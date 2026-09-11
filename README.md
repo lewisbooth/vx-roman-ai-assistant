@@ -14,6 +14,8 @@ Two React Router apps, both with Tailwind CSS 4, share one npm installation and 
 
 These are separate UI applications within one Shopify app registration. Store identity comes from Shopify; production domains are not hardcoded into the client. The existing app client ID, extension UID, and `roman-assistant` embed handle are preserved.
 
+The internal npm package and theme extension are named `vx-roman-ai-assistant`. The Shopify app display name is **Roman AI Assistant**. Shopify release labels are separate: use `npm run deploy -- --version vx-roman-ai-assistant-5` (with a new version label each time) to set one explicitly; changing the npm name does not control Shopify's automatic release labels.
+
 ## Proof-of-concept architecture
 
 One Azure VM runs the admin console and customer-facing backend together as a single React Router server. Shopify displays our custom admin pages inside its Admin app area; customers use the separate theme-embedded frontend. The admin browser page is a view onto backend data, not the owner of running customer sessions.

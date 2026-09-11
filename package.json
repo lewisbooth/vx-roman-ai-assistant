@@ -1,5 +1,5 @@
 {
-  "name": "roman-ai-assistant",
+  "name": "vx-roman-ai-assistant",
   "packageManager": "npm@10.9.2",
   "private": true,
   "scripts": {
