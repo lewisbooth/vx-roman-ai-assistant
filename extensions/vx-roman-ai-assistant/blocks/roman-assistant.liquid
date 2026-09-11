@@ -1,8 +1,14 @@
+<roman-ai-assistant
+  data-label="{{ 'assistant.name' | t | escape }}"
+  data-initial="{{ 'assistant.initial' | t | escape }}"
+  data-script-url="{{ 'roman-assistant.bundle.js' | asset_url }}"
+></roman-ai-assistant>
+
 {% schema %}
 {
-  "name": "t:console_greeting.name",
+  "name": "t:assistant.name",
   "target": "body",
-  "javascript": "roman-assistant.js",
+  "javascript": "roman-assistant-loader.js",
   "settings": []
 }
 {% endschema %}

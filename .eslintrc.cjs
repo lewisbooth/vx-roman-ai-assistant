@@ -1,9 +1,3 @@
-/**
- * This is intended to be a basic starting point for linting in your app.
- * It relies on recommended configs out of the box for simplicity, but you can
- * and should modify this configuration to best suit your team's needs.
- */
-
 /** @type {import('eslint').Linter.Config} */
 module.exports = {
   root: true,
@@ -19,7 +13,7 @@ module.exports = {
     commonjs: true,
     es6: true,
   },
-  ignorePatterns: ["!**/.server", "!**/.client"],
+  ignorePatterns: ["!**/.server", "!**/.client", "**/*.bundle.js"],
 
   // Base config
   extends: ["eslint:recommended"],
@@ -59,7 +53,6 @@ module.exports = {
       plugins: ["@typescript-eslint", "import"],
       parser: "@typescript-eslint/parser",
       settings: {
-        "import/internal-regex": "^~/",
         "import/resolver": {
           node: {
             extensions: [".ts", ".tsx"],
@@ -80,17 +73,41 @@ module.exports = {
     {
       files: [
         ".eslintrc.cjs",
-        "vite.config.{js,ts}",
-        ".graphqlrc.{js,ts}",
-        "shopify.server.{js,ts}",
+        "**/vite.config.{js,ts}",
         "**/*.server.{js,ts}",
       ],
       env: {
         node: true,
       },
     },
+    {
+      files: ["frontend/src/**/*.{ts,tsx}", "shared/**/*.{ts,tsx}"],
+      rules: {
+        "no-restricted-imports": [
+          "error",
+          {
+            patterns: [
+              {
+                group: [
+                  "**/admin/**",
+                  "**/*.server",
+                  "**/*.server.*",
+                  "**/.server/**",
+                  "@prisma/*",
+                  "@shopify/shopify-app-*",
+                  "@shopify/shopify-app-*/**",
+                  "node:*",
+                ],
+                message:
+                  "Customer and shared code must not import admin or server-only modules.",
+              },
+            ],
+          },
+        ],
+      },
+    },
   ],
   globals: {
-    shopify: "readonly"
+    shopify: "readonly",
   },
 };

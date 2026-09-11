@@ -1,61 +1,47 @@
 import { reactRouter } from "@react-router/dev/vite";
-import { defineConfig, type UserConfig } from "vite";
-import tsconfigPaths from "vite-tsconfig-paths";
+import tailwindcss from "@tailwindcss/vite";
+import { defineConfig, loadEnv, type UserConfig } from "vite";
 
-// Related: https://github.com/remix-run/remix/issues/2835#issuecomment-1144102176
-// Replace the HOST env var with SHOPIFY_APP_URL so that it doesn't break the Vite server.
-// The CLI will eventually stop passing in HOST,
-// so we can remove this workaround after the next major release.
-if (
-  process.env.HOST &&
-  (!process.env.SHOPIFY_APP_URL ||
-    process.env.SHOPIFY_APP_URL === process.env.HOST)
-) {
-  process.env.SHOPIFY_APP_URL = process.env.HOST;
-  delete process.env.HOST;
-}
+export default defineConfig(({ mode }) => {
+  const env = { ...loadEnv(mode, process.cwd(), ""), ...process.env };
 
-const host = new URL(process.env.SHOPIFY_APP_URL || "http://localhost")
-  .hostname;
+  // Preserve compatibility with Shopify CLI versions that supply HOST.
+  if (env.HOST && (!env.SHOPIFY_APP_URL || env.SHOPIFY_APP_URL === env.HOST)) {
+    env.SHOPIFY_APP_URL = env.HOST;
+    process.env.SHOPIFY_APP_URL = env.HOST;
+    delete process.env.HOST;
+  }
 
-let hmrConfig;
-if (host === "localhost") {
-  hmrConfig = {
-    protocol: "ws",
-    host: "localhost",
-    port: 64999,
-    clientPort: 64999,
-  };
-} else {
-  hmrConfig = {
-    protocol: "wss",
-    host: host,
-    port: parseInt(process.env.FRONTEND_PORT!) || 8002,
-    clientPort: 443,
-  };
-}
+  const host = new URL(env.SHOPIFY_APP_URL || "http://localhost").hostname;
+  const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(host);
 
-export default defineConfig({
-  server: {
-    allowedHosts: [host],
-    cors: {
-      preflightContinue: true,
+  return {
+    server: {
+      allowedHosts: [host],
+      cors: {
+        preflightContinue: true,
+      },
+      port: Number(env.PORT || 3000),
+      hmr: isLocal
+        ? {
+            protocol: "ws",
+            host,
+            port: 64999,
+            clientPort: 64999,
+          }
+        : {
+            protocol: "wss",
+            host,
+            port: parseInt(env.FRONTEND_PORT || "", 10) || 8002,
+            clientPort: 443,
+          },
+      fs: {
+        allow: ["admin", "shared", "node_modules"],
+      },
     },
-    port: Number(process.env.PORT || 3000),
-    hmr: hmrConfig,
-    fs: {
-      // See https://vitejs.dev/config/server-options.html#server-fs-allow for more information
-      allow: ["app", "node_modules"],
+    plugins: [tailwindcss(), reactRouter()],
+    build: {
+      assetsInlineLimit: 0,
     },
-  },
-  plugins: [
-    reactRouter(),
-    tsconfigPaths(),
-  ],
-  build: {
-    assetsInlineLimit: 0,
-  },
-  optimizeDeps: {
-    include: ["@shopify/app-bridge-react"],
-  },
-}) satisfies UserConfig;
+  } satisfies UserConfig;
+});

@@ -1,10 +1,6 @@
 {
-  "ratings": {
-    "stars": {
-      "label": "Ratings"
-    },
-    "home": {
-      "recommendationText": "Recommended Product!"
-    }
+  "assistant": {
+    "name": "Roman AI Assistant",
+    "initial": "R"
   }
 }

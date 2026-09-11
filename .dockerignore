@@ -1,3 +1,13 @@
 .cache
 build
 node_modules
+.git
+.shopify
+.agents
+.codex
+.react-router
+.env
+.env.*
+prisma/*.sqlite*
+extensions
+frontend
