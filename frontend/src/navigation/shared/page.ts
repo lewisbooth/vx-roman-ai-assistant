@@ -541,6 +541,27 @@ export async function loadPageAssets(
     throw new DOMException("Navigation cancelled", "AbortError");
 }
 
+export function resetHeaderAtTop(): void {
+  if ((window.pageYOffset || document.documentElement.scrollTop) > 0) return;
+  const header = document.querySelector("main-header") as
+    | (HTMLElement & {
+        reset?: () => void;
+        currentScrollTop?: number;
+        initialHeight?: number;
+        initialWidth?: number;
+      })
+    | null;
+  if (typeof header?.reset !== "function") return;
+  // The theme ignores scroll events when page dimensions change. A page swap
+  // can therefore consume the only scroll-to-top event without revealing it.
+  header.reset();
+  if ("currentScrollTop" in header) header.currentScrollTop = 0;
+  if ("initialHeight" in header)
+    header.initialHeight = document.documentElement.scrollHeight;
+  if ("initialWidth" in header)
+    header.initialWidth = document.documentElement.scrollWidth;
+}
+
 export function commitPage(
   page: PreparedPage,
   beforeReplace?: () => void,

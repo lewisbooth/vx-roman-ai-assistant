@@ -2,6 +2,7 @@ import {
   commitPage,
   loadPageAssets,
   preparePage,
+  resetHeaderAtTop,
   ThemeComponentConflict,
 } from "./page";
 import { selectStore } from "../themes";
@@ -284,6 +285,7 @@ export function createStorefrontNavigation(
           .getElementById(decodeURIComponent(finalUrl.hash.slice(1)))
           ?.scrollIntoView();
       } else window.scrollTo({ left: 0, top: 0, behavior: "instant" });
+      resetHeaderAtTop();
       document.dispatchEvent(
         new CustomEvent("roman:navigation", { detail: { url: currentUrl } }),
       );

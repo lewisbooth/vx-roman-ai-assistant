@@ -144,6 +144,94 @@ function captureNativeNavigation(window) {
   return calls;
 }
 
+function installThemeHeader(
+  t,
+  window,
+  { scrollTop = 640, hasReset = true } = {},
+) {
+  const { document } = window;
+  const header = document.createElement("main-header");
+  const content = document.querySelector("header");
+  content.replaceWith(header);
+  header.append(content);
+  const hiddenClasses = [
+    "opacity-0",
+    "pointer-events-none",
+    "sticky",
+    "top-0",
+    "invisible",
+  ];
+  const hide = () => {
+    content.classList.add(...hiddenClasses);
+    document.documentElement.style.setProperty("--header-height", "0px");
+  };
+  hide();
+  let top = scrollTop;
+  const root = document.documentElement;
+  Object.defineProperties(window, {
+    scrollY: { configurable: true, get: () => top },
+    pageYOffset: { configurable: true, get: () => top },
+  });
+  Object.defineProperties(root, {
+    scrollTop: {
+      configurable: true,
+      get: () => top,
+      set: (value) => {
+        top = value;
+      },
+    },
+    scrollHeight: {
+      configurable: true,
+      get: () => Number(document.querySelector("main").dataset.height ?? 3000),
+    },
+    scrollWidth: {
+      configurable: true,
+      get: () => Number(document.querySelector("main").dataset.width ?? 1280),
+    },
+  });
+  header.currentScrollTop = top;
+  header.initialHeight = root.scrollHeight;
+  header.initialWidth = root.scrollWidth;
+  const resets = [];
+  if (hasReset) {
+    header.reset = () => {
+      resets.push({
+        main: document.querySelector("main"),
+        top,
+        pathname: window.location.pathname,
+      });
+      content.classList.remove(...hiddenClasses);
+      // Theme reset returns the header to normal flow, clearing reserved sticky height.
+      root.style.setProperty("--header-height", "0px");
+    };
+  }
+  const observed = { dimensionSkips: 0, scrollEvents: 0 };
+  const onScroll = () => {
+    observed.scrollEvents++;
+    // The real theme skips visibility handling on its first event after a
+    // page-size change, which can leave an already-hidden header at scroll 0.
+    if (
+      header.initialHeight !== root.scrollHeight ||
+      header.initialWidth !== root.scrollWidth
+    ) {
+      header.initialHeight = root.scrollHeight;
+      header.initialWidth = root.scrollWidth;
+      observed.dimensionSkips++;
+      return;
+    }
+    if (top <= 0) header.reset?.();
+    else if (top > header.currentScrollTop) hide();
+    header.currentScrollTop = top;
+  };
+  window.addEventListener("scroll", onScroll);
+  t.after(() => window.removeEventListener("scroll", onScroll));
+  window.scrollTo = ({ top: nextTop }) => {
+    top = nextTop;
+    window.dispatchEvent(new window.Event("scroll"));
+  };
+  return { header, content, resets, observed, hide };
+}
+
 test("all five destinations replace store content without remounting Roman or its surrounding theme", async (t) => {
   const { document, window, host, instance, navigation } = setup(t);
   const provider = document.querySelector("app-provider");
@@ -389,6 +477,179 @@ test("Back restores the outgoing page scroll without discarding other history ow
   );
   assert.equal(window.history.state.themeSelection, "original");
   assert.equal(restored.at(-1).top, 640);
+});
+
+test("top navigation restores the existing theme header after new page dimensions bypass its scroll reset", async (t) => {
+  const { document, window, navigation } = setup(t, async (url) => {
+    const path = new URL(url).pathname;
+    return response(path, {
+      text: async () =>
+        page(path).replace(
+          '<main id="main"',
+          '<main id="main" data-height="1800" data-width="1200"',
+        ),
+    });
+  });
+  const { header, content, resets, observed } = installThemeHeader(t, window);
+  const previousMain = document.querySelector("main");
+
+  await navigation.navigate(productOne);
+
+  assert.equal(window.scrollY, 0);
+  assert.equal(
+    observed.dimensionSkips,
+    1,
+    "the theme's original dimension guard reproduced the missed reset",
+  );
+  assert.equal(resets.length, 1);
+  assert.notEqual(resets[0].main, previousMain);
+  assert.equal(resets[0].main, document.querySelector("main"));
+  assert.equal(resets[0].pathname, productOne);
+  assert.equal(
+    resets[0].top,
+    0,
+    "theme reset runs after the destination scroll is applied",
+  );
+  assert.equal(content.className, "");
+  assert.equal(
+    document.documentElement.style.getPropertyValue("--header-height"),
+    "0px",
+  );
+  assert.equal(header.currentScrollTop, 0);
+  assert.equal(header.initialHeight, 1800);
+  assert.equal(header.initialWidth, 1200);
+  assert.equal(document.querySelector("main-header"), header);
+  assert.equal(document.querySelector("header"), content);
+
+  window.scrollTo({ top: 700 });
+  assert.equal(observed.scrollEvents, 2);
+  assert.equal(
+    content.classList.contains("invisible"),
+    true,
+    "the same theme scroll listener still controls subsequent scrolling",
+  );
+});
+
+test("a header without the theme reset API is left alone during successful navigation", async (t) => {
+  const { document, window, navigation } = setup(t);
+  const { header, content, resets } = installThemeHeader(t, window, {
+    hasReset: false,
+  });
+  const classes = content.className;
+  await navigation.navigate(productOne);
+  assert.equal(navigation.getSnapshot().error, null);
+  assert.equal(window.scrollY, 0);
+  assert.equal(document.querySelector("main-header"), header);
+  assert.equal(content.className, classes);
+  assert.equal(
+    document.documentElement.style.getPropertyValue("--header-height"),
+    "0px",
+  );
+  assert.deepEqual(resets, []);
+});
+
+test("deep restored history and anchors keep the theme header's existing scroll visibility", async (t) => {
+  for (const destination of ["history", "anchor"]) {
+    await t.test(destination, async (t) => {
+      const { document, window, navigation } = setup(t, async (url) => {
+        const path = new URL(url).pathname;
+        return response(path, {
+          url: String(url),
+          text: async () =>
+            page(path, '<div id="measurements">Measuring guide</div>'),
+        });
+      });
+      const { content, resets, hide } = installThemeHeader(t, window);
+      if (destination === "history") {
+        await navigation.navigate(productOne);
+        hide();
+        resets.length = 0;
+        window.history.back();
+        await until(
+          () => document.querySelector("main h1").textContent === "/",
+          "Back did not restore the scrolled page",
+        );
+      } else {
+        window.HTMLElement.prototype.scrollIntoView = function () {
+          assert.equal(this.id, "measurements");
+          window.scrollTo({ top: 900 });
+        };
+        await navigation.navigate(`${productOne}#measurements`);
+      }
+      assert.equal(window.scrollY, destination === "history" ? 640 : 900);
+      assert.deepEqual(resets, []);
+      assert.equal(content.classList.contains("invisible"), true);
+      assert.equal(
+        document.documentElement.style.getPropertyValue("--header-height"),
+        "0px",
+      );
+      assert.equal(navigation.getSnapshot().error, null);
+    });
+  }
+});
+
+test("failed, canceled and native-fallback navigation never reset the retained theme header", async (t) => {
+  for (const outcome of ["HTTP failure", "canceled", "native conflict"]) {
+    await t.test(outcome, async (t) => {
+      let resolveRequest;
+      const { document, window, navigation } = setup(
+        t,
+        () =>
+          outcome === "canceled"
+            ? new Promise((resolve) => {
+                resolveRequest = resolve;
+              })
+            : Promise.resolve(
+                response(
+                  "/cart",
+                  outcome === "HTTP failure"
+                    ? { ok: false, status: 503 }
+                    : {
+                        text: async () =>
+                          themePage("/cart", {
+                            assets: `<script type="module" src="${themeAsset("-core-cart-sections-foundation.js")}"></script>`,
+                          }),
+                      },
+                ),
+              ),
+        {
+          html: themePage("/", {
+            assets: `<script type="module" src="${themeAsset("-core-cart-sections.js")}"></script>`,
+          }),
+        },
+      );
+      const native = captureNativeNavigation(window);
+      const { header, content, resets, observed } = installThemeHeader(
+        t,
+        window,
+        { scrollTop: 0 },
+      );
+      const previousMain = document.querySelector("main");
+      const classes = content.className;
+      const pending = navigation.navigate("/cart");
+      if (outcome === "canceled") {
+        await until(
+          () => resolveRequest,
+          "cancelable navigation did not start",
+        );
+        navigation.dispose();
+        resolveRequest(
+          response("/cart", { text: async () => themePage("/cart") }),
+        );
+      }
+      await pending;
+      assert.deepEqual(resets, []);
+      assert.equal(observed.scrollEvents, 0);
+      assert.equal(document.querySelector("main-header"), header);
+      assert.equal(document.querySelector("main"), previousMain);
+      assert.equal(content.className, classes);
+      assert.equal(
+        document.documentElement.style.getPropertyValue("--header-height"),
+        "0px",
+      );
+      assert.equal(native.length, outcome === "native conflict" ? 1 : 0);
+    });
+  }
 });
 
 test("navigation preserves variant and filter history updates made by the theme", async (t) => {
