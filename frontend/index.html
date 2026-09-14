@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-roman-preview="true">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Roman AI Assistant · Storefront preview</title>
+    <title>Roman storefront preview</title>
     <style>
       body {
         margin: 0;
@@ -13,9 +13,18 @@
           16px/1.6 system-ui,
           sans-serif;
       }
+      app-provider {
+        display: block;
+      }
+      header,
+      footer {
+        padding: 24px;
+        background: #e7e5e4;
+      }
       main {
-        max-width: 640px;
-        margin: 12vh auto;
+        max-width: 720px;
+        min-height: 65vh;
+        margin: 8vh auto;
         padding: 24px;
       }
       h1 {
@@ -27,15 +36,16 @@
       }
     </style>
   </head>
-  <body>
-    <main>
-      <h1>Roman AI Assistant</h1>
-      <p>
-        Storefront preview. The R button stays in the bottom-right corner and
-        currently logs “Hello from Roman” when clicked.
-      </p>
-    </main>
+  <body class="template-index">
+    <app-provider>
+      <header>Roman storefront preview</header>
+      <main id="main" tabindex="-1"><!-- roman:page --></main>
+      <footer>
+        Open the R button, type a note, then use the navigation buttons.
+      </footer>
+    </app-provider>
     <roman-ai-assistant
+      data-shop="hd-dev-multi.myshopify.com"
       data-label="Roman AI Assistant"
       data-initial="R"
     ></roman-ai-assistant>

@@ -26,7 +26,7 @@ export default function Home() {
       <s-section heading="Storefront assistant">
         <s-paragraph>
           Enable the Assistant icon app embed in your theme and save your
-          changes to show the R icon in the bottom-right corner of your
+          changes to show the R icon in the bottom-left corner of your
           storefront.
         </s-paragraph>
         <s-button href={themeEditorUrl} target="_blank" variant="primary">
