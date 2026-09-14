@@ -6,7 +6,7 @@ This module owns `select-blinds-us.myshopify.com` ([production](https://www.sele
 
 The [shared PayPal handler](../../shared/paypal.ts) loads one SDK per document and waits for readiness before the product connects. The theme sets its message amount and `data-pp-message` after pricing; [PayPal's observer](https://github.com/paypal/paypal-messaging-components/blob/develop/src/utils/observers.js) handles rendering. The original SDK tag is preserved outside replaced content. Failures or configuration changes require a reload.
 
-The current drawer/page cart modules register conflicting custom elements. Shared preparation keeps that transition blocked until the theme is fixed. It also blocks a destination that expects a cart drawer missing from the current document, before changing content. The theme must make that persistent shell consistent across templates.
+The current drawer/page cart modules register conflicting custom elements. Shared navigation logs the conflict and loads the full destination page. It also uses normal navigation when the destination expects a cart drawer missing from the current document. Give conflicting components compatible implementations or distinct definitions and make the persistent shell consistent across templates to restore seamless navigation.
 
 See the [frontend README](../../../../README.md) for checks and publishing.
 

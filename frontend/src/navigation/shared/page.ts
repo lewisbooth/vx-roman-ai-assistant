@@ -17,6 +17,10 @@ type ThemeWindow = Window & {
   Shopify?: { PaymentButton?: { init?: () => void } };
 };
 
+export class ThemeComponentConflict extends Error {
+  override name = "ThemeComponentConflict";
+}
+
 export type PreparedPage = {
   document: Document;
   url: URL;
@@ -238,7 +242,7 @@ export function preparePage(
       "app-provider > #shopify-section-cart-drawer-dialog",
     )
   ) {
-    throw new Error(
+    throw new ThemeComponentConflict(
       "The current theme shell is missing its cart drawer. Open this page with normal navigation.",
     );
   }
@@ -266,8 +270,8 @@ export function preparePage(
       ),
   );
   if (cartFamilies.size > 1) {
-    throw new Error(
-      "This theme uses incompatible cart components. Open Cart with normal navigation or test a theme with one shared cart component.",
+    throw new ThemeComponentConflict(
+      `This theme uses incompatible cart components (${[...cartFamilies].join(", ")}).`,
     );
   }
   const blocked: {
@@ -486,9 +490,22 @@ export async function loadPageAssets(
       !page.integration.modules?.some((module) => module.href === asset.href)
     )
       return;
-    runtimeError = new Error(
-      `Theme script ${new URL(event.filename, document.baseURI).pathname} failed to initialize: ${event.message}. Reload this page before continuing.`,
-    );
+    const duplicateDefinition =
+      event.error instanceof DOMException &&
+      event.error.name === "NotSupportedError" &&
+      /CustomElementRegistry|custom elements?|this registry/i.test(
+        event.message,
+      ) &&
+      /already (?:been )?(?:used|defined|registered)|multiple custom elements/i.test(
+        event.message,
+      );
+    runtimeError = duplicateDefinition
+      ? new ThemeComponentConflict(
+          `Theme script ${asset.origin}${asset.pathname} tried to register a custom element that is already defined.`,
+        )
+      : new Error(
+          `Theme script ${asset.pathname} failed to initialize: ${event.message}. Reload this page before continuing.`,
+        );
     loading.abort();
   };
   signal.addEventListener("abort", abort, { once: true });
@@ -532,7 +549,9 @@ export function commitPage(
   error?: string;
 } {
   const previous = mainElement(document);
-  const main = document.importNode(page.main, true);
+  // Keep custom elements inert until insertion, so constructors see the new
+  // page's DOM and globals rather than caching nodes from the outgoing page.
+  const main = page.main.cloneNode(true) as HTMLElement;
   const metadata = Array.from(
     page.document.head.querySelectorAll(pageMetadata),
     (node) => {

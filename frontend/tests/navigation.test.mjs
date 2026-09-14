@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import jsdomInternals from "jsdom/lib/jsdom/living/generated/utils.js";
 
 const origin = "https://hd-dev-multi.myshopify.com";
 const productOne = "/products/traditional-room-darkening-zebra-shades";
@@ -131,6 +132,18 @@ async function until(condition, message) {
   assert.fail(message);
 }
 
+function captureNativeNavigation(window) {
+  // Location methods cannot be replaced on the public DOM object in JSDOM.
+  // Observe its implementation so tests never attempt real page navigation.
+  const location = jsdomInternals.implForWrapper(window.location);
+  const calls = [];
+  for (const method of ["assign", "replace", "reload"]) {
+    location[method] = (url) =>
+      calls.push({ method, url: url ?? window.location.href });
+  }
+  return calls;
+}
+
 test("all five destinations replace store content without remounting Roman or its surrounding theme", async (t) => {
   const { document, window, host, instance, navigation } = setup(t);
   const provider = document.querySelector("app-provider");
@@ -206,6 +219,7 @@ test("failed requests and invalid destination documents leave the existing page 
   for (const [name, fetch] of cases) {
     await t.test(name, async (t) => {
       const { document, window, navigation } = setup(t, fetch);
+      const native = captureNativeNavigation(window);
       const main = document.querySelector("main");
       await navigation.navigate(productOne);
       assert.ok(
@@ -216,6 +230,7 @@ test("failed requests and invalid destination documents leave the existing page 
       assert.equal(document.querySelector("main"), main);
       assert.equal(window.location.href, `${origin}/`);
       assert.equal(document.title, "Store /");
+      assert.deepEqual(native, []);
     });
   }
 });
@@ -542,6 +557,7 @@ test("branching after Back retains correct history positions and failure rollbac
 
 test("payment initialization failure keeps the inserted page and preserves previous history", async (t) => {
   const { document, window, navigation } = setup(t);
+  const native = captureNativeNavigation(window);
   await navigation.navigate(productOne);
   window.Shopify = {
     PaymentButton: {
@@ -559,6 +575,11 @@ test("payment initialization failure keeps the inserted page and preserves previ
   assert.equal(document.querySelector("main h1").textContent, productTwo);
   assert.equal(window.location.pathname, productTwo);
   assert.equal(window.history.length, 3);
+  assert.deepEqual(
+    native,
+    [],
+    "payment initialization does not invoke component-conflict fallback",
+  );
   window.Shopify.PaymentButton.init = () => {};
   window.history.back();
   await until(
@@ -797,6 +818,292 @@ test("theme modules load once across repeated page asset preparation", async (t)
   await loading;
   await window.RomanPage.loadPageAssets(prepared, signal);
   assert.equal(document.querySelectorAll(selector).length, 1);
+});
+
+test("a cart component conflict uses native navigation with the complete destination and a redacted diagnostic", async (t) => {
+  const destination = "/cart?cart_token=QUERY_SECRET#FRAGMENT_SECRET";
+  const { document, window, host, instance, navigation, calls, errors } = setup(
+    t,
+    async (url) => {
+      const finalUrl = new URL(url);
+      finalUrl.hash = ""; // Fetch Response.url excludes the requested fragment.
+      return response("/cart", {
+        url: finalUrl.href,
+        text: async () =>
+          themePage("/cart", {
+            assets: `<script type="module" src="${themeAsset("-core-cart-sections-foundation.js")}"></script>
+              <link rel="stylesheet" href="${themeAsset("cart.css")}">`,
+          }),
+      });
+    },
+    {
+      html: themePage("/", {
+        assets: `<script type="module" src="${themeAsset("-core-cart-sections.js")}"></script>`,
+      }),
+      url: `${origin}/?preview_theme_id=PREVIEW_SECRET`,
+    },
+  );
+  const native = captureNativeNavigation(window);
+  const previousMain = document.querySelector("main");
+  const input = host.shadowRoot.querySelector("input");
+  const previousAssets = [
+    ...document.querySelectorAll("script[src], link[href]"),
+  ];
+  const assetAttempts = [];
+  const observer = new window.MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (
+          node instanceof window.HTMLScriptElement ||
+          node instanceof window.HTMLLinkElement
+        )
+          assetAttempts.push(node);
+      }
+    }
+  });
+  observer.observe(document.head, { childList: true });
+  t.after(() => observer.disconnect());
+  const changes = [];
+  document.addEventListener("roman:navigation", (event) => changes.push(event));
+
+  await navigation.navigate(destination);
+
+  assert.deepEqual(native, [
+    {
+      method: "assign",
+      url: `${origin}/cart?cart_token=QUERY_SECRET&preview_theme_id=PREVIEW_SECRET#FRAGMENT_SECRET`,
+    },
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(document.querySelector("main"), previousMain);
+  assert.deepEqual(
+    [...document.querySelectorAll("script[src], link[href]")],
+    previousAssets,
+  );
+  assert.equal(document.querySelector("roman-ai-assistant"), host);
+  assert.equal(host.romanInstance, instance);
+  assert.equal(host.shadowRoot.querySelector("input"), input);
+  assert.equal(input.value, "Keep my measurements");
+  assert.deepEqual(changes, []);
+  assert.deepEqual(
+    assetAttempts,
+    [],
+    "the preflight conflict starts no asset loading",
+  );
+  assert.equal(
+    window.history.length,
+    1,
+    "native navigation owns the new history entry",
+  );
+  assert.equal(errors.length, 1);
+  const diagnostic = JSON.stringify(errors[0]);
+  assert.match(diagnostic, /\[Roman\]/);
+  assert.ok(diagnostic.includes(`${origin}/cart`));
+  assert.match(diagnostic, /incompatible cart/i);
+  assert.doesNotMatch(diagnostic, /SECRET|Keep my measurements|\?|#/);
+});
+
+test("component conflicts during Back and Forward reload the destination history entry without rolling back", async (t) => {
+  for (const direction of ["back", "forward"]) {
+    await t.test(direction, async (t) => {
+      let conflictPath;
+      const { document, window, navigation, errors } = setup(
+        t,
+        async (url) => {
+          const path = new URL(url).pathname;
+          return response(path, {
+            text: async () =>
+              themePage(path, {
+                assets:
+                  path === conflictPath
+                    ? `<script type="module" src="${themeAsset("-core-cart-sections-foundation.js")}"></script>`
+                    : "",
+              }),
+          });
+        },
+        {
+          html: themePage("/", {
+            assets: `<script type="module" src="${themeAsset("-core-cart-sections.js")}"></script>`,
+          }),
+        },
+      );
+      const native = captureNativeNavigation(window);
+      await navigation.navigate(productOne);
+      await navigation.navigate(productTwo);
+      if (direction === "forward") {
+        window.history.back();
+        await until(
+          () => document.querySelector("main h1").textContent === productOne,
+          "Back did not establish the Forward destination",
+        );
+      }
+      conflictPath = direction === "back" ? productOne : productTwo;
+      const previousMain = document.querySelector("main");
+      const length = window.history.length;
+      window.history[direction]();
+      await until(
+        () => native.length,
+        "the conflicting history destination did not reload",
+      );
+
+      assert.deepEqual(native, [
+        { method: "reload", url: `${origin}${conflictPath}` },
+      ]);
+      assert.equal(window.location.href, `${origin}${conflictPath}`);
+      assert.equal(window.history.length, length);
+      assert.equal(
+        window.history.state.__romanNavigation.index,
+        direction === "back" ? 1 : 2,
+      );
+      assert.equal(document.querySelector("main"), previousMain);
+      assert.equal(errors.length, 1);
+      navigation.dispose();
+      await delay(10);
+      assert.equal(
+        window.location.href,
+        `${origin}${conflictPath}`,
+        "disposal must not undo the pending native history load",
+      );
+      assert.equal(native.length, 1);
+    });
+  }
+});
+
+test("a redirected conflicting history destination replaces its current entry", async (t) => {
+  let redirect = false;
+  const { document, window, navigation } = setup(
+    t,
+    async (url) => {
+      const path = new URL(url).pathname;
+      return response(path, {
+        url: redirect ? `${origin}/cart?redirect=QUERY_SECRET` : String(url),
+        text: async () =>
+          themePage(redirect ? "/cart" : path, {
+            assets: redirect
+              ? `<script type="module" src="${themeAsset("-core-cart-sections-foundation.js")}"></script>`
+              : "",
+          }),
+      });
+    },
+    {
+      html: themePage("/", {
+        assets: `<script type="module" src="${themeAsset("-core-cart-sections.js")}"></script>`,
+      }),
+    },
+  );
+  const native = captureNativeNavigation(window);
+  await navigation.navigate(productOne);
+  await navigation.navigate(productTwo);
+  const previousMain = document.querySelector("main");
+  redirect = true;
+  window.history.back();
+  await until(
+    () => native.length,
+    "the redirected history conflict did not use native navigation",
+  );
+  assert.deepEqual(native, [
+    { method: "replace", url: `${origin}/cart?redirect=QUERY_SECRET` },
+  ]);
+  assert.equal(window.history.length, 3);
+  assert.equal(window.history.state.__romanNavigation.index, 1);
+  assert.equal(document.querySelector("main"), previousMain);
+});
+
+test("late conflict responses from superseded or disposed navigation cannot trigger native fallback", async (t) => {
+  for (const action of ["supersede", "dispose"]) {
+    await t.test(action, async (t) => {
+      let resolveConflict;
+      const { document, window, navigation, calls, errors } = setup(
+        t,
+        (url) =>
+          new URL(url).pathname === "/cart"
+            ? new Promise((resolve) => {
+                resolveConflict = resolve;
+              })
+            : Promise.resolve(
+                response(productOne, {
+                  text: async () => themePage(productOne),
+                }),
+              ),
+        {
+          html: themePage("/", {
+            assets: `<script type="module" src="${themeAsset("-core-cart-sections.js")}"></script>`,
+          }),
+        },
+      );
+      const native = captureNativeNavigation(window);
+      const pending = navigation.navigate("/cart");
+      await until(() => resolveConflict, "conflicting request did not start");
+      if (action === "supersede") await navigation.navigate(productOne);
+      else navigation.dispose();
+      const displayedMain = document.querySelector("main");
+      assert.equal(calls[0].options.signal.aborted, true);
+      resolveConflict(
+        response("/cart", {
+          text: async () =>
+            themePage("/cart", {
+              assets: `<script type="module" src="${themeAsset("-core-cart-sections-foundation.js")}"></script>`,
+            }),
+        }),
+      );
+      await pending;
+      assert.deepEqual(native, []);
+      assert.deepEqual(errors, []);
+      assert.equal(document.querySelector("main"), displayedMain);
+    });
+  }
+});
+
+test("a cached page can resume Roman navigation after a native conflict handoff", async (t) => {
+  const { document, window, navigation, calls } = setup(
+    t,
+    async (url) => {
+      const path = new URL(url).pathname;
+      return response(path, {
+        text: async () =>
+          themePage(path, {
+            assets:
+              path === "/cart"
+                ? `<script type="module" src="${themeAsset("-core-cart-sections-foundation.js")}"></script>`
+                : "",
+          }),
+      });
+    },
+    {
+      html: themePage("/", {
+        assets: `<script type="module" src="${themeAsset("-core-cart-sections.js")}"></script>`,
+      }),
+      beforeImport: (window) => {
+        window.history.scrollRestoration = "auto";
+      },
+    },
+  );
+  const native = captureNativeNavigation(window);
+  await navigation.navigate("/cart");
+  assert.equal(native.length, 1);
+  assert.equal(window.history.scrollRestoration, "auto");
+  await navigation.navigate(productOne);
+  assert.equal(
+    calls.length,
+    1,
+    "no second navigation can race the native handoff",
+  );
+  window.dispatchEvent(
+    new window.PageTransitionEvent("pageshow", { persisted: false }),
+  );
+  await navigation.navigate(productOne);
+  assert.equal(calls.length, 1);
+
+  window.dispatchEvent(
+    new window.PageTransitionEvent("pageshow", { persisted: true }),
+  );
+  assert.equal(window.history.scrollRestoration, "manual");
+  await navigation.navigate(productOne);
+  assert.equal(calls.length, 2);
+  assert.equal(document.querySelector("main h1").textContent, productOne);
+  assert.equal(window.location.pathname, productOne);
+  assert.equal(native.length, 1);
+  assert.equal(navigation.getSnapshot().error, null);
 });
 
 test("failed styles and scripts warn while the page waits for every remaining asset", async (t) => {
@@ -1059,6 +1366,151 @@ test("theme module initialization errors cancel pending assets and keep existing
   assert.deepEqual(warnings, []);
 });
 
+test("only confirmed duplicate custom-element registrations trigger runtime conflict fallback", async (t) => {
+  const cases = [
+    {
+      name: "duplicate registry definition",
+      errorName: "NotSupportedError",
+      message:
+        "Failed to execute 'define' on 'CustomElementRegistry': the name \"cart-remove-toggle\" has already been used with this registry",
+      fallback: true,
+    },
+    {
+      name: "unrelated unsupported operation",
+      errorName: "NotSupportedError",
+      message: "The requested operation is not supported",
+      fallback: false,
+    },
+    {
+      name: "ordinary initialization exception",
+      errorName: "TypeError",
+      message: "Cannot read properties of undefined",
+      fallback: false,
+    },
+    {
+      name: "unconfirmed duplicate wording",
+      errorName: "Error",
+      message: "Custom element was already registered",
+      fallback: false,
+    },
+  ];
+  for (const { name, errorName, message, fallback } of cases) {
+    await t.test(name, async (t) => {
+      const moduleUrl = `${themeAsset("-new-product.js")}?asset=ASSET_SECRET`;
+      const { document, window, navigation, errors, warnings } = setup(
+        t,
+        async (url) =>
+          response(productOne, {
+            url: String(url),
+            text: async () =>
+              themePage(productOne, {
+                assets: `<script type="module" src="${moduleUrl}"></script>
+              <script type="module" src="${themeAsset("-pending-sibling.js")}"></script>`,
+              }),
+          }),
+        { html: themePage("/") },
+      );
+      const native = captureNativeNavigation(window);
+      const previousMain = document.querySelector("main");
+      const destination = `${productOne}?variant=QUERY_SECRET#FRAGMENT_SECRET`;
+      const pending = navigation.navigate(destination);
+      await until(
+        () => document.querySelector(`script[src="${moduleUrl}"]`),
+        "runtime module was not requested",
+      );
+      window.dispatchEvent(
+        new window.ErrorEvent("error", {
+          filename: moduleUrl,
+          message,
+          error: new window.DOMException(message, errorName),
+        }),
+      );
+      await pending;
+
+      assert.deepEqual(
+        native,
+        fallback ? [{ method: "assign", url: `${origin}${destination}` }] : [],
+      );
+      assert.equal(document.querySelector("main"), previousMain);
+      assert.equal(window.location.href, `${origin}/`);
+      assert.equal(window.history.length, 1);
+      assert.equal(document.querySelector(`script[src="${moduleUrl}"]`), null);
+      assert.equal(
+        document.querySelector(
+          `script[src="${themeAsset("-pending-sibling.js")}"]`,
+        ),
+        null,
+      );
+      assert.deepEqual(warnings, []);
+      if (fallback) {
+        assert.equal(errors.length, 1);
+        assert.doesNotMatch(JSON.stringify(errors), /SECRET|\?|#/);
+        assert.ok(JSON.stringify(errors).includes(`${origin}${productOne}`));
+      } else assert.ok(navigation.getSnapshot().error);
+    });
+  }
+});
+
+test("duplicate-registration events after cancellation cannot fall back or disturb the newer page", async (t) => {
+  for (const action of ["supersede", "dispose"]) {
+    await t.test(action, async (t) => {
+      const moduleUrl = themeAsset("-cancelled-product.js");
+      const nextModuleUrl = themeAsset("-next-product.js");
+      const { document, window, navigation, errors } = setup(
+        t,
+        async (url) => {
+          const path = new URL(url).pathname;
+          return response(path, {
+            text: async () =>
+              themePage(path, {
+                assets: `<script type="module" src="${path === productOne ? moduleUrl : nextModuleUrl}"></script>`,
+              }),
+          });
+        },
+        { html: themePage("/") },
+      );
+      const native = captureNativeNavigation(window);
+      const pending = navigation.navigate(productOne);
+      await until(
+        () => document.querySelector(`script[src="${moduleUrl}"]`),
+        "cancelled module was not requested",
+      );
+      let nextNavigation;
+      if (action === "supersede") {
+        nextNavigation = navigation.navigate(productTwo);
+        await until(
+          () => document.querySelector(`script[src="${nextModuleUrl}"]`),
+          "next navigation did not begin loading its module",
+        );
+        document
+          .querySelector(`script[src="${nextModuleUrl}"]`)
+          .dispatchEvent(new window.Event("load"));
+        await nextNavigation;
+      } else navigation.dispose();
+      await pending;
+      const displayedMain = document.querySelector("main");
+      const message =
+        "Failed to execute 'define' on 'CustomElementRegistry': the name \"cart-remove-toggle\" has already been used with this registry";
+      window.dispatchEvent(
+        new window.ErrorEvent("error", {
+          filename: moduleUrl,
+          message,
+          error: new window.DOMException(message, "NotSupportedError"),
+        }),
+      );
+      await delay(0);
+      assert.deepEqual(native, []);
+      assert.deepEqual(errors, []);
+      assert.equal(document.querySelector("main"), displayedMain);
+      if (nextNavigation) {
+        assert.equal(document.querySelector("main h1").textContent, productTwo);
+        assert.equal(navigation.getSnapshot().error, null);
+        assert.deepEqual(native, []);
+      }
+    });
+  }
+});
+
 const storeFixtures = {
   devMulti: { shop: "hd-dev-multi.myshopify.com", origin },
   devSingle: {
@@ -1125,6 +1577,7 @@ test("unsafe-script diagnostics identify every blocker without exposing customer
       html: storePage(store, "/"),
     },
   );
+  const native = captureNativeNavigation(window);
   const main = document.querySelector("main");
   const input = host.shadowRoot.querySelector("input");
   const previousUrl = window.location.href;
@@ -1247,6 +1700,7 @@ test("unsafe-script diagnostics identify every blocker without exposing customer
   );
   assert.equal(document.querySelector("main"), main);
   assert.equal(window.location.href, previousUrl);
+  assert.deepEqual(native, [], "unsafe markup must remain a hard failure");
   assert.equal(document.querySelector("roman-ai-assistant"), host);
   assert.equal(host.romanInstance, instance);
   assert.equal(host.shadowRoot.querySelector("input"), input);
@@ -1693,16 +2147,18 @@ test("navigation rejects destination modules from a different theme revision bef
       }),
     { html: themePage("/") },
   );
+  const native = captureNativeNavigation(window);
   const main = document.querySelector("main");
   await navigation.navigate(productOne);
   assert.ok(navigation.getSnapshot().error);
   assert.equal(document.querySelector("main"), main);
   assert.equal(window.location.pathname, "/");
   assert.equal(document.querySelector('script[src*="/cdn/shop/t/999/"]'), null);
+  assert.deepEqual(native, []);
 });
 
-test("a page cannot inherit a shell missing its required cart drawer", async (t) => {
-  const { document, window, navigation } = setup(
+test("a page requiring a missing cart drawer uses native navigation without changing the current shell", async (t) => {
+  const { document, window, navigation, errors } = setup(
     t,
     async () =>
       response(productOne, {
@@ -1714,11 +2170,20 @@ test("a page cannot inherit a shell missing its required cart drawer", async (t)
       }),
     { html: themePage("/cart"), url: `${origin}/cart` },
   );
+  const native = captureNativeNavigation(window);
   const main = document.querySelector("main");
   await navigation.navigate(productOne);
-  assert.ok(navigation.getSnapshot().error);
+  assert.deepEqual(native, [
+    { method: "assign", url: `${origin}${productOne}` },
+  ]);
+  assert.equal(errors.length, 1);
+  assert.match(JSON.stringify(errors), /missing.*cart drawer/i);
   assert.equal(document.querySelector("main"), main);
   assert.equal(window.location.pathname, "/cart");
+  assert.equal(
+    document.querySelector("#shopify-section-cart-drawer-dialog"),
+    null,
+  );
 });
 
 test("a forward page visit changes the browser URL only once", async (t) => {

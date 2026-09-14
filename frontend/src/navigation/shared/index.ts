@@ -1,4 +1,9 @@
-import { commitPage, loadPageAssets, preparePage } from "./page";
+import {
+  commitPage,
+  loadPageAssets,
+  preparePage,
+  ThemeComponentConflict,
+} from "./page";
 import { selectStore } from "../themes";
 
 export type NavigationSnapshot = {
@@ -85,6 +90,7 @@ export function createStorefrontNavigation(
   let previousScrollRestoration: ScrollRestoration;
   let displayedEntry: HistoryEntry | undefined;
   let restoringEntry: HistoryEntry | undefined;
+  let handingOff = false;
 
   function publish(update: Partial<NavigationSnapshot>) {
     snapshot = { ...snapshot, ...update };
@@ -160,7 +166,7 @@ export function createStorefrontNavigation(
   }
 
   async function visit(path: string, fromHistory = false) {
-    if (disposed || restoringEntry) return;
+    if (disposed || restoringEntry || handingOff) return;
     controller?.abort();
     const request = new AbortController();
     controller = request;
@@ -180,6 +186,7 @@ export function createStorefrontNavigation(
     let replacedUrl = false;
     let pushedEntry = false;
     let outgoingEntry: HistoryEntry | undefined;
+    let destination: URL | undefined;
 
     try {
       if (!store) {
@@ -215,6 +222,8 @@ export function createStorefrontNavigation(
           `The store returned HTTP ${response.status}. The current page has been kept.`,
         );
       const finalUrl = supportedUrl(response.url || url.href);
+      // Fetch strips the requested fragment; native navigation must retain it.
+      if (!finalUrl.hash) finalUrl.hash = url.hash;
       if (!response.headers.get("content-type")?.includes("text/html")) {
         throw new Error("The store did not return an HTML page.");
       }
@@ -223,6 +232,7 @@ export function createStorefrontNavigation(
       // turn a nonfatal asset timeout into a cancelled navigation.
       window.clearTimeout(timeout);
       request.signal.throwIfAborted();
+      destination = finalUrl;
       const page = preparePage(html, finalUrl, store.theme);
       await loadPageAssets(page, request.signal);
       request.signal.throwIfAborted();
@@ -284,6 +294,28 @@ export function createStorefrontNavigation(
         !request.signal.reason?.message?.includes("timed out")
       )
         return;
+      if (error instanceof ThemeComponentConflict && destination) {
+        console.error(
+          "[Roman] Theme component conflict; loading the full page.",
+          {
+            destination: `${destination.origin}${destination.pathname}`,
+            reason: error.message,
+          },
+        );
+        handingOff = true;
+        request.abort();
+        window.clearTimeout(scrollTimer);
+        scrollTimer = undefined;
+        window.history.scrollRestoration = previousScrollRestoration;
+        // Avoid treating this intentional handoff as a failed history visit on
+        // disposal. The old content remains untouched until the browser leaves.
+        publish({ pending: false, error: null });
+        if (!fromHistory) window.location.assign(destination.href);
+        else if (window.location.href === destination.href)
+          window.location.reload();
+        else window.location.replace(destination.href);
+        return;
+      }
       // A theme initialization error after insertion is different from a failed
       // fetch: keep the displayed destination and its URL consistent.
       if (replacedUrl && oldMain && !oldMain.isConnected)
@@ -324,6 +356,7 @@ export function createStorefrontNavigation(
   function onClick(event: MouseEvent) {
     if (
       !store ||
+      handingOff ||
       event.defaultPrevented ||
       event.button !== 0 ||
       event.metaKey ||
@@ -372,6 +405,10 @@ export function createStorefrontNavigation(
   }
 
   function onPopState() {
+    if (handingOff) {
+      handingOff = false;
+      window.history.scrollRestoration = "manual";
+    }
     if (restoringEntry) {
       const entry = historyEntry();
       const restored =
@@ -392,7 +429,19 @@ export function createStorefrontNavigation(
     }
   }
 
-  if (store) document.addEventListener("click", onClick);
+  function onPageShow(event: PageTransitionEvent) {
+    if (!event.persisted || !handingOff || disposed) return;
+    handingOff = false;
+    if (started) window.history.scrollRestoration = "manual";
+    currentUrl = window.location.href;
+    displayedEntry = historyEntry();
+    publish({ url: currentUrl, pending: false, error: null });
+  }
+
+  if (store) {
+    document.addEventListener("click", onClick);
+    window.addEventListener("pageshow", onPageShow);
+  }
 
   return {
     destinations,
@@ -431,6 +480,7 @@ export function createStorefrontNavigation(
       document.removeEventListener("click", onClick);
       window.removeEventListener("popstate", onPopState);
       window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("pageshow", onPageShow);
       if (started) window.history.scrollRestoration = previousScrollRestoration;
       listeners.clear();
     },

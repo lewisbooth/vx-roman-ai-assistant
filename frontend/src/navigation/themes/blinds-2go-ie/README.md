@@ -4,7 +4,7 @@ This module serves `blinds2go-ireland.myshopify.com` at [www.blinds-2go.ie](http
 
 `prepare()` replaces the observed cart Continue-shopping `history.back()` handler with a supported navigation link. Continue shopping goes Back within Roman's recorded history segment, otherwise Home; its native link opens Home after Roman is removed. Shared navigation owns page replacement, history, theme assets, globals and metadata. The older pricing and cart components remain theme-owned.
 
-The sampled pages use one cart module and do not introduce the SelectBlinds/UK cart conflict or portable-wallet module. This theme has no additional SDK loader. Newly introduced integrations remain subject to shared validation. Shared preparation blocks a destination that expects a cart drawer missing from the current document, before changing content; the theme must make that persistent shell consistent.
+The sampled pages use one cart module and do not introduce the SelectBlinds/UK cart conflict or portable-wallet module. This theme has no additional SDK loader. Newly introduced integrations remain subject to shared validation. Shared navigation logs and loads the full destination page when it expects a cart drawer missing from the current document; the theme must make that persistent shell consistent for seamless navigation.
 
 See the [frontend README](../../../../README.md) for checks and publishing.
 
