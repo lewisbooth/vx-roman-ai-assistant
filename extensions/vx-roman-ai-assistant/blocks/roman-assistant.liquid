@@ -3,13 +3,15 @@
   data-label="{{ 'assistant.name' | t | escape }}"
   data-initial="{{ 'assistant.initial' | t | escape }}"
   data-script-url="{{ 'roman-assistant.bundle.js' | asset_url }}"
+  data-logo-url="{{ 'roman-logo.svg' | asset_url }}"
+  data-texture-url="{{ 'ivory-texture.png' | asset_url }}"
 ></roman-ai-assistant>
 
 {% schema %}
 {
   "name": "t:assistant.name",
   "target": "body",
-  "javascript": "roman-assistant-loader.js",
+  "javascript": "roman-assistant-loader.bundle.js",
   "settings": []
 }
 {% endschema %}

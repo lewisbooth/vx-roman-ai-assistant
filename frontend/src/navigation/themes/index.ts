@@ -1,20 +1,14 @@
 import type { StorefrontStore } from "../shared/types";
 import { blinds2goIeDestinations, blinds2goIeTheme } from "./blinds-2go-ie";
 import { blinds2goUkDestinations, blinds2goUkTheme } from "./blinds-2go-uk";
+import { hdDevMultiStore } from "./hd-dev-multi";
+import { hdDevSingleStore } from "./hd-dev-single";
 import { selectblindsTheme } from "./selectblinds";
-import {
-  devDestinations,
-  selectblindsDestinations,
-} from "./selectblinds/destinations";
-
-export const previewStore: StorefrontStore = {
-  shop: "hd-dev-multi.myshopify.com",
-  destinations: devDestinations,
-  theme: selectblindsTheme,
-};
+import { selectblindsDestinations } from "./selectblinds/destinations";
 
 const stores: readonly StorefrontStore[] = [
-  previewStore,
+  hdDevMultiStore,
+  hdDevSingleStore,
   {
     shop: "select-blinds-us.myshopify.com",
     destinations: selectblindsDestinations,
@@ -30,7 +24,14 @@ const stores: readonly StorefrontStore[] = [
     destinations: blinds2goIeDestinations,
     theme: blinds2goIeTheme,
   },
-];
+].map((store) => ({
+  ...store,
+  destinations: [
+    { label: "Home", path: "/" },
+    ...store.destinations,
+    { label: "Cart", path: "/cart" },
+  ],
+}));
 
 export function selectStore(
   shop: string | undefined,

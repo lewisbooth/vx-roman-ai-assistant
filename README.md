@@ -1,6 +1,6 @@
 # Roman AI Assistant
 
-A customer assistant foundation for SelectBlinds and Blinds 2go stores. The current app demonstrates a 400px sidebar and storefront navigation that preserves its note and React instance. AI conversations, measuring assistance and home visualization are not implemented yet.
+A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across supported storefront navigation. Normal page loads restore its open/closed state for the current tab. AI conversations, measuring assistance and home visualization are not implemented yet.
 
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 
@@ -35,7 +35,7 @@ npm run dev:admin
 
 The customer preview is at http://127.0.0.1:5173; the admin landing page is at http://localhost:3000. Embedded admin authentication needs public HTTPS; see the [admin setup](admin/README.md).
 
-For stores eligible for Shopify CLI previews, `npm run dev` manages the tunnel and builds the extension once; run `npm run watch:frontend` alongside it for subsequent changes. For the existing `hd-dev-multi` installation, use the local preview and publish an app version to test on the store.
+For stores eligible for Shopify CLI previews, `npm run dev` manages the tunnel and builds the extension once; run `npm run watch:frontend` alongside it for subsequent changes. For the existing `hd-dev-multi` and `hd-dev-single` installations, use the local preview and publish an app version to test on the stores. Each store has its own [navigation profile](frontend/README.md#theme-integrations).
 
 ## Check and build
 
@@ -54,7 +54,7 @@ npm run build:frontend
 shopify app build
 ```
 
-Shopify's build includes Theme Check. Generated `build/`, `.react-router/` and extension bundles are excluded from Git; rebuild them instead of editing them.
+Shopify's build includes Theme Check. Generated `build/`, `.react-router/`, extension bundles and copied design assets are excluded from Git; rebuild them instead of editing them. `build:frontend` produces both the small launcher and the lazy React bundle.
 
 ## Publish
 

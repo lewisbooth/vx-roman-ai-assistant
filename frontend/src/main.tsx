@@ -1,54 +1,85 @@
 import { StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { RouterProvider } from "react-router/dom";
-import { APP_NAME, ASSISTANT_INITIAL } from "../../shared/brand";
 import { createAssistantRouter } from "./app";
-import {
-  createStorefrontNavigation,
-  type StorefrontNavigation,
-} from "./navigation/shared";
+import { createStorefrontNavigation } from "./navigation/shared";
+import type { AssistantRuntime } from "./runtime";
 import styles from "./styles.css?inline";
 
-class RomanAssistant extends HTMLElement {
-  private root?: Root;
-  private router?: ReturnType<typeof createAssistantRouter>;
-  private navigation?: StorefrontNavigation;
+// Reopening or remounting on this document must not restart the loading delay.
+let firstLoadingDeadline: number | undefined;
 
-  connectedCallback() {
-    if (this.root) return;
+export function mountAssistant(
+  host: HTMLElement,
+  container: HTMLElement,
+  loadingStartedAt: number,
+): AssistantRuntime {
+  const deadline = (firstLoadingDeadline ??= loadingStartedAt + 1000);
+  const logoUrl = host.dataset.logoUrl;
+  if (!logoUrl) throw new Error("The Roman logo asset is not configured.");
 
-    const shadow = this.shadowRoot ?? this.attachShadow({ mode: "open" });
-    const container = document.createElement("div");
-    shadow.replaceChildren(container);
+  let resolveReady!: () => void;
+  let rejectReady!: (reason: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const navigation = createStorefrontNavigation(host);
+  let router: ReturnType<typeof createAssistantRouter> | undefined;
+  let root: Root | undefined;
+  let disposed = false;
+  let readyTimer: number | undefined;
 
-    this.navigation = createStorefrontNavigation(this);
-    this.router = createAssistantRouter({
-      label: this.dataset.label || APP_NAME,
-      initial: this.dataset.initial || ASSISTANT_INITIAL,
-      navigation: this.navigation,
+  function onReady() {
+    if (disposed || readyTimer !== undefined) return;
+    const remaining = deadline - window.performance.now();
+    if (remaining <= 0) resolveReady();
+    else readyTimer = window.setTimeout(resolveReady, remaining);
+  }
+
+  function onError(error: unknown) {
+    window.clearTimeout(readyTimer);
+    rejectReady(error);
+  }
+
+  try {
+    router = createAssistantRouter({
+      logoUrl,
+      navigation,
+      onReady,
+      onError,
     });
-    this.root = createRoot(container);
-    this.root.render(
+    root = createRoot(container);
+    root.render(
       <StrictMode>
         <style>{styles}</style>
-        <RouterProvider router={this.router} />
+        <RouterProvider router={router} />
       </StrictMode>,
     );
+  } catch (error) {
+    // No runtime was returned, so the bootstrap cannot dispose these resources.
+    disposed = true;
+    window.clearTimeout(readyTimer);
+    root?.unmount();
+    router?.dispose();
+    navigation.dispose();
+    throw error;
   }
 
-  disconnectedCallback() {
-    queueMicrotask(() => {
-      if (this.isConnected) return;
-      this.root?.unmount();
-      this.router?.dispose();
-      this.navigation?.dispose();
-      this.root = undefined;
-      this.router = undefined;
-      this.navigation = undefined;
-    });
-  }
-}
-
-if (!customElements.get("roman-ai-assistant")) {
-  customElements.define("roman-ai-assistant", RomanAssistant);
+  return {
+    ready,
+    setOpen(open) {
+      if (!disposed) navigation.setSidebarOpen(open);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      onError(
+        new DOMException("The Roman assistant was removed.", "AbortError"),
+      );
+      root?.unmount();
+      router?.dispose();
+      navigation.dispose();
+    },
+  };
 }

@@ -27,9 +27,9 @@ function sdkTag(src = sdk, attributes = 'id="paypal-script" defer', body = "") {
   return `<script src="${src}" ${attributes}>${body}</script>`;
 }
 
-function themePage(path, extra = "") {
+function themePage(path, extra = "", storeOrigin = origin) {
   return `<!doctype html><html><head><title>Store ${path}</title>
-    <script type="module" src="${origin}/cdn/shop/t/370/assets/-app-provider.js"></script>
+    <script type="module" src="${storeOrigin}/cdn/shop/t/370/assets/-app-provider.js"></script>
     <script>window.__ADMIN_COLLECTION_ID__ = '';
       window.__CART__ = {"items":[]}; window.__CART_COLOR_SWATCHES__ = {};</script>
     <script>var meta = {"currency":"USD","page":{"pageType":"product"}};
@@ -53,18 +53,21 @@ function readySdk(window) {
 function setup(
   t,
   {
-    html = themePage("/"),
+    storeOrigin = origin,
+    html = themePage("/", "", storeOrigin),
     beforeImport,
     shop = "hd-dev-multi.myshopify.com",
   } = {},
 ) {
   const dom = new JSDOM(html, {
-    url: `${origin}/`,
+    url: `${storeOrigin}/`,
     runScripts: "outside-only",
     pretendToBeVisual: true,
   });
   const { window } = dom;
   const { document } = window;
+  const errors = [];
+  window.console.error = (...args) => errors.push(args);
   const initialScripts = new Set(document.querySelectorAll("script[src]"));
   const insertedScripts = new Set();
   const observer = new window.MutationObserver((records) => {
@@ -95,10 +98,11 @@ function setup(
     window,
     document,
     insertedScripts,
+    errors,
     prepare: (path, extra = sdkTag()) =>
       window.RomanPage.preparePage(
-        themePage(path, extra),
-        new window.URL(path, origin),
+        themePage(path, extra, storeOrigin),
+        new window.URL(path, storeOrigin),
         theme,
       ),
     load: (page, signal = new window.AbortController().signal) =>
@@ -124,7 +128,7 @@ async function until(condition, message) {
 }
 
 test("known PayPal scripts are prepared without activating the theme's unpriced message", async (t) => {
-  const { prepare, load, document } = setup(t);
+  const { prepare, load, document, window } = setup(t);
   for (const script of [
     sdkTag(),
     sdkTag(sdk.replace("buttons,messages", "messages,buttons")),
@@ -138,7 +142,7 @@ test("known PayPal scripts are prepared without activating the theme's unpriced 
       `${script}<div data-pp-container data-pp-amount=""></div>
       <script type="application/json">{"variant":123}</script>`,
     );
-    assert.equal(typeof prepared.integration.load, "function");
+    assert.ok(prepared.paypalSdk instanceof window.URL);
     assert.equal(prepared.main.querySelector("script[src]"), null);
     assert.equal(prepared.main.querySelector("[data-pp-message]"), null);
     assert.equal(
@@ -147,7 +151,9 @@ test("known PayPal scripts are prepared without activating the theme's unpriced 
       '{"variant":123}',
     );
   }
-  await load(prepare("/", ""));
+  const withoutSdk = prepare("/", "");
+  assert.equal(withoutSdk.paypalSdk, null);
+  await load(withoutSdk);
   assert.equal(pendingSdk(document), undefined);
 });
 
@@ -219,11 +225,14 @@ test("an initial SDK's own runtime marker does not prevent reuse", async (t) => 
   assert.equal(insertedScripts.size, 0);
 });
 
-test("a pending initial SDK survives a visit to Home and serves the next product", async (t) => {
+test("a pending initial UK SDK survives a visit to Home and serves the next product", async (t) => {
+  const storeOrigin = "https://shop.blinds-2go.co.uk";
   const { window, document, prepare, load, commit, insertedScripts } = setup(
     t,
     {
-      html: themePage("/products/one", sdkTag()),
+      shop: "blinds-2go.myshopify.com",
+      storeOrigin,
+      html: themePage("/products/one", sdkTag(), storeOrigin),
     },
   );
   const original = pendingSdk(document);
@@ -367,15 +376,88 @@ test("a page cannot replace the initialized SDK with a different merchant or loc
   assert.equal(insertedScripts.size, 0);
 });
 
-test("PayPal support belongs to the SelectBlinds theme family and does not permit scripts on UK or Ireland themes", (t) => {
-  for (const shop of [
-    "blinds-2go.myshopify.com",
-    "blinds2go-ireland.myshopify.com",
+test("shared PayPal support is optional across stores and retains SDK configuration guards", async (t) => {
+  for (const { shop, storeOrigin, products } of [
+    {
+      shop: "hd-dev-multi.myshopify.com",
+      storeOrigin: origin,
+      products: [
+        "/products/traditional-room-darkening-zebra-shades",
+        "/products/2-inch-levolor-classic-neutral-faux-wood-blinds",
+      ],
+    },
+    {
+      shop: "hd-dev-single.myshopify.com",
+      storeOrigin: "https://hd-dev-single.myshopify.com",
+      products: [
+        "/products/lottie-mojito-roman-blind",
+        "/products/bifold-clickfit-duoshade-obsidian-pleated-blind",
+      ],
+    },
+    {
+      shop: "select-blinds-us.myshopify.com",
+      storeOrigin: "https://www.selectblinds.com",
+      products: ["/products/classic-roman-shades"],
+    },
+    {
+      shop: "blinds-2go.myshopify.com",
+      storeOrigin: "https://shop.blinds-2go.co.uk",
+      products: ["/products/sevilla-blackout-grey-roller-blind"],
+    },
+    {
+      shop: "blinds2go-ireland.myshopify.com",
+      storeOrigin: "https://www.blinds-2go.ie",
+      products: ["/products/sevilla-blackout-grey-roller-blind"],
+    },
   ]) {
-    const { prepare, document, insertedScripts } = setup(t, { shop });
-    const main = document.querySelector("main");
-    assert.throws(() => prepare("/products/one"));
-    assert.equal(document.querySelector("main"), main);
-    assert.equal(insertedScripts.size, 0);
+    await t.test(shop, async (t) => {
+      const {
+        prepare,
+        load,
+        commit,
+        window,
+        document,
+        insertedScripts,
+        errors,
+      } = setup(t, { shop, storeOrigin });
+      await load(prepare("/", ""));
+      assert.equal(pendingSdk(document), undefined);
+      assert.equal(insertedScripts.size, 0);
+      for (const path of products) {
+        const main = document.querySelector("main");
+        const product = prepare(path);
+        const loading = load(product);
+        if (!window.paypal) {
+          await until(
+            () => pendingSdk(document),
+            "shared PayPal SDK was not requested",
+          );
+          assert.equal(document.querySelector("main"), main);
+          readySdk(window);
+          pendingSdk(document).dispatchEvent(new window.Event("load"));
+        }
+        await loading;
+        commit(product);
+        assert.equal(document.querySelector("h1").textContent, path);
+      }
+      const home = prepare("/", "");
+      assert.equal(home.paypalSdk, null);
+      await load(home);
+      commit(home);
+      await delay(0);
+      assert.equal(insertedScripts.size, 1);
+      assert.deepEqual(errors, []);
+      const main = document.querySelector("main");
+      assert.throws(
+        () => prepare(products[0], sdkTag(`${sdk}&unknown-option=true`)),
+        /unsupported PayPal SDK configuration/,
+      );
+      assert.throws(
+        () => prepare(products[0], sdkTag() + sdkTag()),
+        /multiple PayPal SDK scripts/,
+      );
+      assert.equal(document.querySelector("main"), main);
+      assert.equal(insertedScripts.size, 1);
+    });
   }
 });

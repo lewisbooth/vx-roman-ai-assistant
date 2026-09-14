@@ -1,12 +1,10 @@
 # SelectBlinds theme
 
-This module serves `select-blinds-us.myshopify.com` ([production](https://www.selectblinds.com/)) and `hd-dev-multi.myshopify.com`. They share theme behavior but have separate verified destinations. The local preview uses the dev destinations.
+This module owns `select-blinds-us.myshopify.com` ([production](https://www.selectblinds.com/)) and its destinations. [HD dev multi](../hd-dev-multi/README.md) reuses these theme hooks and owns its own links. Home and Cart are added centrally.
 
-`prepare()` normalizes the observed cart Continue-shopping handler, identifies Shopify wallet modules, and extracts the optional PDP PayPal SDK. Continue shopping goes Back within Roman's recorded history segment, otherwise Home; its native link opens Home after Roman is removed. Shared navigation owns page replacement, history, theme assets, globals and metadata.
+`prepare()` normalizes the observed cart Continue-shopping handler and identifies Shopify wallet modules. Continue shopping goes Back within Roman's recorded history segment, otherwise Home; its native link opens Home after Roman is removed. Shared navigation owns page replacement, history, theme assets, globals, metadata and optional PayPal handling.
 
-`paypal.ts` loads one SDK per document and waits for readiness before the product connects. The theme sets its message amount and `data-pp-message` after pricing; [PayPal's observer](https://github.com/paypal/paypal-messaging-components/blob/develop/src/utils/observers.js) handles rendering. The original SDK tag is preserved outside replaced content. Failures or configuration changes require a reload.
-
-The dev LEVOLOR template references a missing `-cart-remove-toggle.js`; the persistent cart module already imports the component's chunk. This follows the shared asset-warning policy, with no filename-specific skip. Remove the stale reference in the theme when fixing its build output.
+The [shared PayPal handler](../../shared/paypal.ts) loads one SDK per document and waits for readiness before the product connects. The theme sets its message amount and `data-pp-message` after pricing; [PayPal's observer](https://github.com/paypal/paypal-messaging-components/blob/develop/src/utils/observers.js) handles rendering. The original SDK tag is preserved outside replaced content. Failures or configuration changes require a reload.
 
 The current drawer/page cart modules register conflicting custom elements. Shared preparation keeps that transition blocked until the theme is fixed. It also blocks a destination that expects a cart drawer missing from the current document, before changing content. The theme must make that persistent shell consistent across templates.
 

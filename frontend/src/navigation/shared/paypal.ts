@@ -26,7 +26,7 @@ const initialScripts =
       ).filter((script) => isSdkUrl(new URL(script.src, document.baseURI)));
 let sdkLoad: { url: string; promise: Promise<void> } | undefined;
 
-export function readPayPalScript(script: Element, base: URL): URL | null {
+function readPayPalScript(script: Element, base: URL): URL | null {
   const src = script.getAttribute("src");
   if (!src) return null;
   const url = new URL(src, base);
@@ -60,6 +60,22 @@ export function readPayPalScript(script: Element, base: URL): URL | null {
   url.searchParams.set("components", components);
   url.searchParams.sort();
   return url;
+}
+
+export function takePayPalSdk(source: Document, base: URL): URL | null {
+  let paypal: URL | null = null;
+  for (const script of source.querySelectorAll("main#main script")) {
+    const sdk = readPayPalScript(script, base);
+    if (!sdk) continue;
+    if (paypal) {
+      throw new Error(
+        "This page includes multiple PayPal SDK scripts. Open it with normal navigation.",
+      );
+    }
+    paypal = sdk;
+    script.remove();
+  }
+  return paypal;
 }
 
 function sdkReady(): boolean {

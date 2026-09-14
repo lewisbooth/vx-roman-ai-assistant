@@ -1,5 +1,6 @@
 import type { StorefrontTheme, ThemePageHooks } from "./types";
 import { checkWalletElements } from "./wallets";
+import { loadPayPalSdk, preservePayPalSdk, takePayPalSdk } from "./paypal";
 
 type JsonObject = Record<string, unknown>;
 type PageGlobals = {
@@ -24,7 +25,7 @@ export type PreparedPage = {
   globals: PageGlobals | null;
   scripts: URL[];
   styles: URL[];
-  theme: StorefrontTheme;
+  paypalSdk: URL | null;
   integration: ThemePageHooks;
 };
 
@@ -151,6 +152,65 @@ function scriptUrls(source: Document, base: URL): URL[] {
     .filter(isThemeAsset);
 }
 
+function elementLocation(element: Element): string {
+  const parts: string[] = [];
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    let position = 1;
+    for (
+      let sibling = node.previousElementSibling;
+      sibling;
+      sibling = sibling.previousElementSibling
+    ) {
+      if (sibling.localName === node.localName) position++;
+    }
+    parts.unshift(`${node.localName}:nth-of-type(${position})`);
+  }
+  return parts.join(" > ");
+}
+
+function diagnosticScriptSource(script: Element, base: URL): string {
+  const src = script.getAttribute("src");
+  if (!src) return "inline";
+  try {
+    const url = new URL(src, base);
+    return /^https?:$/.test(url.protocol)
+      ? `${url.origin}${url.pathname}`
+      : `${url.protocol}[redacted]`;
+  } catch {
+    return "[invalid URL]";
+  }
+}
+
+function diagnosticScriptType(script: Element): string {
+  const type = script.getAttribute("type")?.trim().toLowerCase();
+  if (!type) return "classic";
+  return [
+    "module",
+    "importmap",
+    "speculationrules",
+    "text/javascript",
+    "application/javascript",
+    "text/ecmascript",
+    "application/ecmascript",
+    "application/json",
+    "application/ld+json",
+  ].includes(type)
+    ? type
+    : "unrecognized";
+}
+
+function unsafeAttributeReason(attribute: Attr): string | null {
+  if (/^on/i.test(attribute.name))
+    return "Inline event handler is not supported.";
+  if (attribute.name === "srcdoc") return "srcdoc embeds executable HTML.";
+  if (
+    /^(href|src|action|formaction|xlink:href)$/i.test(attribute.name) &&
+    /^\s*javascript:/i.test(attribute.value)
+  )
+    return "JavaScript URL is not supported.";
+  return null;
+}
+
 export function preparePage(
   html: string,
   url: URL,
@@ -182,7 +242,18 @@ export function preparePage(
       "The current theme shell is missing its cart drawer. Open this page with normal navigation.",
     );
   }
+  // Locate blockers before hooks remove SDKs or replace Continue-shopping buttons.
+  const elementLocations = new Map(
+    Array.from(source.querySelectorAll("*"))
+      .filter(
+        (element) =>
+          element.localName === "script" ||
+          Array.from(element.attributes).some(unsafeAttributeReason),
+      )
+      .map((element) => [element, elementLocation(element)]),
+  );
   const integration = theme.prepare(source, url);
+  const paypalSdk = takePayPalSdk(source, url);
   const scripts = scriptUrls(source, url);
   // The observed theme has two incompatible custom-element implementations for cart.
   const cartFamilies = new Set(
@@ -199,6 +270,34 @@ export function preparePage(
       "This theme uses incompatible cart components. Open Cart with normal navigation or test a theme with one shared cart component.",
     );
   }
+  const blocked: {
+    reason: string;
+    element: string;
+    type?: string;
+    src?: string;
+    attribute?: string;
+  }[] = [];
+  let scriptError: string | undefined;
+  const unsupportedModules = new Set<Element>();
+  const blockScript = (
+    element: Element,
+    reason: string,
+    message: string,
+    attribute?: string,
+  ) => {
+    scriptError ??= message;
+    blocked.push({
+      reason,
+      element: elementLocations.get(element) ?? elementLocation(element),
+      ...(element.localName === "script"
+        ? {
+            type: diagnosticScriptType(element),
+            src: diagnosticScriptSource(element, url),
+          }
+        : {}),
+      ...(attribute ? { attribute } : {}),
+    });
+  };
   if (!preview) {
     const loaded = new Set(
       Array.from(document.querySelectorAll("script[src]")).map(
@@ -210,25 +309,26 @@ export function preparePage(
     )) {
       const asset = new URL(script.getAttribute("src")!, url);
       if (!isThemeAsset(asset) && !loaded.has(asset.href)) {
-        throw new Error(
+        unsupportedModules.add(script);
+        blockScript(
+          script,
+          "Module is outside the current theme and is not already loaded.",
           `This page requires an unsupported integration (${asset.pathname}). Open it with normal navigation.`,
         );
       }
     }
   }
   for (const element of [main, ...main.querySelectorAll("*")]) {
-    if (
-      Array.from(element.attributes).some(
-        (attribute) =>
-          /^on/i.test(attribute.name) ||
-          attribute.name === "srcdoc" ||
-          (/^(href|src|action|formaction|xlink:href)$/i.test(attribute.name) &&
-            /^\s*javascript:/i.test(attribute.value)),
-      )
-    ) {
-      throw new Error(
-        "This page requires inline JavaScript. Open it with normal navigation.",
-      );
+    for (const attribute of element.attributes) {
+      const reason = unsafeAttributeReason(attribute);
+      if (reason) {
+        blockScript(
+          element,
+          reason,
+          "This page requires inline JavaScript. Open it with normal navigation.",
+          attribute.name,
+        );
+      }
     }
   }
   for (const script of main.querySelectorAll("script")) {
@@ -240,9 +340,25 @@ export function preparePage(
       script.remove();
       continue;
     }
-    throw new Error(
-      "This page contains scripts that cannot be safely initialized by Roman. Open it with normal navigation.",
-    );
+    if (!unsupportedModules.has(script)) {
+      blockScript(
+        script,
+        src
+          ? "External script is not a supported theme module."
+          : "Inline script has no supported initialization lifecycle.",
+        "This page contains scripts that cannot be safely initialized by Roman. Open it with normal navigation.",
+      );
+    }
+  }
+  if (scriptError) {
+    // Log descriptors only: DOM nodes and script/attribute contents may contain
+    // customer data. URLs omit credentials, query strings and fragments.
+    console.error("[Roman] Unsafe storefront scripts blocked navigation.", {
+      page: `${url.origin}${url.pathname}`,
+      theme: theme.id,
+      blocked,
+    });
+    throw new Error(scriptError);
   }
 
   const styles = Array.from(
@@ -266,7 +382,7 @@ export function preparePage(
     globals: readGlobals(source),
     scripts,
     styles,
-    theme,
+    paypalSdk,
     integration,
   };
 }
@@ -346,7 +462,7 @@ export async function loadPageAssets(
   page: PreparedPage,
   signal: AbortSignal,
 ): Promise<void> {
-  await page.integration.load?.(signal);
+  await loadPayPalSdk(page.paypalSdk, signal);
   async function load(url: URL, kind: "script" | "style", signal: AbortSignal) {
     try {
       await loadAsset(url, kind, signal);
@@ -457,7 +573,7 @@ export function commitPage(
   document.title = page.title;
   document.head.querySelectorAll(pageMetadata).forEach((node) => node.remove());
   document.head.append(...metadata);
-  page.theme.preserve?.(previous);
+  preservePayPalSdk(previous);
   beforeReplace?.();
   previous.replaceWith(main);
   // main-header caches these flags at connection; preserve its listeners and context.

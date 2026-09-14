@@ -1,161 +1,99 @@
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
-import { createMemoryRouter } from "react-router";
+import { useEffect, useSyncExternalStore } from "react";
+import { createMemoryRouter, useRouteError } from "react-router";
 import type { StorefrontNavigation } from "./navigation/shared";
 
 type AssistantProps = {
-  label: string;
-  initial: string;
+  logoUrl: string;
   navigation: StorefrontNavigation;
+  onReady: () => void;
+  onError: (error: unknown) => void;
 };
 
-function Assistant({ label, initial, navigation }: AssistantProps) {
-  const [open, setOpen] = useState(false);
-  const [note, setNote] = useState("");
-  const [instanceId] = useState(() => crypto.randomUUID().slice(0, 8));
-  const id = useId();
-  const launcherRef = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLElement>(null);
+function Assistant({ logoUrl, navigation, onReady }: AssistantProps) {
   const { url, pending, error } = useSyncExternalStore(
     navigation.subscribe,
     navigation.getSnapshot,
   );
   const pathname = new URL(url, window.location.origin).pathname;
 
-  useEffect(() => {
-    navigation.setSidebarOpen(open);
-    if (open) closeRef.current?.focus();
-    return () => navigation.setSidebarOpen(false);
-  }, [navigation, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const panel = panelRef.current;
-    if (!panel) return;
-
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-      launcherRef.current?.focus();
-    };
-    panel.addEventListener("keydown", handleEscape);
-    return () => panel.removeEventListener("keydown", handleEscape);
-  }, [open]);
-
-  const close = () => {
-    setOpen(false);
-    launcherRef.current?.focus();
-  };
+  useEffect(() => onReady(), [onReady]);
 
   return (
-    <>
-      <button
-        ref={launcherRef}
-        type="button"
-        aria-label={label}
-        title={label}
-        aria-expanded={open}
-        aria-controls={`${id}-panel`}
-        onClick={() => {
-          console.log("Hello from Roman");
-          setOpen((value) => !value);
-        }}
-        className="fixed left-[calc(20px+env(safe-area-inset-left))] bottom-[calc(20px+env(safe-area-inset-bottom))] z-[1000] inline-flex size-[48px] cursor-pointer items-center justify-center rounded-full border border-solid border-white/10 bg-zinc-900 font-serif text-[26px] leading-none font-semibold text-white [box-shadow:0_6px_24px_#00000026] transition-colors hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-4 focus-visible:outline-zinc-900 motion-reduce:transition-none"
-      >
-        <span aria-hidden="true">{initial}</span>
-      </button>
+    <div className="roman-content flex flex-col items-center px-[24px] pt-[107px] pb-[40px] font-serif font-normal text-[#4E0E0E]">
+      <img
+        src={logoUrl}
+        alt="Roman by SelectBlinds"
+        width={121}
+        height={50}
+        className="block h-[50px] w-[121px] shrink-0"
+      />
 
-      <section
-        ref={panelRef}
-        id={`${id}-panel`}
-        hidden={!open}
-        aria-labelledby={`${id}-title`}
-        className="fixed top-0 right-0 z-[1001] flex h-dvh w-[400px] max-w-[100vw] flex-col border-l border-solid border-zinc-200 bg-white font-sans text-[14px] leading-[1.5] text-zinc-900 [box-shadow:-8px_0_32px_#0000000d]"
+      <h1 className="mt-[57px] mb-0 w-[303px] max-w-full text-center text-[41.809px] leading-[0.88575] font-normal tracking-[-0.02em]">
+        A brighter home <em>starts</em> with a conversation.
+      </h1>
+
+      <nav
+        aria-label="Browse store"
+        aria-busy={pending}
+        className="mt-[48px] flex w-[303px] max-w-full flex-col items-center text-center text-[18px] leading-[1.3]"
       >
-        <header className="flex items-center justify-between gap-4 border-b border-solid border-zinc-200 px-6 pt-[calc(20px+env(safe-area-inset-top))] pb-5">
-          <h2 id={`${id}-title`} className="text-[18px] font-semibold">
-            {label}
-          </h2>
-          <button
-            ref={closeRef}
-            type="button"
-            onClick={close}
-            aria-label="Close assistant"
-            className="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-full text-[24px] hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+        {navigation.destinations.map((destination) => (
+          <a
+            key={destination.path}
+            href={destination.path}
+            aria-current={pathname === destination.path ? "page" : undefined}
+            aria-disabled={pending || undefined}
+            onClick={(event) => {
+              if (
+                event.defaultPrevented ||
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+              ) {
+                return;
+              }
+              event.preventDefault();
+              if (!pending) void navigation.navigate(destination.path);
+            }}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-sm px-[8px] py-[8px] text-inherit no-underline decoration-[#C59745] decoration-1 underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-[#4E0E0E] aria-[current=page]:underline aria-disabled:cursor-wait aria-disabled:opacity-50"
           >
-            <span aria-hidden="true">×</span>
-          </button>
-        </header>
+            {destination.label}
+          </a>
+        ))}
+      </nav>
 
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          <p className="text-[20px] font-semibold">Hello from Roman</p>
-          <p className="mt-2 text-zinc-600">
-            Browse the store while keeping your assistant open.
-          </p>
-
-          <nav aria-label="Browse store" aria-busy={pending} className="mt-6">
-            <div className="flex flex-col gap-2">
-              {navigation.destinations.map((destination) => (
-                <button
-                  key={destination.path}
-                  type="button"
-                  aria-current={
-                    pathname === destination.path ? "page" : undefined
-                  }
-                  disabled={pending}
-                  onClick={() => void navigation.navigate(destination.path)}
-                  className="min-h-[44px] cursor-pointer rounded-lg border border-solid border-zinc-200 px-4 py-3 text-left hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-zinc-900 disabled:cursor-wait disabled:opacity-50 aria-[current=page]:border-zinc-900 aria-[current=page]:bg-zinc-100"
-                >
-                  {destination.label}
-                </button>
-              ))}
-            </div>
-          </nav>
-
-          <p role="status" className="mt-3 text-zinc-500">
-            {pending ? "Opening page…" : "Ready"}
-          </p>
-          {error && (
-            <p role="alert" className="mt-3 text-red-700">
-              {error}
-            </p>
-          )}
-
-          <label htmlFor={`${id}-note`} className="mt-8 block font-semibold">
-            Your note
-          </label>
-          <p id={`${id}-note-help`} className="mt-1 text-zinc-600">
-            Write a note, then change pages. It stays here while you browse.
-          </p>
-          <textarea
-            id={`${id}-note`}
-            aria-describedby={`${id}-note-help`}
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            rows={4}
-            className="mt-3 w-full resize-y rounded-lg border border-solid border-zinc-300 bg-white px-3 py-3 text-[16px] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
-          />
-        </div>
-
-        <footer className="border-t border-solid border-zinc-200 px-6 pt-4 pb-[calc(16px+env(safe-area-inset-bottom))] text-[12px] text-zinc-500">
-          Assistant instance: <span className="font-mono">{instanceId}</span>
-        </footer>
-      </section>
-    </>
+      <p role="status" className="m-0 mt-[12px] text-center text-[15px]">
+        {pending ? "Opening page…" : ""}
+      </p>
+      {error && (
+        <p
+          role="alert"
+          className="m-0 mt-[12px] w-[303px] max-w-full text-center text-[15px] leading-[1.4]"
+        >
+          {error}
+        </p>
+      )}
+    </div>
   );
+}
+
+function AssistantError({ onError }: Pick<AssistantProps, "onError">) {
+  const error = useRouteError();
+  useEffect(() => onError(error), [error, onError]);
+  return null;
 }
 
 export function createAssistantRouter(props: AssistantProps) {
   return createMemoryRouter(
-    [{ path: "/", element: <Assistant {...props} /> }],
+    [
+      {
+        path: "/",
+        element: <Assistant {...props} />,
+        errorElement: <AssistantError onError={props.onError} />,
+      },
+    ],
     { initialEntries: ["/"] },
   );
 }

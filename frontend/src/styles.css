@@ -1,10 +1,16 @@
-@import "tailwindcss" source("./");
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./app.tsx";
 
 @theme {
   --spacing: 4px;
+  --font-serif: GelicaSite, Georgia, serif;
 }
 
-:host {
-  all: initial;
-  color-scheme: light;
+/* The vanilla shell is already visible when this stylesheet arrives. Keep its
+   reset and layout under bootstrap ownership instead of importing Preflight. */
+.roman-content,
+.roman-content * {
+  box-sizing: border-box;
 }

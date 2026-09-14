@@ -78,7 +78,9 @@ function setup(
   const { window } = dom;
   const calls = [];
   const warnings = [];
+  const errors = [];
   window.console.warn = (...args) => warnings.push(args.map(String).join(" "));
+  window.console.error = (...args) => errors.push(args);
   window.fetch = (url, options) => {
     calls.push({ url: String(url), options });
     return fetch(url, options);
@@ -117,6 +119,7 @@ function setup(
     navigation,
     calls,
     warnings,
+    errors,
   };
 }
 
@@ -272,10 +275,6 @@ test("only supported ordinary links are intercepted while the sidebar is open", 
   );
   assert.equal(calls.length, 0);
   navigation.setSidebarOpen(true);
-  assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
-    true,
-  );
   for (const [href, options, attributes] of [
     [productOne, { ctrlKey: true }],
     [productOne, { metaKey: true }],
@@ -301,11 +300,6 @@ test("only supported ordinary links are intercepted while the sidebar is open", 
   );
   assert.equal(calls.length, 1);
   navigation.setSidebarOpen(false);
-  assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
-    false,
-  );
-  assert.equal(document.querySelector("style[data-roman-layout]"), null);
   assert.equal(click(productTwo), false);
   assert.equal(calls.length, 1);
 });
@@ -324,6 +318,22 @@ test("cart forms keep their native submission behavior", (t) => {
   form.dispatchEvent(submission);
   assert.equal(submission.defaultPrevented, false);
   assert.equal(calls.length, 0);
+});
+
+test("navigation leaves the sidebar shell's layout resources untouched", (t) => {
+  const { document, navigation } = setup(t);
+  const layout = document.createElement("style");
+  layout.dataset.romanLayout = "";
+  document.head.append(layout);
+  document.documentElement.setAttribute("data-roman-sidebar-open", "");
+  navigation.setSidebarOpen(true);
+  navigation.setSidebarOpen(false);
+  navigation.dispose();
+  assert.equal(
+    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    true,
+  );
+  assert.equal(document.querySelector("style[data-roman-layout]"), layout);
 });
 
 test("Back and Forward restore store pages without losing Roman state", async (t) => {
@@ -612,11 +622,6 @@ test("disposal aborts pending work and removes navigation interception", async (
   const pending = navigation.navigate(productOne);
   await until(() => resolveRequest, "request did not start");
   navigation.dispose();
-  assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
-    false,
-  );
-  assert.equal(document.querySelector("style[data-roman-layout]"), null);
   assert.equal(calls[0].options.signal.aborted, true);
   resolveRequest(response(productOne));
   await pending;
@@ -1054,22 +1059,328 @@ test("theme module initialization errors cancel pending assets and keep existing
   assert.deepEqual(warnings, []);
 });
 
-const stores = [
-  { shop: "hd-dev-multi.myshopify.com", origin },
-  {
+const storeFixtures = {
+  devMulti: { shop: "hd-dev-multi.myshopify.com", origin },
+  devSingle: {
+    shop: "hd-dev-single.myshopify.com",
+    origin: "https://hd-dev-single.myshopify.com",
+  },
+  selectBlinds: {
     shop: "select-blinds-us.myshopify.com",
     origin: "https://www.selectblinds.com",
   },
-  { shop: "blinds-2go.myshopify.com", origin: "https://shop.blinds-2go.co.uk" },
-  {
+  blinds2goUk: {
+    shop: "blinds-2go.myshopify.com",
+    origin: "https://shop.blinds-2go.co.uk",
+  },
+  blinds2goIe: {
     shop: "blinds2go-ireland.myshopify.com",
     origin: "https://www.blinds-2go.ie",
   },
-];
+};
+const stores = Object.values(storeFixtures);
 
 function storePage(store, path, options = {}) {
   return themePage(path, options).replaceAll(origin, store.origin);
 }
+
+test("unsafe-script diagnostics identify every blocker without exposing customer data or changing the page", async (t) => {
+  const store = storeFixtures.devSingle;
+  const path = "/products/lottie-mojito-roman-blind";
+  const destination = `${path}?variant=PAGE_QUERY_SECRET#PAGE_FRAGMENT_SECRET`;
+  const safeModule = `${store.origin}/cdn/shop/t/118/assets/-safe-component.js?token=ASSET_QUERY_SECRET`;
+  const html = storePage(store, path, {
+    assets: `<script type="module" data-case="head-module" src="https://app-cdn.example.org/head-sdk.js?token=HEAD_QUERY_SECRET#HEAD_FRAGMENT_SECRET"></script>
+      <link rel="stylesheet" href="${store.origin}/cdn/shop/t/118/assets/product.css?token=STYLE_QUERY_SECRET">`,
+    extra: `<div id="PRIVATE_ID_SECRET" class="PRIVATE_CLASS_SECRET" data-customer="ATTRIBUTE_VALUE_SECRET">
+      <script type="module" src="${safeModule}"></script>
+      <script type="application/json">{"customer":"JSON_BODY_SECRET"}</script>
+      <script type="module" data-case="external-module" src="https://CREDENTIAL_USER_SECRET:CREDENTIAL_PASSWORD_SECRET@app-cdn.example.org/widget.js?token=MODULE_QUERY_SECRET#MODULE_FRAGMENT_SECRET"></script>
+      <script type=" TEXT/JAVASCRIPT " data-case="inline-script">window.inlineLeak = 'INLINE_BODY_SECRET';</script>
+      <script type="CUSTOM_TYPE_SECRET" data-case="unknown-type">window.unknownLeak = 'UNKNOWN_BODY_SECRET';</script>
+      <script type="text/javascript" data-case="data-script" src="data:text/javascript,window.dataLeak='DATA_BODY_SECRET'" onerror="window.handlerLeak='HANDLER_VALUE_SECRET'">SCRIPT_BODY_SECRET</script>
+      <a data-case="javascript-link" href="javascript:window.linkLeak='JAVASCRIPT_URL_SECRET'">CUSTOMER_TEXT_SECRET</a>
+      <iframe data-case="frame" srcdoc="&lt;p&gt;SRCDOC_VALUE_SECRET&lt;/p&gt;"></iframe>
+      <button data-case="button" onclick="window.buttonLeak='BUTTON_HANDLER_SECRET'" onfocus="window.focusLeak='FOCUS_HANDLER_SECRET'">Continue</button>
+    </div>`,
+  }).replace(
+    '<main id="main"',
+    '<main id="main" data-case="main" onkeydown="window.mainLeak=\'MAIN_HANDLER_SECRET\'"',
+  );
+  const {
+    document,
+    window,
+    host,
+    instance,
+    navigation,
+    calls,
+    warnings,
+    errors,
+  } = setup(
+    t,
+    async (url) => response(path, { url: String(url), text: async () => html }),
+    {
+      shop: store.shop,
+      url: `${store.origin}/?session=OUTGOING_QUERY_SECRET`,
+      html: storePage(store, "/"),
+    },
+  );
+  const main = document.querySelector("main");
+  const input = host.shadowRoot.querySelector("input");
+  const previousUrl = window.location.href;
+  const initialAssets = [
+    ...document.querySelectorAll("script[src], link[rel=stylesheet]"),
+  ];
+  const assetAttempts = [];
+  const observer = new window.MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (
+          node instanceof window.HTMLScriptElement ||
+          node instanceof window.HTMLLinkElement
+        )
+          assetAttempts.push(node);
+      }
+    }
+  });
+  observer.observe(document.head, { childList: true });
+  t.after(() => observer.disconnect());
+  await navigation.navigate(destination);
+  assert.match(
+    navigation.getSnapshot().error,
+    /unsupported integration \(\/head-sdk\.js\)/,
+  );
+  assert.equal(errors.length, 1);
+  const [message, details] = errors[0];
+  assert.equal(
+    message,
+    "[Roman] Unsafe storefront scripts blocked navigation.",
+  );
+  assert.deepEqual(Object.keys(details).sort(), ["blocked", "page", "theme"]);
+  assert.equal(details.page, `${store.origin}${path}`);
+  assert.equal(
+    details.theme,
+    window.RomanPage.selectStore(store.shop).theme.id,
+  );
+  assert.equal(details.blocked.length, 11);
+  const source = new window.DOMParser().parseFromString(html, "text/html");
+  const byCase = new Map();
+  const permittedFields = new Set([
+    "reason",
+    "element",
+    "type",
+    "src",
+    "attribute",
+  ]);
+  for (const blocked of details.blocked) {
+    assert.ok(Object.keys(blocked).every((key) => permittedFields.has(key)));
+    assert.ok(
+      Object.values(blocked).every((value) => typeof value === "string"),
+    );
+    assert.ok(blocked.reason.length > 0);
+    assert.match(
+      blocked.element,
+      /^[a-z][a-z0-9-]*(?::nth-of-type\([1-9]\d*\))?(?:\s*>\s*[a-z][a-z0-9-]*(?::nth-of-type\([1-9]\d*\))?)*$/,
+    );
+    const matches = source.querySelectorAll(blocked.element);
+    assert.equal(
+      matches.length,
+      1,
+      "each diagnostic must locate exactly one element in the fetched HTML",
+    );
+    const element = matches[0];
+    const fixtureCase = element.getAttribute("data-case");
+    assert.ok(fixtureCase, "safe modules and JSON must not become blockers");
+    byCase.set(fixtureCase, [...(byCase.get(fixtureCase) ?? []), blocked]);
+    if (element.localName !== "script") assert.equal(blocked.type, undefined);
+  }
+  assert.deepEqual(
+    new Set(byCase.keys()),
+    new Set([
+      "head-module",
+      "external-module",
+      "main",
+      "inline-script",
+      "unknown-type",
+      "data-script",
+      "javascript-link",
+      "frame",
+      "button",
+    ]),
+  );
+  assert.equal(byCase.get("head-module").length, 1);
+  assert.equal(
+    byCase.get("external-module").length,
+    1,
+    "an unsupported external module must not be logged twice",
+  );
+  assert.equal(
+    byCase.get("external-module")[0].src,
+    "https://app-cdn.example.org/widget.js",
+  );
+  assert.equal(byCase.get("external-module")[0].type, "module");
+  assert.equal(byCase.get("inline-script")[0].type, "text/javascript");
+  assert.equal(byCase.get("inline-script")[0].src, "inline");
+  const dataBlockers = byCase.get("data-script");
+  assert.equal(
+    dataBlockers.length,
+    2,
+    "an unsafe handler and script source are distinct blockers",
+  );
+  assert.equal(new Set(dataBlockers.map(({ reason }) => reason)).size, 2);
+  assert.ok(dataBlockers.every(({ src }) => src === "data:[redacted]"));
+  assert.ok(dataBlockers.some(({ attribute }) => attribute === "onerror"));
+  assert.deepEqual(
+    new Set(byCase.get("button").map(({ attribute }) => attribute)),
+    new Set(["onclick", "onfocus"]),
+  );
+  assert.equal(byCase.get("main")[0].attribute, "onkeydown");
+  assert.equal(byCase.get("javascript-link")[0].attribute, "href");
+  assert.equal(byCase.get("frame")[0].attribute, "srcdoc");
+  assert.doesNotMatch(JSON.stringify(errors), /SECRET|Keep my measurements/i);
+  assert.deepEqual(warnings, []);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(assetAttempts, []);
+  assert.deepEqual(
+    [...document.querySelectorAll("script[src], link[rel=stylesheet]")],
+    initialAssets,
+  );
+  assert.equal(document.querySelector("main"), main);
+  assert.equal(window.location.href, previousUrl);
+  assert.equal(document.querySelector("roman-ai-assistant"), host);
+  assert.equal(host.romanInstance, instance);
+  assert.equal(host.shadowRoot.querySelector("input"), input);
+  assert.equal(input.value, "Keep my measurements");
+  assert.equal(window.inlineLeak, undefined);
+});
+
+test("safe theme modules and JSON configuration navigate without unsafe-script diagnostics", async (t) => {
+  const store = storeFixtures.devSingle;
+  const path = "/products/lottie-mojito-roman-blind";
+  const moduleUrl = `${store.origin}/cdn/shop/t/118/assets/-safe-component.js`;
+  const { document, window, navigation, errors } = setup(
+    t,
+    async (url) =>
+      response(path, {
+        url: String(url),
+        text: async () =>
+          storePage(store, path, {
+            extra: `<script type="module" src="${moduleUrl}"></script>
+          <script type="application/json" data-json>{"note":"window.jsonIsData=true"}</script>
+          <script type="application/ld+json" data-linked-json>{"@type":"Product"}</script>`,
+          }),
+      }),
+    { shop: store.shop, url: `${store.origin}/`, html: storePage(store, "/") },
+  );
+  const visiting = navigation.navigate(path);
+  await until(
+    () => document.querySelector(`script[src="${moduleUrl}"]`),
+    "safe theme module was not requested",
+  );
+  document
+    .querySelector(`script[src="${moduleUrl}"]`)
+    .dispatchEvent(new window.Event("load"));
+  await visiting;
+  assert.equal(navigation.getSnapshot().error, null);
+  assert.deepEqual(errors, []);
+  assert.equal(window.location.pathname, path);
+  assert.equal(
+    document.querySelector("[data-json]").textContent,
+    '{"note":"window.jsonIsData=true"}',
+  );
+  assert.equal(
+    document.querySelector("[data-linked-json]").textContent,
+    '{"@type":"Product"}',
+  );
+  assert.equal(window.jsonIsData, undefined);
+});
+
+test("unsafe attribute diagnostics retain original selectors when a theme hook replaces an earlier button", (t) => {
+  const store = storeFixtures.devSingle;
+  const html = storePage(store, "/cart", {
+    extra: `<button onclick="if(history.length>1){history.back()}else{window.location.href='/'}">Continue shopping</button>
+      <button data-case="unsafe" onclick="window.unexpectedInline = true">Other action</button>`,
+  });
+  const { window, document, errors } = setup(t, undefined, {
+    shop: store.shop,
+    url: `${store.origin}/`,
+    html: storePage(store, "/"),
+  });
+  const main = document.querySelector("main");
+  assert.throws(
+    () =>
+      window.RomanPage.preparePage(html, new window.URL("/cart", store.origin)),
+    /inline JavaScript/,
+  );
+  assert.equal(errors.length, 1);
+  const blocked = errors[0][1].blocked;
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].attribute, "onclick");
+  const source = new window.DOMParser().parseFromString(html, "text/html");
+  assert.equal(
+    source.querySelector(blocked[0].element),
+    source.querySelector('[data-case="unsafe"]'),
+  );
+  assert.equal(document.querySelector("main"), main);
+});
+
+test("both hd-dev-single products use the shared PayPal loader without remounting Roman", async (t) => {
+  const store = storeFixtures.devSingle;
+  const products = [
+    "/products/lottie-mojito-roman-blind",
+    "/products/bifold-clickfit-duoshade-obsidian-pleated-blind",
+  ];
+  const sdk =
+    "https://www.paypal.com/sdk/js?client-id=test-merchant&components=buttons,messages&locale=en_GB";
+  const { document, window, host, instance, navigation, errors } = setup(
+    t,
+    async (url) => {
+      const path = new URL(url).pathname;
+      return response(path, {
+        url: String(url),
+        text: async () =>
+          storePage(store, path, {
+            extra: products.includes(path)
+              ? `<script id="paypal-script" defer src="${sdk}"></script><div data-pp-container data-pp-amount=""></div>`
+              : "",
+          }),
+      });
+    },
+    { shop: store.shop, url: `${store.origin}/`, html: storePage(store, "/") },
+  );
+  const input = host.shadowRoot.querySelector("input");
+  const sdkSelector = 'script[src^="https://www.paypal.com/sdk/js?"]';
+  for (const path of products) {
+    const main = document.querySelector("main");
+    const visiting = navigation.navigate(path);
+    if (!window.paypal) {
+      await until(
+        () => document.querySelector(sdkSelector),
+        "PayPal was not requested for hd-dev-single",
+      );
+      assert.equal(document.querySelector("main"), main);
+      window.paypal = {
+        Buttons: () => assert.fail("The storefront owns checkout buttons"),
+        Messages: () => assert.fail("The SDK owns price message rendering"),
+      };
+      document
+        .querySelector(sdkSelector)
+        .dispatchEvent(new window.Event("load"));
+    }
+    await visiting;
+    assert.equal(navigation.getSnapshot().error, null);
+    assert.equal(window.location.pathname, path);
+    assert.equal(document.querySelector("main h1").textContent, path);
+    assert.equal(document.querySelectorAll(sdkSelector).length, 1);
+    assert.equal(host.romanInstance, instance);
+    assert.equal(host.shadowRoot.querySelector("input"), input);
+    assert.equal(input.value, "Keep my measurements");
+  }
+  await navigation.navigate("/");
+  assert.equal(navigation.getSnapshot().error, null);
+  assert.equal(document.querySelectorAll(sdkSelector).length, 1);
+  assert.deepEqual(errors, []);
+});
 
 test("the LEVOLOR missing module is requested and warned about before navigation continues", async (t) => {
   const connected = [];
@@ -1219,8 +1530,18 @@ test("verified Shopify identities select working shared navigation on their stor
       assert.equal(document.documentElement.dataset.romanPreview, "false");
       assert.equal(window.RomanPage.selectStore(store.shop).shop, store.shop);
       const provider = document.querySelector("app-provider");
-      assert.ok(navigation.destinations.some(({ path }) => path === "/"));
-      assert.ok(navigation.destinations.some(({ path }) => path === "/cart"));
+      assert.equal(
+        navigation.destinations.filter(({ path }) => path === "/").length,
+        1,
+      );
+      assert.equal(
+        navigation.destinations.filter(({ path }) => path === "/cart").length,
+        1,
+      );
+      assert.equal(
+        new Set(navigation.destinations.map(({ path }) => path)).size,
+        navigation.destinations.length,
+      );
       for (const { path } of navigation.destinations.filter(
         ({ path }) => path !== "/",
       )) {
@@ -1244,6 +1565,85 @@ test("verified Shopify identities select working shared navigation on their stor
       );
       assert.equal(window.location.pathname, previousPath);
       assert.ok(calls.every(({ url }) => new URL(url).origin === store.origin));
+    });
+  }
+});
+
+test("development store route allowlists stay isolated even when their themes share hooks", async (t) => {
+  const singleRoutes = [
+    "/collections/blackout-blinds",
+    "/collections/all",
+    "/products/lottie-mojito-roman-blind",
+    "/products/bifold-clickfit-duoshade-obsidian-pleated-blind",
+  ];
+  for (const { store, routes, foreignRoutes, foreignStore } of [
+    {
+      store: storeFixtures.devMulti,
+      routes: ["/collections/all", productOne, productTwo],
+      foreignRoutes: [
+        ...singleRoutes.filter((path) => path !== "/collections/all"),
+        "/products/classic-roman-shades",
+      ],
+      foreignStore: storeFixtures.devSingle,
+    },
+    {
+      store: storeFixtures.devSingle,
+      routes: singleRoutes,
+      foreignRoutes: [
+        productOne,
+        productTwo,
+        "/collections/wooden-blinds",
+        "/products/sevilla-blackout-grey-roller-blind",
+      ],
+      foreignStore: storeFixtures.devMulti,
+    },
+  ]) {
+    await t.test(store.shop, async (t) => {
+      const { document, window, navigation, calls } = setup(
+        t,
+        async (url) =>
+          response(new URL(url).pathname, {
+            url: String(url),
+            text: async () => storePage(store, new URL(url).pathname),
+          }),
+        {
+          shop: store.shop,
+          url: `${store.origin}/`,
+          html: storePage(store, "/"),
+        },
+      );
+      assert.deepEqual(
+        new Set(navigation.destinations.map(({ path }) => path)),
+        new Set(["/", ...routes, "/cart"]),
+      );
+      const product = routes.find((path) => path.startsWith("/products/"));
+      const scopedProduct = `/collections/all${product}`;
+      await navigation.navigate(scopedProduct);
+      assert.equal(navigation.getSnapshot().error, null);
+      assert.equal(window.location.pathname, scopedProduct);
+      const main = document.querySelector("main");
+      const fetched = calls.length;
+      for (const path of [
+        ...foreignRoutes.flatMap((path) =>
+          path.startsWith("/products/")
+            ? [path, `/collections/all${path}`]
+            : [path],
+        ),
+        `${foreignStore.origin}/collections/all`,
+      ]) {
+        await navigation.navigate(path);
+        assert.ok(
+          navigation.getSnapshot().error,
+          `${store.shop} must reject ${path}`,
+        );
+        assert.equal(
+          calls.length,
+          fetched,
+          "a rejected route must not fetch another storefront page",
+        );
+        assert.equal(document.querySelector("main"), main);
+        assert.equal(window.location.href, `${store.origin}${scopedProduct}`);
+      }
     });
   }
 });
@@ -1337,7 +1737,7 @@ test("a forward page visit changes the browser URL only once", async (t) => {
 });
 
 test("UK and Ireland cart return controls use managed Back after closing Roman and retain native fallback after disposal", async (t) => {
-  for (const store of stores.slice(2)) {
+  for (const store of [storeFixtures.blinds2goUk, storeFixtures.blinds2goIe]) {
     await t.test(store.shop, async (t) => {
       const handler =
         store.shop === "blinds2go-ireland.myshopify.com"
@@ -1416,7 +1816,7 @@ test("UK and Ireland cart return controls use managed Back after closing Roman a
 });
 
 test("cart handler normalization refuses extra code and cross-origin fallback destinations", (t) => {
-  for (const store of stores.slice(2)) {
+  for (const store of [storeFixtures.blinds2goUk, storeFixtures.blinds2goIe]) {
     const { window, document } = setup(t, undefined, {
       shop: store.shop,
       url: `${store.origin}/`,
@@ -1486,7 +1886,7 @@ function walletPage(
 }
 
 test("SelectBlinds and UK wallet modules load once before their cart components connect", async (t) => {
-  for (const store of stores.slice(1, 3)) {
+  for (const store of [storeFixtures.selectBlinds, storeFixtures.blinds2goUk]) {
     await t.test(store.shop, async (t) => {
       const { document, window, navigation } = setup(
         t,
@@ -1541,7 +1941,7 @@ test("SelectBlinds and UK wallet modules load once before their cart components 
 });
 
 test("wallet network, registration and initialization failures preserve the current page", async (t) => {
-  const store = stores[2];
+  const store = storeFixtures.blinds2goUk;
   for (const failure of ["network", "missing registration", "initialization"]) {
     await t.test(failure, async (t) => {
       const { document, window, navigation, warnings } = setup(
@@ -1605,7 +2005,7 @@ test("wallet network, registration and initialization failures preserve the curr
 });
 
 test("wallet cleanup and CORS attributes are optional and strictly bounded", (t) => {
-  const store = stores[2];
+  const store = storeFixtures.blinds2goUk;
   const { document, window } = setup(t, undefined, {
     shop: store.shop,
     url: `${store.origin}/`,
@@ -1647,9 +2047,15 @@ test("wallet cleanup and CORS attributes are optional and strictly bounded", (t)
 
 test("wallet support does not allow unrecognized hosts, SDK endpoints or Ireland integrations", (t) => {
   for (const [store, walletUrl] of [
-    [stores[2], `https://example.org${walletPath}`],
-    [stores[2], `${stores[2].origin}/cdn/shopifycloud/other-sdk.js`],
-    [stores[3], `${stores[3].origin}${walletPath}`],
+    [storeFixtures.blinds2goUk, `https://example.org${walletPath}`],
+    [
+      storeFixtures.blinds2goUk,
+      `${storeFixtures.blinds2goUk.origin}/cdn/shopifycloud/other-sdk.js`,
+    ],
+    [
+      storeFixtures.blinds2goIe,
+      `${storeFixtures.blinds2goIe.origin}${walletPath}`,
+    ],
   ]) {
     const { document, window } = setup(t, undefined, {
       shop: store.shop,

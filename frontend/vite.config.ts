@@ -1,8 +1,12 @@
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
-import { previewStore } from "./src/navigation/themes";
+import { selectStore } from "./src/navigation/themes";
 
+const previewStore = selectStore("hd-dev-multi.myshopify.com");
+if (!previewStore)
+  throw new Error("The local preview store is not configured.");
 const { destinations } = previewStore;
 
 export default defineConfig(({ mode }) => ({
@@ -10,6 +14,36 @@ export default defineConfig(({ mode }) => ({
   publicDir: false,
   plugins: [
     tailwindcss(),
+    {
+      name: "roman-design-assets",
+      apply: "build",
+      buildStart() {
+        if (mode !== "bootstrap") return;
+        for (const fileName of ["roman-logo.svg", "ivory-texture.png"]) {
+          const path = fileURLToPath(
+            new URL(`./src/assets/${fileName}`, import.meta.url),
+          );
+          this.addWatchFile(path);
+          this.emitFile({
+            type: "asset",
+            fileName,
+            source: readFileSync(path),
+          });
+        }
+      },
+      generateBundle(_options, bundle) {
+        if (mode !== "bootstrap") return;
+        const loader = bundle["roman-assistant-loader.bundle.js"];
+        if (
+          loader?.type === "chunk" &&
+          Buffer.byteLength(loader.code) > 10000
+        ) {
+          this.error(
+            `Roman's initial script is ${Buffer.byteLength(loader.code)} bytes; Shopify's app block limit is 10000 bytes.`,
+          );
+        }
+      },
+    },
     {
       name: "roman-storefront-preview",
       apply: "serve",
@@ -57,10 +91,18 @@ export default defineConfig(({ mode }) => ({
     ),
     emptyOutDir: false,
     lib: {
-      entry: fileURLToPath(new URL("./src/main.tsx", import.meta.url)),
-      name: "RomanAssistant",
+      entry: fileURLToPath(
+        new URL(
+          mode === "bootstrap" ? "./src/bootstrap.ts" : "./src/main.tsx",
+          import.meta.url,
+        ),
+      ),
+      name: mode === "bootstrap" ? "RomanBootstrap" : "RomanAssistant",
       formats: ["iife"],
-      fileName: () => "roman-assistant.bundle.js",
+      fileName: () =>
+        mode === "bootstrap"
+          ? "roman-assistant-loader.bundle.js"
+          : "roman-assistant.bundle.js",
     },
   },
 }));

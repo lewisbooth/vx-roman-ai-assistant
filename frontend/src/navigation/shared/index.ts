@@ -24,20 +24,6 @@ type HistoryEntry = {
   scroll: [number, number];
 };
 
-// Keep the desktop storefront in normal flow. Narrow screens use an overlay.
-// Theme media queries still follow the viewport and need live geometry checks.
-const layoutCss = `
-  @media (min-width: 1024px) {
-    html[data-roman-sidebar-open] body {
-      width: calc(100% - 400px) !important;
-      margin-right: 400px !important;
-    }
-    html[data-roman-sidebar-open] app-provider .w-screen {
-      width: calc(100vw - 400px);
-    }
-  }
-`;
-
 function historyRecord(): Record<string, unknown> {
   const state: unknown = window.history.state;
   return state && typeof state === "object" && !Array.isArray(state)
@@ -99,9 +85,6 @@ export function createStorefrontNavigation(
   let previousScrollRestoration: ScrollRestoration;
   let displayedEntry: HistoryEntry | undefined;
   let restoringEntry: HistoryEntry | undefined;
-  const layout = document.createElement("style");
-  layout.dataset.romanLayout = "";
-  layout.textContent = layoutCss;
 
   function publish(update: Partial<NavigationSnapshot>) {
     snapshot = { ...snapshot, ...update };
@@ -424,12 +407,6 @@ export function createStorefrontNavigation(
     setSidebarOpen(isOpen) {
       if (disposed || !store || open === isOpen) return;
       open = isOpen;
-      document.documentElement.toggleAttribute("data-roman-sidebar-open", open);
-      if (open) {
-        document.head.append(layout);
-      } else {
-        layout.remove();
-      }
     },
     dispose() {
       if (
@@ -455,8 +432,6 @@ export function createStorefrontNavigation(
       window.removeEventListener("popstate", onPopState);
       window.removeEventListener("scroll", onScroll);
       if (started) window.history.scrollRestoration = previousScrollRestoration;
-      layout.remove();
-      document.documentElement.removeAttribute("data-roman-sidebar-open");
       listeners.clear();
     },
   };

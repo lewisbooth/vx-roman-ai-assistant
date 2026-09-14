@@ -1,0 +1,9 @@
+@media (min-width: 1024px) {
+  html[data-roman-sidebar-open] body {
+    width: calc(100% - 400px) !important;
+    margin-right: 400px !important;
+  }
+  html[data-roman-sidebar-open] app-provider .w-screen {
+    width: calc(100vw - 400px);
+  }
+}

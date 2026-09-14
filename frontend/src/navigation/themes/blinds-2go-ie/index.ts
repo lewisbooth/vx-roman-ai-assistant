@@ -10,11 +10,9 @@ export const blinds2goIeTheme: StorefrontTheme = {
 };
 
 export const blinds2goIeDestinations = [
-  { label: "Home", path: "/" },
   { label: "Roller blinds", path: "/collections/roller-blinds" },
   {
     label: "Sevilla blackout grey roller blind",
     path: "/products/sevilla-blackout-grey-roller-blind",
   },
-  { label: "Cart", path: "/cart" },
 ] as const;
