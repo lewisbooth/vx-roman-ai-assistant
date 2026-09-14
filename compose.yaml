@@ -1,0 +1,19 @@
+services:
+  admin:
+    build: .
+    image: roman-ai-admin
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: file:/data/roman.sqlite
+    ports:
+      - "127.0.0.1:${ROMAN_ADMIN_PORT:-3000}:3000"
+    volumes:
+      - roman-ai-data:/data
+    restart: unless-stopped
+
+volumes:
+  roman-ai-data:
+    name: roman-ai-data

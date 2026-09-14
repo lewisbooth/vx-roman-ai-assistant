@@ -4,6 +4,7 @@ import { RouterProvider } from "react-router/dom";
 import { createAssistantRouter } from "./app";
 import { createStorefrontNavigation } from "./navigation/shared";
 import type { AssistantRuntime } from "./runtime";
+import { createAssistantTools } from "./tools";
 import styles from "./styles.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
@@ -25,6 +26,7 @@ export function mountAssistant(
     rejectReady = reject;
   });
   const navigation = createStorefrontNavigation(host);
+  const tools = createAssistantTools(host, navigation);
   let router: ReturnType<typeof createAssistantRouter> | undefined;
   let root: Root | undefined;
   let disposed = false;
@@ -46,6 +48,10 @@ export function mountAssistant(
     router = createAssistantRouter({
       logoUrl,
       navigation,
+      tools,
+      showTools:
+        host.dataset.shop === "hd-dev-multi.myshopify.com" ||
+        host.dataset.shop === "hd-dev-single.myshopify.com",
       onReady,
       onError,
     });
@@ -62,6 +68,7 @@ export function mountAssistant(
     window.clearTimeout(readyTimer);
     root?.unmount();
     router?.dispose();
+    tools.dispose();
     navigation.dispose();
     throw error;
   }
@@ -79,6 +86,7 @@ export function mountAssistant(
       );
       root?.unmount();
       router?.dispose();
+      tools.dispose();
       navigation.dispose();
     },
   };

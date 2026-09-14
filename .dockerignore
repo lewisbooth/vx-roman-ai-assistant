@@ -8,6 +8,7 @@ node_modules
 .react-router
 .env
 .env.*
+shopify.app.local.toml
 prisma/*.sqlite*
 extensions
 frontend

@@ -1,39 +1,38 @@
 # Roman AI Assistant
 
-A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across supported storefront navigation. Normal page loads restore its open/closed state for the current tab. AI conversations, measuring assistance and home visualization are not implemented yet.
+A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. AI conversations, measuring advice and home visualization are not implemented yet.
 
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 
 | Location                                                              | Owns                                                         | Runs on                                   |
 | --------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------- |
 | [frontend/](frontend/README.md)                                       | Customer sidebar and theme navigation                        | Storefront browser; assets on Shopify CDN |
-| [admin/](admin/README.md)                                             | Embedded admin console, authentication, webhooks and backend | One Azure VM for the proof of concept     |
+| [admin/](admin/README.md)                                             | Embedded admin console, authentication, webhooks and backend | Local Docker; same image on Azure later   |
 | [extensions/vx-roman-ai-assistant/](extensions/vx-roman-ai-assistant) | Liquid app embed and asset loader                            | Shopify                                   |
 
 Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication, separately from future customer conversations. AI credentials and privileged calls belong on the admin/backend server.
 
 ## Setup and development
 
-Use Node.js 22 and npm from the repository root. Install Shopify CLI on your machine. In PowerShell, use `npm.cmd` if execution policy blocks the npm shim.
+Use Node.js 22 and npm from the repository root. Install Shopify CLI and Docker Desktop with Linux containers. In PowerShell, use `npm.cmd` if execution policy blocks the npm shim.
 
 On first setup:
 
 ```powershell
 npm ci
 Copy-Item .env.example .env
-npm run setup
 ```
 
 Set `SHOPIFY_API_SECRET` in the root `.env` for admin development. Keep an existing `.env` when reinstalling. The customer preview needs neither Shopify credentials nor a database.
 
-Start the apps in separate terminals:
+Build and start the backend, then start the customer preview:
 
 ```powershell
+docker compose up --build -d
 npm run dev:frontend
-npm run dev:admin
 ```
 
-The customer preview is at http://127.0.0.1:5173; the admin landing page is at http://localhost:3000. Embedded admin authentication needs public HTTPS; see the [admin setup](admin/README.md).
+The customer preview is at http://127.0.0.1:5173; the admin defaults to http://localhost:3000. If that port is occupied, set `ROMAN_ADMIN_PORT=3100` and the matching local `SHOPIFY_APP_URL` in `.env`. Docker applies migrations and keeps SQLite in the `roman-ai-data` volume. Use `docker compose logs -f admin` for logs and `docker compose down` to stop; the volume is retained. See [admin setup](admin/README.md) for embedding the local server in Shopify through HTTPS and for native hot reload.
 
 For stores eligible for Shopify CLI previews, `npm run dev` manages the tunnel and builds the extension once; run `npm run watch:frontend` alongside it for subsequent changes. For the existing `hd-dev-multi` and `hd-dev-single` installations, use the local preview and publish an app version to test on the stores. Each store has its own [navigation profile](frontend/README.md#theme-integrations).
 
@@ -66,7 +65,7 @@ This runs checks, rebuilds the frontend and releases Shopify configuration and e
 
 Enable **Assistant icon** under **App embeds** in the target theme, save and refresh the storefront. An app release reaches every store where this app is installed; a theme preview does not isolate it. Use a separate development app registration before experimenting with an app installed on production stores. Preserve the extension UID and `roman-assistant` block handle.
 
-**Publish the admin/backend separately** using the [Azure VM and Docker instructions](admin/README.md). Shopify CLI does not host that server. Set `application_url` and `auth.redirect_urls` in `shopify.app.toml`, and the host's `SHOPIFY_APP_URL`, to the deployed HTTPS origin as documented there; the checked-in URLs remain `https://example.com`. Retain the database volume across deployments. Pushing to GitHub alone publishes neither app.
+**Run the admin/backend separately** using the [Docker instructions](admin/README.md). It runs locally now; the same image can run on one Azure VM later. Shopify CLI does not host that server. Local Docker development uses an HTTPS tunnel, matching `SHOPIFY_APP_URL` in `.env`, and ignored `shopify.app.local.toml` selected with `shopify app config use local`. Publish that configuration explicitly with `npm run deploy -- --config local`; keep Docker and the tunnel running while using the embedded admin. The checked-in `shopify.app.toml` retains placeholder URLs until a stable host is available. Retain the database volume across deployments. Pushing to GitHub alone publishes neither app.
 
 ## Conventions and references
 

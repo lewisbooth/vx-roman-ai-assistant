@@ -1,15 +1,25 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { createMemoryRouter, useRouteError } from "react-router";
 import type { StorefrontNavigation } from "./navigation/shared";
+import type { AssistantTools } from "./tools";
+import { ToolDrawer } from "./tools/ToolDrawer";
 
 type AssistantProps = {
   logoUrl: string;
   navigation: StorefrontNavigation;
+  tools: AssistantTools;
+  showTools: boolean;
   onReady: () => void;
   onError: (error: unknown) => void;
 };
 
-function Assistant({ logoUrl, navigation, onReady }: AssistantProps) {
+function Assistant({
+  logoUrl,
+  navigation,
+  tools,
+  showTools,
+  onReady,
+}: AssistantProps) {
   const { url, pending, error } = useSyncExternalStore(
     navigation.subscribe,
     navigation.getSnapshot,
@@ -75,6 +85,7 @@ function Assistant({ logoUrl, navigation, onReady }: AssistantProps) {
           {error}
         </p>
       )}
+      {showTools && <ToolDrawer tools={tools} />}
     </div>
   );
 }

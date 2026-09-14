@@ -3,7 +3,6 @@ import {
   loadPageAssets,
   preparePage,
   resetHeaderAtTop,
-  ThemeComponentConflict,
 } from "./page";
 import { selectStore } from "../themes";
 
@@ -68,12 +67,6 @@ export function createStorefrontNavigation(
 ): StorefrontNavigation {
   const store = selectStore(host.dataset.shop);
   const destinations = store?.destinations ?? [];
-  // Back may return to the page on which the assistant was first opened, even
-  // when that page is not one of the configured sidebar shortcuts.
-  const supportedPaths = new Set([
-    ...destinations.map(({ path }) => path),
-    window.location.pathname,
-  ]);
   const listeners = new Set<() => void>();
   let currentUrl = window.location.href;
   let snapshot: NavigationSnapshot = {
@@ -90,7 +83,6 @@ export function createStorefrontNavigation(
   let scrollTimer: number | undefined;
   let previousScrollRestoration: ScrollRestoration;
   let displayedEntry: HistoryEntry | undefined;
-  let restoringEntry: HistoryEntry | undefined;
   let handingOff = false;
 
   function publish(update: Partial<NavigationSnapshot>) {
@@ -98,29 +90,17 @@ export function createStorefrontNavigation(
     listeners.forEach((listener) => listener());
   }
 
-  function supportsPath(path: string): boolean {
-    if (supportedPaths.has(path)) return true;
-    const product = /^\/collections\/[^/]+\/products\/([^/]+)$/.exec(path);
-    return !!product && supportedPaths.has(`/products/${product[1]}`);
-  }
-
-  function supportedUrl(path: string): URL {
+  function storefrontUrl(path: string): URL {
     const url = new URL(path, window.location.href);
     if (
       url.origin !== window.location.origin ||
       url.username ||
       url.password ||
-      !supportsPath(url.pathname)
+      !/^https?:$/.test(url.protocol)
     ) {
       throw new Error(
-        "This destination is outside Roman's configured storefront routes.",
+        "Navigation requires a same-origin storefront URL without credentials.",
       );
-    }
-    if (
-      url.searchParams.has("sections") ||
-      url.searchParams.has("section_id")
-    ) {
-      throw new Error("Navigation requires a complete storefront page.");
     }
     return url;
   }
@@ -167,26 +147,22 @@ export function createStorefrontNavigation(
   }
 
   async function visit(path: string, fromHistory = false) {
-    if (disposed || restoringEntry || handingOff) return;
+    if (disposed || handingOff) return;
     controller?.abort();
     const request = new AbortController();
     controller = request;
-    const timeout = window.setTimeout(
-      () =>
-        request.abort(new Error("The page request timed out. Please retry.")),
-      15000,
-    );
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      request.abort(new Error("The page request timed out."));
+    }, 15000);
     // The theme also updates query parameters for filters, variants and sizes.
     // Preserve its latest URL when creating an outgoing history entry.
     if (!fromHistory) currentUrl = window.location.href;
-    const oldUrl = currentUrl;
     const oldMain = document.querySelector("app-provider > main#main");
-    let oldState = window.history.state;
     const scroll = fromHistory ? savedScroll() : undefined;
     const targetEntry = fromHistory ? historyEntry() : undefined;
     let replacedUrl = false;
-    let pushedEntry = false;
-    let outgoingEntry: HistoryEntry | undefined;
     let destination: URL | undefined;
 
     try {
@@ -195,36 +171,40 @@ export function createStorefrontNavigation(
           "Roman navigation is not configured for this storefront.",
         );
       }
-      if (!oldMain || oldMain.contains(host)) {
-        throw new Error(
-          "The theme must have app-provider > main#main outside Roman.",
-        );
-      }
-      const url = supportedUrl(path);
+      const url = storefrontUrl(path);
       const previewTheme = new URL(currentUrl).searchParams.get(
         "preview_theme_id",
       );
       if (previewTheme && !url.searchParams.has("preview_theme_id")) {
         url.searchParams.set("preview_theme_id", previewTheme);
       }
-      start();
-      if (!fromHistory) {
-        saveScroll();
-        oldState = window.history.state;
+      destination = url;
+      if (
+        url.searchParams.has("sections") ||
+        url.searchParams.has("section_id")
+      )
+        throw new Error(
+          "Partial storefront responses require normal navigation.",
+        );
+      if (!oldMain || oldMain.contains(host)) {
+        throw new Error(
+          "The theme must have app-provider > main#main outside Roman.",
+        );
       }
+      start();
+      if (!fromHistory) saveScroll();
       publish({ pending: true, error: null });
       const response = await window.fetch(url.href, {
         credentials: "same-origin",
         headers: { Accept: "text/html" },
         signal: request.signal,
       });
-      if (!response.ok)
-        throw new Error(
-          `The store returned HTTP ${response.status}. The current page has been kept.`,
-        );
-      const finalUrl = supportedUrl(response.url || url.href);
+      const finalUrl = storefrontUrl(response.url || url.href);
       // Fetch strips the requested fragment; native navigation must retain it.
       if (!finalUrl.hash) finalUrl.hash = url.hash;
+      destination = finalUrl;
+      if (!response.ok)
+        throw new Error(`The store returned HTTP ${response.status}.`);
       if (!response.headers.get("content-type")?.includes("text/html")) {
         throw new Error("The store did not return an HTML page.");
       }
@@ -233,7 +213,6 @@ export function createStorefrontNavigation(
       // turn a nonfatal asset timeout into a cancelled navigation.
       window.clearTimeout(timeout);
       request.signal.throwIfAborted();
-      destination = finalUrl;
       const page = preparePage(html, finalUrl, store.theme);
       await loadPageAssets(page, request.signal);
       request.signal.throwIfAborted();
@@ -243,7 +222,6 @@ export function createStorefrontNavigation(
       // changes also reach theme analytics and can produce duplicate pageviews.
       const { main, error: initializationError } = commitPage(page, () => {
         if (!fromHistory) {
-          outgoingEntry = displayedEntry;
           displayedEntry = {
             segment: displayedEntry!.segment,
             index: displayedEntry!.index + 1,
@@ -255,7 +233,6 @@ export function createStorefrontNavigation(
             "",
             finalUrl.href,
           );
-          pushedEntry = true;
         } else {
           if (window.location.href !== finalUrl.href) {
             window.history.replaceState(historyRecord(), "", finalUrl.href);
@@ -265,10 +242,11 @@ export function createStorefrontNavigation(
         replacedUrl = true;
       });
       currentUrl = finalUrl.href;
+      if (initializationError) throw new Error(initializationError);
       publish({
         url: currentUrl,
         pending: false,
-        error: initializationError ?? null,
+        error: null,
       });
       if (!host.shadowRoot?.activeElement) {
         main.setAttribute("tabindex", "-1");
@@ -291,59 +269,53 @@ export function createStorefrontNavigation(
       );
     } catch (error) {
       if (controller !== request || disposed) return;
-      if (
-        request.signal.aborted &&
-        !request.signal.reason?.message?.includes("timed out")
-      )
-        return;
-      if (error instanceof ThemeComponentConflict && destination) {
+      if (request.signal.aborted && !timedOut) return;
+      const cause = request.signal.aborted ? request.signal.reason : error;
+      if (destination) {
+        // Error messages can contain asset/request URLs. Keep useful context
+        // without copying their credentials, query parameters or fragments.
+        const reason = (
+          cause instanceof Error
+            ? cause.message
+            : "Storefront navigation failed."
+        )
+          .replace(/https?:\/\/[^\s"'<>]+/g, (value) => {
+            try {
+              const url = new URL(value);
+              return `${url.origin}${url.pathname}`;
+            } catch {
+              return "[URL]";
+            }
+          })
+          .replace(/[?#][^\s"'<>)]*/g, "[redacted]")
+          .slice(0, 500);
         console.error(
-          "[Roman] Theme component conflict; loading the full page.",
+          "[Roman] Storefront navigation failed; loading the full page.",
           {
             destination: `${destination.origin}${destination.pathname}`,
-            reason: error.message,
+            reason,
           },
         );
         handingOff = true;
         request.abort();
         window.clearTimeout(scrollTimer);
         scrollTimer = undefined;
-        window.history.scrollRestoration = previousScrollRestoration;
+        if (started)
+          window.history.scrollRestoration = previousScrollRestoration;
         // Avoid treating this intentional handoff as a failed history visit on
-        // disposal. The old content remains untouched until the browser leaves.
+        // disposal, including failures after the destination was inserted.
+        if (replacedUrl) currentUrl = window.location.href;
         publish({ pending: false, error: null });
-        if (!fromHistory) window.location.assign(destination.href);
+        if (!fromHistory && !replacedUrl)
+          window.location.assign(destination.href);
         else if (window.location.href === destination.href)
           window.location.reload();
         else window.location.replace(destination.href);
         return;
       }
-      // A theme initialization error after insertion is different from a failed
-      // fetch: keep the displayed destination and its URL consistent.
-      if (replacedUrl && oldMain && !oldMain.isConnected)
-        currentUrl = window.location.href;
-      else if (fromHistory) {
-        // Restore the previous history position, never overwrite the destination
-        // of a failed Back/Forward request. Native theme entries have no reliable
-        // relative index, so fall back to loading their actual destination.
-        if (
-          targetEntry &&
-          displayedEntry &&
-          targetEntry.segment === displayedEntry.segment &&
-          targetEntry.index !== displayedEntry.index
-        ) {
-          restoringEntry = displayedEntry;
-          window.history.go(displayedEntry.index - targetEntry.index);
-        } else window.location.reload();
-      } else if (pushedEntry && outgoingEntry) {
-        displayedEntry = outgoingEntry;
-        restoringEntry = outgoingEntry;
-        window.history.back();
-      } else if (replacedUrl) window.history.replaceState(oldState, "", oldUrl);
-      const cause = request.signal.aborted ? request.signal.reason : error;
       publish({
         url: currentUrl,
-        pending: !!restoringEntry,
+        pending: false,
         error:
           cause instanceof Error
             ? cause.message
@@ -394,9 +366,12 @@ export function createStorefrontNavigation(
       return;
     }
     if (!open) return;
-    const url = new URL(anchor.href, window.location.href);
-    if (url.origin !== window.location.origin || !supportsPath(url.pathname))
+    let url: URL;
+    try {
+      url = storefrontUrl(anchor.href);
+    } catch {
       return;
+    }
     if (
       url.pathname === window.location.pathname &&
       url.search === window.location.search
@@ -411,24 +386,7 @@ export function createStorefrontNavigation(
       handingOff = false;
       window.history.scrollRestoration = "manual";
     }
-    if (restoringEntry) {
-      const entry = historyEntry();
-      const restored =
-        entry?.segment === restoringEntry.segment &&
-        entry?.index === restoringEntry.index &&
-        window.location.href === currentUrl;
-      restoringEntry = undefined;
-      if (restored) {
-        publish({ pending: false });
-        return;
-      }
-    }
-    const url = new URL(window.location.href);
-    if (supportsPath(url.pathname)) void visit(url.href, true);
-    else {
-      controller?.abort();
-      window.location.reload();
-    }
+    void visit(window.location.href, true);
   }
 
   function onPageShow(event: PageTransitionEvent) {
@@ -460,12 +418,7 @@ export function createStorefrontNavigation(
       open = isOpen;
     },
     dispose() {
-      if (
-        started &&
-        snapshot.pending &&
-        window.location.href !== currentUrl &&
-        !restoringEntry
-      ) {
+      if (started && snapshot.pending && window.location.href !== currentUrl) {
         const target = historyEntry();
         if (
           target &&

@@ -77,6 +77,7 @@ function setup(
     pretendToBeVisual: true,
   });
   const { window } = dom;
+  const native = captureNativeNavigation(window);
   const calls = [];
   const warnings = [];
   const errors = [];
@@ -121,6 +122,7 @@ function setup(
     calls,
     warnings,
     errors,
+    native,
   };
 }
 
@@ -278,7 +280,7 @@ test("all five destinations replace store content without remounting Roman or it
   assert.ok(notifications >= 5, "navigation subscribers observe state changes");
 });
 
-test("failed requests and invalid destination documents leave the existing page and URL usable", async (t) => {
+test("failed requests and invalid destination documents load the trusted destination normally", async (t) => {
   const cases = [
     [
       "HTTP failure",
@@ -303,24 +305,135 @@ test("failed requests and invalid destination documents leave the existing page 
       async () =>
         response(productOne, { url: "https://accounts.shopify.com/login" }),
     ],
+    [
+      "same-origin authentication redirect",
+      async () =>
+        response("/password", {
+          text: async () =>
+            '<html><head><title>Sign in</title></head><body class="template-password"></body></html>',
+        }),
+      "/password",
+    ],
+    [
+      "same-origin redirected HTTP failure",
+      async () => response("/pages/unavailable", { ok: false, status: 500 }),
+      "/pages/unavailable",
+    ],
+    [
+      "non-HTML response",
+      async () =>
+        response(productOne, { headers: { get: () => "application/json" } }),
+    ],
   ];
-  for (const [name, fetch] of cases) {
+  for (const [name, fetch, expected = productOne] of cases) {
     await t.test(name, async (t) => {
-      const { document, window, navigation } = setup(t, fetch);
+      const { document, window, navigation, errors } = setup(t, fetch);
       const native = captureNativeNavigation(window);
       const main = document.querySelector("main");
       await navigation.navigate(productOne);
-      assert.ok(
-        navigation.getSnapshot().error,
-        "failure is exposed to the sidebar",
-      );
+      assert.equal(navigation.getSnapshot().error, null);
       assert.equal(Boolean(navigation.getSnapshot().pending), false);
       assert.equal(document.querySelector("main"), main);
       assert.equal(window.location.href, `${origin}/`);
       assert.equal(document.title, "Store /");
-      assert.deepEqual(native, []);
+      assert.deepEqual(native, [
+        { method: "assign", url: `${origin}${expected}` },
+      ]);
+      assert.equal(errors.length, 1);
+      assert.match(
+        errors[0][0],
+        /Storefront navigation failed; loading the full page/,
+      );
+      assert.equal(errors[0][1].destination, `${origin}${expected}`);
     });
   }
+});
+
+test("invalid destination URLs neither fetch nor invoke normal navigation", async (t) => {
+  const { document, window, navigation, calls, native, errors } = setup(t);
+  const main = document.querySelector("main");
+  const historyLength = window.history.length;
+  for (const target of [
+    "https://other-store.example/products/new",
+    "//other-store.example/cart",
+    `https://user:SECRET@${new URL(origin).host}/products/new`,
+    "javascript:alert(1)",
+    `blob:${origin}/opaque-id`,
+    "data:text/html,hello",
+    "http://",
+  ]) {
+    await navigation.navigate(target);
+    assert.ok(navigation.getSnapshot().error);
+    assert.equal(document.querySelector("main"), main);
+    assert.equal(window.location.href, `${origin}/`);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(window.history.length, historyLength);
+  assert.deepEqual(native, []);
+  assert.deepEqual(errors, []);
+});
+
+test("partial rendering requests and a missing current page shell use trusted native navigation", async (t) => {
+  for (const mode of ["sections", "section_id", "missing main"]) {
+    await t.test(mode, async (t) => {
+      const { document, window, navigation, calls, native, errors } = setup(t);
+      const target =
+        mode === "missing main"
+          ? "/pages/help"
+          : `/collections/new?${mode}=grid`;
+      if (mode === "missing main") document.querySelector("main").remove();
+      const oldRestoration = window.history.scrollRestoration;
+      await navigation.navigate(target);
+      assert.deepEqual(native, [{ method: "assign", url: origin + target }]);
+      assert.equal(calls.length, 0);
+      assert.equal(errors.length, 1);
+      assert.equal(window.history.scrollRestoration, oldRestoration);
+    });
+  }
+});
+
+test("fetch deadlines fall back once and scrub URL secrets from the diagnostic", async (t) => {
+  let expire;
+  const { window, navigation, native, errors } = setup(
+    t,
+    (_url, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () =>
+          reject(options.signal.reason),
+        );
+      }),
+  );
+  const setTimeout = window.setTimeout.bind(window);
+  window.setTimeout = (callback, ms, ...args) => {
+    if (ms === 15000) {
+      expire = callback;
+      return 123456;
+    }
+    return setTimeout(callback, ms, ...args);
+  };
+  const target = "/products/new?token=QUERY_SECRET#FRAGMENT_SECRET";
+  const pending = navigation.navigate(target);
+  expire();
+  await pending;
+  assert.deepEqual(native, [{ method: "assign", url: origin + target }]);
+  assert.match(errors[0][1].reason, /timed out/);
+  assert.doesNotMatch(JSON.stringify(errors), /SECRET|\?|#/);
+  navigation.dispose();
+  assert.equal(native.length, 1);
+});
+
+test("a failed fetch diagnostic removes credentials and queries from exception URLs", async (t) => {
+  let window;
+  const env = setup(t, async () => {
+    throw new window.Error(
+      `Failed to fetch https://USERNAME_SECRET:PASSWORD_SECRET@${new URL(origin).host}/products/new?token=QUERY_SECRET#FRAGMENT_SECRET`,
+    );
+  });
+  window = env.window;
+  await env.navigation.navigate("/products/new");
+  assert.equal(env.native.length, 1);
+  assert.match(env.errors[0][1].reason, /Failed to fetch/);
+  assert.doesNotMatch(JSON.stringify(env.errors), /SECRET|\?|#/);
 });
 
 test("an older response cannot overwrite a newer navigation even if fetch ignores cancellation", async (t) => {
@@ -345,7 +458,7 @@ test("an older response cannot overwrite a newer navigation even if fetch ignore
   assert.equal(navigation.getSnapshot().error, null);
 });
 
-test("only supported ordinary links are intercepted while the sidebar is open", async (t) => {
+test("ordinary same-origin links are intercepted only while the sidebar is open", async (t) => {
   const { document, window, navigation, calls } = setup(t);
   const intercepted = [];
   // Observe the adapter's decision, then suppress jsdom's unimplemented hard navigation.
@@ -384,7 +497,8 @@ test("only supported ordinary links are intercepted while the sidebar is open", 
     [productOne, { shiftKey: true }],
     [productOne, { button: 1 }],
     ["https://example.org/"],
-    ["/checkout"],
+    ["javascript:alert(1)"],
+    [`https://user:secret@${new URL(origin).host}/products/test`],
     [productOne, {}, { target: "_blank" }],
     [productOne, {}, { download: "product.html" }],
     ["#measurements"],
@@ -396,10 +510,10 @@ test("only supported ordinary links are intercepted while the sidebar is open", 
     );
   }
   assert.equal(calls.length, 0);
-  assert.equal(click(productOne), true);
+  assert.equal(click("/pages/measuring-guide"), true);
   await until(
-    () => window.location.pathname === productOne,
-    "supported link did not navigate",
+    () => window.location.pathname === "/pages/measuring-guide",
+    "arbitrary same-origin link did not navigate",
   );
   assert.equal(calls.length, 1);
   navigation.setSidebarOpen(false);
@@ -647,7 +761,7 @@ test("failed, canceled and native-fallback navigation never reset the retained t
         document.documentElement.style.getPropertyValue("--header-height"),
         "0px",
       );
-      assert.equal(native.length, outcome === "native conflict" ? 1 : 0);
+      assert.equal(native.length, outcome === "canceled" ? 0 : 1);
     });
   }
 });
@@ -717,108 +831,88 @@ test("Back restores the initial page even when it is outside the five shortcuts"
   assert.equal(navigation.getSnapshot().error, null);
 });
 
-test("failed Back and Forward preserve their destinations for a successful retry", async (t) => {
-  let failingPath;
-  const { document, window, navigation } = setup(t, async (url) => {
-    const path = new URL(url).pathname;
-    return response(
-      path,
-      path === failingPath ? { ok: false, status: 503 } : {},
-    );
-  });
-  await navigation.navigate(productOne);
-  await navigation.navigate(productTwo);
-  const secondProduct = document.querySelector("main");
-  const historyLength = window.history.length;
-  failingPath = productOne;
-  window.history.back();
-  await until(
-    () =>
-      navigation.getSnapshot().error &&
-      !navigation.getSnapshot().pending &&
-      window.location.pathname === productTwo,
-    "failed Back did not return to the displayed product's history entry",
-  );
-  assert.equal(document.querySelector("main"), secondProduct);
-  assert.equal(window.history.length, historyLength);
-
-  failingPath = undefined;
-  window.history.back();
-  await until(
-    () => document.querySelector("main h1").textContent === productOne,
-    "retrying Back lost the original destination",
-  );
-  const firstProduct = document.querySelector("main");
-  failingPath = productTwo;
-  window.history.forward();
-  await until(
-    () =>
-      navigation.getSnapshot().error &&
-      !navigation.getSnapshot().pending &&
-      window.location.pathname === productOne,
-    "failed Forward did not return to the displayed product's history entry",
-  );
-  assert.equal(document.querySelector("main"), firstProduct);
-  assert.equal(window.history.length, historyLength);
-  failingPath = undefined;
-  window.history.forward();
-  await until(
-    () => document.querySelector("main h1").textContent === productTwo,
-    "retrying Forward lost the original destination",
-  );
-  assert.equal(navigation.getSnapshot().error, null);
+test("failed Back and Forward reload arbitrary destinations without rolling history back", async (t) => {
+  for (const direction of ["back", "forward"]) {
+    await t.test(direction, async (t) => {
+      const first = "/pages/measuring-guide";
+      const second = "/collections/new-collection";
+      let failingPath;
+      const { document, window, navigation, native, errors } = setup(
+        t,
+        async (url) => {
+          const path = new URL(url).pathname;
+          return response(
+            path,
+            path === failingPath ? { ok: false, status: 503 } : {},
+          );
+        },
+      );
+      await navigation.navigate(first);
+      await navigation.navigate(second);
+      if (direction === "forward") {
+        window.history.back();
+        await until(
+          () => document.querySelector("main h1").textContent === first,
+          "Back did not establish Forward",
+        );
+      }
+      const previousMain = document.querySelector("main");
+      const length = window.history.length;
+      failingPath = direction === "back" ? first : second;
+      window.history[direction]();
+      await until(
+        () => native.length,
+        "Failed history destination did not reload",
+      );
+      assert.deepEqual(native, [
+        { method: "reload", url: origin + failingPath },
+      ]);
+      assert.equal(window.location.pathname, failingPath);
+      assert.equal(window.history.length, length);
+      assert.equal(document.querySelector("main"), previousMain);
+      assert.match(errors[0][1].reason, /HTTP 503/);
+      navigation.dispose();
+      assert.equal(
+        native.length,
+        1,
+        "disposal must not undo the native handoff",
+      );
+    });
+  }
 });
 
-test("branching after Back retains correct history positions and failure rollback", async (t) => {
-  let failingPath;
-  const { document, window, navigation } = setup(t, async (url) => {
-    const path = new URL(url).pathname;
-    return response(
-      path,
-      path === failingPath ? { ok: false, status: 503 } : {},
-    );
-  });
+test("branching after Back retains arbitrary route history positions", async (t) => {
+  const { document, window, navigation } = setup(t);
   await navigation.navigate(productOne);
   await navigation.navigate(productTwo);
   window.history.back();
   await until(
     () => document.querySelector("main h1").textContent === productOne,
-    "Back did not reach the branch point",
+    "Back did not reach branch point",
   );
-  await navigation.navigate("/cart");
+  const branch = "/pages/fitting-guide";
+  await navigation.navigate(branch);
   assert.equal(window.history.length, 3);
-  failingPath = productOne;
-  window.history.back();
-  await until(
-    () =>
-      navigation.getSnapshot().error &&
-      !navigation.getSnapshot().pending &&
-      window.location.pathname === "/cart",
-    "failed Back did not restore the new branch",
-  );
-  assert.equal(document.querySelector("main h1").textContent, "/cart");
-  failingPath = undefined;
   window.history.go(-2);
   await until(
     () => document.querySelector("main h1").textContent === "/",
-    "two-entry Back did not reach Home",
+    "Two-entry Back did not reach Home",
   );
   window.history.forward();
   await until(
     () => document.querySelector("main h1").textContent === productOne,
-    "Forward did not reach the branch point",
+    "Forward did not reach branch point",
   );
   window.history.forward();
   await until(
-    () => document.querySelector("main h1").textContent === "/cart",
-    "Forward returned to the discarded branch",
+    () => document.querySelector("main h1").textContent === branch,
+    "Forward returned to discarded branch",
   );
-  assert.equal(window.location.pathname, "/cart");
+  assert.equal(window.location.pathname, branch);
 });
 
-test("payment initialization failure keeps the inserted page and preserves previous history", async (t) => {
-  const { document, window, navigation } = setup(t);
-  const native = captureNativeNavigation(window);
+test("payment initialization failure reloads the inserted destination without adding another history entry", async (t) => {
+  const { document, window, navigation, native, errors } = setup(t);
   await navigation.navigate(productOne);
   window.Shopify = {
     PaymentButton: {
@@ -828,31 +922,23 @@ test("payment initialization failure keeps the inserted page and preserves previ
     },
   };
   await navigation.navigate(productTwo);
-  assert.match(
-    navigation.getSnapshot().error,
-    /payment controls could not initialize/,
-  );
+  assert.match(errors[0][1].reason, /payment controls could not initialize/);
   assert.equal(navigation.getSnapshot().pending, false);
   assert.equal(document.querySelector("main h1").textContent, productTwo);
   assert.equal(window.location.pathname, productTwo);
   assert.equal(window.history.length, 3);
-  assert.deepEqual(
-    native,
-    [],
-    "payment initialization does not invoke component-conflict fallback",
-  );
+  assert.deepEqual(native, [{ method: "reload", url: origin + productTwo }]);
   window.Shopify.PaymentButton.init = () => {};
   window.history.back();
   await until(
     () => document.querySelector("main h1").textContent === productOne,
-    "payment failure discarded the previous product's history",
+    "Payment fallback lost previous history",
   );
   window.history.back();
   await until(
     () => document.querySelector("main h1").textContent === "/",
-    "payment failure discarded the initial page's history",
+    "Payment fallback lost initial history",
   );
-  assert.equal(navigation.getSnapshot().error, null);
 });
 
 test("disposing during Back restores the displayed URL and ignores its pending response", async (t) => {
@@ -1552,10 +1638,10 @@ test("superseding or disposing asset loading produces no warning or stale page c
   }
 });
 
-test("unexpected stylesheet insertion failure cancels sibling assets without warning or committing", async (t) => {
+test("unexpected stylesheet insertion failure cancels sibling assets and loads the full page", async (t) => {
   const pendingUrl = themeAsset("pending.css");
   const brokenUrl = themeAsset("cannot-insert.css");
-  const { document, window, navigation, warnings } = setup(
+  const { document, window, navigation, warnings, errors, native } = setup(
     t,
     async (url) =>
       response(new URL(url).pathname, {
@@ -1580,7 +1666,10 @@ test("unexpected stylesheet insertion failure cancels sibling assets without war
     append(...nodes);
   };
   await navigation.navigate(productOne);
-  assert.match(navigation.getSnapshot().error, /Cannot insert stylesheet/);
+  assert.match(errors[0][1].reason, /Cannot insert stylesheet/);
+  assert.deepEqual(native, [
+    { method: "assign", url: `${origin}${productOne}` },
+  ]);
   assert.equal(navigation.getSnapshot().pending, false);
   assert.equal(document.querySelector("main"), main);
   assert.equal(window.location.pathname, "/");
@@ -1627,35 +1716,31 @@ test("theme module initialization errors cancel pending assets and keep existing
   assert.deepEqual(warnings, []);
 });
 
-test("only confirmed duplicate custom-element registrations trigger runtime conflict fallback", async (t) => {
+test("all observed theme initialization errors load the full page with a diagnostic", async (t) => {
   const cases = [
     {
       name: "duplicate registry definition",
       errorName: "NotSupportedError",
       message:
         "Failed to execute 'define' on 'CustomElementRegistry': the name \"cart-remove-toggle\" has already been used with this registry",
-      fallback: true,
     },
     {
       name: "unrelated unsupported operation",
       errorName: "NotSupportedError",
       message: "The requested operation is not supported",
-      fallback: false,
     },
     {
       name: "ordinary initialization exception",
       errorName: "TypeError",
       message: "Cannot read properties of undefined",
-      fallback: false,
     },
     {
       name: "unconfirmed duplicate wording",
       errorName: "Error",
       message: "Custom element was already registered",
-      fallback: false,
     },
   ];
-  for (const { name, errorName, message, fallback } of cases) {
+  for (const { name, errorName, message } of cases) {
     await t.test(name, async (t) => {
       const moduleUrl = `${themeAsset("-new-product.js")}?asset=ASSET_SECRET`;
       const { document, window, navigation, errors, warnings } = setup(
@@ -1688,10 +1773,9 @@ test("only confirmed duplicate custom-element registrations trigger runtime conf
       );
       await pending;
 
-      assert.deepEqual(
-        native,
-        fallback ? [{ method: "assign", url: `${origin}${destination}` }] : [],
-      );
+      assert.deepEqual(native, [
+        { method: "assign", url: `${origin}${destination}` },
+      ]);
       assert.equal(document.querySelector("main"), previousMain);
       assert.equal(window.location.href, `${origin}/`);
       assert.equal(window.history.length, 1);
@@ -1703,11 +1787,9 @@ test("only confirmed duplicate custom-element registrations trigger runtime conf
         null,
       );
       assert.deepEqual(warnings, []);
-      if (fallback) {
-        assert.equal(errors.length, 1);
-        assert.doesNotMatch(JSON.stringify(errors), /SECRET|\?|#/);
-        assert.ok(JSON.stringify(errors).includes(`${origin}${productOne}`));
-      } else assert.ok(navigation.getSnapshot().error);
+      assert.equal(errors.length, 1);
+      assert.doesNotMatch(JSON.stringify(errors), /SECRET|\?|#/);
+      assert.ok(JSON.stringify(errors).includes(`${origin}${productOne}`));
     });
   }
 });
@@ -1861,10 +1943,10 @@ test("unsafe-script diagnostics identify every blocker without exposing customer
   t.after(() => observer.disconnect());
   await navigation.navigate(destination);
   assert.match(
-    navigation.getSnapshot().error,
+    errors[1][1].reason,
     /unsupported integration \(\/head-sdk\.js\)/,
   );
-  assert.equal(errors.length, 1);
+  assert.equal(errors.length, 2);
   const [message, details] = errors[0];
   assert.equal(
     message,
@@ -1961,7 +2043,9 @@ test("unsafe-script diagnostics identify every blocker without exposing customer
   );
   assert.equal(document.querySelector("main"), main);
   assert.equal(window.location.href, previousUrl);
-  assert.deepEqual(native, [], "unsafe markup must remain a hard failure");
+  assert.deepEqual(native, [
+    { method: "assign", url: `${store.origin}${destination}` },
+  ]);
   assert.equal(document.querySelector("roman-ai-assistant"), host);
   assert.equal(host.romanInstance, instance);
   assert.equal(host.shadowRoot.querySelector("input"), input);
@@ -2284,7 +2368,7 @@ test("verified Shopify identities select working shared navigation on their stor
   }
 });
 
-test("development store route allowlists stay isolated even when their themes share hooks", async (t) => {
+test("development store shortcuts stay isolated without restricting same-origin navigation", async (t) => {
   const singleRoutes = [
     "/collections/blackout-blinds",
     "/collections/all",
@@ -2336,29 +2420,24 @@ test("development store route allowlists stay isolated even when their themes sh
       await navigation.navigate(scopedProduct);
       assert.equal(navigation.getSnapshot().error, null);
       assert.equal(window.location.pathname, scopedProduct);
+      for (const path of foreignRoutes.flatMap((path) =>
+        path.startsWith("/products/")
+          ? [path, `/collections/all${path}`]
+          : [path],
+      )) {
+        await navigation.navigate(path);
+        assert.equal(navigation.getSnapshot().error, null);
+        assert.equal(window.location.pathname, path);
+        assert.equal(document.querySelector("main h1").textContent, path);
+      }
       const main = document.querySelector("main");
       const fetched = calls.length;
-      for (const path of [
-        ...foreignRoutes.flatMap((path) =>
-          path.startsWith("/products/")
-            ? [path, `/collections/all${path}`]
-            : [path],
-        ),
-        `${foreignStore.origin}/collections/all`,
-      ]) {
-        await navigation.navigate(path);
-        assert.ok(
-          navigation.getSnapshot().error,
-          `${store.shop} must reject ${path}`,
-        );
-        assert.equal(
-          calls.length,
-          fetched,
-          "a rejected route must not fetch another storefront page",
-        );
-        assert.equal(document.querySelector("main"), main);
-        assert.equal(window.location.href, `${store.origin}${scopedProduct}`);
-      }
+      const current = window.location.href;
+      await navigation.navigate(`${foreignStore.origin}/collections/all`);
+      assert.match(navigation.getSnapshot().error, /same-origin/);
+      assert.equal(calls.length, fetched);
+      assert.equal(document.querySelector("main"), main);
+      assert.equal(window.location.href, current);
     });
   }
 });
@@ -2395,8 +2474,8 @@ test("an unrecognized Shopify identity remains inert without changing history or
   assert.equal(intercepted, false);
 });
 
-test("navigation rejects destination modules from a different theme revision before committing", async (t) => {
-  const { document, window, navigation } = setup(
+test("navigation uses the full page for a different theme revision before committing", async (t) => {
+  const { document, window, navigation, errors } = setup(
     t,
     async () =>
       response(productOne, {
@@ -2411,11 +2490,13 @@ test("navigation rejects destination modules from a different theme revision bef
   const native = captureNativeNavigation(window);
   const main = document.querySelector("main");
   await navigation.navigate(productOne);
-  assert.ok(navigation.getSnapshot().error);
+  assert.equal(errors.length, 2);
   assert.equal(document.querySelector("main"), main);
   assert.equal(window.location.pathname, "/");
   assert.equal(document.querySelector('script[src*="/cdn/shop/t/999/"]'), null);
-  assert.deepEqual(native, []);
+  assert.deepEqual(native, [
+    { method: "assign", url: `${origin}${productOne}` },
+  ]);
 });
 
 test("a page requiring a missing cart drawer uses native navigation without changing the current shell", async (t) => {
@@ -2569,7 +2650,7 @@ test("cart handler normalization refuses extra code and cross-origin fallback de
   }
 });
 
-test("collection-scoped URLs can reach configured products but cannot expand the destination allowlist", async (t) => {
+test("collection-scoped URLs can reach products beyond the sidebar shortcuts", async (t) => {
   const { document, window, navigation, calls } = setup(t, async (url) =>
     response(new URL(url).pathname),
   );
@@ -2578,12 +2659,17 @@ test("collection-scoped URLs can reach configured products but cannot expand the
   assert.equal(navigation.getSnapshot().error, null);
   assert.equal(window.location.pathname, scoped);
   assert.equal(document.querySelector("main h1").textContent, scoped);
-  const main = document.querySelector("main");
   await navigation.navigate("/collections/all/products/unknown-product");
-  assert.ok(navigation.getSnapshot().error);
-  assert.equal(calls.length, 1);
-  assert.equal(document.querySelector("main"), main);
-  assert.equal(window.location.pathname, scoped);
+  assert.equal(navigation.getSnapshot().error, null);
+  assert.equal(calls.length, 2);
+  assert.equal(
+    document.querySelector("main h1").textContent,
+    "/collections/all/products/unknown-product",
+  );
+  assert.equal(
+    window.location.pathname,
+    "/collections/all/products/unknown-product",
+  );
 });
 
 const walletPath =
@@ -2666,11 +2752,11 @@ test("SelectBlinds and UK wallet modules load once before their cart components 
   }
 });
 
-test("wallet network, registration and initialization failures preserve the current page", async (t) => {
+test("wallet network, registration and initialization failures load the full page", async (t) => {
   const store = storeFixtures.blinds2goUk;
   for (const failure of ["network", "missing registration", "initialization"]) {
     await t.test(failure, async (t) => {
-      const { document, window, navigation, warnings } = setup(
+      const { document, window, navigation, warnings, errors, native } = setup(
         t,
         async (url) =>
           response(new URL(url).pathname, {
@@ -2713,13 +2799,15 @@ test("wallet network, registration and initialization failures preserve the curr
           );
       }
       await visiting;
-      assert.ok(navigation.getSnapshot().error);
+      assert.deepEqual(native, [
+        { method: "assign", url: `${store.origin}/cart` },
+      ]);
       assert.equal(navigation.getSnapshot().pending, false);
       assert.equal(document.querySelector("main"), main);
       assert.equal(window.location.href, `${store.origin}/`);
       if (failure === "network") {
         assert.match(
-          navigation.getSnapshot().error,
+          errors[0][1].reason,
           /wallet components did not initialize/,
         );
         assert.equal(warnings.length, 1);

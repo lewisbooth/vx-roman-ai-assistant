@@ -25,7 +25,7 @@ Keep business logic separate from transport, persistence, and framework concerns
 
 Every protected admin loader/action must authenticate its own request; layout authentication does not protect parallel route handlers. Verify webhooks with Shopify's SDK. Use the authenticated shop identity to scope data access.
 
-The proof-of-concept deployment is one Azure VM running this admin/backend server. Customer API routes belong outside the merchant-only `/app` layout and require their own authorization. Keep Shopify's `Session` model separate from future customer conversations. Scope customer records and files to their shop and customer/session identity; keep AI credentials server-only. Add AI clients, storage configuration, and dashboard models with working features, not unused scaffolding.
+The admin/backend runs locally through Docker Compose for now; the same image can run on one Azure VM later. Preserve the named database volume across container replacements. Customer API routes belong outside the merchant-only `/app` layout and require their own authorization. Keep Shopify's `Session` model separate from future customer conversations. Scope customer records and files to their shop and customer/session identity; keep AI credentials server-only. Add AI clients, storage configuration, and dashboard models with working features, not unused scaffolding.
 
 ## Shopify platform work
 

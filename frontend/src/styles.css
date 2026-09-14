@@ -2,6 +2,7 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @source "./app.tsx";
+@source "./tools/ToolDrawer.tsx";
 
 @theme {
   --spacing: 4px;
@@ -13,4 +14,13 @@
 .roman-content,
 .roman-content * {
   box-sizing: border-box;
+}
+
+.roman-tools :is(select, button) {
+  font: inherit;
+}
+
+.roman-tools :is(summary, select, textarea, button):focus-visible {
+  outline: 2px solid #4e0e0e;
+  outline-offset: 2px;
 }
