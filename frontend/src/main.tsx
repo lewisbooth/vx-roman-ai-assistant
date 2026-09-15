@@ -29,7 +29,8 @@ export function mountAssistant(
     rejectReady = reject;
   });
   const navigation = createStorefrontNavigation(host);
-  const tools = createAssistantTools(host, navigation);
+  const tools = createAssistantTools(host, navigation, (name, input, signal) =>
+    session.executeMeasurements(name, input, signal));
   const executor = createStorefrontExecutor(tools);
   const session = createConversationClient(executor);
   const stopJourney = createJourneyObserver(session, navigation);
@@ -42,11 +43,12 @@ export function mountAssistant(
   voiceDock.hidden = true;
   host.shadowRoot?.append(voiceDock);
   function syncVoiceDock() {
-    const status = session.getSnapshot().voice.status;
+    const state = session.getSnapshot();
+    const status = state.voice.status;
     const active =
       status === "starting" || status === "active" || status === "stopping";
-    voiceDock.hidden = sidebarOpen || !active;
-    navigation.setSidebarOpen(sidebarOpen || active);
+    voiceDock.hidden = sidebarOpen || (!active && !state.approval);
+    navigation.setSidebarOpen(sidebarOpen || active || !!state.approval);
   }
   const stopVoiceDock = session.subscribe(syncVoiceDock);
 

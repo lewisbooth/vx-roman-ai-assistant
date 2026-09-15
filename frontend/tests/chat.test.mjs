@@ -125,6 +125,7 @@ async function setup(t, options = {}) {
     setVoiceMuted: (muted) => {
       update({ voice: { ...state.voice, muted } });
     },
+    resolveToolApproval: (id, confirmed) => options.onApproval?.(id, confirmed),
   };
   const navigationState = {
     url: window.location.href,
@@ -185,6 +186,26 @@ async function setup(t, options = {}) {
     navigationCalls,
   };
 }
+
+test("cart approval stays actionable during voice and is also available in the closed-sidebar dock", async t => {
+  const choices = [];
+  const approval = { invocationId: "cart-one", title: "Remove this item?", details: ["Kitchen blind", "Remove quantity 2."] };
+  const ctx = await setup(t, { state: { approval, conversation: { id: "chat", status: "active", messages: [], busy: true, tools: [] }, voice: { status: "active", muted: false, error: null } }, onApproval: (...args) => choices.push(args) });
+  const panel = ctx.container.querySelector(".roman-tool-approval");
+  const dock = ctx.voiceDock.querySelector(".roman-tool-approval");
+  assert.match(panel.textContent, /Kitchen blind.*quantity 2/);
+  assert.ok(dock);
+  assert.equal(panel.getAttribute("aria-labelledby"), panel.querySelector("h2").id);
+  assert.notEqual(panel.querySelector("h2").id, dock.querySelector("h2").id);
+  const approve = [...dock.querySelectorAll("button")].find(button => button.textContent === "Approve");
+  assert.equal(approve.disabled, false);
+  approve.click();
+  assert.deepEqual(choices, [["cart-one", true]]);
+  ctx.update({ approval: { ...approval, unavailable: "Review the new product." } });
+  await until(() => ctx.container.querySelector(".roman-tool-approval button:last-child").disabled, "Unavailable action was still approvable");
+  ctx.container.querySelector(".roman-tool-approval button").click();
+  assert.deepEqual(choices.at(-1), ["cart-one", false]);
+});
 
 test("welcome uses original asset paths, unavailable tiles and one collapsed developer tools section", async (t) => {
   const { container } = await setup(t, { showTools: true });

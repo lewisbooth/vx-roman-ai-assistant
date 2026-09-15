@@ -99,8 +99,24 @@ function setup(t, options = {}) {
   };
   window.eval(`${bundle.outputFiles[0].text}\nwindow.RomanTools = RomanTools;`);
   const instances = [];
+  const measurementCalls = [];
+  const measurements =
+    options.measurements ??
+    (async (name, args) => {
+      measurementCalls.push({ name, args: plain(args) });
+      return name === "set_measurements"
+        ? {
+            status: "saved",
+            draft: { ...args, updatedAt: "2026-09-15T00:00:00.000Z" },
+          }
+        : { status: "not_found", productPath: args.productPath };
+    });
   const create = () => {
-    const instance = window.RomanTools.createAssistantTools(host, navigation);
+    const instance = window.RomanTools.createAssistantTools(
+      host,
+      navigation,
+      measurements,
+    );
     instances.push(instance);
     return instance;
   };
@@ -116,6 +132,7 @@ function setup(t, options = {}) {
     create,
     calls,
     visits,
+    measurementCalls,
     timers,
     setPage: (path, extra = {}) => {
       snapshot = {
@@ -207,8 +224,8 @@ test("tool calls reject malformed arguments and unknown names before requesting 
   assert.deepEqual(calls, []);
   assert.deepEqual(visits, []);
   assert.deepEqual(plain(await tools.execute("get_measurements", {})), {
-    status: "draft",
-    measurement: null,
+    status: "not_found",
+    productPath: productOne,
   });
 });
 
@@ -350,96 +367,48 @@ test("lookup_catalog dispatches validated IDs through the real catalog client", 
   assert.doesNotMatch(JSON.stringify(result), /INTERNAL_SECRET/);
 });
 
-test("measurement drafts follow the canonical current product and stay private to each tool instance", async (t) => {
-  const { window, tools, create, setPage, calls } = setup(t);
-  const otherInstance = create();
-  const form = window.document.querySelector("form");
-  const before = form.outerHTML;
-  const saved = await tools.execute("set_measurements", {
+test("manual measurements delegate canonical product drafts to the conversation owner without modifying theme inputs", async (t) => {
+  const { window, tools, setPage, measurementCalls, calls } = setup(t);
+  const before = window.document.querySelector("form").outerHTML;
+  setPage("/en-gb/collections/all" + productOne + "/?variant=123#measure");
+  const result = await tools.execute("set_measurements", {
     width: 100.5,
     height: 150,
     unit: "cm",
   });
-  assert.deepEqual(plain(saved), {
-    status: "draft_saved",
-    appliedToProduct: false,
-    productPath: productOne,
-    width: 100.5,
-    height: 150,
-    unit: "cm",
-  });
-  saved.width = 999;
-  setPage(`/collections/all${productOne}/?variant=123#measurements`);
-  const read = await tools.execute("get_measurements", {});
-  assert.deepEqual(plain(read), {
-    status: "draft",
-    measurement: {
+  assert.equal(result.status, "saved");
+  assert.deepEqual(measurementCalls[0], {
+    name: "set_measurements",
+    args: {
       productPath: productOne,
       width: 100.5,
       height: 150,
       unit: "cm",
+      kind: "window",
+      mount: "unknown",
     },
   });
-  read.measurement.height = 999;
-  assert.equal(
-    (await tools.execute("get_measurements", {})).measurement.height,
-    150,
-  );
-  assert.equal(
-    (await otherInstance.execute("get_measurements", {})).measurement,
-    null,
-  );
-
-  setPage(productTwo);
-  assert.equal((await tools.execute("get_measurements", {})).measurement, null);
-  await tools.execute("set_measurements", {
-    width: 38,
-    height: 56,
-    unit: "in",
+  await tools.execute("get_measurements", {});
+  assert.deepEqual(measurementCalls[1], {
+    name: "get_measurements",
+    args: { productPath: productOne },
   });
-  setPage(productOne);
-  assert.equal(
-    (await tools.execute("get_measurements", {})).measurement.width,
-    100.5,
-  );
-  assert.equal(
-    form.outerHTML,
-    before,
-    "draft tools must not configure the theme product",
-  );
+  assert.equal(window.document.querySelector("form").outerHTML, before);
   assert.deepEqual(calls, []);
 });
 
-test("measurement tools reject non-product pages and bound drafts while allowing existing drafts to change", async (t) => {
-  const { tools, setPage } = setup(t);
+test("measurement tools reject non-product pages and propagate persistence failures without pretending to save", async (t) => {
+  const { tools, setPage } = setup(t, {
+    measurements: async () => {
+      throw new Error("Storage unavailable");
+    },
+  });
   setPage("/collections/all");
   await assert.rejects(tools.execute("get_measurements", {}), /Open a product/);
+  setPage(productOne);
   await assert.rejects(
     tools.execute("set_measurements", { width: 100, height: 200, unit: "mm" }),
-    /Open a product/,
-  );
-  for (let index = 0; index < 20; index++) {
-    setPage(`/products/product-${index}`);
-    await tools.execute("set_measurements", {
-      width: 100,
-      height: 200,
-      unit: "mm",
-    });
-  }
-  setPage("/products/product-20");
-  await assert.rejects(
-    tools.execute("set_measurements", { width: 100, height: 200, unit: "mm" }),
-    /20 product measurement drafts/,
-  );
-  setPage("/products/product-0");
-  await tools.execute("set_measurements", {
-    width: 120,
-    height: 200,
-    unit: "mm",
-  });
-  assert.equal(
-    (await tools.execute("get_measurements", {})).measurement.width,
-    120,
+    /Storage unavailable/,
   );
 });
 
@@ -663,8 +632,8 @@ test("cart HTTP, login and malformed response errors are surfaced and release th
       });
       assert.equal(timers.size, 0);
       assert.equal(
-        (await tools.execute("get_measurements", {})).measurement,
-        null,
+        (await tools.execute("get_measurements", {})).status,
+        "not_found",
       );
     });
   }
@@ -691,15 +660,12 @@ test("live Shopify tools are unavailable in the local preview and on unconfigure
           /local preview has no Shopify session/,
         );
       }
-      await tools.execute("set_measurements", {
+      const stored = await tools.execute("set_measurements", {
         width: 100,
         height: 120,
         unit: "cm",
       });
-      assert.equal(
-        (await tools.execute("get_measurements", {})).measurement.width,
-        100,
-      );
+      assert.equal(stored.draft.width, 100);
       assert.deepEqual(calls, []);
     });
   }
@@ -751,7 +717,10 @@ test("tool timeout aborts the request and allows a later independent call", asyn
   );
   assert.equal(calls[0].signal.aborted, true);
   assert.equal(timers.size, 0);
-  assert.equal((await tools.execute("get_measurements", {})).measurement, null);
+  assert.equal(
+    (await tools.execute("get_measurements", {})).status,
+    "not_found",
+  );
 });
 
 test("aborting an already-submitted cart action preserves its handed-off outcome", async (t) => {

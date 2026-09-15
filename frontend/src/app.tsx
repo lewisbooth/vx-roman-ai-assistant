@@ -12,6 +12,7 @@ import { Composer } from "./chat/Composer";
 import { Timeline } from "./chat/Timeline";
 import { Welcome } from "./chat/Welcome";
 import { VoiceControls } from "./chat/VoiceControls";
+import { ToolApproval } from "./chat/ToolApproval";
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
@@ -142,6 +143,9 @@ function Assistant({
           </ToolDrawer>
         )}
       </div>
+      {state.approval && (
+        <ToolApproval approval={state.approval} session={session} />
+      )}
       <VoiceControls
         session={session}
         voice={voice}
@@ -154,9 +158,16 @@ function Assistant({
         waiting={waitingForVoice}
       />
       {voiceDock &&
-        localVoice &&
+        (localVoice || state.approval) &&
         createPortal(
-          <VoiceControls session={session} voice={voice} dock />,
+          <>
+            {state.approval && (
+              <ToolApproval approval={state.approval} session={session} dock />
+            )}
+            {localVoice && (
+              <VoiceControls session={session} voice={voice} dock />
+            )}
+          </>,
           voiceDock,
         )}
       <Composer

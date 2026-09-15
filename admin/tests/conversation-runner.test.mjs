@@ -26,7 +26,10 @@ const bundle = await build({
       name: "runner-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /repository\.server$|browser-tools\.server$|^openai$/ },
+          {
+            filter:
+              /repository\.server$|browser-tools\.server$|measurements\/service\.server$|^openai$/,
+          },
           (args) => ({
             path: args.path,
             namespace: "stub",
@@ -43,9 +46,11 @@ const bundle = await build({
             }`
               : args.path.endsWith("browser-tools.server")
                 ? `export const requestBrowserTool=(...args)=>mock.browserTool(...args);`
-                : args.path.includes("usage")
-                  ? `export const recordModelUsage=(...args)=>mock.usage(...args);`
-                  : `export const beginTurn=(...args)=>mock.begin(...args);
+                : args.path.includes("measurements")
+                  ? `export const executeMeasurementTool=(...args)=>mock.measurementTool(...args);`
+                  : args.path.includes("usage")
+                    ? `export const recordModelUsage=(...args)=>mock.usage(...args);`
+                    : `export const beginTurn=(...args)=>mock.begin(...args);
              export const failPending=(...args)=>mock.recover(...args);
              export const finishTurn=(...args)=>mock.finish(...args);
              export const getSnapshot=(...args)=>mock.snapshot(...args);
@@ -240,6 +245,9 @@ function setup() {
     },
     executeTool: async () => {
       throw new Error("No browser tool result supplied.");
+    },
+    measurementTool: async () => {
+      throw new Error("No measurement result supplied.");
     },
     end: async (id) => {
       calls.ends.push(id);
@@ -785,6 +793,121 @@ function catalogCall(
   };
 }
 
+test("model cart changes have no confirmation argument and cannot automatically repeat a mutation", async () => {
+  const env = setup();
+  env.streams.push(
+    events(
+      completed("", { output: [catalogCall("cart-read", "get_cart", {})] }),
+    ),
+    events(
+      completed("", { output: [catalogCall("cart-clear", "clear_cart", {})] }),
+    ),
+    events(
+      completed("", {
+        output: [catalogCall("repeat-clear", "clear_cart", {})],
+      }),
+    ),
+    events(completed("The result was not confirmed. Please check your cart.")),
+  );
+  const executions = [];
+  await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (id, name, args) => {
+      executions.push({ id, name, args });
+      return name === "get_cart"
+        ? { currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: [] }
+        : {
+            status: "uncertain",
+            message: "Check the cart before requesting another change.",
+          };
+    },
+  );
+  assert.deepEqual(
+    executions.map((call) => call.name),
+    ["get_cart", "clear_cart"],
+  );
+  for (const call of executions) assert.equal("confirmed" in call.args, false);
+  const remaining = env.calls.requests[2].input.tools.map((tool) => tool.name);
+  assert.ok(remaining.includes("get_cart"));
+  assert.ok(remaining.includes("get_measurements"));
+  assert.ok(!remaining.includes("clear_cart"));
+  assert.ok(!remaining.includes("add_to_cart"));
+  assert.ok(!remaining.includes("apply_measurements"));
+  const denied = env.calls.requests[3].input.input.find(
+    (item) =>
+      item.type === "function_call_output" && item.call_id === "repeat-clear",
+  );
+  assert.match(
+    JSON.parse(denied.output).error,
+    /not confirmed.*not claim.*repeat/i,
+  );
+});
+
+test("text and voice measurement tools execute on the server while cart reads use the browser", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    const draft = {
+      productPath: "/products/shade",
+      width: 300,
+      height: 400,
+      unit: "mm",
+      kind: "window",
+      mount: "recess",
+      updatedAt: "2026-09-15T10:00:00.000Z",
+    };
+    const measurementCalls = [];
+    env.mock.measurementTool = async (...args) => {
+      measurementCalls.push(args);
+      return { status: "saved", draft };
+    };
+    env.mock.executeTool = async () => ({
+      currency: "GBP",
+      itemCount: 0,
+      totalPriceMinorUnits: 0,
+      items: [],
+    });
+    const input = { ...draft };
+    delete input.updatedAt;
+    env.streams.push(
+      events(
+        completed("", {
+          output: [catalogCall("measure", "set_measurements", input)],
+        }),
+      ),
+      events(completed("", { output: [catalogCall("cart", "get_cart", {})] })),
+      events(
+        completed(
+          "The dimensions are saved as a window draft. The cart is empty.",
+        ),
+      ),
+    );
+    if (mode === "voice") {
+      voiceHistory(env, [
+        { role: "user", text: "Save these measurements and read my cart." },
+      ]);
+      await env.api.runVoiceDelegation(
+        "one",
+        VOICE_ID,
+        firstInput.requestId,
+        new AbortController().signal,
+      );
+    } else {
+      await env.api.startTurn("one", firstInput);
+      await flush();
+      await flush();
+    }
+    assert.equal(measurementCalls.length, 1);
+    assert.equal(measurementCalls[0][0], "one");
+    assert.equal(measurementCalls[0][3], "set_measurements");
+    assert.deepEqual(plain(measurementCalls[0][4]), input);
+    assert.equal(env.calls.browserTools.length, 1);
+    assert.equal(env.calls.browserTools[0][3], "get_cart");
+    assert.equal(env.calls.finishes[0].result.status, "complete");
+  }
+});
+
 test("catalog loops preserve encrypted reasoning within the turn without exposing or reusing it", async () => {
   const env = setup();
   const reasoning = {
@@ -839,6 +962,14 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "get_product",
         "lookup_catalog",
         "navigate",
+        "set_measurements",
+        "get_measurements",
+        "get_cart",
+        "add_to_cart",
+        "remove_from_cart",
+        "set_cart_quantity",
+        "clear_cart",
+        "apply_measurements",
         "show_products",
       ],
     );
@@ -913,7 +1044,7 @@ test("catalog call budget leaves only presentation after four lookups and reject
 
 test("invalid or failed catalog calls return a safe error to the model without fabricated products", async () => {
   for (const call of [
-    catalogCall("call-1", "add_to_cart", {}),
+    catalogCall("call-1", "checkout", {}),
     catalogCall("call-1", "search_products", "not JSON"),
     catalogCall("call-1"),
   ]) {

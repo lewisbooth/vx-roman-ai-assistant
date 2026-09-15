@@ -4,6 +4,10 @@ import { getCart } from "./cart";
 import { clearCart, removeFromCart, setCartQuantity } from "./cart-actions";
 import { getProduct, lookupCatalog, searchProducts } from "./catalog";
 import { addConfiguredProduct } from "./product";
+import {
+  parseMeasurementCall,
+  type MeasurementToolResult,
+} from "../../../shared/measurements";
 
 export const toolDefinitions = [
   {
@@ -57,12 +61,19 @@ export const toolDefinitions = [
   {
     name: "set_measurements",
     description:
-      "Save a measurement draft for this product in Roman memory. This does not change the product configuration or cart.",
-    example: { width: 100, height: 150, unit: "cm" },
+      "Save a draft for this product in your Roman conversation. Window measurements are raw; order dimensions are values you explicitly intend to enter. Saving does not change the product or cart.",
+    example: {
+      width: 100,
+      height: 150,
+      unit: "cm",
+      kind: "window",
+      mount: "unknown",
+    },
   },
   {
     name: "get_measurements",
-    description: "Read Roman's measurement draft for the current product.",
+    description:
+      "Read this conversation's saved draft for the current product.",
     example: {},
   },
   {
@@ -73,12 +84,11 @@ export const toolDefinitions = [
 ] as const;
 
 export type ToolName = (typeof toolDefinitions)[number]["name"];
-type Measurement = {
-  productPath: string;
-  width: number;
-  height: number;
-  unit: "mm" | "cm" | "in";
-};
+export type MeasurementAccess = (
+  name: "set_measurements" | "get_measurements",
+  input: Record<string, unknown>,
+  signal?: AbortSignal,
+) => Promise<MeasurementToolResult>;
 
 function argumentsObject(
   input: unknown,
@@ -112,16 +122,17 @@ function textArgument(
 export function createAssistantTools(
   host: HTMLElement,
   navigation: StorefrontNavigation,
+  accessMeasurements?: MeasurementAccess,
 ) {
-  const measurements = new Map<string, Measurement>();
   let active: AbortController | undefined;
   let disposed = false;
 
   function productPath() {
     const path = new URL(navigation.getSnapshot().url).pathname;
-    const match = /^(?:\/collections\/[^/]+)?\/products\/([^/]+)\/?$/.exec(
-      path,
-    );
+    const match =
+      /^(?:\/[a-z]{2}(?:-[a-z]{2})?)?(?:\/collections\/[^/]+)?\/products\/([^/]+)\/?$/i.exec(
+        path,
+      );
     if (!match)
       throw new Error("Open a product before using measurement tools.");
     return `/products/${match[1]}`;
@@ -252,7 +263,13 @@ export function createAssistantTools(
                 );
               return clearCart(request.signal);
             case "set_measurements": {
-              const args = argumentsObject(input, ["width", "height", "unit"]);
+              const args = argumentsObject(input, [
+                "width",
+                "height",
+                "unit",
+                "kind",
+                "mount",
+              ]);
               const { width, height, unit } = args;
               if (
                 typeof width !== "number" ||
@@ -267,32 +284,29 @@ export function createAssistantTools(
                   "Provide positive numeric width and height and a unit of mm, cm or in.",
                 );
               const path = productPath();
-              if (!measurements.has(path) && measurements.size >= 20)
-                throw new Error(
-                  "Roman can hold 20 product measurement drafts per session. Refresh to start again.",
-                );
-              const draft: Measurement = {
+              const call = parseMeasurementCall(name, {
                 productPath: path,
                 width,
                 height,
                 unit,
-              };
-              measurements.set(path, draft);
-              return {
-                status: "draft_saved",
-                appliedToProduct: false,
-                ...draft,
-              };
+                kind: args.kind ?? "window",
+                mount: args.mount ?? "unknown",
+              });
+              if (!accessMeasurements)
+                throw new Error(
+                  "Measurement storage requires a Roman conversation connection.",
+                );
+              return accessMeasurements(name, call.arguments, request.signal);
             }
             case "get_measurements": {
               argumentsObject(input, []);
               const path = productPath();
-              return {
-                status: "draft",
-                measurement: measurements.get(path)
-                  ? { ...measurements.get(path)! }
-                  : null,
-              };
+              const call = parseMeasurementCall(name, { productPath: path });
+              if (!accessMeasurements)
+                throw new Error(
+                  "Measurement storage requires a Roman conversation connection.",
+                );
+              return accessMeasurements(name, call.arguments, request.signal);
             }
             case "navigate": {
               const args = argumentsObject(input, ["path"]);
@@ -338,7 +352,6 @@ export function createAssistantTools(
     dispose() {
       disposed = true;
       active?.abort(new DOMException("Roman was removed.", "AbortError"));
-      measurements.clear();
     },
   };
 }

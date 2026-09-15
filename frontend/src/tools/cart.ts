@@ -1,3 +1,5 @@
+import type { CartSnapshot } from "../../../shared/cart-tools";
+
 type ShopifyWindow = Window & { Shopify?: { routes?: { root?: string } } };
 
 export type StoreCart = Record<string, unknown> & {
@@ -11,19 +13,6 @@ export type StoreCart = Record<string, unknown> & {
     variant_id: number;
     final_line_price: number;
   })[];
-};
-
-export type CartSnapshot = {
-  currency: string;
-  itemCount: number;
-  totalPriceMinorUnits: number;
-  items: {
-    lineKey: string;
-    title: string;
-    variantId: number;
-    quantity: number;
-    linePriceMinorUnits: number;
-  }[];
 };
 
 function cartUrl(): URL {

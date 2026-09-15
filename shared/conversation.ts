@@ -1,6 +1,7 @@
 export type MessageStatus = "pending" | "complete" | "failed";
 
 import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
+import type { CartToolName } from "./cart-tools";
 
 export interface TextPart {
   type: "text";
@@ -30,7 +31,8 @@ export type ConversationPart =
 export type CatalogToolName =
   "search_products" | "get_product" | "lookup_catalog";
 
-export type BrowserToolName = CatalogToolName | "navigate";
+export type BrowserToolName =
+  CatalogToolName | CartToolName | "navigate" | "apply_measurements";
 
 export interface BrowserToolInvocation {
   id: string;
@@ -42,6 +44,11 @@ export interface BrowserToolInvocation {
 export interface ToolClaim {
   clientId: string;
   claimToken: string;
+}
+
+/** Supplied by the shopper's review controls, never by the model's arguments. */
+export interface ToolClaimInput extends ToolClaim {
+  confirmed?: boolean;
 }
 
 export interface JourneyInput {

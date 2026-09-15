@@ -637,6 +637,366 @@ test("only a tab granted the tool claim executes the catalog command", async (t)
   );
 });
 
+const needsCartApproval = {
+  ...needsTool,
+  tools: [
+    {
+      ...needsTool.tools[0],
+      name: "remove_from_cart",
+      arguments: { lineKey: "123:abc" },
+    },
+  ],
+};
+const approvalReview = {
+  title: "Remove this item?",
+  details: ["Kitchen blind", "Quantity 2"],
+};
+const removedResult = {
+  status: "updated",
+  message: "Removed.",
+  cart: { currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: [] },
+};
+
+test("cart review waits for the exact shopper approval before claim and never sends confirmation as model input or result", async (t) => {
+  const executions = [];
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async () => approvalReview,
+      execute: () =>
+        assert.fail("Mutation must use the approved executor path"),
+      executeApproved: async (...args) => {
+        executions.push(args);
+        return removedResult;
+      },
+    },
+  });
+  await resume(ctx, needsCartApproval);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Review was not presented",
+  );
+  assert.equal(ctx.calls.length, 2);
+  assert.equal(executions.length, 0);
+  ctx.client.resolveToolApproval("wrong-invocation", true);
+  await delay(5);
+  assert.equal(ctx.calls.length, 2);
+  ctx.client.resolveToolApproval(invocationId, true);
+  await until(() => ctx.calls.length === 3, "Approved tool was not claimed");
+  assert.equal(ctx.calls[2].body.confirmed, true);
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  assert.equal(executions.length, 0);
+  ctx.respond(2, { claimed: true });
+  await until(
+    () => ctx.calls.length === 4,
+    "Approved result was not submitted",
+  );
+  assert.equal(executions.length, 1);
+  assert.equal(executions[0][1], approvalReview);
+  assert.deepEqual(JSON.parse(JSON.stringify(executions[0][0].arguments)), {
+    lineKey: "123:abc",
+  });
+  assert.equal("confirmed" in ctx.calls[3].body, false);
+  assert.deepEqual(ctx.calls[3].body.result, removedResult);
+  ctx.respond(3, complete);
+});
+
+test("shopper cancellation declines the invocation without execution even if a server incorrectly grants it", async (t) => {
+  for (const claimed of [false, true])
+    await t.test(String(claimed), async (t) => {
+      const ctx = setup(t, {
+        saved: access,
+        executor: {
+          prepareApproval: async () => approvalReview,
+          executeApproved: () =>
+            assert.fail("Cancelled action must never execute"),
+        },
+      });
+      await resume(ctx, needsCartApproval);
+      await until(
+        () => !!ctx.client.getSnapshot().approval,
+        "Review was not presented",
+      );
+      ctx.client.resolveToolApproval(invocationId, false);
+      await until(() => ctx.calls.length === 3, "Decline was not sent");
+      assert.equal(ctx.calls[2].body.confirmed, false);
+      ctx.respond(2, { claimed });
+      await delay(10);
+      assert.equal(
+        ctx.calls.some((call) => call.url.endsWith("/result")),
+        false,
+      );
+      if (!claimed) {
+        await until(
+          () => ctx.calls.length === 4,
+          "Decline did not refresh the chat",
+        );
+        ctx.respond(3, complete);
+      } else
+        assert.match(
+          ctx.client.getSnapshot().error,
+          /cancelled action was not executed/,
+        );
+    });
+});
+
+test("an unavailable configuration cannot be approved, but can be declined", async (t) => {
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async () => {
+        throw new ctx.window.Error("Open the matching product.");
+      },
+      executeApproved: () => assert.fail("Unavailable action must not execute"),
+    },
+  });
+  await resume(ctx, needsCartApproval);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Unavailable review was not presented",
+  );
+  assert.match(
+    ctx.client.getSnapshot().approval.unavailable,
+    /matching product/,
+  );
+  ctx.client.resolveToolApproval(invocationId, true);
+  await delay(5);
+  assert.equal(ctx.calls.length, 2);
+  ctx.client.resolveToolApproval(invocationId, false);
+  await until(() => ctx.calls.length === 3, "Decline was not sent");
+  ctx.respond(2, { claimed: false });
+});
+
+test("authoritative removal cancels a waiting review and stale approval clicks cannot claim it", async (t) => {
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async () => approvalReview,
+      executeApproved: () => assert.fail("Expired action must never execute"),
+    },
+  });
+  await resume(ctx, needsCartApproval);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Review was not presented",
+  );
+  ctx.tick();
+  await until(
+    () => ctx.calls.length === 3,
+    "Poll did not start while review waited",
+  );
+  ctx.respond(2, complete);
+  await until(
+    () => !ctx.client.getSnapshot().approval,
+    "Expired review did not close",
+  );
+  ctx.client.resolveToolApproval(invocationId, true);
+  await delay(5);
+  assert.equal(
+    ctx.calls.some((call) => call.url.endsWith("/claim")),
+    false,
+  );
+  assert.equal(ctx.client.getSnapshot().error, null);
+});
+
+test("a lost approved mutation result retries only the outcome, not approval, claim or mutation", async (t) => {
+  let executions = 0;
+  let reviews = 0;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async () => {
+        reviews++;
+        return approvalReview;
+      },
+      executeApproved: async () => {
+        executions++;
+        return removedResult;
+      },
+    },
+  });
+  await resume(ctx, needsCartApproval);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Review was not presented",
+  );
+  ctx.client.resolveToolApproval(invocationId, true);
+  await until(() => ctx.calls.length === 3, "Claim did not start");
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Result did not start");
+  const original = ctx.calls[3].body;
+  ctx.calls[3].reject(new TypeError("Lost result response"));
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Failure was not surfaced",
+  );
+  ctx.tick();
+  await until(() => ctx.calls.length === 5, "Poll did not start");
+  ctx.respond(4, {
+    ...needsCartApproval,
+    revision: 2,
+    tools: [{ ...needsCartApproval.tools[0], status: "running" }],
+  });
+  await until(() => ctx.calls.length === 6, "Result was not retried");
+  assert.deepEqual(ctx.calls[5].body, original);
+  assert.equal(executions, 1);
+  assert.equal(reviews, 1);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/claim")).length,
+    1,
+  );
+  ctx.respond(5, { ...complete, revision: 3 });
+});
+
+test("a lost approval claim acknowledgement reuses the same decision and token once", async (t) => {
+  let reviews = 0;
+  let executions = 0;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async () => {
+        reviews++;
+        return approvalReview;
+      },
+      executeApproved: async () => {
+        executions++;
+        return removedResult;
+      },
+    },
+  });
+  await resume(ctx, needsCartApproval);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Review was not presented",
+  );
+  ctx.client.resolveToolApproval(invocationId, true);
+  await until(() => ctx.calls.length === 3, "Claim did not start");
+  const original = ctx.calls[2].body;
+  ctx.calls[2].reject(new TypeError("Lost claim acknowledgement"));
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Claim failure was not surfaced",
+  );
+  ctx.tick();
+  await until(() => ctx.calls.length === 4, "Poll did not start");
+  ctx.respond(3, {
+    ...needsCartApproval,
+    revision: 2,
+    tools: [{ ...needsCartApproval.tools[0], status: "running" }],
+  });
+  await until(() => ctx.calls.length === 5, "Claim retry did not start");
+  assert.deepEqual(ctx.calls[4].body, original);
+  assert.equal(reviews, 1);
+  assert.equal(executions, 0);
+  ctx.respond(4, { claimed: true });
+  await until(() => ctx.calls.length === 6, "Result did not start");
+  assert.equal(executions, 1);
+  ctx.respond(5, { ...complete, revision: 3 });
+});
+
+test("failed End cannot revive an approved action whose claim was in flight", async (t) => {
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async () => approvalReview,
+      executeApproved: () =>
+        assert.fail("An abandoned approval must never execute"),
+    },
+  });
+  await resume(ctx, needsCartApproval);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Review was not presented",
+  );
+  ctx.client.resolveToolApproval(invocationId, true);
+  await until(() => ctx.calls.length === 3, "Claim did not start");
+  const originalClaim = ctx.calls[2].body;
+  const ending = ctx.client.end();
+  const rejected = assert.rejects(ending);
+  ctx.respond(3, { error: { message: "Temporary failure" } }, 500);
+  await rejected;
+  ctx.respond(2, { claimed: true });
+  await delay(10);
+  ctx.client.clearError();
+  await until(
+    () => ctx.calls.length === 5,
+    "Reconciliation read did not start",
+  );
+  ctx.respond(4, {
+    ...needsCartApproval,
+    revision: 2,
+    tools: [{ ...needsCartApproval.tools[0], status: "running" }],
+  });
+  await until(() => ctx.calls.length === 6, "Ownership was not reconciled");
+  assert.deepEqual(ctx.calls[5].body, originalClaim);
+  ctx.respond(5, { claimed: true });
+  await until(
+    () => ctx.calls.length === 7,
+    "Interrupted outcome was not reported",
+  );
+  assert.match(ctx.calls[6].body.error, /interrupted/);
+  assert.equal("result" in ctx.calls[6].body, false);
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  ctx.respond(6, { ...complete, revision: 3 });
+});
+
+test("measurement application reviews the server's frozen order draft and claims only after approval", async (t) => {
+  const draft = {
+    productPath: "/products/shade",
+    width: 300,
+    height: 400,
+    unit: "mm",
+    kind: "order",
+    mount: "unknown",
+    updatedAt: "2026-09-15T10:00:00.000Z",
+  };
+  const snapshot = {
+    ...needsTool,
+    tools: [
+      {
+        ...needsTool.tools[0],
+        name: "apply_measurements",
+        arguments: { productPath: draft.productPath, draft },
+      },
+    ],
+  };
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: async (command) => {
+        assert.deepEqual(
+          JSON.parse(JSON.stringify(command.arguments.draft)),
+          draft,
+        );
+        return {
+          title: "Fill these order dimensions?",
+          details: ["Width 300 mm; drop 400 mm."],
+        };
+      },
+      executeApproved: async (command) => ({
+        status: "applied",
+        productPath: command.arguments.productPath,
+        draftUpdatedAt: command.arguments.draft.updatedAt,
+        message: "Filled width and drop. Nothing was added to the cart.",
+      }),
+    },
+  });
+  await resume(ctx, snapshot);
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Measurement review did not appear",
+  );
+  assert.equal(ctx.calls.length, 2);
+  ctx.client.resolveToolApproval(invocationId, true);
+  await until(() => ctx.calls.length === 3, "Measurement claim did not start");
+  assert.equal(ctx.calls[2].body.confirmed, true);
+  assert.equal("draft" in ctx.calls[2].body, false);
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Measurement result did not start");
+  assert.equal(ctx.calls[3].body.result.draftUpdatedAt, draft.updatedAt);
+  ctx.respond(3, complete);
+});
+
 test("a lost tool-result response retries the same result without reexecuting or claiming again", async (t) => {
   for (const [snapshot, result] of [
     [needsTool, catalogResult],
@@ -1173,6 +1533,43 @@ test("Stop voice cancels claimed navigation and ignores its late outcome", async
   );
 });
 
+test("Stop voice withdraws an unclaimed cart review and ignores late approval clicks", async (t) => {
+  const ctx = setup(t, {
+    mediaOptions: {},
+    executor: {
+      prepareApproval: async () => approvalReview,
+      executeApproved: () =>
+        assert.fail("Stopped voice must not mutate a cart"),
+    },
+  });
+  const voice = await activeVoice(ctx);
+  const [timerId, poll] = [...ctx.timers].find(([, timer]) => timer.ms === 500);
+  ctx.timers.delete(timerId);
+  poll.callback();
+  ctx.respond(3, { ...needsCartApproval, revision: 2, voice });
+  await until(
+    () => !!ctx.client.getSnapshot().approval,
+    "Voice cart review did not appear",
+  );
+  const stopping = ctx.client.stopVoice();
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  ctx.client.resolveToolApproval(invocationId, true);
+  assert.equal(
+    ctx.calls.some((call) => call.url.endsWith("/claim")),
+    false,
+  );
+  ctx.respond(4, {
+    ...empty,
+    revision: 3,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  assert.equal(
+    ctx.calls.some((call) => call.url.endsWith("/result")),
+    false,
+  );
+});
+
 test("an offer response arriving after cancellation cannot reopen its peer", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const starting = ctx.client.startVoice();
@@ -1510,4 +1907,99 @@ test("product widgets use the display lookup without changing fresh model execut
   const ids = ["gid://shopify/Product/123"];
   assert.equal(await ctx.client.loadProducts(ids), catalogResult);
   assert.deepEqual(calls, [ids]);
+});
+
+const measurementInput = {
+  productPath: "/products/lottie",
+  width: 300,
+  height: 400,
+  unit: "mm",
+  kind: "window",
+  mount: "unknown",
+};
+const savedMeasurement = {
+  status: "saved",
+  draft: { ...measurementInput, updatedAt: "2026-09-15T00:00:00.000Z" },
+};
+
+test("manual measurements lazily create a conversation and persist without requesting a model reply", async (t) => {
+  const ctx = setup(t);
+  const saving = ctx.client.executeMeasurements(
+    "set_measurements",
+    measurementInput,
+  );
+  assert.equal(ctx.calls.length, 1);
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Measurement request missing");
+  assert.equal(
+    ctx.calls[1].url,
+    `${access.apiBaseUrl}/${conversationId}/measurements`,
+  );
+  assert.equal(ctx.calls[1].body.name, "set_measurements");
+  assert.deepEqual(ctx.calls[1].body.arguments, measurementInput);
+  assert.match(ctx.calls[1].body.requestId, /^[0-9a-f-]{36}$/);
+  ctx.respond(1, { result: savedMeasurement });
+  await until(() => ctx.calls.length === 3, "Snapshot refresh missing");
+  ctx.respond(2, { ...empty, revision: 1 });
+  assert.equal((await saving).draft.width, 300);
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(
+    ctx.calls.some((call) => call.url.endsWith("/messages")),
+    false,
+  );
+});
+
+test("an unconfirmed measurement save retains its identity and blocks different values until resolved", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, empty);
+  const first = ctx.client.executeMeasurements(
+    "set_measurements",
+    measurementInput,
+  );
+  const rejected = assert.rejects(first, /connect/);
+  ctx.calls[2].reject(new Error("lost response"));
+  await rejected;
+  const id = ctx.calls[2].body.requestId;
+  await assert.rejects(
+    ctx.client.executeMeasurements("set_measurements", {
+      ...measurementInput,
+      width: 500,
+    }),
+    /unconfirmed/,
+  );
+  assert.equal(ctx.calls.length, 3);
+  const retry = ctx.client.executeMeasurements(
+    "set_measurements",
+    measurementInput,
+  );
+  assert.equal(ctx.calls[3].body.requestId, id);
+  ctx.respond(3, { result: savedMeasurement });
+  await until(() => ctx.calls.length === 5, "Retry refresh missing");
+  ctx.respond(4, { ...empty, revision: 1 });
+  assert.equal((await retry).status, "saved");
+});
+
+test("measurements reject a mismatched product result and a late response after ending without starting more work", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, empty);
+  const reading = ctx.client.executeMeasurements("get_measurements", {
+    productPath: measurementInput.productPath,
+  });
+  const invalid = assert.rejects(reading, /different request/);
+  ctx.respond(2, {
+    result: { status: "not_found", productPath: "/products/other" },
+  });
+  await invalid;
+  const saving = ctx.client.executeMeasurements(
+    "set_measurements",
+    measurementInput,
+  );
+  const late = assert.rejects(saving, /conversation.*changed/i);
+  const ending = ctx.client.end();
+  ctx.respond(4, { ...empty, status: "ended", revision: 1 });
+  await ending;
+  ctx.respond(3, { result: savedMeasurement });
+  await late;
+  assert.equal(ctx.calls.length, 5);
+  assert.equal(ctx.client.getSnapshot().conversation, null);
 });

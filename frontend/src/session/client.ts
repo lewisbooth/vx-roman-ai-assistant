@@ -10,12 +10,22 @@ import {
   type ToolClaim,
 } from "../../../shared/conversation";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
-import type { CatalogResult } from "../../../shared/catalog";
 import {
-  parseNavigationCall,
-  type NavigationResult,
-} from "../../../shared/navigation-tool";
-import type { createStorefrontExecutor } from "./storefront-executor";
+  isCartTool,
+  parseCartCall,
+  requiresCartConfirmation,
+} from "../../../shared/cart-tools";
+import {
+  parseApplyMeasurementsCommand,
+  parseMeasurementCall,
+  parseMeasurementToolResult,
+} from "../../../shared/measurements";
+import { parseNavigationCall } from "../../../shared/navigation-tool";
+import type {
+  createStorefrontExecutor,
+  BrowserToolResult,
+  PreparedToolApproval,
+} from "./storefront-executor";
 import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
 import { createVoiceConnection } from "./voice-connection";
@@ -103,6 +113,10 @@ function snapshot(value: unknown): value is ConversationSnapshot {
         return false;
       try {
         if (tool.name === "navigate") parseNavigationCall(tool.arguments);
+        else if (isCartTool(String(tool.name)))
+          parseCartCall(String(tool.name), tool.arguments);
+        else if (tool.name === "apply_measurements")
+          parseApplyMeasurementsCommand(tool.arguments);
         else parseCatalogCall(String(tool.name), tool.arguments);
         return true;
       } catch {
@@ -179,6 +193,7 @@ export function createConversationClient(
     error: null,
     voice: idleVoice,
     selectedVoice: DEFAULT_LIVE_VOICE,
+    approval: null,
   };
   let access: ConversationCredential | null = null;
   let resumeAccess: ConversationCredential | null = null;
@@ -203,17 +218,22 @@ export function createConversationClient(
   let processingTool = false;
   let toolController: AbortController | undefined;
   let activeToolId: string | undefined;
+  let approvalChoice:
+    { id: string; resolve(confirmed: boolean): void } | undefined;
   const clientId = window.crypto.randomUUID();
   const toolAttempts = new Map<
     string,
     {
       claim: ToolClaim;
       attempts: number;
-      outcome?:
-        { result: CatalogResult | NavigationResult } | { error: string };
+      confirmed?: boolean;
+      approval?: PreparedToolApproval;
+      abandoned?: boolean;
+      outcome?: { result: BrowserToolResult } | { error: string };
     }
   >();
   let uncertainSubmission: { requestId: string; text: string } | null = null;
+  let uncertainMeasurement: { requestId: string; key: string } | null = null;
   const listeners = new Set<() => void>();
   const lifetime = new AbortController();
 
@@ -289,7 +309,11 @@ export function createConversationClient(
         ...init,
         redirect: "error",
         cache: "no-store",
-        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(20_000)]),
+        signal: AbortSignal.any([
+          lifetime.signal,
+          AbortSignal.timeout(20_000),
+          ...(init.signal ? [init.signal] : []),
+        ]),
       });
       if (!response.headers.get("content-type")?.includes("application/json")) {
         throw new SessionRequestError(
@@ -357,7 +381,7 @@ export function createConversationClient(
     update({ conversation: boot.conversation });
   }
 
-  async function rawApi(path = "", body?: unknown) {
+  async function rawApi(path = "", body?: unknown, signal?: AbortSignal) {
     const credential = access;
     const requestedEpoch = epoch;
     if (!credential)
@@ -373,6 +397,7 @@ export function createConversationClient(
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal,
       },
     );
     if (
@@ -490,6 +515,7 @@ export function createConversationClient(
     readVersion = undefined;
     resumeAccess = null;
     uncertainSubmission = null;
+    uncertainMeasurement = null;
     toolAttempts.clear();
     pollAfterCurrent = false;
     window.clearTimeout(pollTimer);
@@ -500,6 +526,7 @@ export function createConversationClient(
       restoring: false,
       error: null,
       voice: idleVoice,
+      approval: null,
     });
   }
 
@@ -535,7 +562,12 @@ export function createConversationClient(
       submitted =
         (await executeTool(tool, startedEpoch, controller.signal)) === true;
     } catch (error) {
-      if (!disposed && startedEpoch === epoch && !ending)
+      if (
+        !disposed &&
+        startedEpoch === epoch &&
+        !ending &&
+        !controller.signal.aborted
+      )
         update({
           error:
             error instanceof Error
@@ -543,6 +575,20 @@ export function createConversationClient(
               : "The storefront tool could not finish.",
         });
     } finally {
+      if (
+        controller.signal.aborted &&
+        (requiresCartConfirmation(tool.name) ||
+          tool.name === "apply_measurements")
+      ) {
+        const attempt = toolAttempts.get(tool.id);
+        if (attempt) {
+          // End/Stop may fail while a claim response is in flight. Ownership
+          // can be reconciled later, but that cannot revive permission to act.
+          attempt.abandoned = true;
+          attempt.approval = undefined;
+          attempt.confirmed ??= false;
+        }
+      }
       processingTool = false;
       if (toolController === controller) {
         toolController = undefined;
@@ -580,18 +626,85 @@ export function createConversationClient(
       attempt = { claim: { clientId, claimToken }, attempts: 0 };
       toolAttempts.set(tool.id, attempt);
     }
+    const needsApproval =
+      requiresCartConfirmation(tool.name) || tool.name === "apply_measurements";
+    if (needsApproval && attempt.confirmed === undefined) {
+      let unavailable: string | undefined;
+      try {
+        attempt.approval = await executor!.prepareApproval(tool, signal);
+      } catch (error) {
+        signal.throwIfAborted();
+        unavailable =
+          error instanceof Error
+            ? error.message
+            : "This action cannot be reviewed on this page.";
+      }
+      signal.throwIfAborted();
+      attempt.confirmed = await new Promise<boolean>((resolve, reject) => {
+        const finish = (confirmed: boolean) => {
+          if (confirmed && unavailable) return;
+          signal.removeEventListener("abort", cancel);
+          if (approvalChoice?.id === tool.id) approvalChoice = undefined;
+          update({ approval: null });
+          resolve(confirmed);
+        };
+        const cancel = () => {
+          if (approvalChoice?.id === tool.id) approvalChoice = undefined;
+          update({ approval: null });
+          reject(signal.reason);
+        };
+        approvalChoice = { id: tool.id, resolve: finish };
+        signal.addEventListener("abort", cancel, { once: true });
+        update({
+          approval: {
+            invocationId: tool.id,
+            title: attempt!.approval?.title ?? "This action needs your review",
+            details: attempt!.approval?.details ?? [],
+            ...(unavailable ? { unavailable } : {}),
+          },
+        });
+      });
+    }
+    signal.throwIfAborted();
     if (attempt.attempts++ >= 5) return;
     if (!attempt.outcome) {
-      const claimed = await rawApi(`/tools/${tool.id}/claim`, attempt.claim);
-      if (!record(claimed) || claimed.claimed !== true) return;
+      const claimed = await rawApi(`/tools/${tool.id}/claim`, {
+        ...attempt.claim,
+        ...(needsApproval ? { confirmed: attempt.confirmed } : {}),
+      });
+      if (!record(claimed) || claimed.claimed !== true) {
+        if (record(claimed) && claimed.claimed === false) {
+          toolAttempts.delete(tool.id);
+          return needsApproval && attempt.confirmed === false;
+        }
+        throw new Error(
+          "Roman could not confirm ownership of this storefront action.",
+        );
+      }
+      if (needsApproval && attempt.confirmed !== true)
+        throw new Error(
+          "The cancelled action was not executed. Refresh Roman to check its status.",
+        );
       if (disposed || ending || signal.aborted || startedEpoch !== epoch)
         return;
       try {
+        if (attempt.abandoned)
+          throw new Error(
+            "This action was interrupted. Check the product or cart before requesting another change; Roman will not repeat it automatically.",
+          );
         attempt.outcome = {
-          result:
-            tool.name === "navigate"
+          result: needsApproval
+            ? await executor!.executeApproved(tool, attempt.approval!, signal)
+            : tool.name === "navigate"
               ? await executor!.execute("navigate", tool.arguments, signal)
-              : await executor!.execute(tool.name, tool.arguments, signal),
+              : tool.name === "get_cart"
+                ? await executor!.execute("get_cart", tool.arguments, signal)
+                : await executor!.execute(
+                    tool.name as
+                      "search_products" | "get_product" | "lookup_catalog",
+                    tool.arguments,
+                    signal,
+                  ),
         };
       } catch (error) {
         attempt.outcome = {
@@ -1064,6 +1177,97 @@ export function createConversationClient(
       journeyQueue = task.catch(() => undefined);
       return task;
     },
+    async executeMeasurements(name, input, signal) {
+      const call = parseMeasurementCall(name, input);
+      signal?.throwIfAborted();
+      if (
+        disposed ||
+        ending ||
+        state.pending ||
+        state.restoring ||
+        state.conversation?.busy
+      )
+        throw new Error(
+          "Wait for Roman's current work before changing measurements.",
+        );
+      if (!isConversationStorefront(window.location.origin))
+        throw new Error(
+          "Persistent measurements are available on the installed development storefronts.",
+        );
+      const key = JSON.stringify(call);
+      if (
+        name === "set_measurements" &&
+        uncertainMeasurement &&
+        uncertainMeasurement.key !== key
+      )
+        throw new Error(
+          "The previous measurement save is unconfirmed. Retry those same values before saving different measurements.",
+        );
+      const startedEpoch = epoch;
+      update({ pending: true });
+      try {
+        if (!access) await bootstrap(resumeAccess);
+        signal?.throwIfAborted();
+        if (disposed || ending || epoch !== startedEpoch)
+          throw new Error("The conversation changed.");
+        if (name === "set_measurements")
+          uncertainMeasurement ??= {
+            requestId: window.crypto.randomUUID(),
+            key,
+          };
+        const response = await rawApi(
+          "/measurements",
+          {
+            requestId:
+              name === "set_measurements"
+                ? uncertainMeasurement!.requestId
+                : window.crypto.randomUUID(),
+            ...call,
+          },
+          signal,
+        );
+        if (disposed || ending || epoch !== startedEpoch)
+          throw new Error("The conversation changed.");
+        if (!record(response))
+          throw new Error("Roman received an invalid measurement response.");
+        const result = parseMeasurementToolResult(response.result);
+        const path =
+          result.status === "not_found"
+            ? result.productPath
+            : result.draft.productPath;
+        if (
+          path !== call.arguments.productPath ||
+          (name === "set_measurements"
+            ? result.status !== "saved"
+            : result.status === "saved")
+        )
+          throw new Error(
+            "Roman received a measurement result for a different request.",
+          );
+        if (name === "set_measurements") uncertainMeasurement = null;
+        readVersion = undefined;
+        try {
+          await api();
+        } catch {
+          if (!disposed && !ending && epoch === startedEpoch)
+            update({
+              error:
+                "Your measurement request completed, but the chat could not refresh. Reopen Roman to refresh it.",
+            });
+        }
+        return result;
+      } catch (error) {
+        if (
+          name === "set_measurements" &&
+          error instanceof SessionRequestError &&
+          [400, 401, 404, 409, 429].includes(error.status)
+        )
+          uncertainMeasurement = null;
+        throw error;
+      } finally {
+        if (!disposed && epoch === startedEpoch) update({ pending: false });
+      }
+    },
     loadProducts(ids, signal) {
       if (
         !executor ||
@@ -1075,6 +1279,10 @@ export function createConversationClient(
           new Error("Start a chat to load these products."),
         );
       return executor.loadProducts(ids, signal);
+    },
+    resolveToolApproval(invocationId, confirmed) {
+      if (approvalChoice?.id === invocationId && typeof confirmed === "boolean")
+        approvalChoice.resolve(confirmed);
     },
     startVoice,
     setVoice,

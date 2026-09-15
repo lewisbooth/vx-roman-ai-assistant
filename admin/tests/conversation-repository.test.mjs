@@ -218,6 +218,319 @@ test("recovery advances the version without clearing a different current request
   assert.equal((await repository.getSnapshot(id)).messages[1].status, "failed");
 });
 
+const cartFixture = {
+  currency: "GBP",
+  itemCount: 1,
+  totalPriceMinorUnits: 1000,
+  items: [
+    {
+      lineKey: "123:abc",
+      title: "Configured shade",
+      variantId: 123,
+      quantity: 1,
+      linePriceMinorUnits: 1000,
+    },
+  ],
+};
+
+async function cartInvocation(name = "clear_cart", args = {}) {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Please change my cart.",
+  });
+  const tool = await repository.createToolInvocation(id, turn.assistantId, {
+    providerCallId: randomUUID(),
+    name,
+    arguments: args,
+  });
+  return { id, turn, tool };
+}
+
+test("cart reads persist only sanitized results and remain available to future text and voice history", async () => {
+  const { id, turn, tool } = await cartInvocation("get_cart");
+  const claim = executor();
+  await assert.rejects(
+    repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: true }),
+    { status: 400 },
+  );
+  await repository.claimToolInvocation(id, tool.id, claim);
+  await assert.rejects(
+    repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome: { ...cartFixture, token: "PRIVATE_TOKEN" },
+    }),
+  );
+  const result = { productIds: [], outcome: cartFixture };
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  const before = await repository.getSnapshot(id);
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  assert.deepEqual(await repository.getSnapshot(id), before);
+  await repository.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "failed",
+  });
+  const history = JSON.stringify(await repository.getModelHistory(id));
+  assert.match(history, /Historical storefront action/);
+  assert.match(history, /123:abc/);
+  assert.doesNotMatch(history, /PRIVATE_TOKEN/);
+  const stored = await database.toolInvocation.findUnique({
+    where: { id: tool.id },
+  });
+  assert.deepEqual(JSON.parse(stored.resultJson), cartFixture);
+  assert.equal(stored.confirmedAt, null);
+});
+
+test("every cart mutation requires an invocation-specific shopper decision and decline is durable", async () => {
+  for (const [name, args] of [
+    ["add_to_cart", { productPath: "/products/shade" }],
+    ["remove_from_cart", { lineKey: "123:abc" }],
+    ["set_cart_quantity", { lineKey: "123:abc", quantity: 2 }],
+    ["clear_cart", {}],
+  ]) {
+    const { id, tool } = await cartInvocation(name, args);
+    const claim = executor();
+    await assert.rejects(repository.claimToolInvocation(id, tool.id, claim), {
+      status: 400,
+    });
+    await assert.rejects(
+      repository.claimToolInvocation(id, tool.id, {
+        ...claim,
+        confirmed: "true",
+      }),
+      { status: 400 },
+    );
+    assert.equal(
+      (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
+        .status,
+      "pending",
+    );
+    const declined = await repository.claimToolInvocation(id, tool.id, {
+      ...claim,
+      confirmed: false,
+    });
+    assert.equal(declined.claimed, false);
+    assert.equal(declined.outcome.status, "cancelled");
+    const before = await repository.getSnapshot(id);
+    assert.deepEqual(
+      await repository.claimToolInvocation(id, tool.id, {
+        ...claim,
+        confirmed: false,
+      }),
+      declined,
+    );
+    assert.deepEqual(
+      await repository.claimToolInvocation(id, tool.id, {
+        ...claim,
+        confirmed: true,
+      }),
+      { claimed: false },
+    );
+    assert.deepEqual(await repository.getSnapshot(id), before);
+    assert.equal(
+      (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
+        .confirmedAt,
+      null,
+    );
+  }
+});
+
+test("confirmed cart completion is bound to its executor and uncertain outcomes never replay", async () => {
+  const { id, turn, tool } = await cartInvocation("add_to_cart", {
+    productPath: "/products/shade",
+  });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, {
+    ...claim,
+    confirmed: true,
+  });
+  assert.ok(
+    (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
+      .confirmedAt,
+  );
+  await assert.rejects(
+    repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: false }),
+    { status: 409 },
+  );
+  assert.deepEqual(
+    await repository.claimToolInvocation(id, tool.id, {
+      ...executor(),
+      confirmed: true,
+    }),
+    { claimed: false },
+  );
+  const result = {
+    productIds: [],
+    outcome: {
+      status: "handed_off",
+      message: "The theme may still complete this request.",
+    },
+  };
+  await assert.rejects(
+    repository.completeToolInvocation(id, tool.id, executor(), result),
+    { status: 401 },
+  );
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  const stored = await database.toolInvocation.findUnique({
+    where: { id: tool.id },
+  });
+  assert.equal(stored.status, "failed");
+  assert.equal(JSON.parse(stored.resultJson).status, "handed_off");
+  await assert.rejects(
+    repository.createToolInvocation(id, turn.assistantId, {
+      providerCallId: stored.providerCallId,
+      name: stored.name,
+      arguments: JSON.parse(stored.argumentsJson),
+    }),
+    { status: 409 },
+  );
+  await assert.rejects(
+    repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome: { status: "added", message: "Late result", quantityAdded: 1 },
+    }),
+    { status: 409 },
+  );
+});
+
+test("timeout, End and restart preserve claimed cart uncertainty and unclaimed cancellation", async () => {
+  for (const cleanup of ["timeout", "end", "restart"])
+    for (const confirmed of [false, true]) {
+      const { id, tool } = await cartInvocation();
+      if (confirmed)
+        await repository.claimToolInvocation(id, tool.id, {
+          ...executor(),
+          confirmed: true,
+        });
+      if (cleanup === "timeout")
+        await repository.failToolInvocation(id, tool.id, "Timed out.");
+      if (cleanup === "end") await repository.endConversation(id);
+      if (cleanup === "restart") {
+        await database.conversationMessage.updateMany({
+          where: { conversationId: id },
+          data: { createdAt: new Date(0) },
+        });
+        await repository.failPending(id);
+      }
+      const stored = await database.toolInvocation.findUnique({
+        where: { id: tool.id },
+      });
+      assert.equal(
+        JSON.parse(stored.resultJson).status,
+        confirmed ? "uncertain" : "cancelled",
+        `${cleanup}/${confirmed}`,
+      );
+    }
+});
+
+test("measurement application approval binds exact order draft and result fingerprint", async () => {
+  const draft = {
+    productPath: "/products/shade",
+    width: 300,
+    height: 400,
+    unit: "mm",
+    kind: "order",
+    mount: "recess",
+    updatedAt: new Date().toISOString(),
+  };
+  const { id, tool } = await cartInvocation("apply_measurements", {
+    productPath: draft.productPath,
+    draft,
+  });
+  const { updatedAt, ...values } = draft;
+  await database.measurementDraft.create({
+    data: { conversationId: id, ...values, updatedAt: new Date(updatedAt) },
+  });
+  const claim = executor();
+  await assert.rejects(repository.claimToolInvocation(id, tool.id, claim), {
+    status: 400,
+  });
+  await database.measurementDraft.update({
+    where: {
+      conversationId_productPath: {
+        conversationId: id,
+        productPath: draft.productPath,
+      },
+    },
+    data: { width: 350 },
+  });
+  await assert.rejects(
+    repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: true }),
+    { status: 409 },
+  );
+  await database.measurementDraft.update({
+    where: {
+      conversationId_productPath: {
+        conversationId: id,
+        productPath: draft.productPath,
+      },
+    },
+    data: { width: 300 },
+  });
+  await repository.claimToolInvocation(id, tool.id, {
+    ...claim,
+    confirmed: true,
+  });
+  const outcome = {
+    status: "applied",
+    productPath: draft.productPath,
+    draftUpdatedAt: updatedAt,
+    message: "Exact dimensions were filled; review the form.",
+  };
+  await database.measurementDraft.update({
+    where: {
+      conversationId_productPath: {
+        conversationId: id,
+        productPath: draft.productPath,
+      },
+    },
+    data: { updatedAt: new Date(Date.parse(updatedAt) + 1) },
+  });
+  await assert.rejects(
+    repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: true }),
+    { status: 409 },
+  );
+  assert.deepEqual(
+    await repository.claimToolInvocation(id, tool.id, {
+      ...executor(),
+      confirmed: true,
+    }),
+    { claimed: false },
+  );
+  await assert.rejects(
+    repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome: { ...outcome, draftUpdatedAt: new Date(0).toISOString() },
+    }),
+    { status: 400 },
+  );
+  await repository.completeToolInvocation(id, tool.id, claim, {
+    productIds: [],
+    outcome,
+  });
+  const savedRevision = (await repository.getSnapshot(id)).revision;
+  await repository.completeToolInvocation(id, tool.id, claim, {
+    productIds: [],
+    outcome,
+  });
+  assert.equal(
+    (await repository.getSnapshot(id)).revision,
+    savedRevision,
+    "lost result responses retry without rechecking a later draft or repeating execution",
+  );
+  assert.deepEqual(
+    JSON.parse(
+      (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
+        .resultJson,
+    ),
+    outcome,
+  );
+});
+
 test("credentials are hashed, scoped to their conversation, and expire", async () => {
   const first = await repository.createConversation(shop, origin);
   const second = await repository.createConversation(shop, origin);

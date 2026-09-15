@@ -13,6 +13,18 @@ import {
   parseNavigationCall,
 } from "../../shared/navigation-tool";
 import type { BrowserToolOutcome } from "./browser-tools.server";
+import {
+  cartToolDefinitions,
+  isCartTool,
+  parseCartCall,
+  requiresCartConfirmation,
+} from "../../shared/cart-tools";
+import {
+  measurementToolDefinitions,
+  applyMeasurementsToolDefinition,
+  parseMeasurementCall,
+  type MeasurementToolResult,
+} from "../../shared/measurements";
 import type { ModelUsageUpdate } from "../usage/contracts";
 import {
   ROMAN_ADVISOR_PROMPT,
@@ -26,6 +38,7 @@ import {
 
 export const TEXT_MODEL = "gpt-5.6-luna";
 export const TEXT_SERVICE_TIER = "fast";
+type ModelToolOutcome = BrowserToolOutcome | MeasurementToolResult;
 
 export interface ModelMessage {
   role: "user" | "assistant";
@@ -110,7 +123,7 @@ export async function generateReply(
     callId: string,
     name: string,
     input: unknown,
-  ) => Promise<BrowserToolOutcome>,
+  ) => Promise<ModelToolOutcome>,
   mode: "text" | "voice" = "text",
   onUsage?: (usage: ModelUsageUpdate) => Promise<void>,
 ): Promise<ModelReply> {
@@ -120,6 +133,7 @@ export async function generateReply(
     content: text,
   }));
   let browserCalls = 0;
+  let mutationAttempted = false;
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
   const availableProductIds = new Set<string>();
@@ -129,7 +143,18 @@ export async function generateReply(
     const tools = execute
       ? [
           ...(browserCalls < 4
-            ? [...catalogToolDefinitions, navigationToolDefinition]
+            ? [
+                ...catalogToolDefinitions,
+                navigationToolDefinition,
+                ...measurementToolDefinitions,
+                ...cartToolDefinitions.filter(
+                  (tool) =>
+                    !mutationAttempted || !requiresCartConfirmation(tool.name),
+                ),
+                ...(!mutationAttempted
+                  ? [applyMeasurementsToolDefinition]
+                  : []),
+              ]
             : []),
           ...(!presentationAttempted ? [showProductsDefinition] : []),
         ]
@@ -280,16 +305,37 @@ export async function generateReply(
           "Roman reached the storefront tool limit for this reply.",
         );
       browserCalls++;
-      let outcome: BrowserToolOutcome;
+      let outcome: ModelToolOutcome;
       try {
         const argumentsValue: unknown = JSON.parse(call.arguments);
+        const mutation =
+          requiresCartConfirmation(call.name) ||
+          call.name === "apply_measurements";
+        if (mutation && mutationAttempted)
+          throw new Error(
+            "Only one confirmed storefront change is allowed per reply.",
+          );
         const parsed =
           call.name === "navigate"
             ? {
                 name: "navigate",
                 arguments: parseNavigationCall(argumentsValue),
               }
-            : parseCatalogCall(call.name, argumentsValue);
+            : isCartTool(call.name)
+              ? parseCartCall(call.name, argumentsValue)
+              : call.name === "apply_measurements"
+                ? {
+                    name: call.name,
+                    arguments: parseMeasurementCall(
+                      "get_measurements",
+                      argumentsValue,
+                    ).arguments,
+                  }
+                : call.name === "get_measurements" ||
+                    call.name === "set_measurements"
+                  ? parseMeasurementCall(call.name, argumentsValue)
+                  : parseCatalogCall(call.name, argumentsValue);
+        if (mutation) mutationAttempted = true;
         signal.throwIfAborted();
         outcome = await execute(call.call_id, parsed.name, parsed.arguments);
         signal.throwIfAborted();
@@ -300,9 +346,17 @@ export async function generateReply(
         signal.throwIfAborted();
         outcome = {
           error:
-            call.name === "navigate"
-              ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
-              : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
+            requiresCartConfirmation(call.name) ||
+            call.name === "apply_measurements"
+              ? "The storefront change was not confirmed. Do not claim it succeeded or repeat it automatically. Check the current cart/form and ask the shopper before requesting a new change."
+              : call.name === "get_cart"
+                ? "The current cart could not be read. Do not infer its contents or claim it is empty."
+                : call.name === "get_measurements" ||
+                    call.name === "set_measurements"
+                  ? "The measurement draft could not be read or saved. Do not claim dimensions were saved or applied."
+                  : call.name === "navigate"
+                    ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
+                    : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
         };
       }
       input.push({

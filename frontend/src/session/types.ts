@@ -3,7 +3,9 @@ import type {
   JourneyInput,
 } from "../../../shared/conversation";
 import type { CatalogResult } from "../../../shared/catalog";
+import type { MeasurementToolResult } from "../../../shared/measurements";
 import type { LiveVoice, VoiceClientState } from "../../../shared/voice";
+import type { PendingToolApproval } from "./tool-approval";
 
 export interface ConversationClientState {
   conversation: ConversationSnapshot | null;
@@ -12,6 +14,7 @@ export interface ConversationClientState {
   error: string | null;
   voice: VoiceClientState;
   selectedVoice: LiveVoice;
+  approval: PendingToolApproval | null;
 }
 
 export interface ConversationClient {
@@ -20,7 +23,13 @@ export interface ConversationClient {
   /** Resolves when the server has accepted the message, before generation ends. */
   sendMessage(text: string): Promise<void>;
   recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;
+  executeMeasurements(
+    name: "set_measurements" | "get_measurements",
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<MeasurementToolResult>;
   loadProducts(ids: string[], signal?: AbortSignal): Promise<CatalogResult>;
+  resolveToolApproval(invocationId: string, confirmed: boolean): void;
   startVoice(): Promise<void>;
   setVoice(voice: LiveVoice): void;
   stopVoice(): Promise<void>;

@@ -51,6 +51,8 @@ model Conversation {
   voiceSessions       VoiceSession[]
   voiceTranscripts    VoiceTranscript[]
   modelUsage          ModelUsage[]
+  measurementDrafts   MeasurementDraft[]
+  measurementWrites   MeasurementWriteReceipt[]
 
   @@index([shop, createdAt])
 }
@@ -89,12 +91,39 @@ model ToolInvocation {
   claimClientId    String?
   claimTokenHash   String?
   productIdsJson   String?
+  resultJson       String?
+  confirmedAt      DateTime?
   error            String?
   createdAt        DateTime            @default(now())
   completedAt      DateTime?
 
   @@unique([conversationId, providerCallId])
   @@index([conversationId, status])
+}
+
+model MeasurementDraft {
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  productPath    String
+  width          Float
+  height         Float
+  unit           String
+  kind           String
+  mount          String
+  updatedAt      DateTime
+
+  @@id([conversationId, productPath])
+}
+
+model MeasurementWriteReceipt {
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  requestId      String
+  argumentsJson  String
+  resultJson     String
+  createdAt      DateTime @default(now())
+
+  @@id([conversationId, requestId])
 }
 
 model VoiceSession {

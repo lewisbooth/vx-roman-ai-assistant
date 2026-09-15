@@ -337,10 +337,10 @@ test("one failed lookup is not replayed and does not poison later queued work", 
   );
 });
 
-test("only validated catalog and navigation calls reach the shared browser tool owner", async () => {
+test("only validated automatic tools reach the shared browser tool owner without approval", async () => {
   const { executor, calls } = setup(async () => ({ products: [] }));
+  assert.throws(() => executor.execute("clear_cart", {}), /confirmation/);
   for (const [name, args] of [
-    ["clear_cart", {}],
     ["search_products", { query: "shade", shop: "other" }],
     ["lookup_catalog", { ids: [] }],
   ]) {

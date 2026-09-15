@@ -252,6 +252,46 @@
     @apply mb-[4px] block text-[11px] text-[#797366];
   }
 
+  .roman-tool-approval {
+    @apply mx-[16px] my-[8px] shrink-0 rounded-[14px] border border-solid border-[#d1cbc0] bg-[#f7f5ef] p-[14px] text-[14px] leading-[1.4] text-[#402b2b];
+  }
+
+  .roman-tool-approval h2 {
+    @apply m-0 text-[17px] font-semibold;
+  }
+
+  .roman-approval-details {
+    @apply max-h-[160px] overflow-y-auto;
+  }
+
+  .roman-approval-details p {
+    @apply my-[8px];
+  }
+
+  .roman-approval-actions {
+    @apply mt-[10px] flex justify-end gap-[8px];
+  }
+
+  .roman-approval-actions button {
+    @apply min-h-[40px] cursor-pointer rounded-full border border-solid border-[#d1cbc0] bg-white px-[16px] text-[14px] text-[#402b2b] disabled:cursor-default disabled:opacity-50;
+    font: inherit;
+  }
+
+  .roman-approval-actions button:last-child {
+    @apply border-[#4e0e0e] bg-[#4e0e0e] text-white;
+  }
+
+  .roman-approval-actions button:focus-visible {
+    outline: 2px solid #4e0e0e;
+    outline-offset: 3px;
+  }
+
+  .roman-approval-dock {
+    @apply fixed bottom-[165px] left-[16px] z-[2147483647] m-0 w-[340px] max-w-[calc(100vw-32px)] font-serif;
+    pointer-events: auto;
+    box-shadow: 0 2px 12px #0002;
+  }
+
   .roman-composer form {
     @apply flex items-end gap-[10px];
   }

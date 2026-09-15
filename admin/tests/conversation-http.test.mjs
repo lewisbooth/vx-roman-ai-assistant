@@ -48,7 +48,9 @@ const bundle = await build({
               export const claimToolInvocation=(...args)=>mock.claim(...args);
               export const conversationApiBaseUrl=()=>mock.apiBaseUrl;`
                 : args.path.endsWith("browser-tools.server")
-                  ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`
+                  ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`.concat(
+                      `export const claimBrowserTool=(...args)=>mock.claim(...args);`,
+                    )
                   : `export const endTurn=(...args)=>mock.end(...args);
               export const startTurn=(...args)=>mock.start(...args);
               export const readConversation=(...args)=>mock.read(...args);`,
@@ -277,6 +279,42 @@ test("conditional conversation reads validate both versions after independent au
     }),
   );
   assert.equal(denied.status, 401);
+});
+
+test("shopper approval is a strict claim field and cannot be smuggled in result uploads", async () => {
+  const env = setup();
+  const path = `/api/conversations/${ID}/tools/${INVOCATION_ID}`;
+  for (const confirmed of [true, false]) {
+    const response = await run(
+      env.api.claim,
+      request(`${path}/claim`, {
+        method: "POST",
+        body: json({ ...CLAIM, confirmed }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(env.calls.claim.at(-1)[2].confirmed, confirmed);
+  }
+  for (const confirmed of ["true", 1, null, {}]) {
+    const response = await run(
+      env.api.claim,
+      request(`${path}/claim`, {
+        method: "POST",
+        body: json({ ...CLAIM, confirmed }),
+      }),
+    );
+    assert.equal(response.status, 400);
+  }
+  const result = await run(
+    env.api.result,
+    request(`${path}/result`, {
+      method: "POST",
+      body: json({ ...CLAIM, confirmed: true, result: {} }),
+    }),
+  );
+  assert.equal(result.status, 400);
+  assert.equal(env.calls.claim.length, 2);
+  assert.equal(env.calls.result.length, 0);
 });
 
 test("signed bootstrap creates only for the authenticated offline development shop", async () => {

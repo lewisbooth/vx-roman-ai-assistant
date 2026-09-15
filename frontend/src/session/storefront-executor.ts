@@ -5,12 +5,42 @@ import {
   type CatalogResult,
 } from "../../../shared/catalog";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
-import type { CatalogToolName } from "../../../shared/conversation";
+import type {
+  CatalogToolName,
+  BrowserToolInvocation,
+} from "../../../shared/conversation";
 import {
   parseNavigationCall,
   type NavigationResult,
 } from "../../../shared/navigation-tool";
 import type { AssistantTools } from "../tools";
+import {
+  parseCartCall,
+  parseCartResult,
+  requiresCartConfirmation,
+  type CartToolResult,
+} from "../../../shared/cart-tools";
+import {
+  parseApplyMeasurementsCommand,
+  parseApplyMeasurementsResult,
+  type ApplyMeasurementsResult,
+} from "../../../shared/measurements";
+import {
+  inspectMeasurementApplication,
+  applyMeasurements,
+} from "../tools/measurements";
+import {
+  cartReview,
+  inspectConfiguredProduct,
+  publicCart,
+  recheckCart,
+  recheckConfiguredProduct,
+  type ToolApprovalReview,
+} from "./tool-approval";
+
+export type BrowserToolResult =
+  CatalogResult | NavigationResult | CartToolResult | ApplyMeasurementsResult;
+export type PreparedToolApproval = ToolApprovalReview;
 
 const DISPLAY_CACHE_MS = 60_000;
 const MAX_DISPLAY_PRODUCTS = 60;
@@ -40,6 +70,15 @@ export function createStorefrontExecutor(
   let active: StorefrontJob | undefined;
   let disposed = false;
   const storefrontOrigin = window.location.origin;
+  const approvals = new WeakMap<
+    PreparedToolApproval,
+    {
+      command: string;
+      execute(
+        signal: AbortSignal,
+      ): Promise<CartToolResult | ApplyMeasurementsResult>;
+    }
+  >();
   const displayProducts = new Map<
     string,
     { product: CatalogProduct; messages: CatalogMessage[]; expiresAt: number }
@@ -211,10 +250,28 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<NavigationResult>;
   function execute(
+    name: "get_cart",
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<CartToolResult>;
+  function execute(
     name: string,
     input: unknown,
     signal?: AbortSignal,
-  ): Promise<CatalogResult | NavigationResult> {
+  ): Promise<BrowserToolResult> {
+    if (name === "get_cart") {
+      const call = parseCartCall(name, input);
+      return enqueue(
+        "foreground",
+        async (signal) =>
+          publicCart(await tools.execute(call.name, call.arguments, signal)),
+        signal,
+      );
+    }
+    if (requiresCartConfirmation(name) || name === "apply_measurements")
+      throw new Error(
+        "This action needs the shopper's review and confirmation.",
+      );
     const call =
       name === "navigate"
         ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
@@ -269,6 +326,96 @@ export function createStorefrontExecutor(
   }
   return {
     execute,
+    prepareApproval(
+      tool: BrowserToolInvocation,
+      signal?: AbortSignal,
+    ): Promise<PreparedToolApproval> {
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          let review: PreparedToolApproval;
+          let operation: (
+            signal: AbortSignal,
+          ) => Promise<CartToolResult | ApplyMeasurementsResult>;
+          if (tool.name === "apply_measurements") {
+            const command = parseApplyMeasurementsCommand(tool.arguments);
+            const context = inspectMeasurementApplication(command.draft);
+            review = {
+              title: "Fill in these order dimensions?",
+              details: context.details,
+            };
+            operation = async (signal) =>
+              parseApplyMeasurementsResult(
+                applyMeasurements(command.draft, context, signal),
+              );
+          } else {
+            const call = parseCartCall(tool.name, tool.arguments);
+            if (!requiresCartConfirmation(call.name))
+              throw new Error("This tool does not need approval.");
+            if (call.name === "add_to_cart") {
+              const path = call.arguments.productPath as string;
+              const context = inspectConfiguredProduct(path);
+              review = {
+                title: "Add this configured product?",
+                details: [
+                  context.title,
+                  ...(context.quantity
+                    ? [`Quantity ${context.quantity}.`]
+                    : []),
+                  "Review the measurements, options, quantity and price on this page. This adds the current configuration to your cart; it does not check out.",
+                ],
+              };
+              operation = async (signal) => {
+                recheckConfiguredProduct(path, context);
+                signal.throwIfAborted();
+                return parseCartResult(
+                  call.name,
+                  await tools.execute(call.name, {}, signal),
+                );
+              };
+            } else {
+              const cart = publicCart(
+                await tools.execute("get_cart", {}, signal),
+              );
+              review = cartReview(call.name, call.arguments, cart);
+              operation = async (signal) => {
+                const current = publicCart(
+                  await tools.execute("get_cart", {}, signal),
+                );
+                recheckCart(cart, current);
+                signal.throwIfAborted();
+                return parseCartResult(
+                  call.name,
+                  await tools.execute(call.name, call.arguments, signal),
+                );
+              };
+            }
+          }
+          signal.throwIfAborted();
+          approvals.set(review, {
+            command: JSON.stringify([tool.id, tool.name, tool.arguments]),
+            execute: operation,
+          });
+          return review;
+        },
+        signal,
+      );
+    },
+    executeApproved(
+      tool: BrowserToolInvocation,
+      approval: PreparedToolApproval,
+      signal?: AbortSignal,
+    ) {
+      const owned = approvals.get(approval);
+      if (
+        !owned ||
+        owned.command !== JSON.stringify([tool.id, tool.name, tool.arguments])
+      )
+        return Promise.reject(new Error("This action needs a fresh review."));
+      // A review is one invocation, never a reusable authorization or replay.
+      approvals.delete(approval);
+      return enqueue("foreground", (signal) => owned.execute(signal), signal);
+    },
     async loadProducts(
       ids: readonly string[],
       signal?: AbortSignal,

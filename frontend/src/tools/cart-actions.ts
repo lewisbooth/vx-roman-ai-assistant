@@ -2,9 +2,9 @@ import {
   getStoreCart,
   summarizeCart,
   validateStoreCart,
-  type CartSnapshot,
   type StoreCart,
 } from "./cart";
+import type { CartSnapshot } from "../../../shared/cart-tools";
 
 type CartActionResult = {
   status: "updated" | "needs_cart_page" | "handed_off";

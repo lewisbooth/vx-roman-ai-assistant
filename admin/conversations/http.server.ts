@@ -3,6 +3,7 @@
   type SendMessageInput,
   type JourneyInput,
   type ToolClaim,
+  type ToolClaimInput,
 } from "../../shared/conversation";
 import { allowedOrigin, UUID_PATTERN } from "./auth.server";
 import { ConversationError } from "./errors.server";
@@ -220,10 +221,20 @@ function parseClaim(value: Record<string, unknown>): ToolClaim {
   return { clientId: value.clientId, claimToken: value.claimToken };
 }
 
-export function claimInput(value: Record<string, unknown>): ToolClaim {
-  if (Object.keys(value).length !== 2)
-    throw new ConversationError(400, "Send only clientId and claimToken.");
-  return parseClaim(value);
+export function claimInput(value: Record<string, unknown>): ToolClaimInput {
+  const confirmed = value.confirmed;
+  if (
+    Object.keys(value).length !== (confirmed === undefined ? 2 : 3) ||
+    (confirmed !== undefined && typeof confirmed !== "boolean")
+  )
+    throw new ConversationError(
+      400,
+      "Send clientId, claimToken and an optional shopper confirmation boolean.",
+    );
+  return {
+    ...parseClaim(value),
+    ...(confirmed === undefined ? {} : { confirmed }),
+  };
 }
 
 export function toolResultInput(value: Record<string, unknown>): {

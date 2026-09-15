@@ -14,18 +14,27 @@ const bundle = await build({
     {
       name: "tool-repository-boundary",
       setup(build) {
-        build.onResolve({ filter: /repository\.server$/ }, (args) => ({
-          path: args.path,
-          namespace: "repository-stub",
-        }));
-        build.onLoad({ filter: /.*/, namespace: "repository-stub" }, () => ({
-          contents: `
+        build.onResolve(
+          { filter: /repository\.server$|measurements\/service\.server$/ },
+          (args) => ({
+            path: args.path,
+            namespace: "repository-stub",
+          }),
+        );
+        build.onLoad(
+          { filter: /.*/, namespace: "repository-stub" },
+          (args) => ({
+            contents: args.path.includes("measurements")
+              ? `export const getMeasurementDraft=(...args)=>mock.measurementDraft(...args);`
+              : `
         export const createToolInvocation=(...args)=>mock.create(...args);
         export const completeToolInvocation=(...args)=>mock.complete(...args);
         export const failToolInvocation=(...args)=>mock.fail(...args);
         export const getBrowserToolContext=(...args)=>mock.context(...args);
+        export const claimToolInvocation=(...args)=>mock.claim(...args);
       `,
-        }));
+          }),
+        );
       },
     },
   ],
@@ -62,6 +71,8 @@ function setup() {
   const deadlines = [];
   let sequence = 0;
   const mock = {
+    measurementDraft: async () => null,
+    claim: async () => ({ claimed: true }),
     beforeCreate: undefined,
     beforeComplete: undefined,
     beforeFail: undefined,
@@ -76,14 +87,14 @@ function setup() {
     },
     fail: async (...args) => {
       calls.fail.push(args);
-      await mock.beforeFail?.(...args);
+      return await mock.beforeFail?.(...args);
     },
     context: async (...args) => {
       calls.context.push(args);
       return {
         origin,
         name: mock.toolName ?? "search_products",
-        arguments: {},
+        arguments: mock.toolArguments ?? {},
       };
     },
   };
@@ -116,6 +127,122 @@ function request(env, signal = new AbortController().signal) {
     signal,
   );
 }
+
+test("declined cart approval reaches the model only after its durable decision", async () => {
+  const env = setup();
+  const gate = deferred();
+  const outcome = {
+    status: "cancelled",
+    message: "The shopper declined this change.",
+  };
+  env.mock.claim = async () => {
+    await gate.promise;
+    return { claimed: false, outcome };
+  };
+  let resolved = false;
+  const pending = env.api
+    .requestBrowserTool(
+      "conversation-1",
+      "assistant-1",
+      "call-1",
+      "clear_cart",
+      {},
+      new AbortController().signal,
+    )
+    .then((value) => {
+      resolved = true;
+      return value;
+    });
+  await flush();
+  const decision = env.api.claimBrowserTool("conversation-1", "invocation-1", {
+    ...claim,
+    confirmed: false,
+  });
+  await flush();
+  assert.equal(resolved, false);
+  gate.resolve();
+  assert.deepEqual(plain(await decision), { claimed: false });
+  assert.deepEqual(plain(await pending), outcome);
+  assert.equal(env.calls.complete.length, 0);
+});
+
+test("cart timeout returns the persisted uncertain outcome without another operation", async () => {
+  const env = setup();
+  const outcome = {
+    status: "uncertain",
+    message: "Check the cart; this must not be replayed.",
+  };
+  env.mock.beforeFail = async () => outcome;
+  const pending = env.api.requestBrowserTool(
+    "conversation-1",
+    "assistant-1",
+    "call-1",
+    "clear_cart",
+    {},
+    new AbortController().signal,
+  );
+  await flush();
+  env.deadlines[0].controller.abort();
+  assert.deepEqual(plain(await pending), outcome);
+  assert.equal(env.calls.create.length, 1);
+  assert.equal(env.calls.fail.length, 1);
+});
+
+test("applying measurements resolves a saved order draft before exposing the browser command", async () => {
+  const env = setup();
+  const draft = {
+    productPath: "/products/shade",
+    width: 300,
+    height: 400,
+    unit: "mm",
+    kind: "order",
+    mount: "recess",
+    updatedAt: "2026-09-15T10:00:00.000Z",
+  };
+  const makeRequest = (args = { productPath: draft.productPath }) =>
+    env.api.requestBrowserTool(
+      "conversation-1",
+      "assistant-1",
+      "call-1",
+      "apply_measurements",
+      args,
+      new AbortController().signal,
+    );
+  await assert.rejects(makeRequest(), /Save explicit order dimensions/);
+  env.mock.measurementDraft = async () => ({ ...draft, kind: "window" });
+  await assert.rejects(makeRequest(), /saved order dimensions/);
+  await assert.rejects(
+    makeRequest({ productPath: draft.productPath, draft }),
+    /Supply positive/,
+  );
+  assert.equal(env.calls.create.length, 0);
+  env.mock.measurementDraft = async () => draft;
+  env.mock.toolName = "apply_measurements";
+  env.mock.toolArguments = { productPath: draft.productPath, draft };
+  const pending = makeRequest();
+  await flush();
+  assert.deepEqual(
+    plain(env.calls.create[0][2].arguments),
+    env.mock.toolArguments,
+  );
+  const result = {
+    status: "applied",
+    productPath: draft.productPath,
+    draftUpdatedAt: draft.updatedAt,
+    message: "Dimensions filled; review the form.",
+  };
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await pending), result);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [],
+    outcome: result,
+  });
+});
 
 test("browser result reaches its waiter only after durable IDs-only completion", async () => {
   const env = setup();
@@ -341,7 +468,7 @@ test("aborted or invalid calls never create a durable invocation", async () => {
       "conversation-1",
       "assistant-1",
       "provider-call-1",
-      "clear_cart",
+      "checkout",
       {},
       new AbortController().signal,
     ),
