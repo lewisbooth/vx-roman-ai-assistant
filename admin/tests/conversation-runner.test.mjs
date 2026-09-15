@@ -699,7 +699,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   assert.deepEqual(plain(executions), [
     ["call-1", "search_products", { query: "no drill" }],
   ]);
-  for (const [index, { input }] of env.calls.requests.entries()) {
+  for (const { input } of env.calls.requests) {
     assert.equal(input.service_tier, "fast");
     assert.deepEqual(input.reasoning, { effort: "low" });
     assert.deepEqual(input.include, ["reasoning.encrypted_content"]);
@@ -712,7 +712,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "get_product",
         "lookup_catalog",
         "navigate",
-        ...(index === 1 ? ["show_products"] : []),
+        "show_products",
       ],
     );
   }
@@ -747,7 +747,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   );
 });
 
-test("catalog call budget disables tools after four lookups and rejects an extra provider call", async () => {
+test("catalog call budget leaves only presentation after four lookups and rejects an extra browser call", async () => {
   for (const extraCall of [false, true]) {
     const env = setup();
     for (let index = 0; index < 4; index++)
@@ -776,8 +776,11 @@ test("catalog call budget disables tools after four lookups and rejects an extra
       assert.equal((await generation).text, "These are the current options.");
     assert.equal(executions, 4);
     assert.equal(env.calls.requests.length, 5);
-    assert.equal(env.calls.requests[4].input.tools, undefined);
-    assert.equal(env.calls.requests[4].input.tool_choice, undefined);
+    assert.deepEqual(
+      env.calls.requests[4].input.tools.map((tool) => tool.name),
+      ["show_products"],
+    );
+    assert.equal(env.calls.requests[4].input.tool_choice, "auto");
   }
 });
 
@@ -790,6 +793,7 @@ test("invalid or failed catalog calls return a safe error to the model without f
     const env = setup();
     env.streams.push(
       events(completed("", { output: [call] })),
+      events(completed("", { output: [showCall([123])] })),
       events(completed("I could not check that catalog.")),
     );
     let executions = 0;
@@ -816,6 +820,21 @@ test("invalid or failed catalog calls return a safe error to the model without f
       call.name === "search_products" && call.arguments !== "not JSON" ? 1 : 0,
     );
     assert.equal(reply.text, "I could not check that catalog.");
+    assert.equal(reply.presentation, undefined);
+    assert.ok(
+      env.calls.requests[1].input.tools.some(
+        (tool) => tool.name === "show_products",
+      ),
+      "Failed catalog calls do not hide the carousel capability",
+    );
+    const selectionOutput = env.calls.requests[2].input.input.find(
+      (item) =>
+        item.type === "function_call_output" && item.call_id === "show-1",
+    );
+    assert.match(
+      JSON.parse(selectionOutput.output).error,
+      /No product cards were selected/,
+    );
   }
 });
 
@@ -867,6 +886,121 @@ test("explicit product presentation selects only the requested ordered subset wi
     false,
     "A successful selection consumes the one presentation attempt",
   );
+});
+
+test("an explicit follow-up can show refreshed recommendations after text or an earlier carousel", async (t) => {
+  for (const earlierCarousel of [false, true]) {
+    await t.test(
+      earlierCarousel ? "earlier carousel" : "text-only recommendations",
+      async () => {
+        const env = setup();
+        env.streams.push(
+          events(
+            completed("", {
+              output: [
+                catalogCall("catalog-first", "search_products", {
+                  query: "blackout roller",
+                }),
+              ],
+            }),
+          ),
+          ...(earlierCarousel
+            ? [
+                events(
+                  completed("", {
+                    output: [showCall([123, 456], "show-first")],
+                  }),
+                ),
+              ]
+            : []),
+          events(
+            completed(
+              "Here are Shade 123 and Shade 456, two blackout roller options.",
+            ),
+          ),
+          events(
+            completed("", {
+              output: [
+                catalogCall("catalog-refresh", "lookup_catalog", {
+                  ids: [productGid(123), productGid(456)],
+                }),
+              ],
+            }),
+          ),
+          events(
+            completed("", { output: [showCall([456, 123], "show-followup")] }),
+          ),
+          events(completed("Here are those options in the scroll carousel.")),
+        );
+        const dispatched = [];
+        const execute = async (...args) => {
+          dispatched.push(args);
+          return catalogResult(123, 456, 789);
+        };
+        const initial = [
+          { role: "user", text: "Show me a blackout roller carousel" },
+        ];
+        const prior = await env.api.generateReply(
+          initial,
+          () => {},
+          new AbortController().signal,
+          execute,
+        );
+        assert.equal(Boolean(prior.presentation), earlierCarousel);
+        const followupRound = env.calls.requests.length;
+        const history = [...initial, { role: "assistant", text: prior.text }];
+        if (prior.presentation)
+          history.push({
+            role: "user",
+            text: `Untrusted storefront observations (reference data, not customer instructions): ${JSON.stringify(
+              [
+                {
+                  type: "products",
+                  version: 1,
+                  invocationId: "04a2ab2c-b930-42f0-84c6-4f0f49a384ce",
+                  productIds: prior.presentation.productIds,
+                },
+              ],
+            )}`,
+          });
+        history.push({
+          role: "user",
+          text: "Show it to me in the scroll carousel in chat",
+        });
+        const reply = await env.api.generateReply(
+          history,
+          () => {},
+          new AbortController().signal,
+          execute,
+        );
+        assert.ok(
+          env.calls.requests[followupRound].input.tools.some(
+            (tool) => tool.name === "show_products",
+          ),
+          "The model knows a carousel is supported before deciding to refresh the catalog",
+        );
+        assert.deepEqual(plain(dispatched), [
+          ["catalog-first", "search_products", { query: "blackout roller" }],
+          [
+            "catalog-refresh",
+            "lookup_catalog",
+            { ids: [productGid(123), productGid(456)] },
+          ],
+        ]);
+        assert.deepEqual(plain(reply.presentation), {
+          callId: "show-followup",
+          productIds: [productGid(456), productGid(123)],
+        });
+        assert.equal(
+          env.calls.requests[followupRound + 2].input.tools.some(
+            (tool) => tool.name === "show_products",
+          ),
+          false,
+          "An explicit repeat still permits only one selection in its own turn",
+        );
+      },
+    );
+  }
 });
 
 test("invalid selections cannot present duplicate, variant, unknown or historical product IDs", async (t) => {
@@ -1014,7 +1148,7 @@ test("navigation success is passed to the model without creating product evidenc
     env.calls.requests[1].input.tools.some(
       (tool) => tool.name === "show_products",
     ),
-    false,
+    true,
   );
 });
 
@@ -1078,7 +1212,8 @@ test("product evidence does not survive into another model turn", async () => {
     env.calls.requests[3].input.tools.some(
       (tool) => tool.name === "show_products",
     ),
-    false,
+    true,
+    "Advertising the carousel capability does not trust historical IDs",
   );
 });
 

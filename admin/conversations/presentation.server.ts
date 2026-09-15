@@ -9,7 +9,7 @@ export const showProductsDefinition = {
   type: "function",
   name: "show_products",
   description:
-    "Select up to six products for one visible recommendation carousel, in display order. Use only IDs returned by successful catalog lookups in this reply. Call once for deliberate new recommendations or alternatives, not routine price checks, measurement-unit clarification, or repeating earlier cards. Catalog lookups do not show cards by themselves.",
+    "Display up to six selected products in a horizontally scrolling carousel inside this chat. Use for recommendations or whenever the customer asks to see a carousel or product cards, including showing earlier products again. First search or refresh the requested products with a catalog tool in this reply, then pass their returned IDs in display order. Call once per reply. Avoid unsolicited carousels during routine price checks or measurement clarification; an explicit request to show products takes precedence. Catalog lookups alone do not display cards.",
   strict: true,
   parameters: {
     type: "object",

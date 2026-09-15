@@ -63,9 +63,7 @@ export async function generateReply(
           ...(browserCalls < 4
             ? [...catalogToolDefinitions, navigationToolDefinition]
             : []),
-          ...(!presentationAttempted && availableProductIds.size
-            ? [showProductsDefinition]
-            : []),
+          ...(!presentationAttempted ? [showProductsDefinition] : []),
         ]
       : [];
     const stream = await client.responses.create(
