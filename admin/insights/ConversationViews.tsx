@@ -6,7 +6,13 @@ import type {
   ConversationOverview,
   UsageSummary,
 } from "./contracts";
-import { recordedDate, recordedNumber, storefrontHref } from "./format";
+import { CostValue } from "../pricing/PricingViews";
+import {
+  recordedDate,
+  recordedNumber,
+  serviceTierLabel,
+  storefrontHref,
+} from "./format";
 
 export function RecordedUsage({ usage }: { usage: UsageSummary }) {
   return (
@@ -15,6 +21,10 @@ export function RecordedUsage({ usage }: { usage: UsageSummary }) {
         {[
           ["Input tokens", recordedNumber(usage.inputTokens)],
           ["Cached input tokens", recordedNumber(usage.cachedInputTokens)],
+          [
+            "Cache-write input tokens",
+            recordedNumber(usage.cacheWriteInputTokens),
+          ],
           ["Output tokens", recordedNumber(usage.outputTokens)],
           ["Reasoning tokens", recordedNumber(usage.reasoningTokens)],
           ["Total tokens", recordedNumber(usage.totalTokens)],
@@ -28,13 +38,13 @@ export function RecordedUsage({ usage }: { usage: UsageSummary }) {
       </dl>
       <s-paragraph color="subdued">
         Luna reports tokens for text and delegated work; GPT-Live reports audio
-        seconds.{" "}
-        Usage reported for {usage.reportedModelCalls} of {usage.modelCalls}{" "}
-        Luna calls and {usage.reportedVoiceSessions} of {usage.voiceSessions}{" "}
-        GPT-Live sessions. Totals include recorded usage only. Older or unfinished
-        activity may have no usage report; these are not cost estimates. Cached
-        input and reasoning tokens are included in input and output totals,
-        respectively.
+        seconds. Usage reported for {usage.reportedModelCalls} of{" "}
+        {usage.modelCalls} Luna calls and {usage.reportedVoiceSessions} of{" "}
+        {usage.voiceSessions} GPT-Live sessions. Totals include recorded usage
+        only. Older or unfinished activity may have no usage report. Cached and
+        cache-write input tokens are subsets of input; reasoning tokens are
+        included in output. These recorded counts are the basis for the separate
+        cost estimates.
       </s-paragraph>
     </s-stack>
   );
@@ -281,27 +291,34 @@ export function ModelActivity({
         <s-table-header listSlot="primary">Model / service tier</s-table-header>
         <s-table-header listSlot="inline">Status</s-table-header>
         <s-table-header>Started</s-table-header>
-        <s-table-header format="numeric">Input / cached</s-table-header>
+        <s-table-header format="numeric">
+          Input / cached / cache-write
+        </s-table-header>
         <s-table-header format="numeric">Output / reasoning</s-table-header>
         <s-table-header format="numeric">Total tokens</s-table-header>
+        <s-table-header>Estimated cost</s-table-header>
       </s-table-header-row>
       <s-table-body>
         {usage.map((call) => (
           <s-table-row key={call.id}>
             <s-table-cell>
-              {call.model} / {call.serviceTier || "Not recorded"}
+              {call.model} / {serviceTierLabel(call.serviceTier)}
             </s-table-cell>
             <s-table-cell>{call.status}</s-table-cell>
             <s-table-cell>{recordedDate(call.createdAt)}</s-table-cell>
             <s-table-cell>
               {recordedNumber(call.inputTokens)} /{" "}
-              {recordedNumber(call.cachedInputTokens)}
+              {recordedNumber(call.cachedInputTokens)} /{" "}
+              {recordedNumber(call.cacheWriteInputTokens)}
             </s-table-cell>
             <s-table-cell>
               {recordedNumber(call.outputTokens)} /{" "}
               {recordedNumber(call.reasoningTokens)}
             </s-table-cell>
             <s-table-cell>{recordedNumber(call.totalTokens)}</s-table-cell>
+            <s-table-cell>
+              <CostValue cost={call.cost} />
+            </s-table-cell>
           </s-table-row>
         ))}
       </s-table-body>
@@ -324,6 +341,7 @@ export function VoiceActivity({
         <s-table-header>Started</s-table-header>
         <s-table-header>Closed</s-table-header>
         <s-table-header format="numeric">Reported seconds</s-table-header>
+        <s-table-header>Estimated cost</s-table-header>
         <s-table-header>Failure</s-table-header>
       </s-table-header-row>
       <s-table-body>
@@ -334,6 +352,9 @@ export function VoiceActivity({
             <s-table-cell>{recordedDate(session.createdAt)}</s-table-cell>
             <s-table-cell>{recordedDate(session.closedAt)}</s-table-cell>
             <s-table-cell>{recordedNumber(session.usageSeconds)}</s-table-cell>
+            <s-table-cell>
+              <CostValue cost={session.cost} />
+            </s-table-cell>
             <s-table-cell>{session.error || "—"}</s-table-cell>
           </s-table-row>
         ))}

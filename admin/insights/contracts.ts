@@ -1,8 +1,10 @@
 import type { ConversationMessage } from "../../shared/conversation";
+import type { CostEstimate, CostSummary, ModelPrice } from "../pricing/contracts";
 
 export interface UsageSummary {
   inputTokens: number | null;
   cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
   outputTokens: number | null;
   reasoningTokens: number | null;
   totalTokens: number | null;
@@ -30,8 +32,10 @@ export interface ConversationOverview {
     endedConversations: number;
     failedReplies: number;
     usage: UsageSummary;
+    cost: CostSummary;
   };
   conversations: ConversationListItem[];
+  prices: readonly ModelPrice[];
 }
 
 export interface InspectedModelUsage {
@@ -42,11 +46,13 @@ export interface InspectedModelUsage {
   status: string;
   inputTokens: number | null;
   cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
   outputTokens: number | null;
   reasoningTokens: number | null;
   totalTokens: number | null;
   createdAt: string;
   completedAt: string | null;
+  cost: CostEstimate;
 }
 
 export interface InspectedVoiceSession {
@@ -57,6 +63,7 @@ export interface InspectedVoiceSession {
   closedAt: string | null;
   usageSeconds: number | null;
   error: string | null;
+  cost: CostEstimate;
 }
 
 export interface ConversationInspection {
@@ -73,4 +80,5 @@ export interface ConversationInspection {
   modelUsage: InspectedModelUsage[];
   voiceSessions: InspectedVoiceSession[];
   usage: UsageSummary;
+  cost: CostSummary;
 }

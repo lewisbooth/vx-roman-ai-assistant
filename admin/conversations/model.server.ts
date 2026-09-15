@@ -61,6 +61,9 @@ function responseUsage(
   const cachedInputTokens = reportedTokens(
     usage?.input_tokens_details?.cached_tokens,
   );
+  const cacheWriteInputTokens = reportedTokens(
+    usage?.input_tokens_details?.cache_write_tokens,
+  );
   const reasoningTokens = reportedTokens(
     usage?.output_tokens_details?.reasoning_tokens,
   );
@@ -82,6 +85,12 @@ function responseUsage(
       cachedInputTokens > inputTokens
         ? null
         : cachedInputTokens,
+    cacheWriteInputTokens:
+      cacheWriteInputTokens !== null &&
+      inputTokens !== null &&
+      cacheWriteInputTokens + (cachedInputTokens ?? 0) > inputTokens
+        ? null
+        : cacheWriteInputTokens,
     outputTokens,
     reasoningTokens:
       reasoningTokens !== null &&

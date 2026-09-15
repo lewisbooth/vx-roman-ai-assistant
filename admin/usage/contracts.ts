@@ -9,6 +9,7 @@ export interface ModelUsageUpdate {
   status: ModelUsageStatus;
   inputTokens: number | null;
   cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
   outputTokens: number | null;
   reasoningTokens: number | null;
   totalTokens: number | null;

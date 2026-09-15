@@ -1,6 +1,13 @@
 import type { Prisma } from "@prisma/client";
 import prisma from "../db.server";
 import { conversationTimeline } from "../conversations/repository.server";
+import {
+  addCost,
+  emptyCostSummary,
+  estimateModelUsage,
+  estimateVoiceUsage,
+} from "../pricing/estimate.server";
+import { MODEL_PRICES } from "../pricing/rates.server";
 import type {
   ConversationInspection,
   ConversationListItem,
@@ -9,6 +16,23 @@ import type {
 } from "./contracts";
 
 const pageSize = 25;
+const costBatchSize = 500;
+const modelCostFields = {
+  id: true,
+  model: true,
+  serviceTier: true,
+  createdAt: true,
+  inputTokens: true,
+  cachedInputTokens: true,
+  cacheWriteInputTokens: true,
+  outputTokens: true,
+} satisfies Prisma.ModelUsageSelect;
+const voiceCostFields = {
+  id: true,
+  model: true,
+  createdAt: true,
+  usageSeconds: true,
+} satisfies Prisma.VoiceSessionSelect;
 const conversationSummary = {
   id: true,
   status: true,
@@ -50,6 +74,7 @@ async function usageSummary(
         _sum: {
           inputTokens: true,
           cachedInputTokens: true,
+          cacheWriteInputTokens: true,
           outputTokens: true,
           reasoningTokens: true,
           totalTokens: true,
@@ -77,6 +102,42 @@ async function usageSummary(
   };
 }
 
+async function shopCostSummary(
+  transaction: Prisma.TransactionClient,
+  shop: string,
+) {
+  const summary = emptyCostSummary();
+  let afterModel: string | undefined;
+  do {
+    const rows = await transaction.modelUsage.findMany({
+      where: {
+        conversation: { shop },
+        ...(afterModel ? { id: { gt: afterModel } } : {}),
+      },
+      select: modelCostFields,
+      orderBy: { id: "asc" },
+      take: costBatchSize,
+    });
+    for (const row of rows) addCost(summary, "model", estimateModelUsage(row));
+    afterModel = rows.length === costBatchSize ? rows.at(-1)!.id : undefined;
+  } while (afterModel);
+  let afterVoice: string | undefined;
+  do {
+    const rows = await transaction.voiceSession.findMany({
+      where: {
+        conversation: { shop },
+        ...(afterVoice ? { id: { gt: afterVoice } } : {}),
+      },
+      select: voiceCostFields,
+      orderBy: { id: "asc" },
+      take: costBatchSize,
+    });
+    for (const row of rows) addCost(summary, "voice", estimateVoiceUsage(row));
+    afterVoice = rows.length === costBatchSize ? rows.at(-1)!.id : undefined;
+  } while (afterVoice);
+  return summary;
+}
+
 export async function getConversationOverview(
   shop: string,
   page = 1,
@@ -84,31 +145,45 @@ export async function getConversationOverview(
   if (!Number.isSafeInteger(page) || page < 1 || page > 10_000)
     throw new RangeError("Invalid conversation page.");
   return prisma.$transaction(async (transaction) => {
-    const [rows, conversations, endedConversations, failedReplies, usage] =
-      await Promise.all([
-        transaction.conversation.findMany({
-          where: { shop },
-          select: conversationSummary,
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          skip: (page - 1) * pageSize,
-          take: pageSize + 1,
-        }),
-        transaction.conversation.count({ where: { shop } }),
-        transaction.conversation.count({ where: { shop, status: "ended" } }),
-        transaction.conversationMessage.count({
-          where: {
-            conversation: { shop },
-            role: { in: ["assistant", "context"] },
-            status: "failed",
-          },
-        }),
-        usageSummary(transaction, shop),
-      ]);
+    const [
+      rows,
+      conversations,
+      endedConversations,
+      failedReplies,
+      usage,
+      cost,
+    ] = await Promise.all([
+      transaction.conversation.findMany({
+        where: { shop },
+        select: conversationSummary,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: (page - 1) * pageSize,
+        take: pageSize + 1,
+      }),
+      transaction.conversation.count({ where: { shop } }),
+      transaction.conversation.count({ where: { shop, status: "ended" } }),
+      transaction.conversationMessage.count({
+        where: {
+          conversation: { shop },
+          role: { in: ["assistant", "context"] },
+          status: "failed",
+        },
+      }),
+      usageSummary(transaction, shop),
+      shopCostSummary(transaction, shop),
+    ]);
     return {
       page,
       hasNextPage: rows.length > pageSize,
-      summary: { conversations, endedConversations, failedReplies, usage },
+      summary: {
+        conversations,
+        endedConversations,
+        failedReplies,
+        usage,
+        cost,
+      },
       conversations: rows.slice(0, pageSize).map(listItem),
+      prices: MODEL_PRICES,
     };
   });
 }
@@ -143,35 +218,47 @@ export async function getConversationInspection(
         modelUsage: {
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           select: {
-            id: true,
+            ...modelCostFields,
             assistantId: true,
-            model: true,
-            serviceTier: true,
             status: true,
-            inputTokens: true,
-            cachedInputTokens: true,
-            outputTokens: true,
             reasoningTokens: true,
             totalTokens: true,
-            createdAt: true,
             completedAt: true,
           },
         },
         voiceSessions: {
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           select: {
-            id: true,
-            model: true,
+            ...voiceCostFields,
             status: true,
-            createdAt: true,
             closedAt: true,
-            usageSeconds: true,
             error: true,
           },
         },
       },
     });
     if (!row) return null;
+    const cost = emptyCostSummary();
+    const modelUsage = row.modelUsage.map((usage) => {
+      const estimate = estimateModelUsage(usage);
+      addCost(cost, "model", estimate);
+      return {
+        ...usage,
+        cost: estimate,
+        createdAt: usage.createdAt.toISOString(),
+        completedAt: usage.completedAt?.toISOString() ?? null,
+      };
+    });
+    const voiceSessions = row.voiceSessions.map((voice) => {
+      const estimate = estimateVoiceUsage(voice);
+      addCost(cost, "voice", estimate);
+      return {
+        ...voice,
+        cost: estimate,
+        createdAt: voice.createdAt.toISOString(),
+        closedAt: voice.closedAt?.toISOString() ?? null,
+      };
+    });
     return {
       conversation: { ...listItem(row), origin: row.origin },
       messages: conversationTimeline(row).filter(
@@ -182,17 +269,10 @@ export async function getConversationInspection(
         createdAt: tool.createdAt.toISOString(),
         completedAt: tool.completedAt?.toISOString() ?? null,
       })),
-      modelUsage: row.modelUsage.map((usage) => ({
-        ...usage,
-        createdAt: usage.createdAt.toISOString(),
-        completedAt: usage.completedAt?.toISOString() ?? null,
-      })),
-      voiceSessions: row.voiceSessions.map((voice) => ({
-        ...voice,
-        createdAt: voice.createdAt.toISOString(),
-        closedAt: voice.closedAt?.toISOString() ?? null,
-      })),
+      modelUsage,
+      voiceSessions,
       usage: await usageSummary(transaction, shop, id),
+      cost,
     };
   });
 }

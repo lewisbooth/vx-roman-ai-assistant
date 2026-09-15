@@ -127,6 +127,7 @@ model ModelUsage {
   status             String
   inputTokens        Int?
   cachedInputTokens  Int?
+  cacheWriteInputTokens Int?
   outputTokens       Int?
   reasoningTokens    Int?
   totalTokens        Int?

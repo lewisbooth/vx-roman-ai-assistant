@@ -11,6 +11,7 @@ import {
   VoiceActivity,
 } from "../insights/ConversationViews";
 import { recordedDate } from "../insights/format";
+import { EstimatedCosts } from "../pricing/PricingViews";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -58,6 +59,9 @@ export default function ConversationDetail() {
       </s-section>
       <s-section heading="Recorded usage">
         <RecordedUsage usage={inspection.usage} />
+      </s-section>
+      <s-section heading="Estimated costs">
+        <EstimatedCosts cost={inspection.cost} />
       </s-section>
       <s-section heading="Transcript">
         <s-stack gap="base">

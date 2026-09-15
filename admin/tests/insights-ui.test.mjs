@@ -12,12 +12,13 @@ const [viewBundle, routeBundle] = await Promise.all([
         import { createRoot } from 'react-dom/client';
         import { flushSync } from 'react-dom';
         import * as views from './admin/insights/ConversationViews';
+        import * as pricingViews from './admin/pricing/PricingViews';
         export * from './admin/insights/format';
         export function mount(container) {
           const root = createRoot(container);
           return {
             render(name, props) {
-              const View = views[name];
+              const View = views[name] ?? pricingViews[name];
               flushSync(() => root.render(<View {...props} />));
             },
             dispose() { root.unmount(); },
@@ -83,6 +84,7 @@ const ID = "78b1ba71-5a92-40ef-a9db-768a0c96a2e0";
 const EMPTY_USAGE = {
   inputTokens: null,
   cachedInputTokens: null,
+  cacheWriteInputTokens: null,
   outputTokens: null,
   reasoningTokens: null,
   totalTokens: null,
@@ -252,7 +254,7 @@ test("transcript links reject other origins, credentials and private routes", (t
 test("usage distinguishes missing reporting from measured zero and states coverage", (t) => {
   const { render, container } = setupView(t);
   render("RecordedUsage", { usage: EMPTY_USAGE });
-  assert.equal(container.querySelectorAll("dd").length, 6);
+  assert.equal(container.querySelectorAll("dd").length, 7);
   assert.ok(
     [...container.querySelectorAll("dd")].every(
       (node) => node.textContent === "Not recorded",
@@ -276,8 +278,8 @@ test("usage distinguishes missing reporting from measured zero and states covera
     (node) => node.textContent,
   );
   assert.equal(values[0], "0");
-  assert.equal(values[4], "1,234");
-  assert.equal(values[5], "2.5");
+  assert.equal(values[5], "1,234");
+  assert.equal(values[6], "2.5");
 });
 
 test("tool and voice failures display stored status and error rather than inferred success", (t) => {
@@ -318,6 +320,7 @@ test("tool and voice failures display stored status and error rather than inferr
         closedAt: NOW,
         usageSeconds: null,
         error: "Connection closed.",
+        cost: { usd: null, rateId: null, reason: "missing_usage" },
       },
     ],
   });
@@ -449,4 +452,209 @@ test("authentication failure stops both page loaders before querying conversatio
     );
   }
   assert.equal(calls.length, 0);
+});
+
+test("USD formatting preserves missing values, measured zero and tiny positive estimates", (t) => {
+  const { api } = setupView(t);
+  assert.equal(api.estimatedUsd(null), "Unavailable");
+  assert.equal(api.estimatedUsd(0), "USD 0.00");
+  assert.equal(api.estimatedUsd(0.0000001), "< USD 0.000001");
+  assert.equal(api.estimatedUsd(0.000001), "USD 0.000001");
+  assert.equal(api.estimatedUsd(1.23456789), "USD 1.234568");
+  assert.equal(api.estimatedUsd(1200.1), "USD 1,200.10");
+});
+
+test("estimated totals distinguish partial pricing from a complete measured zero", (t) => {
+  const { render, container } = setupView(t);
+  const cost = {
+    totalUsd: 0.000004,
+    modelUsd: 0.000004,
+    voiceUsd: null,
+    pricedModelCalls: 1,
+    unpricedModelCalls: 2,
+    pricedVoiceSessions: 0,
+    unpricedVoiceSessions: 1,
+  };
+  render("EstimatedCosts", { cost });
+  assert.deepEqual(
+    [...container.querySelectorAll("dd")].map((node) => node.textContent),
+    ["USD 0.000004", "USD 0.000004", "Unavailable"],
+  );
+  assert.match(container.textContent, /Partial estimate/);
+  assert.match(
+    container.textContent,
+    /Priced 1 of 3 model calls and 0 of 1 voice sessions/,
+  );
+  assert.match(container.textContent, /Unpriced activity is excluded/);
+  render("EstimatedCosts", {
+    cost: {
+      ...cost,
+      totalUsd: 0,
+      modelUsd: 0,
+      voiceUsd: 0,
+      unpricedModelCalls: 0,
+      unpricedVoiceSessions: 0,
+      pricedVoiceSessions: 1,
+    },
+  });
+  assert.ok(
+    [...container.querySelectorAll("dd")].every(
+      (node) => node.textContent === "USD 0.00",
+    ),
+  );
+  assert.doesNotMatch(container.textContent, /Partial estimate|Unavailable/);
+});
+
+test("cost cells expose distinct missing-usage, missing-rate and invalid-usage reasons", (t) => {
+  const { render, container } = setupView(t);
+  for (const [reason, expected] of [
+    ["missing_usage", "Required usage not recorded"],
+    ["missing_rate", "No rate for this model, tier or date"],
+    ["invalid_usage", "Usage is inconsistent; cannot estimate"],
+  ]) {
+    render("CostValue", { cost: { usd: null, rateId: null, reason } });
+    assert.match(container.textContent, /Unavailable/);
+    assert.ok(container.textContent.includes(expected));
+    assert.doesNotMatch(container.textContent, /USD 0\.00/);
+  }
+  render("CostValue", {
+    cost: { usd: 0, rateId: "luna-period-a", reason: null },
+  });
+  assert.match(container.textContent, /USD 0\.00.*Rate: luna-period-a/);
+});
+
+test("pricing history shows exact UTC boundaries, tier rates, context thresholds and sources", (t) => {
+  const { render, container } = setupView(t);
+  const base = {
+    id: "luna-standard-test",
+    kind: "tokens",
+    model: "gpt-5.6-luna",
+    currency: "USD",
+    serviceTier: "default",
+    effectiveFrom: "2026-09-15T00:00:00.000Z",
+    effectiveTo: "2026-09-16T12:34:56.789Z",
+    verifiedAt: "2026-09-15T15:36:00.000Z",
+    sourceUrl: "https://developers.openai.com/api/docs/pricing",
+    prices: {
+      inputPerMillion: 0.2,
+      cachedInputPerMillion: 0.02,
+      cacheWriteInputPerMillion: 0.25,
+      outputPerMillion: 1.2,
+    },
+    longContext: {
+      aboveInputTokens: 272000,
+      prices: {
+        inputPerMillion: 0.4,
+        cachedInputPerMillion: 0.04,
+        cacheWriteInputPerMillion: 0.5,
+        outputPerMillion: 1.8,
+      },
+    },
+  };
+  render("PricingHistory", {
+    prices: [
+      base,
+      {
+        ...base,
+        id: "luna-fast-test",
+        serviceTier: "priority",
+        effectiveTo: null,
+      },
+      {
+        ...base,
+        id: "live-test",
+        model: "gpt-live-1",
+        kind: "voice",
+        serviceTier: null,
+        effectiveTo: null,
+        perMinute: 0.05,
+        sourceUrl: "https://developers.openai.com/api/docs/models/gpt-live-1",
+      },
+    ],
+  });
+  const rows = [...container.querySelectorAll("s-table-body s-table-row")];
+  assert.equal(rows.length, 3);
+  assert.match(
+    container.textContent,
+    /From \(inclusive\).*Until \(exclusive\)/s,
+  );
+  assert.match(rows[0].textContent, /2026-09-15 00:00:00\.000 UTC/);
+  assert.match(rows[0].textContent, /2026-09-16 12:34:56\.789 UTC/);
+  assert.match(rows[0].textContent, /Standard \(default\)/);
+  assert.match(
+    rows[0].textContent,
+    /Short context: up to 272,000 input tokens/,
+  );
+  assert.match(rows[0].textContent, /Long context: over 272,000 input tokens/);
+  assert.match(rows[0].textContent, /Cache-write inputUSD 0\.25/);
+  assert.match(rows[0].textContent, /Cache-write inputUSD 0\.50/);
+  assert.match(rows[1].textContent, /Fast \(priority\).*Open ended/s);
+  assert.match(rows[2].textContent, /USD 0\.05 per minute/);
+  assert.match(
+    container.textContent,
+    /whole request, not just tokens above the threshold/,
+  );
+  assert.match(
+    container.textContent,
+    /provider-reported seconds.*divided by 60/s,
+  );
+  assert.equal(
+    rows[0].querySelector('time[datetime="2026-09-15T15:36:00.000Z"]')
+      .textContent,
+    "2026-09-15 15:36:00.000 UTC",
+  );
+  assert.equal(
+    rows[2].querySelector("s-link").getAttribute("href"),
+    "https://developers.openai.com/api/docs/models/gpt-live-1",
+  );
+  assert.equal(
+    rows[2].querySelector("s-link").getAttribute("target"),
+    "_blank",
+  );
+  assert.equal(
+    container.querySelectorAll("input, s-text-field, s-button").length,
+    0,
+  );
+});
+
+test("model and voice activity show per-attempt costs with actual tiers and cache-write usage", (t) => {
+  const { render, container } = setupView(t);
+  render("ModelActivity", {
+    usage: [
+      {
+        id: "call1",
+        assistantId: "message1",
+        model: "gpt-5.6-luna",
+        serviceTier: "priority",
+        status: "complete",
+        createdAt: NOW,
+        completedAt: NOW,
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        cacheWriteInputTokens: 30,
+        outputTokens: 10,
+        reasoningTokens: 2,
+        totalTokens: 110,
+        cost: { usd: 0.000015, rateId: "luna-fast-test", reason: null },
+      },
+    ],
+  });
+  assert.match(container.textContent, /Fast \(priority\)/);
+  assert.match(container.textContent, /100 \/ 20 \/ 30/);
+  assert.match(container.textContent, /USD 0\.000015.*Rate: luna-fast-test/s);
+  render("VoiceActivity", {
+    sessions: [
+      {
+        id: "voice1",
+        model: "gpt-live-1",
+        status: "closed",
+        createdAt: NOW,
+        closedAt: NOW,
+        usageSeconds: 24,
+        error: null,
+        cost: { usd: 0.02, rateId: "live-test", reason: null },
+      },
+    ],
+  });
+  assert.match(container.textContent, /24USD 0\.02.*Rate: live-test/s);
 });

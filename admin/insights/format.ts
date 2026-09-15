@@ -8,6 +8,26 @@ const dateFormat = new Intl.DateTimeFormat("en-GB", {
   timeStyle: "short",
   timeZone: "UTC",
 });
+const usdFormat = new Intl.NumberFormat("en-GB", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 6,
+});
+
+export function estimatedUsd(value: number | null): string {
+  if (value === null) return "Unavailable";
+  if (value > 0 && value < 0.000001) return "< USD 0.000001";
+  return `USD ${usdFormat.format(value)}`;
+}
+
+export function serviceTierLabel(tier: string | null): string {
+  if (tier === "default") return "Standard (default)";
+  if (tier === "priority") return "Fast (priority)";
+  return tier || "Not recorded";
+}
+
+export function priceBoundary(value: string): string {
+  return new Date(value).toISOString().replace("T", " ").replace("Z", " UTC");
+}
 
 export function recordedNumber(value: number | null): string {
   return value === null ? "Not recorded" : numberFormat.format(value);

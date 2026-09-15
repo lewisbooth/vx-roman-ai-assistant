@@ -30,6 +30,7 @@ export async function recordModelUsage(
   const counts = [
     usage.inputTokens,
     usage.cachedInputTokens,
+    usage.cacheWriteInputTokens,
     usage.outputTokens,
     usage.reasoningTokens,
     usage.totalTokens,
@@ -45,6 +46,10 @@ export async function recordModelUsage(
     (usage.cachedInputTokens !== null &&
       usage.inputTokens !== null &&
       usage.cachedInputTokens > usage.inputTokens) ||
+    (usage.cacheWriteInputTokens !== null &&
+      usage.inputTokens !== null &&
+      usage.cacheWriteInputTokens + (usage.cachedInputTokens ?? 0) >
+        usage.inputTokens) ||
     (usage.reasoningTokens !== null &&
       usage.outputTokens !== null &&
       usage.reasoningTokens > usage.outputTokens)

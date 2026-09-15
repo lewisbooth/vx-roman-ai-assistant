@@ -5,6 +5,7 @@ import { APP_NAME } from "../../shared/brand";
 import { authenticate } from "../shopify.server";
 import { getConversationOverview } from "../insights/repository.server";
 import { ConversationList, RecordedUsage } from "../insights/ConversationViews";
+import { EstimatedCosts, PricingHistory } from "../pricing/PricingViews";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -69,6 +70,12 @@ export default function Home() {
       </s-section>
       <s-section heading="Recorded usage — this store">
         <RecordedUsage usage={overview.summary.usage} />
+      </s-section>
+      <s-section heading="Estimated costs — this store">
+        <EstimatedCosts cost={overview.summary.cost} />
+      </s-section>
+      <s-section heading="Pricing history">
+        <PricingHistory prices={overview.prices} />
       </s-section>
       <s-section heading="Storefront assistant">
         <s-paragraph>

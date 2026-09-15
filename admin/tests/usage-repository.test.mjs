@@ -93,6 +93,7 @@ const attempt = (extra = {}) => ({
   status: "pending",
   inputTokens: null,
   cachedInputTokens: null,
+  cacheWriteInputTokens: null,
   outputTokens: null,
   reasoningTokens: null,
   totalTokens: null,
@@ -105,6 +106,7 @@ const complete = (usage, extra = {}) => ({
   serviceTier: "priority",
   inputTokens: 20,
   cachedInputTokens: 10,
+  cacheWriteInputTokens: 3,
   outputTokens: 5,
   reasoningTokens: 2,
   totalTokens: 25,
@@ -127,6 +129,7 @@ test("request UUIDs persist once, retain actual provider fields and cannot be do
   assert.equal(rows[0].serviceTier, "priority");
   assert.equal(rows[0].totalTokens, 25);
   assert.equal(rows[0].cachedInputTokens, 10);
+  assert.equal(rows[0].cacheWriteInputTokens, 3);
   assert.equal(rows[0].reasoningTokens, 2);
   assert.ok(rows[0].completedAt);
 });
@@ -168,6 +171,7 @@ test("known zero, unavailable attempts and different tool rounds remain distinct
     complete(zero, {
       inputTokens: 0,
       cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
       outputTokens: 0,
       reasoningTokens: 0,
       totalTokens: 0,
@@ -245,7 +249,32 @@ test("invalid provider counts and unbounded metadata cannot enter usage records"
     record(complete(attempt(), { reasoningTokens: 6 })),
     /Invalid model usage/,
   );
+  for (const cacheWriteInputTokens of [-1, NaN, 11, 2 ** 31])
+    await assert.rejects(
+      record(complete(attempt(), { cacheWriteInputTokens })),
+      /Invalid model usage/,
+    );
   assert.equal(await database.modelUsage.count(), 0);
+});
+
+test("missing historical cache-write counts remain unknown instead of becoming zero", async () => {
+  const usage = complete(attempt());
+  const historical = { ...usage };
+  delete historical.cacheWriteInputTokens;
+  await database.modelUsage.create({
+    data: { ...historical, conversationId, assistantId },
+  });
+  const row = await database.modelUsage.findUnique({ where: { id: usage.id } });
+  assert.equal(row.cacheWriteInputTokens, null);
+  assert.equal(row.inputTokens, 20);
+  assert.equal(row.totalTokens, 25);
+  const missing = complete(attempt(), { cacheWriteInputTokens: null });
+  await record(missing);
+  assert.equal(
+    (await database.modelUsage.findUnique({ where: { id: missing.id } }))
+      .cacheWriteInputTokens,
+    null,
+  );
 });
 
 test("voice records keep final cumulative seconds once, including a real zero", async () => {

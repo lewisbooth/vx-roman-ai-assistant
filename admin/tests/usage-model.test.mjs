@@ -212,6 +212,27 @@ test("lost streaming replies retain known rounds and record the final attempt as
   assert.equal(app.records[3].totalTokens, null);
 });
 
+test("cache-write usage is a separate input subset, with missing and invalid values left unknown", async () => {
+  for (const [write, expected] of [
+    [undefined, null],
+    [0, 0],
+    [6, 6],
+    [11, null],
+    [-1, null],
+    [NaN, null],
+  ]) {
+    const usage = tokens(20, 5, 10, 2);
+    if (write !== undefined)
+      usage.input_tokens_details.cache_write_tokens = write;
+    const app = setup([events(terminal("completed", usage))]);
+    await app.run();
+    assert.equal(app.records[0].cacheWriteInputTokens, null);
+    assert.equal(app.records.at(-1).cacheWriteInputTokens, expected);
+    assert.equal(app.records.at(-1).cachedInputTokens, 10);
+    assert.equal(app.records.at(-1).inputTokens, 20);
+  }
+});
+
 test("cancellation after terminal usage receipt cannot erase the reported counts", async () => {
   const app = setup([events(terminal())]);
   await assert.rejects(
