@@ -232,7 +232,9 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
     sdp: "offer-sdp",
   });
   assert.match(request.session.instructions, /Roman.*shop-at-home/);
-  assert.deepEqual(plain(request.session.audio), { output: { voice: "gleam" } });
+  assert.deepEqual(plain(request.session.audio), {
+    output: { voice: "willow" },
+  });
   assert.match(request.session.instructions, /Interruption policy:/);
   assert.match(request.session.instructions, /Luna/);
   assert.equal(options.signal.aborted, false);
@@ -755,58 +757,63 @@ test("consumed malformed events still fail closed with only type and field diagn
   }
 });
 
-test("beginConversation sends opening instructions then commentary only after the matching acknowledgment", async () => {
+test("beginConversation sends one cue and waits for its matching acknowledgment", async () => {
   const app = setup();
   const provider = await app.connect();
   const socket = app.sockets[0];
   assert.equal(socket.sent.length, 0, "The service chooses when to begin");
   const opening = provider.beginConversation();
   assert.equal(socket.sent.length, 1);
-  assert.equal(socket.sent[0].type, "session.instructions.append");
+  assert.equal(socket.sent[0].type, "session.commentary.append");
   assert.equal(socket.sent[0].delegation_id, null);
-  assert.match(socket.sent[0].content, /without waiting/);
-  assert.match(socket.sent[0].content, /English/);
+  assert.match(socket.sent[0].content, /initial opening instructions/);
+  assert.equal(provider.beginConversation(), opening);
+  let done = false;
+  void opening.then(() => {
+    done = true;
+  });
   socket.event({
-    type: "session.commentary.appended",
+    type: "session.thinking.appended",
     event_id: "wrong-opening-ack",
     client_event_id: socket.sent[0].event_id,
   });
   await flush();
   assert.equal(socket.sent.length, 1);
+  assert.equal(done, false);
   socket.ack(0);
-  await flush();
-  assert.equal(socket.sent.length, 2);
-  assert.equal(socket.sent[1].type, "session.commentary.append");
-  assert.equal(socket.sent[1].delegation_id, null);
-  assert.match(socket.sent[1].content, /Begin the conversation now/);
-  socket.ack(1);
   await opening;
+  await provider.beginConversation();
+  assert.equal(
+    socket.sent.length,
+    1,
+    "Repeated startup cannot inject another cue",
+  );
   assert.equal(app.timers.size, 0);
 });
 
-test("opening selection distinguishes a prior Roman reply from observations or blank assistant history", async () => {
+test("initial instructions select the opening from full history before Live creation", async () => {
   async function openingFor(history) {
     const app = setup();
     const provider = await app.connect({ history });
     const socket = app.sockets[0];
-    const opening = provider.beginConversation();
-    const instruction = socket.sent[0];
-    assert.equal(instruction.type, "session.instructions.append");
-    socket.ack(0);
-    await flush();
-    assert.equal(socket.sent[1].type, "session.commentary.append");
-    socket.ack(1);
-    await opening;
+    const instruction = app.requests[0][0].session.instructions;
+    assert.equal(socket.sent.length, 0, "No late instructions are necessary");
     const closing = provider.close();
     socket.event(ended);
     await closing;
     return {
-      instruction: instruction.content,
+      instruction,
       input: plain(app.requests[0][0].session.input),
     };
   }
 
   const first = await openingFor([]);
+  assert.match(
+    first.instruction,
+    /Say this complete welcome exactly: "Hi I'm Roman/,
+  );
+  assert.match(first.instruction, /Wait for the application's opening cue/);
+  assert.doesNotMatch(first.instruction, /Hi, it's Roman again/);
   const priorReply = {
     role: "assistant",
     text: "Would you like privacy while keeping daylight in?",
@@ -816,6 +823,8 @@ test("opening selection distinguishes a prior Roman reply from observations or b
     { role: "user", text: "Yes, for my kitchen." },
   ]);
   assert.notEqual(first.instruction, resumed.instruction);
+  assert.match(resumed.instruction, /Hi, it's Roman again/);
+  assert.doesNotMatch(resumed.instruction, /Say this complete welcome exactly/);
 
   const observations = await openingFor([
     {
@@ -846,7 +855,7 @@ test("opening selection distinguishes a prior Roman reply from observations or b
   );
 });
 
-test("an opening acknowledgment failure or stop cannot send the next opening command", async () => {
+test("an opening acknowledgment failure or stop cannot retry the cue", async () => {
   for (const mode of ["timeout", "stop"]) {
     const app = setup();
     const provider = await app.connect();
@@ -854,17 +863,109 @@ test("an opening acknowledgment failure or stop cannot send the next opening com
     const opening = provider.beginConversation();
     const rejected = assert.rejects(opening, { code: "command_failed" });
     if (mode === "timeout") app.fire(3000);
-    else {
-      app.controller.abort();
-      socket.ack(0);
-    }
+    else app.controller.abort();
     socket.event(ended);
     await rejected;
+    await assert.rejects(provider.beginConversation(), {
+      code: "command_failed",
+    });
     await provider.close();
     assert.equal(
-      socket.sent.some((event) => event.type === "session.commentary.append"),
-      false,
+      socket.sent.filter((event) => event.type === "session.commentary.append")
+        .length,
+      1,
     );
     assert.equal(app.timers.size, 0);
+  }
+});
+
+test("speech observed during startup suppresses the opening without suppressing captions", async () => {
+  for (const observation of [
+    {
+      type: "session.input_transcript.delta",
+      event_id: "early-user",
+      delta: "I need blackout blinds.",
+      start_ms: 0,
+      end_ms: 400,
+    },
+    {
+      type: "session.output_transcript.delta",
+      event_id: "early-assistant",
+      delta: "Hi, I'm Roman.",
+      start_ms: 0,
+      end_ms: 400,
+    },
+  ]) {
+    const app = setup();
+    const creating = app.create();
+    await flush();
+    const socket = app.sockets[0];
+    socket.event(observation);
+    socket.open();
+    const provider = await creating;
+    await provider.beginConversation();
+    await provider.beginConversation();
+    assert.equal(socket.sent.length, 0);
+    assert.equal(app.events.length, 1);
+    assert.deepEqual(app.logs, []);
+    assert.equal(app.timers.size, 0);
+    const closing = provider.close();
+    socket.event(ended);
+    await closing;
+  }
+});
+
+test("nonempty reflected audio and blank captions cannot suppress the startup cue", async () => {
+  const app = setup();
+  const creating = app.create();
+  await flush();
+  const socket = app.sockets[0];
+  socket.event({
+    type: "session.input_audio.append",
+    audio: "PRIVATE_AUDIO_BYTES",
+  });
+  socket.event({ type: "session.output_audio.delta", delta: "" });
+  socket.event({
+    type: "session.output_audio.delta",
+    delta: Buffer.alloc(960).toString("base64"),
+  });
+  socket.event({
+    type: "session.input_transcript.delta",
+    event_id: "blank-caption",
+    delta: " \n\t",
+    start_ms: 0,
+    end_ms: 400,
+  });
+  socket.open();
+  const provider = await creating;
+  const opening = provider.beginConversation();
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].type, "session.commentary.append");
+  socket.ack();
+  await opening;
+  assert.deepEqual(app.logs, []);
+});
+
+test("Willow requests Irish English while other selected voices retain their natural character", async () => {
+  for (const voice of [undefined, "willow", "coral", "gleam"]) {
+    const app = setup();
+    await app.connect({ voice });
+    const { session } = app.requests[0][0];
+    assert.equal(session.audio.output.voice, voice ?? "willow");
+    assert.match(session.instructions, /warm, lively and attentive/);
+    assert.match(session.instructions, /natural conversational pace/);
+    if (voice === undefined || voice === "willow") {
+      assert.match(session.instructions, /natural Irish English accent/);
+    } else {
+      assert.doesNotMatch(session.instructions, /Irish English/);
+      assert.match(session.instructions, /selected voice's natural accent/);
+    }
+    assert.doesNotMatch(
+      session.instructions,
+      /female voice|southern British|non-rhotic|unhurried|British vowel/,
+    );
+    assert.match(session.instructions, /Interruption policy:/);
+    assert.match(session.instructions, /Delegate product selection/);
+    assert.match(session.instructions, /Do not request or reveal.*API keys/);
   }
 });

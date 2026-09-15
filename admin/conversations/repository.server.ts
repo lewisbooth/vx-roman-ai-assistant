@@ -84,7 +84,15 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
       typeof part.invocationId === "string" &&
       uuidPattern.test(part.invocationId) &&
       validProductIds(part.productIds) &&
-      Object.keys(part).length === 4
+      (Object.keys(part).length === 4 ||
+        (Object.keys(part).length === 5 &&
+          part.voiceReply &&
+          typeof part.voiceReply === "object" &&
+          Object.keys(part.voiceReply).length === 2 &&
+          typeof part.voiceReply.voiceId === "string" &&
+          uuidPattern.test(part.voiceReply.voiceId) &&
+          Number.isSafeInteger(part.voiceReply.afterSequence) &&
+          part.voiceReply.afterSequence >= 0))
     )
       continue;
     if (
@@ -132,6 +140,7 @@ export function conversationTimeline(
     }
     return {
       sequence: message.sequence,
+      endSequence: message.sequence,
       message: {
         id: message.id,
         role: message.role as ConversationMessage["role"],
@@ -141,6 +150,18 @@ export function conversationTimeline(
         ...(message.error ? { error: message.error } : {}),
       } as ConversationMessage,
     };
+  });
+  const voicePlacements = rows.flatMap((row) =>
+    row.message.parts.flatMap((part) =>
+      part.type === "products" && part.voiceReply ? [part.voiceReply] : [],
+    ),
+  );
+  const captionBoundaries = voicePlacements.flatMap((reply) => {
+    const nextMessage = rows.find((row) => row.sequence >= reply.afterSequence);
+    return [
+      reply.afterSequence,
+      ...(nextMessage ? [nextMessage.sequence] : []),
+    ];
   });
   const captions = groupVoiceTranscript(
     conversation.voiceTranscripts.map((fragment) => {
@@ -152,18 +173,23 @@ export function conversationTimeline(
         createdAt: fragment.createdAt.toISOString(),
       };
     }),
-    // Empty delegation rows own tool work but are not visible conversation
-    // entries. Page visits, widgets, text and failures still separate captions.
+    // Voice-linked cards move to completion; their reserved placeholder no
+    // longer breaks speech. Completion and the next message are explicit cuts.
     rows
       .filter(
         (row) =>
-          row.message.parts.length === 0 && row.message.status !== "failed",
+          (row.message.parts.length === 0 && row.message.status !== "failed") ||
+          row.message.parts.some(
+            (part) => part.type === "products" && part.voiceReply,
+          ),
       )
       .map((row) => row.sequence),
+    captionBoundaries,
   );
   for (const caption of captions)
     rows.push({
       sequence: caption.sequence,
+      endSequence: caption.fragments.at(-1)!.sequence,
       message: {
         id: caption.id,
         role: caption.role,
@@ -181,8 +207,35 @@ export function conversationTimeline(
         ],
       },
     });
+  rows.sort((left, right) => left.sequence - right.sequence);
+  // Delegation reserves a hidden row before tools run. Place its cards at
+  // completion, then beneath the following spoken response as captions arrive.
+  // Never cross a customer turn, page visit, different voice or another result.
+  const positions = new Map<string, number>();
+  for (const row of rows) {
+    const product = row.message.parts.find((part) => part.type === "products");
+    const reply = product?.voiceReply;
+    if (!reply || row.message.role !== "context") continue;
+    let position = reply.afterSequence - 0.5;
+    for (const next of rows) {
+      if (next === row || next.endSequence < reply.afterSequence) continue;
+      if (
+        next.message.role !== "assistant" ||
+        !next.message.parts.every(
+          (part) => part.type === "voice" && part.voiceId === reply.voiceId,
+        )
+      )
+        break;
+      position = next.endSequence + 0.5;
+    }
+    positions.set(row.message.id, position);
+  }
   return rows
-    .sort((left, right) => left.sequence - right.sequence)
+    .sort(
+      (left, right) =>
+        (positions.get(left.message.id) ?? left.sequence) -
+        (positions.get(right.message.id) ?? right.sequence),
+    )
     .map((row) => row.message);
 }
 
@@ -574,6 +627,7 @@ export async function finishTurn(
     error?: string;
     model?: string;
     serviceTier?: string;
+    voiceId?: string;
     presentation?: ProductPresentation;
   },
 ): Promise<void> {
@@ -591,6 +645,14 @@ export async function finishTurn(
     if (!message) return;
     const content: ConversationPart[] =
       message.role === "context" ? [] : [{ type: "text", text: result.text }];
+    if (
+      result.voiceId !== undefined &&
+      (message.role !== "context" ||
+        !conversation.voiceSessions.some(
+          (session) => session.id === result.voiceId,
+        ))
+    )
+      throw new ConversationError(400, "Invalid voice presentation owner.");
     if (result.status === "complete" && result.presentation) {
       let productIds: string[];
       try {
@@ -650,6 +712,14 @@ export async function finishTurn(
         version: 1,
         invocationId: presentation.id,
         productIds,
+        ...(message.role === "context" && result.voiceId
+          ? {
+              voiceReply: {
+                voiceId: result.voiceId,
+                afterSequence: conversation.nextSequence,
+              },
+            }
+          : {}),
       });
     }
     const finished = await transaction.conversationMessage.updateMany({

@@ -1,3 +1,39 @@
+// BuiltInVoice in the OpenAI Live API. Keep this browser-safe list aligned with
+// https://developers.openai.com/api/reference/typescript/resources/live#built-in-voice
+export const LIVE_VOICES = [
+  "alloy",
+  "ash",
+  "ballad",
+  "beacon",
+  "bossa",
+  "cedar",
+  "cinder",
+  "coral",
+  "delta",
+  "echo",
+  "gleam",
+  "marin",
+  "meridian",
+  "quartz",
+  "ripple",
+  "sage",
+  "shimmer",
+  "stone",
+  "tempo",
+  "verse",
+  "vesper",
+  "willow",
+] as const;
+
+export type LiveVoice = (typeof LIVE_VOICES)[number];
+export const DEFAULT_LIVE_VOICE: LiveVoice = "willow";
+
+export function isLiveVoice(value: unknown): value is LiveVoice {
+  return (
+    typeof value === "string" && LIVE_VOICES.some((voice) => voice === value)
+  );
+}
+
 export interface VoiceSessionSnapshot {
   id: string;
   clientId: string;

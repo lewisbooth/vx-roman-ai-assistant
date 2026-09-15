@@ -254,6 +254,8 @@ function setup() {
     conversationId,
     input,
     start: () => api.startVoice(conversationId, input),
+    ready: () =>
+      api.readyVoice(conversationId, input.requestId, input.clientId),
     stop: () => api.stopVoice(conversationId, input.requestId, input.clientId),
     emit: (event) => providers[0].options.onEvent(event),
   };
@@ -270,7 +272,7 @@ function transcript(overrides = {}) {
   };
 }
 
-test("voice starts once per exact owner and SDP, resuming duplicate HTTP requests safely", async () => {
+test("voice starts once per exact owner, voice and SDP, resuming duplicate HTTP requests safely", async () => {
   const state = setup();
   const createGate = deferred();
   state.mock.beforeCreate = () => createGate.promise;
@@ -279,6 +281,14 @@ test("voice starts once per exact owner and SDP, resuming duplicate HTTP request
   await flush();
   assert.equal(state.calls.reserve.length, 1);
   assert.equal(state.providers.length, 1);
+  assert.equal(state.providers[0].options.voice, "willow");
+  await assert.rejects(
+    state.api.startVoice(state.conversationId, {
+      ...state.input,
+      voice: "gleam",
+    }),
+    { status: 409 },
+  );
   await assert.rejects(
     state.api.startVoice(state.conversationId, {
       ...state.input,
@@ -308,7 +318,7 @@ test("voice starts once per exact owner and SDP, resuming duplicate HTTP request
   assert.equal(state.timers.size, 0);
 });
 
-test("voice returns SDP before native readiness and opens once after its late started event", async () => {
+test("voice returns SDP before readiness and opens once after both transports are ready", async () => {
   const state = setup();
   const answer = await state.start();
   assert.equal(answer.sdp, "v=0\r\nanswer");
@@ -316,12 +326,40 @@ test("voice returns SDP before native readiness and opens once after its late st
   state.emit({ type: "started", eventId: "started_1" });
   state.emit({ type: "started", eventId: "started_1" });
   state.emit({ type: "started", eventId: "started_2" });
+  assert.equal(state.providers[0].openingCount, 0);
+  state.ready();
+  state.ready();
   await state.start();
   await flush();
   assert.equal(state.providers[0].openingCount, 1);
   assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.calls.caption.length, 0);
   await state.stop();
+});
+
+test("browser readiness waits for native startup and cannot target a foreign or closed connection", async () => {
+  const state = setup();
+  state.input.voice = "cedar";
+  assert.throws(state.ready, { status: 409 });
+  await state.start();
+  assert.equal(state.providers[0].options.voice, "cedar");
+  for (const [conversationId, voiceId, clientId] of [
+    [randomUUID(), state.input.requestId, state.input.clientId],
+    [state.conversationId, randomUUID(), state.input.clientId],
+    [state.conversationId, state.input.requestId, randomUUID()],
+  ]) {
+    assert.throws(
+      () => state.api.readyVoice(conversationId, voiceId, clientId),
+      { status: 409 },
+    );
+  }
+  state.ready();
+  assert.equal(state.providers[0].openingCount, 0);
+  state.emit({ type: "started", eventId: "late_native_start" });
+  assert.equal(state.providers[0].openingCount, 1);
+  await state.stop();
+  assert.throws(state.ready, { status: 409 });
+  assert.equal(state.providers[0].openingCount, 1);
 });
 
 test("stop drains final trusted usage before closing the durable voice session", async () => {
@@ -374,6 +412,8 @@ test("an early native started event waits for provider creation and activation w
   assert.equal(state.providers[0].openingCount, 0);
   activateGate.resolve();
   assert.equal((await started).sdp, "v=0\r\nanswer");
+  assert.equal(state.providers[0].openingCount, 0);
+  state.ready();
   assert.equal(state.providers[0].openingCount, 1);
   openingGate.resolve();
   await state.stop();
@@ -402,6 +442,7 @@ test("opening failures close voice categorically without fabricating a greeting 
     throw new Error("private opening payload");
   };
   await state.start();
+  state.ready();
   state.emit({ type: "started", eventId: "started_1" });
   await flush();
   assert.equal(state.providers[0].openingCount, 1);
@@ -421,6 +462,7 @@ test("stopping during opening suppresses its late rejection and preserves the cl
   const gate = deferred();
   state.mock.onOpening = () => gate.promise;
   await state.start();
+  state.ready();
   state.emit({ type: "started", eventId: "started_1" });
   await flush();
   assert.equal(state.providers[0].openingCount, 1);
@@ -435,6 +477,7 @@ test("stopping during opening suppresses its late rejection and preserves the cl
 test("each new voice connection opens once while actual provider captions remain the only transcript", async () => {
   const state = setup();
   await state.start();
+  state.ready();
   state.emit({ type: "started", eventId: "started_1" });
   await flush();
   assert.equal(state.calls.caption.length, 0);
@@ -449,6 +492,7 @@ test("each new voice connection opens once while actual provider captions remain
   await state.stop();
   const next = { ...state.input, requestId: randomUUID() };
   await state.api.startVoice(state.conversationId, next);
+  state.api.readyVoice(state.conversationId, next.requestId, next.clientId);
   state.providers[1].options.onEvent({ type: "started", eventId: "started_2" });
   await flush();
   assert.deepEqual(

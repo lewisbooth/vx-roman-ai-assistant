@@ -43,6 +43,7 @@ function adjacentInTimeline(
 export function groupVoiceTranscript(
   fragments: readonly VoiceTranscriptFragment[],
   hiddenSequences: readonly number[] = [],
+  breakBeforeSequences: readonly number[] = [],
 ): VoiceTranscriptGroup[] {
   const groups: VoiceTranscriptGroup[] = [];
   const hidden = new Set(hiddenSequences);
@@ -58,6 +59,10 @@ export function groupVoiceTranscript(
       previous.voiceId === fragment.voiceId &&
       previous.role === fragment.role &&
       adjacentInTimeline(lastFragment.sequence, fragment.sequence, hidden) &&
+      !breakBeforeSequences.some(
+        (sequence) =>
+          sequence > lastFragment.sequence && sequence <= fragment.sequence,
+      ) &&
       fragment.startMs >= previous.startMs &&
       // Natural pauses within speech should not create separate chat bubbles.
       fragment.startMs <= previous.endMs + maxCaptionPauseMs

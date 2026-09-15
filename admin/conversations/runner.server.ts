@@ -131,7 +131,11 @@ async function completeTurn(
       (usage) => recordModelUsage(id, assistantId, usage),
     );
     signal.throwIfAborted();
-    await finishTurn(id, assistantId, { ...reply, status: "complete" });
+    await finishTurn(id, assistantId, {
+      ...reply,
+      status: "complete",
+      voiceId: turn.voiceId,
+    });
     return reply;
   } catch (error) {
     if (turn.controller.signal.aborted) return;

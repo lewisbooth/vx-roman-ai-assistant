@@ -4,8 +4,9 @@ import type { VoiceUsage } from "../usage/contracts";
 import { SidebandWS } from "openai/resources/live/sideband/ws";
 import type { ConnectServerEvent } from "openai/resources/live/sideband/sideband";
 import type { InitialItem } from "openai/resources/live/live";
+import { DEFAULT_LIVE_VOICE, type LiveVoice } from "../../shared/voice";
 import {
-  ROMAN_VOICE_PROMPT,
+  romanVoicePrompt,
   ROMAN_VOICE_OPENING_PROMPTS,
   ROMAN_VOICE_OPENING_CUE,
 } from "../prompts/roman.server";
@@ -20,7 +21,6 @@ const consumedEventTypes = new Set([
   "session.input_transcript.delta",
   "session.output_transcript.delta",
   "session.delegation.created",
-  "session.instructions.appended",
   "session.thinking.appended",
   "session.commentary.appended",
   "error",
@@ -115,10 +115,12 @@ let client: OpenAI | undefined;
 export async function createVoiceProvider(options: {
   sdp: string;
   history: readonly VoiceHistoryMessage[];
+  voice?: LiveVoice;
   onEvent(event: VoiceProviderEvent): void;
   signal: AbortSignal;
 }): Promise<VoiceProvider> {
   options.signal.throwIfAborted();
+  const voice = options.voice ?? DEFAULT_LIVE_VOICE;
   // Choose before truncating Live's context; page observations alone are not a
   // previous exchange with Roman.
   const openingPrompt = options.history.some(
@@ -136,6 +138,8 @@ export async function createVoiceProvider(options: {
   let sideband: SidebandWS | undefined;
   let closing = false;
   let closed = false;
+  let speechObserved = false;
+  let openingPromise: Promise<void> | undefined;
   const providerModel = VOICE_MODEL;
   let closePromise: Promise<void> | undefined;
   let finishClose: (() => void) | undefined;
@@ -226,7 +230,8 @@ export async function createVoiceProvider(options: {
     const eventType: string | undefined = event?.type;
     // Live reflects audio to trusted sidebands without event_id. Those frames
     // are documented by the native Live schema but absent from this SDK's
-    // sideband union. WebRTC owns playback; Roman never stores reflected audio.
+    // sideband union. Packets can contain silence and do not prove speech.
+    // WebRTC owns playback; Roman never inspects or stores reflected audio.
     if (
       eventType === "session.input_audio.append" ||
       eventType === "session.output_audio.delta"
@@ -289,7 +294,8 @@ export async function createVoiceProvider(options: {
           throw new VoiceProviderError("invalid_event");
         }
         invalidField = "event_handler";
-        if (event.delta)
+        if (event.delta) {
+          if (event.delta.trim()) speechObserved = true;
           emit({
             type: "transcript",
             eventId: event.event_id,
@@ -301,6 +307,7 @@ export async function createVoiceProvider(options: {
             startMs: event.start_ms,
             endMs: event.end_ms,
           });
+        }
       } else if (event.type === "session.delegation.created" && !closing) {
         invalidField = "delegation.id";
         if (!identifier(event.delegation?.id)) {
@@ -330,7 +337,6 @@ export async function createVoiceProvider(options: {
           offsetMs: event.offset_ms,
         });
       } else if (
-        event.type === "session.instructions.appended" ||
         event.type === "session.thinking.appended" ||
         event.type === "session.commentary.appended"
       ) {
@@ -372,10 +378,10 @@ export async function createVoiceProvider(options: {
       {
         session: {
           model: VOICE_MODEL,
-          audio: { output: { voice: "gleam" } },
+          audio: { output: { voice } },
           store: false,
           delegation: { type: "client" },
-          instructions: ROMAN_VOICE_PROMPT,
+          instructions: `${romanVoicePrompt(voice)}\n\n${openingPrompt}`,
           input: initialHistory(options.history),
           client: {
             data_channel: {
@@ -445,7 +451,7 @@ export async function createVoiceProvider(options: {
       );
 
     const append = (
-      type: "instructions" | "thinking" | "commentary",
+      type: "thinking" | "commentary",
       delegationId: string | null,
       text: string,
     ) => {
@@ -485,10 +491,10 @@ export async function createVoiceProvider(options: {
     return {
       providerId: created.session.id,
       sdp: created.transport.sdp,
-      beginConversation: async () => {
-        await append("instructions", null, openingPrompt);
-        await append("commentary", null, ROMAN_VOICE_OPENING_CUE);
-      },
+      beginConversation: () =>
+        (openingPromise ??= speechObserved
+          ? Promise.resolve()
+          : append("commentary", null, ROMAN_VOICE_OPENING_CUE)),
       appendThinking: (text) => append("thinking", null, text),
       appendCommentary: (delegationId, text) =>
         append("commentary", delegationId, text),

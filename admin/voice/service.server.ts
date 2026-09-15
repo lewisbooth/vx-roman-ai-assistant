@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { JourneyInput } from "../../shared/conversation";
-import type { VoiceStartResult } from "../../shared/voice";
+import {
+  DEFAULT_LIVE_VOICE,
+  type LiveVoice,
+  type VoiceStartResult,
+} from "../../shared/voice";
 import { ConversationError } from "../conversations/errors.server";
 import { recordVoiceUsage } from "../usage/repository.server";
 import { getModelHistory } from "../conversations/repository.server";
@@ -29,6 +33,7 @@ interface VoiceOwner {
   voiceId: string;
   clientId: string;
   offerHash: string;
+  voice: LiveVoice;
   controller: AbortController;
   start: Promise<VoiceStartResult>;
   provider?: VoiceProvider;
@@ -37,6 +42,7 @@ interface VoiceOwner {
   reserved: boolean;
   started: boolean;
   activated: boolean;
+  browserReady: boolean;
   openingStarted: boolean;
   error?: string;
   timer?: ReturnType<typeof setTimeout>;
@@ -81,12 +87,13 @@ function beginConversation(owner: VoiceOwner) {
     owner.openingStarted ||
     !owner.started ||
     !owner.activated ||
+    !owner.browserReady ||
     !owner.provider
   )
     return;
   owner.openingStarted = true;
-  // Native audio readiness may arrive before or after provider creation. Never
-  // await the opening here: the browser needs its SDP answer to finish connecting.
+  // Both transports must be connected before the one opening cue. Never await
+  // speech or playback here: producing audio may be needed to resolve play().
   void owner.provider.beginConversation().catch(() => {
     if (!owner.stopping)
       fail(
@@ -288,15 +295,22 @@ function closeOwner(owner: VoiceOwner): Promise<void> {
 
 export async function startVoice(
   conversationId: string,
-  input: { requestId: string; clientId: string; sdp: string },
+  input: {
+    requestId: string;
+    clientId: string;
+    sdp: string;
+    voice?: LiveVoice;
+  },
 ): Promise<VoiceStartResult> {
   const offerHash = createHash("sha256").update(input.sdp).digest("hex");
+  const voice = input.voice ?? DEFAULT_LIVE_VOICE;
   const current = owners.get(conversationId);
   if (current) {
     if (
       current.voiceId === input.requestId &&
       current.clientId === input.clientId &&
       current.offerHash === offerHash &&
+      current.voice === voice &&
       !current.stopping
     )
       return current.start;
@@ -315,11 +329,13 @@ export async function startVoice(
     voiceId: input.requestId,
     clientId: input.clientId,
     offerHash,
+    voice,
     controller: new AbortController(),
     stopping: false,
     reserved: false,
     started: false,
     activated: false,
+    browserReady: false,
     openingStarted: false,
     start: Promise.resolve({ voiceId: input.requestId, sdp: "" }),
     events: Promise.resolve(),
@@ -344,6 +360,7 @@ export async function startVoice(
     lease(owner, reserved.session.leaseExpiresAt);
     owner.provider = await createVoiceProvider({
       sdp: input.sdp,
+      voice,
       history: await getModelHistory(conversationId),
       signal: owner.controller.signal,
       onEvent: (event) => receive(owner, event),
@@ -373,6 +390,25 @@ export async function startVoice(
           "Voice could not connect. Please try again.",
         );
   }
+}
+
+/** The authenticated browser confirms transport readiness, not audible playback. */
+export function readyVoice(
+  conversationId: string,
+  voiceId: string,
+  clientId: string,
+) {
+  const owner = owners.get(conversationId);
+  if (
+    !owner ||
+    owner.voiceId !== voiceId ||
+    owner.clientId !== clientId ||
+    owner.stopping ||
+    !owner.activated
+  )
+    throw new ConversationError(409, disconnected);
+  owner.browserReady = true;
+  beginConversation(owner);
 }
 
 export async function heartbeatVoice(

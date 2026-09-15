@@ -47,6 +47,9 @@ export async function handleJsonRequest(
           401,
           "Storefront origin is not authorized.",
         );
+      // Cache only permission to make the cross-origin request. Every actual
+      // request still authenticates independently and its response is no-store.
+      headers.set("Access-Control-Max-Age", "600");
       return new Response(null, { status: 204, headers });
     }
     if (request.method !== method) {
@@ -71,6 +74,7 @@ export async function handleJsonRequest(
             "result",
             "bootstrap",
             "voice",
+            "ready",
             "heartbeat",
             "stop",
           ].find((route) =>

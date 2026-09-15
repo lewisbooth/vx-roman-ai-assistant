@@ -12,6 +12,8 @@ export interface ProductListPart {
   version: 1;
   invocationId: string;
   productIds: string[];
+  /** Display association for a voice result; never evidence of heard speech. */
+  voiceReply?: { voiceId: string; afterSequence: number };
 }
 
 export interface PageViewPart {

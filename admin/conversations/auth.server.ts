@@ -1,11 +1,13 @@
 ﻿import { authenticate } from "../shopify.server";
 import { authorizeCredential } from "./repository.server";
 import { ConversationError } from "./errors.server";
+import {
+  CONVERSATION_STOREFRONTS,
+  isConversationStorefront,
+  isConversationStorefrontForShop,
+} from "../../shared/storefronts";
 
-const developmentShops = new Set([
-  "hd-dev-multi.myshopify.com",
-  "hd-dev-single.myshopify.com",
-]);
+const developmentShops = new Set(Object.keys(CONVERSATION_STOREFRONTS));
 const creationWindows = new Map<string, { startedAt: number; count: number }>();
 
 export const UUID_PATTERN =
@@ -14,9 +16,7 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export function allowedOrigin(request: Request): string | undefined {
   const origin = request.headers.get("Origin");
-  for (const shop of developmentShops)
-    if (origin === `https://${shop}`) return origin;
-  return undefined;
+  return origin && isConversationStorefront(origin) ? origin : undefined;
 }
 
 export async function authenticateBootstrap(request: Request) {
@@ -45,9 +45,17 @@ export async function authenticateBootstrap(request: Request) {
       401,
       "Open Roman in Shopify admin to approve its permissions, then refresh the storefront.",
     );
-  const origin = `https://${session.shop}`;
   const suppliedOrigin = request.headers.get("Origin");
-  if (suppliedOrigin !== null && suppliedOrigin !== origin)
+  // App proxies can omit Origin. The browser supplies its origin in the query
+  // Shopify signs; it must still belong to that authenticated permanent shop.
+  const origin =
+    new URL(request.url).searchParams.get("storefront_origin") ??
+    suppliedOrigin ??
+    `https://${session.shop}`;
+  if (
+    !isConversationStorefrontForShop(session.shop, origin) ||
+    (suppliedOrigin !== null && suppliedOrigin !== origin)
+  )
     throw new ConversationError(401, "Storefront origin does not match.");
   return { shop: session.shop, origin };
 }
@@ -84,7 +92,7 @@ export async function authorizeStorefrontCredential(
   if (
     !developmentShops.has(credential.shop) ||
     credential.origin !== origin ||
-    origin !== `https://${credential.shop}` ||
+    !isConversationStorefrontForShop(credential.shop, origin) ||
     (shop !== undefined && credential.shop !== shop)
   )
     throw new ConversationError(401, "Conversation authorization failed.");

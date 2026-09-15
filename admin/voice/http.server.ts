@@ -1,3 +1,8 @@
+import {
+  DEFAULT_LIVE_VOICE,
+  isLiveVoice,
+  type LiveVoice,
+} from "../../shared/voice";
 import { UUID_PATTERN } from "../conversations/auth.server";
 import { ConversationError } from "../conversations/errors.server";
 
@@ -8,9 +13,13 @@ export function voiceStartInput(value: Record<string, unknown>): {
   requestId: string;
   clientId: string;
   sdp: string;
+  voice: LiveVoice;
 } {
   if (
-    Object.keys(value).length !== 3 ||
+    Object.keys(value).some(
+      (key) => !["requestId", "clientId", "sdp", "voice"].includes(key),
+    ) ||
+    ("voice" in value && !isLiveVoice(value.voice)) ||
     typeof value.requestId !== "string" ||
     !UUID_PATTERN.test(value.requestId) ||
     typeof value.clientId !== "string" ||
@@ -21,13 +30,17 @@ export function voiceStartInput(value: Record<string, unknown>): {
   ) {
     throw new ConversationError(
       400,
-      "Send requestId and clientId UUIDs and a voice connection offer up to 48 KiB.",
+      "Send requestId and clientId UUIDs, a voice connection offer up to 48 KiB, and an optional built-in Live voice.",
     );
   }
   return {
     requestId: value.requestId,
     clientId: value.clientId,
     sdp: value.sdp,
+    voice:
+      value.voice === undefined
+        ? DEFAULT_LIVE_VOICE
+        : (value.voice as LiveVoice),
   };
 }
 

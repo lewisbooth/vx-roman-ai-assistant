@@ -9,6 +9,7 @@ const bundle = await build({
   stdin: {
     contents: `
       export * as start from "./admin/routes/api.conversations.$id.voice.ts";
+      export * as ready from "./admin/routes/api.conversations.$id.voice.$voiceId.ready.ts";
       export * as heartbeat from "./admin/routes/api.conversations.$id.voice.$voiceId.heartbeat.ts";
       export * as stop from "./admin/routes/api.conversations.$id.voice.$voiceId.stop.ts";
       export { ConversationError } from "./admin/conversations/errors.server.ts";
@@ -35,6 +36,7 @@ const bundle = await build({
               : args.path.endsWith("runner.server")
                 ? "export const readConversation=(...args)=>mock.read(...args);"
                 : `export const startVoice=(...args)=>mock.start(...args);
+                 export const readyVoice=(...args)=>mock.ready(...args);
                  export const heartbeatVoice=(...args)=>mock.heartbeat(...args);
                  export const stopVoice=(...args)=>mock.stop(...args);`,
         }));
@@ -68,6 +70,7 @@ function setup() {
   const calls = {
     authorize: [],
     start: [],
+    ready: [],
     heartbeat: [],
     stop: [],
     read: [],
@@ -88,6 +91,9 @@ function setup() {
     start: async (...args) => {
       calls.start.push(plain(args));
       return { voiceId: VOICE_ID, sdp: "synthetic-answer" };
+    },
+    ready: (...args) => {
+      calls.ready.push(plain(args));
     },
     heartbeat: async (...args) => {
       calls.heartbeat.push(plain(args));
@@ -161,7 +167,7 @@ test("voice start authorizes the conversation and passes only the validated offe
     sdp: "synthetic-answer",
   });
   assert.deepEqual(env.calls.authorize, [{ id: ID, token: TOKEN }]);
-  assert.deepEqual(env.calls.start, [[ID, START]]);
+  assert.deepEqual(env.calls.start, [[ID, { ...START, voice: "willow" }]]);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
   assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
@@ -169,7 +175,7 @@ test("voice start authorizes the conversation and passes only the validated offe
 });
 
 test("heartbeat and stop authenticate independently and retain conversation/client scope", async () => {
-  for (const route of ["heartbeat", "stop"]) {
+  for (const route of ["ready", "heartbeat", "stop"]) {
     const env = setup();
     const response = await run(env, route);
     assert.equal(response.status, 200);
@@ -177,14 +183,14 @@ test("heartbeat and stop authenticate independently and retain conversation/clie
     assert.deepEqual(env.calls[route], [[ID, VOICE_ID, CLIENT_ID]]);
     assert.deepEqual(
       await response.json(),
-      route === "heartbeat" ? { ok: true } : SNAPSHOT,
+      route !== "stop" ? { ok: true } : SNAPSHOT,
     );
     assert.deepEqual(env.calls.order, route === "stop" ? ["stop", "read"] : []);
   }
 });
 
 test("every voice endpoint rejects absent or incorrect bearer/origin authorization before work", async (t) => {
-  for (const route of ["start", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop"]) {
     for (const invalid of [
       { authorization: false },
       { authorization: `Bearer ${"B".repeat(43)}` },
@@ -198,6 +204,7 @@ test("every voice endpoint rejects absent or incorrect bearer/origin authorizati
         assert.equal(response.status, 401);
         assert.equal(
           env.calls.start.length +
+            env.calls.ready.length +
             env.calls.heartbeat.length +
             env.calls.stop.length +
             env.calls.read.length,
@@ -209,7 +216,7 @@ test("every voice endpoint rejects absent or incorrect bearer/origin authorizati
 });
 
 test("each voice endpoint rejects an invalid conversation ID and only permits POST", async () => {
-  for (const route of ["start", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop"]) {
     const env = setup();
     assert.equal(
       (await run(env, route, request(route), { id: "not-a-uuid" })).status,
@@ -223,6 +230,7 @@ test("each voice endpoint rejects an invalid conversation ID and only permits PO
     assert.equal(response.headers.get("Allow"), "POST, OPTIONS");
     assert.equal(
       env.calls.start.length +
+        env.calls.ready.length +
         env.calls.heartbeat.length +
         env.calls.stop.length,
       0,
@@ -231,7 +239,7 @@ test("each voice endpoint rejects an invalid conversation ID and only permits PO
 });
 
 test("voice preflight remains restricted to allowed storefronts without issuing a session", async () => {
-  for (const route of ["start", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop"]) {
     const env = setup();
     assert.equal(
       (
@@ -257,6 +265,7 @@ test("voice preflight remains restricted to allowed storefronts without issuing 
     assert.equal(env.calls.authorize.length, 0);
     assert.equal(
       env.calls.start.length +
+        env.calls.ready.length +
         env.calls.heartbeat.length +
         env.calls.stop.length,
       0,
@@ -264,7 +273,7 @@ test("voice preflight remains restricted to allowed storefronts without issuing 
   }
 });
 
-test("start accepts exactly requestId, clientId and a nonempty bounded SDP offer", async (t) => {
+test("start accepts a bounded SDP offer and rejects unexpected fields or invalid voices", async (t) => {
   const invalid = [
     {},
     { ...START, requestId: "invalid" },
@@ -274,6 +283,10 @@ test("start accepts exactly requestId, clientId and a nonempty bounded SDP offer
     { ...START, sdp: "" },
     { ...START, sdp: "  " },
     { ...START, sdp: null },
+    ...[null, "", "unknown", {}, { id: "custom" }].map((voice) => ({
+      ...START,
+      voice,
+    })),
     { ...START, providerId: "live_forged" },
     { ...START, transcript: "forged caption" },
     { ...START, sdp: "x".repeat(48 * 1024 + 1) },
@@ -299,7 +312,47 @@ test("start accepts exactly requestId, clientId and a nonempty bounded SDP offer
     (await run(env, "start", request("start", { body: input }))).status,
     200,
   );
-  assert.deepEqual(env.calls.start, [[ID, input]]);
+  assert.deepEqual(env.calls.start, [[ID, { ...input, voice: "willow" }]]);
+});
+
+test("start accepts each built-in voice and passes the validated selection", async () => {
+  const source = await import("node:fs/promises");
+  const sdk = await source.readFile(
+    "node_modules/openai/src/resources/live/live.ts",
+    "utf8",
+  );
+  const choices = sdk
+    .match(/export type BuiltInVoice =([\s\S]*?);/)[1]
+    .matchAll(/'([^']+)'/g);
+  for (const [, voice] of choices) {
+    const env = setup();
+    const input = { ...START, voice };
+    assert.equal(
+      (await run(env, "start", request("start", { body: input }))).status,
+      200,
+    );
+    assert.deepEqual(env.calls.start, [[ID, input]]);
+  }
+});
+
+test("preflight permission is cached while actual data stays uncached and authenticated", async () => {
+  const env = setup();
+  const preflight = await run(
+    env,
+    "ready",
+    request("ready", { method: "OPTIONS", authorization: false }),
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("Access-Control-Max-Age"), "600");
+  const denied = await run(
+    env,
+    "ready",
+    request("ready", { authorization: false }),
+  );
+  assert.equal(denied.status, 401);
+  assert.equal(denied.headers.get("Cache-Control"), "no-store");
+  assert.equal(denied.headers.get("Access-Control-Max-Age"), null);
+  assert.equal(env.calls.ready.length, 0);
 });
 
 test("start enforces 64 KiB on streamed body and declared Content-Length", async () => {
@@ -325,7 +378,7 @@ test("start enforces 64 KiB on streamed body and declared Content-Length", async
 });
 
 test("voice requests require valid JSON objects and an application/json content type", async () => {
-  for (const route of ["start", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop"]) {
     for (const body of ["{bad", "[]", "null"]) {
       const env = setup();
       assert.equal(
@@ -350,7 +403,7 @@ test("voice requests require valid JSON objects and an application/json content 
 });
 
 test("heartbeat and stop require a voice UUID and exactly the client UUID", async () => {
-  for (const route of ["heartbeat", "stop"]) {
+  for (const route of ["ready", "heartbeat", "stop"]) {
     for (const voiceId of [undefined, "not-a-uuid", "live_provider_id"]) {
       const env = setup();
       assert.equal(
@@ -376,9 +429,9 @@ test("heartbeat and stop require a voice UUID and exactly the client UUID", asyn
 });
 
 test("ownership conflicts retain their status and stop cannot read after rejection", async () => {
-  for (const route of ["start", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop"]) {
     const env = setup();
-    env.mock[route] = async () => {
+    env.mock[route] = () => {
       throw new env.api.ConversationError(
         409,
         "Voice belongs to another browser.",

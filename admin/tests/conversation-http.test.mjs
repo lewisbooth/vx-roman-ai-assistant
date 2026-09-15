@@ -305,6 +305,111 @@ test("signed bootstrap rejects supplied null/foreign Origin and ignores forwarde
   assert.equal(env.calls.create, 1);
 });
 
+test("the custom storefront bootstraps through signed shop identity even when Origin is omitted", async () => {
+  const origin = "https://shopify-single-dev.hdecom.com";
+  const env = setup();
+  const path = `/api/storefront/bootstrap?shop=${SHOP}&storefront_origin=${encodeURIComponent(origin)}&signature=fixture`;
+  env.mock.create = async (shop, receivedOrigin) => {
+    assert.equal(shop, SHOP);
+    assert.equal(receivedOrigin, origin);
+    return { conversationId: ID };
+  };
+  for (const suppliedOrigin of [false, origin]) {
+    const response = await run(
+      env.api.bootstrap,
+      request(path, {
+        method: "POST",
+        origin: suppliedOrigin,
+        body: "{}",
+        authorization: false,
+      }),
+    );
+    assert.equal(response.status, 200);
+  }
+  env.mock.authorize = async () => ({
+    id: ID,
+    shop: SHOP,
+    origin,
+    expiresAt: new Date(),
+  });
+  assert.equal(
+    (
+      await run(
+        env.api.bootstrap,
+        request(path, {
+          method: "POST",
+          origin: false,
+          body: json({ conversationId: ID, token: TOKEN }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  const read = await run(
+    env.api.conversation,
+    request(`/api/conversations/${ID}`, { origin }),
+  );
+  assert.equal(read.status, 200);
+  assert.equal(read.headers.get("Access-Control-Allow-Origin"), origin);
+  assert.equal(
+    (await run(env.api.conversation, request(`/api/conversations/${ID}`)))
+      .status,
+    401,
+  );
+});
+
+test("custom origin authorization rejects another shop, forwarded headers, and wildcard lookalikes", async () => {
+  const custom = "https://shopify-single-dev.hdecom.com";
+  for (const origin of [
+    "https://attacker.hdecom.com",
+    `${custom}.attacker.example`,
+    `${custom}/`,
+    "http://shopify-single-dev.hdecom.com",
+    "https://hd-dev-multi.myshopify.com",
+  ]) {
+    const env = setup();
+    assert.equal(
+      (
+        await run(
+          env.api.bootstrap,
+          request(
+            `/api/storefront/bootstrap?shop=${SHOP}&storefront_origin=${encodeURIComponent(origin)}&signature=fixture`,
+            { method: "POST", origin: false, body: "{}" },
+          ),
+        )
+      ).status,
+      401,
+    );
+    assert.equal(env.calls.create, 0);
+  }
+  const env = setup();
+  const path = `/api/storefront/bootstrap?shop=${SHOP}&storefront_origin=${encodeURIComponent(custom)}&signature=fixture`;
+  assert.equal(
+    (
+      await run(
+        env.api.bootstrap,
+        request(path, { method: "POST", body: "{}" }),
+      )
+    ).status,
+    401,
+  );
+  env.mock.authorize = async () => ({
+    id: ID,
+    shop: "hd-dev-multi.myshopify.com",
+    origin: custom,
+    expiresAt: new Date(),
+  });
+  assert.equal(
+    (
+      await run(
+        env.api.conversation,
+        request(`/api/conversations/${ID}`, { origin: custom }),
+      )
+    ).status,
+    401,
+  );
+});
+
 test("bootstrap resumes the same scoped credential and uses the current API base URL", async () => {
   const env = setup();
   const response = await run(

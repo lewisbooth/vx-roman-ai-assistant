@@ -350,25 +350,145 @@ test("a delegated presentation persists only its selected widget beside actual p
   await conversation.finishTurn(id, delegated.assistantId, {
     status: "complete",
     text: "Not yet spoken.",
+    voiceId: session.id,
     presentation: { callId: "cards-delegated", productIds: [productId] },
+  });
+  const beforeSpeech = await conversation.getSnapshot(id);
+  assert.equal(beforeSpeech.messages[1].id, delegated.assistantId);
+  assert.deepEqual(beforeSpeech.messages[1].parts[0].voiceReply, {
+    voiceId: session.id,
+    afterSequence: 2,
   });
   await caption(session, "Here are those blinds.", 200, "assistant");
   const state = await conversation.getSnapshot(id);
   assert.equal(state.messages.length, 3);
   assert.equal(state.messages[0].id, first.id);
-  assert.equal(state.messages[1].id, delegated.assistantId);
-  assert.equal(state.messages[1].role, "context");
+  assert.equal(state.messages[2].id, delegated.assistantId);
+  assert.equal(state.messages[2].role, "context");
   assert.deepEqual(
-    state.messages[1].parts.map((part) => part.type),
+    state.messages[2].parts.map((part) => part.type),
     ["products"],
   );
-  assert.deepEqual(state.messages[1].parts[0].productIds, [productId]);
-  assert.equal(state.messages[2].parts[0].text, "Here are those blinds.");
+  assert.deepEqual(state.messages[2].parts[0].productIds, [productId]);
+  assert.equal(state.messages[1].parts[0].text, "Here are those blinds.");
   assert.ok(
     !(await conversation.getModelHistory(id)).some((entry) =>
       entry.text.includes("Not yet spoken"),
     ),
   );
+});
+
+test("voice cards follow only their result captions and retain exact durable records", () => {
+  const voiceId = randomUUID();
+  const widgetId = randomUUID();
+  const widget = {
+    id: widgetId,
+    sequence: 1,
+    role: "context",
+    status: "complete",
+    createdAt: new Date(),
+    partsJson: JSON.stringify([
+      {
+        type: "products",
+        version: 1,
+        invocationId: randomUUID(),
+        productIds: ["gid://shopify/Product/123"],
+        voiceReply: { voiceId, afterSequence: 4 },
+      },
+    ]),
+  };
+  const fragment = (sequence, text, role = "assistant", extra = {}) => ({
+    id: `caption-${sequence}`,
+    voiceId,
+    sequence,
+    role,
+    text,
+    startMs: sequence * 300,
+    endMs: sequence * 300 + 100,
+    createdAt: new Date(),
+    ...extra,
+  });
+  const base = {
+    origin: "https://hd-dev-single.myshopify.com",
+    messages: [widget],
+    voiceTranscripts: [
+      fragment(0, "Find blinds", "user"),
+      fragment(2, "Let me"),
+      fragment(3, " check."),
+      fragment(4, "Here are"),
+      fragment(5, " the options."),
+    ],
+  };
+  const original = structuredClone(base);
+  let rows = conversation.conversationTimeline(base);
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ["caption-0", "caption-2", "caption-4", widgetId],
+  );
+  assert.equal(rows[1].parts[0].text, "Let me check.");
+  assert.equal(rows[2].parts[0].text, "Here are the options.");
+  assert.deepEqual(base, original);
+  for (const barrier of [
+    {
+      ...widget,
+      id: "next-delegation",
+      sequence: 6,
+      status: "pending",
+      partsJson: "[]",
+    },
+    {
+      ...widget,
+      id: "page",
+      sequence: 6,
+      partsJson: JSON.stringify([
+        {
+          type: "page_view",
+          version: 1,
+          title: "Blinds",
+          path: "/collections/all",
+          occurredAt: new Date().toISOString(),
+        },
+      ]),
+    },
+    {
+      ...widget,
+      id: "typed",
+      sequence: 6,
+      role: "user",
+      partsJson: JSON.stringify([{ type: "text", text: "Something else" }]),
+    },
+  ]) {
+    rows = conversation.conversationTimeline({
+      ...base,
+      messages: [widget, barrier],
+      voiceTranscripts: [
+        ...base.voiceTranscripts,
+        fragment(7, "An unrelated follow-up"),
+      ],
+    });
+    assert.ok(
+      rows.findIndex((row) => row.id === widgetId) <
+        rows.findIndex((row) => row.id === barrier.id),
+    );
+    assert.ok(
+      rows.findIndex((row) => row.id === barrier.id) <
+        rows.findIndex((row) => row.id === "caption-7"),
+    );
+  }
+  for (const extra of [{ role: "user" }, { voiceId: randomUUID() }]) {
+    rows = conversation.conversationTimeline({
+      ...base,
+      voiceTranscripts: [
+        ...base.voiceTranscripts,
+        fragment(6, "New turn", "assistant", extra),
+        fragment(7, "Later reply"),
+      ],
+    });
+    assert.ok(
+      rows.findIndex((row) => row.id === widgetId) <
+        rows.findIndex((row) => row.id === "caption-6"),
+    );
+  }
 });
 
 test("ending chat closes voice and delegated work atomically while retaining captions", async () => {
