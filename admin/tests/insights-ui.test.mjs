@@ -260,7 +260,7 @@ test("usage distinguishes missing reporting from measured zero and states covera
   );
   assert.match(
     container.textContent,
-    /0 of 2 model calls and 0 of 1 voice sessions/,
+    /0 of 2 Luna calls and 0 of 1 GPT-Live sessions/,
   );
   render("RecordedUsage", {
     usage: {

@@ -232,6 +232,7 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
     sdp: "offer-sdp",
   });
   assert.match(request.session.instructions, /Roman.*shop-at-home/);
+  assert.deepEqual(plain(request.session.audio), { output: { voice: "ballad" } });
   assert.match(request.session.instructions, /Interruption policy:/);
   assert.match(request.session.instructions, /Luna/);
   assert.equal(options.signal.aborted, false);

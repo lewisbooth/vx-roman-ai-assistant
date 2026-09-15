@@ -27,9 +27,11 @@ export function RecordedUsage({ usage }: { usage: UsageSummary }) {
         ))}
       </dl>
       <s-paragraph color="subdued">
+        Luna reports tokens for text and delegated work; GPT-Live reports audio
+        seconds.{" "}
         Usage reported for {usage.reportedModelCalls} of {usage.modelCalls}{" "}
-        model calls and {usage.reportedVoiceSessions} of {usage.voiceSessions}{" "}
-        voice sessions. Totals include recorded usage only. Older or unfinished
+        Luna calls and {usage.reportedVoiceSessions} of {usage.voiceSessions}{" "}
+        GPT-Live sessions. Totals include recorded usage only. Older or unfinished
         activity may have no usage report; these are not cost estimates. Cached
         input and reasoning tokens are included in input and output totals,
         respectively.

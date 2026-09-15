@@ -76,6 +76,56 @@ test("stopping while permission is pending stops a late microphone without creat
   assert.equal(media.tracks[0].stopped, true);
 });
 
+test("native startup remains pending until delayed playback succeeds and lifecycle events do not restart audio", async (t) => {
+  let allowPlayback;
+  const { connection, media } = setup(t, {
+    play: () =>
+      new Promise((resolve) => {
+        allowPlayback = resolve;
+      }),
+  });
+  await connection.prepare();
+  let ready = false;
+  const connecting = connection.connect("answer").then(() => {
+    ready = true;
+  });
+  media.connect();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(ready, false);
+  assert.equal(media.calls.play, 1);
+  allowPlayback();
+  await connecting;
+  assert.equal(ready, true);
+  media.event("session.started");
+  media.peers[0].onconnectionstatechange();
+  assert.equal(media.calls.play, 1);
+  assert.equal(media.calls.pause, 0);
+  assert.equal(media.calls.microphone, 1);
+});
+
+test("stopping during delayed playback cannot reactivate voice when play later resolves", async (t) => {
+  let allowPlayback;
+  const { connection, media, errors } = setup(t, {
+    play: () =>
+      new Promise((resolve) => {
+        allowPlayback = resolve;
+      }),
+  });
+  await connection.prepare();
+  const connecting = connection.connect("answer");
+  media.connect();
+  connection.close();
+  await assert.rejects(connecting, /stopped/);
+  allowPlayback();
+  await Promise.resolve();
+  assert.equal(media.calls.play, 1);
+  assert.equal(media.calls.pause, 1);
+  assert.equal(media.peers[0].closed, true);
+  assert.equal(media.tracks[0].stopped, true);
+  assert.deepEqual(errors, []);
+});
+
 test("browser data messages cannot execute tools or upload captions", async (t) => {
   const { connection, media, errors } = setup(t);
   await connection.prepare();
