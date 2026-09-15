@@ -24,11 +24,28 @@ export interface VoiceTranscriptGroup {
   fragments: VoiceTranscriptFragment[];
 }
 
+const maxCaptionPauseMs = 3000;
+
+function adjacentInTimeline(
+  previous: number,
+  current: number,
+  hiddenSequences: ReadonlySet<number>,
+): boolean {
+  if (current <= previous || current - previous > hiddenSequences.size + 1)
+    return false;
+  for (let sequence = previous + 1; sequence < current; sequence++) {
+    if (!hiddenSequences.has(sequence)) return false;
+  }
+  return true;
+}
+
 /** Display grouping only: captions are observations, not completed user turns. */
 export function groupVoiceTranscript(
   fragments: readonly VoiceTranscriptFragment[],
+  hiddenSequences: readonly number[] = [],
 ): VoiceTranscriptGroup[] {
   const groups: VoiceTranscriptGroup[] = [];
+  const hidden = new Set(hiddenSequences);
   const ordered = [...fragments].sort(
     (left, right) => left.sequence - right.sequence,
   );
@@ -40,9 +57,10 @@ export function groupVoiceTranscript(
       lastFragment &&
       previous.voiceId === fragment.voiceId &&
       previous.role === fragment.role &&
-      lastFragment.sequence + 1 === fragment.sequence &&
+      adjacentInTimeline(lastFragment.sequence, fragment.sequence, hidden) &&
       fragment.startMs >= previous.startMs &&
-      fragment.startMs <= previous.endMs + 750
+      // Natural pauses within speech should not create separate chat bubbles.
+      fragment.startMs <= previous.endMs + maxCaptionPauseMs
     ) {
       previous.fragments.push(fragment);
       // Provider deltas may split a word. Never infer spaces or completed intent.

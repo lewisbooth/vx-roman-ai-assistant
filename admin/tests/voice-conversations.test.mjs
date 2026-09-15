@@ -207,6 +207,107 @@ test("voice delegation has one hidden context owner and never fabricates spoken 
   assert.equal(await database.voiceTranscript.count(), 1);
 });
 
+test("empty delegation bookkeeping does not split a spoken reply during or after completion", async () => {
+  const session = await startVoice();
+  const first = await caption(session, "Hello", 0, "assistant");
+  const delegated = await conversation.beginTurn(id, textInput(""), session.id);
+  await caption(session, " there", 1200, "assistant");
+  const pending = await conversation.getSnapshot(id);
+  assert.equal(pending.busy, true);
+  assert.equal(pending.messages.length, 1);
+  assert.equal(pending.messages[0].id, first.id);
+  assert.equal(pending.messages[0].parts[0].text, "Hello there");
+  await conversation.finishTurn(id, delegated.assistantId, {
+    text: "Private briefing",
+    status: "complete",
+  });
+  await caption(session, ". How can I help?", 2800, "assistant");
+  const completed = await conversation.getSnapshot(id);
+  assert.equal(completed.messages.length, 1);
+  assert.equal(completed.messages[0].id, first.id);
+  assert.equal(
+    completed.messages[0].parts[0].text,
+    "Hello there. How can I help?",
+  );
+  assert.equal(await database.voiceTranscript.count(), 3);
+  assert.deepEqual(await conversation.getModelHistory(id), [
+    { role: "assistant", text: "Hello there. How can I help?" },
+  ]);
+});
+
+for (const entry of [
+  {
+    label: "page visits",
+    role: "context",
+    status: "complete",
+    parts: [
+      {
+        type: "page_view",
+        version: 1,
+        title: "Roller blinds",
+        path: "/collections/all",
+        occurredAt: "2026-09-16T12:00:00.000Z",
+      },
+    ],
+  },
+  {
+    label: "product widgets",
+    role: "context",
+    status: "complete",
+    parts: [
+      {
+        type: "products",
+        version: 1,
+        invocationId: "6dedf5cd-9d29-4c06-bcf6-ce5d3b49b7a9",
+        productIds: ["gid://shopify/Product/123"],
+      },
+    ],
+  },
+  {
+    label: "text messages",
+    role: "assistant",
+    status: "complete",
+    parts: [{ type: "text", text: "A saved text reply" }],
+  },
+  {
+    label: "failed delegation rows",
+    role: "context",
+    status: "failed",
+    parts: [],
+  },
+]) {
+  test(`visible ${entry.label} remain ordered boundaries between voice captions`, async () => {
+    const session = await startVoice();
+    const first = await caption(session, "Before", 0, "assistant");
+    const boundary = await database.conversationMessage.create({
+      data: {
+        id: randomUUID(),
+        conversationId: id,
+        requestId: randomUUID(),
+        sequence: 1,
+        role: entry.role,
+        status: entry.status,
+        partsJson: JSON.stringify(entry.parts),
+        ...(entry.status === "failed"
+          ? { error: "Work was interrupted." }
+          : {}),
+      },
+    });
+    await database.conversation.update({
+      where: { id },
+      data: { nextSequence: 2 },
+    });
+    const last = await caption(session, " after", 400, "assistant");
+    const state = await conversation.getSnapshot(id);
+    assert.deepEqual(
+      state.messages.map((message) => message.id),
+      [first.id, boundary.id, last.id],
+    );
+    assert.equal(state.messages[0].parts[0].text, "Before");
+    assert.equal(state.messages[2].parts[0].text, " after");
+  });
+}
+
 test("voice and text ownership excludes other sessions and newer cancellation tombstones", async () => {
   const session = await startVoice();
   await assert.rejects(

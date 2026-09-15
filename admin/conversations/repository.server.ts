@@ -118,7 +118,10 @@ function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
 }
 
 export function conversationTimeline(
-  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts">,
+  conversation: Pick<
+    StoredConversation,
+    "origin" | "messages" | "voiceTranscripts"
+  >,
 ): ConversationMessage[] {
   const rows = conversation.messages.map((message) => {
     if (
@@ -149,6 +152,14 @@ export function conversationTimeline(
         createdAt: fragment.createdAt.toISOString(),
       };
     }),
+    // Empty delegation rows own tool work but are not visible conversation
+    // entries. Page visits, widgets, text and failures still separate captions.
+    rows
+      .filter(
+        (row) =>
+          row.message.parts.length === 0 && row.message.status !== "failed",
+      )
+      .map((row) => row.sequence),
   );
   for (const caption of captions)
     rows.push({
