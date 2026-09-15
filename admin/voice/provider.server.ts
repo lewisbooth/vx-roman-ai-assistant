@@ -8,6 +8,17 @@ export const VOICE_MODEL = "gpt-live-1";
 const STARTUP_MS = 15_000;
 const COMMAND_MS = 3_000;
 const MAX_CONTEXT_CHARACTERS = 1_200;
+const consumedEventTypes = new Set([
+  "session.started",
+  "session.closed",
+  "session.input_transcript.delta",
+  "session.output_transcript.delta",
+  "session.delegation.created",
+  "session.instructions.appended",
+  "session.thinking.appended",
+  "session.commentary.appended",
+  "error",
+]);
 
 // Live owns conversation and pacing. Luna retains the business rules and tools.
 const VOICE_PROMPT = `You are Roman, a warm, calm digital shop-at-home advisor for window blinds and shades. Help the customer choose confidently for their room, light, privacy, style and fitting needs. Speak naturally, briefly and without sales pressure. Ask one useful question at a time. Continue the supplied conversation rather than introducing yourself again. Match the customer's language and units.
@@ -54,6 +65,7 @@ export type VoiceProviderEvent =
 export interface VoiceProvider {
   providerId: string;
   sdp: string;
+  beginConversation(): Promise<void>;
   appendThinking(text: string): Promise<void>;
   appendCommentary(delegationId: string, text: string): Promise<void>;
   close(): Promise<void>;
@@ -204,10 +216,23 @@ export async function createVoiceProvider(options: {
   const onError = () => fail("connection_failed");
   const onEvent = (event: ConnectServerEvent) => {
     if (closed) return;
+    const eventType: string | undefined = event?.type;
+    // Live reflects audio to trusted sidebands without event_id. Those frames
+    // are documented by the native Live schema but absent from this SDK's
+    // sideband union. WebRTC owns playback; Roman never stores reflected audio.
+    if (
+      eventType === "session.input_audio.append" ||
+      eventType === "session.output_audio.delta"
+    )
+      return;
+    // Validate the events we consume, not every future provider event envelope.
+    if (!eventType || !consumedEventTypes.has(eventType)) return;
+    let invalidField = "event_id";
     try {
       if (!identifier(event.event_id))
         throw new VoiceProviderError("invalid_event");
       if (event.type === "session.closed") {
+        invalidField = "reason";
         const reasons = [
           "close_requested",
           "expired",
@@ -217,22 +242,28 @@ export async function createVoiceProvider(options: {
         ];
         if (!reasons.includes(event.reason))
           throw new VoiceProviderError("invalid_event");
+        invalidField = "event_handler";
         stop(event.reason, true);
       } else if (event.type === "session.started") {
+        invalidField = "event_handler";
         emit({ type: "started", eventId: event.event_id });
       } else if (
         event.type === "session.input_transcript.delta" ||
         event.type === "session.output_transcript.delta"
       ) {
-        if (
-          typeof event.delta !== "string" ||
-          event.delta.length > 2_000 ||
-          !timestamp(event.start_ms) ||
-          !timestamp(event.end_ms) ||
-          event.end_ms < event.start_ms
-        ) {
+        invalidField = "delta";
+        if (typeof event.delta !== "string" || event.delta.length > 2_000) {
           throw new VoiceProviderError("invalid_event");
         }
+        invalidField = "start_ms";
+        if (!timestamp(event.start_ms)) {
+          throw new VoiceProviderError("invalid_event");
+        }
+        invalidField = "end_ms";
+        if (!timestamp(event.end_ms) || event.end_ms < event.start_ms) {
+          throw new VoiceProviderError("invalid_event");
+        }
+        invalidField = "event_handler";
         if (event.delta)
           emit({
             type: "transcript",
@@ -246,16 +277,27 @@ export async function createVoiceProvider(options: {
             endMs: event.end_ms,
           });
       } else if (event.type === "session.delegation.created" && !closing) {
+        invalidField = "delegation.id";
+        if (!identifier(event.delegation?.id)) {
+          throw new VoiceProviderError("invalid_event");
+        }
+        invalidField = "delegation.target";
+        if (event.delegation.target !== "client") {
+          throw new VoiceProviderError("invalid_event");
+        }
+        invalidField = "offset_ms";
+        if (!timestamp(event.offset_ms)) {
+          throw new VoiceProviderError("invalid_event");
+        }
+        invalidField = "delegation_limit";
         if (
-          !identifier(event.delegation?.id) ||
-          event.delegation.target !== "client" ||
-          !timestamp(event.offset_ms) ||
-          (knownDelegations.size >= 128 &&
-            !knownDelegations.has(event.delegation.id))
+          knownDelegations.size >= 128 &&
+          !knownDelegations.has(event.delegation.id)
         ) {
           throw new VoiceProviderError("invalid_event");
         }
         knownDelegations.add(event.delegation.id);
+        invalidField = "event_handler";
         emit({
           type: "delegation",
           eventId: event.event_id,
@@ -263,9 +305,17 @@ export async function createVoiceProvider(options: {
           offsetMs: event.offset_ms,
         });
       } else if (
+        event.type === "session.instructions.appended" ||
         event.type === "session.thinking.appended" ||
         event.type === "session.commentary.appended"
       ) {
+        invalidField = "client_event_id";
+        if (
+          event.client_event_id !== undefined &&
+          !identifier(event.client_event_id)
+        ) {
+          throw new VoiceProviderError("invalid_event");
+        }
         const command = event.client_event_id
           ? commands.get(event.client_event_id)
           : undefined;
@@ -278,6 +328,10 @@ export async function createVoiceProvider(options: {
         fail("command_failed");
       }
     } catch {
+      console.error("[Roman] Voice provider event rejected.", {
+        type: eventType,
+        field: invalidField,
+      });
       fail("invalid_event");
     }
   };
@@ -365,7 +419,7 @@ export async function createVoiceProvider(options: {
       );
 
     const append = (
-      type: "thinking" | "commentary",
+      type: "instructions" | "thinking" | "commentary",
       delegationId: string | null,
       text: string,
     ) => {
@@ -405,6 +459,18 @@ export async function createVoiceProvider(options: {
     return {
       providerId: created.session.id,
       sdp: created.transport.sdp,
+      beginConversation: async () => {
+        await append(
+          "instructions",
+          null,
+          "Begin speaking immediately without waiting for the customer. Use English unless the supplied conversation established another language. If this is a new conversation, give a brief warm greeting as Roman and ask how you can help with their blinds or shades. If there is earlier conversation, acknowledge that you are continuing in voice and ask one concise relevant follow-up based on that context. Do not repeat an introduction or invent a product claim. Then pause and listen. Keep the original advisor and delegation instructions.",
+        );
+        await append(
+          "commentary",
+          null,
+          "Begin the conversation now, following the opening instructions just provided.",
+        );
+      },
       appendThinking: (text) => append("thinking", null, text),
       appendCommentary: (delegationId, text) =>
         append("commentary", delegationId, text),

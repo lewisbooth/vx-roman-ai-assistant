@@ -34,6 +34,9 @@ interface VoiceOwner {
   closing?: Promise<void>;
   stopping: boolean;
   reserved: boolean;
+  started: boolean;
+  activated: boolean;
+  openingStarted: boolean;
   error?: string;
   timer?: ReturnType<typeof setTimeout>;
   events: Promise<void>;
@@ -69,6 +72,28 @@ function lease(owner: VoiceOwner, expiresAt: Date) {
     Math.max(0, expiresAt.getTime() - Date.now()),
   );
   owner.timer.unref();
+}
+
+function beginConversation(owner: VoiceOwner) {
+  if (
+    owner.stopping ||
+    owner.openingStarted ||
+    !owner.started ||
+    !owner.activated ||
+    !owner.provider
+  )
+    return;
+  owner.openingStarted = true;
+  // Native audio readiness may arrive before or after provider creation. Never
+  // await the opening here: the browser needs its SDP answer to finish connecting.
+  void owner.provider.beginConversation().catch(() => {
+    if (!owner.stopping)
+      fail(
+        owner,
+        "Roman could not begin speaking. Start voice again to reconnect.",
+        "opening_failed",
+      );
+  });
 }
 
 function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
@@ -150,7 +175,11 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
     if (!owner.stopping) fail(owner, disconnected, "provider_closed");
     return;
   }
-  if (event.type === "started") return;
+  if (event.type === "started") {
+    owner.started = true;
+    beginConversation(owner);
+    return;
+  }
   // Final captions remain accepted while close() drains the trusted sideband.
   if (owner.eventCount >= 128) {
     fail(
@@ -275,6 +304,9 @@ export async function startVoice(
     controller: new AbortController(),
     stopping: false,
     reserved: false,
+    started: false,
+    activated: false,
+    openingStarted: false,
     start: Promise.resolve({ voiceId: input.requestId, sdp: "" }),
     events: Promise.resolve(),
     eventCount: 0,
@@ -310,6 +342,8 @@ export async function startVoice(
       owner.provider.providerId,
     );
     owner.controller.signal.throwIfAborted();
+    owner.activated = true;
+    beginConversation(owner);
     return { voiceId: owner.voiceId, sdp: owner.provider.sdp };
   })();
   try {

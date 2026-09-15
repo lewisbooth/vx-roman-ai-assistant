@@ -116,12 +116,17 @@ function setup() {
         options,
         closed: false,
         closeCount: 0,
+        openingCount: 0,
         commentaries: [],
         thoughts: [],
       };
       const provider = {
         providerId: "live_test",
         sdp: "v=0\r\nanswer",
+        beginConversation: async () => {
+          record.openingCount++;
+          await mock.onOpening?.(record);
+        },
         close: async () => {
           order.push("provider-close");
           record.closeCount++;
@@ -293,6 +298,132 @@ test("voice starts once per exact owner and SDP, resuming duplicate HTTP request
   await state.stop();
   assert.equal(state.providers[0].closeCount, 1);
   assert.equal(state.timers.size, 0);
+});
+
+test("voice returns SDP before native readiness and opens once after its late started event", async () => {
+  const state = setup();
+  const answer = await state.start();
+  assert.equal(answer.sdp, "v=0\r\nanswer");
+  assert.equal(state.providers[0].openingCount, 0);
+  state.emit({ type: "started", eventId: "started_1" });
+  state.emit({ type: "started", eventId: "started_1" });
+  state.emit({ type: "started", eventId: "started_2" });
+  await state.start();
+  await flush();
+  assert.equal(state.providers[0].openingCount, 1);
+  assert.equal(state.calls.delegate.length, 0);
+  assert.equal(state.calls.caption.length, 0);
+  await state.stop();
+});
+
+test("an early native started event waits for provider creation and activation without blocking SDP on the opening", async () => {
+  const state = setup();
+  const createGate = deferred();
+  const activateGate = deferred();
+  const openingGate = deferred();
+  state.mock.beforeCreate = async (options) => {
+    options.onEvent({ type: "started", eventId: "early_started" });
+    await createGate.promise;
+  };
+  state.mock.beforeActivate = () => activateGate.promise;
+  state.mock.onOpening = () => openingGate.promise;
+  const started = state.start();
+  await flush();
+  assert.equal(state.providers[0].openingCount, 0);
+  createGate.resolve();
+  await flush();
+  assert.equal(state.calls.activate.length, 1);
+  assert.equal(state.providers[0].openingCount, 0);
+  activateGate.resolve();
+  assert.equal((await started).sdp, "v=0\r\nanswer");
+  assert.equal(state.providers[0].openingCount, 1);
+  openingGate.resolve();
+  await state.stop();
+});
+
+test("a cancelled connection never opens even when native readiness arrives during activation or after stop", async () => {
+  const state = setup();
+  const gate = deferred();
+  state.mock.beforeActivate = () => gate.promise;
+  const starting = state.start().catch((error) => error);
+  await flush();
+  state.emit({ type: "started", eventId: "started_before_stop" });
+  const stopped = state.stop();
+  gate.resolve();
+  await stopped;
+  assert.equal((await starting).status, 503);
+  state.emit({ type: "started", eventId: "started_after_stop" });
+  await flush();
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.rows.get(state.input.requestId).status, "closed");
+});
+
+test("opening failures close voice categorically without fabricating a greeting or invoking Luna", async () => {
+  const state = setup();
+  state.mock.onOpening = async () => {
+    throw new Error("private opening payload");
+  };
+  await state.start();
+  state.emit({ type: "started", eventId: "started_1" });
+  await flush();
+  assert.equal(state.providers[0].openingCount, 1);
+  assert.equal(state.providers[0].closed, true);
+  assert.equal(state.rows.get(state.input.requestId).status, "failed");
+  assert.match(
+    state.rows.get(state.input.requestId).error,
+    /could not begin speaking/,
+  );
+  assert.equal(state.calls.delegate.length, 0);
+  assert.equal(state.calls.caption.length, 0);
+  assert.ok(!JSON.stringify(state.logs).includes("private opening payload"));
+});
+
+test("stopping during opening suppresses its late rejection and preserves the closed outcome", async () => {
+  const state = setup();
+  const gate = deferred();
+  state.mock.onOpening = () => gate.promise;
+  await state.start();
+  state.emit({ type: "started", eventId: "started_1" });
+  await flush();
+  assert.equal(state.providers[0].openingCount, 1);
+  await state.stop();
+  gate.reject(new Error("opening cancelled"));
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).status, "closed");
+  assert.equal(state.calls.close.length, 0);
+  assert.deepEqual(state.logs, []);
+});
+
+test("each new voice connection opens once while actual provider captions remain the only transcript", async () => {
+  const state = setup();
+  await state.start();
+  state.emit({ type: "started", eventId: "started_1" });
+  await flush();
+  assert.equal(state.calls.caption.length, 0);
+  state.emit(
+    transcript({
+      role: "assistant",
+      text: "Hello, what room can I help with?",
+    }),
+  );
+  await flush();
+  assert.equal(state.calls.caption.length, 1);
+  await state.stop();
+  const next = { ...state.input, requestId: randomUUID() };
+  await state.api.startVoice(state.conversationId, next);
+  state.providers[1].options.onEvent({ type: "started", eventId: "started_2" });
+  await flush();
+  assert.deepEqual(
+    state.providers.map((provider) => provider.openingCount),
+    [1, 1],
+  );
+  assert.equal(state.calls.caption.length, 1);
+  assert.equal(state.calls.delegate.length, 0);
+  await state.api.stopVoice(
+    state.conversationId,
+    next.requestId,
+    next.clientId,
+  );
 });
 
 test("a stop that arrives before start leaves a durable cancellation and creates no provider", async () => {

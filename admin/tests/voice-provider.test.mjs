@@ -73,6 +73,7 @@ function deferred() {
 
 function setup() {
   const events = [];
+  const logs = [];
   const timers = new Map();
   const sockets = [];
   const requests = [];
@@ -134,6 +135,7 @@ function setup() {
     AbortController,
     Buffer,
     process,
+    console: { error: (...args) => logs.push(plain(args)) },
     setTimeout: (fn, ms) => {
       const id = ++nextId;
       timers.set(id, { fn, ms });
@@ -169,6 +171,7 @@ function setup() {
     create,
     connect,
     events,
+    logs,
     timers,
     sockets,
     requests,
@@ -595,4 +598,148 @@ test("provider errors expose only a category and reject commands on close", asyn
   await rejected;
   await provider.close();
   assert.equal(app.timers.size, 0);
+});
+
+test("reflected input and output audio without event IDs do not end a voice session", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  socket.event({
+    type: "session.input_audio.append",
+    audio: "PRIVATE_AUDIO_BYTES",
+  });
+  socket.event({
+    type: "session.output_audio.delta",
+    delta: "PRIVATE_AUDIO_BYTES",
+    start_ms: 0,
+    end_ms: 20,
+  });
+  socket.event({
+    type: "session.provider_extension",
+    detail: "PRIVATE_UNCONSUMED_DATA",
+  });
+  socket.event({
+    type: "session.input_transcript.delta",
+    event_id: "caption-after-audio",
+    delta: "Hello",
+    start_ms: 20,
+    end_ms: 250,
+  });
+  assert.deepEqual(app.events, [
+    {
+      type: "transcript",
+      eventId: "caption-after-audio",
+      role: "user",
+      text: "Hello",
+      startMs: 20,
+      endMs: 250,
+    },
+  ]);
+  assert.deepEqual(app.logs, []);
+  assert.equal(socket.sent.length, 0);
+  const closing = provider.close();
+  socket.event(ended);
+  await closing;
+});
+
+test("consumed malformed events still fail closed with only type and field diagnostics", async () => {
+  for (const [event, field] of [
+    [
+      {
+        type: "session.input_transcript.delta",
+        delta: "PRIVATE_CAPTION",
+        start_ms: 0,
+        end_ms: 20,
+      },
+      "event_id",
+    ],
+    [
+      {
+        type: "session.input_transcript.delta",
+        event_id: "PRIVATE_ID",
+        delta: "PRIVATE_CAPTION",
+        start_ms: "0",
+        end_ms: 20,
+      },
+      "start_ms",
+    ],
+    [
+      { ...delegation(), delegation: { id: "PRIVATE_ID", target: "unknown" } },
+      "delegation.target",
+    ],
+    [
+      {
+        type: "session.commentary.appended",
+        event_id: "PRIVATE_ID",
+        client_event_id: {},
+      },
+      "client_event_id",
+    ],
+  ]) {
+    const app = setup();
+    const provider = await app.connect();
+    const socket = app.sockets[0];
+    socket.event(event);
+    assert.deepEqual(app.events, [{ type: "error", code: "invalid_event" }]);
+    assert.deepEqual(app.logs, [
+      ["[Roman] Voice provider event rejected.", { type: event.type, field }],
+    ]);
+    assert.doesNotMatch(JSON.stringify(app.logs), /PRIVATE/);
+    assert.equal(socket.sent.at(-1).type, "session.close");
+    socket.event(ended);
+    await provider.close();
+  }
+});
+
+test("beginConversation sends opening instructions then commentary only after the matching acknowledgment", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  assert.equal(socket.sent.length, 0, "The service chooses when to begin");
+  const opening = provider.beginConversation();
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].type, "session.instructions.append");
+  assert.equal(socket.sent[0].delegation_id, null);
+  assert.match(socket.sent[0].content, /without waiting/);
+  assert.match(socket.sent[0].content, /earlier conversation/);
+  assert.match(socket.sent[0].content, /English/);
+  socket.event({
+    type: "session.commentary.appended",
+    event_id: "wrong-opening-ack",
+    client_event_id: socket.sent[0].event_id,
+  });
+  await flush();
+  assert.equal(socket.sent.length, 1);
+  socket.ack(0);
+  await flush();
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[1].type, "session.commentary.append");
+  assert.equal(socket.sent[1].delegation_id, null);
+  assert.match(socket.sent[1].content, /Begin the conversation now/);
+  socket.ack(1);
+  await opening;
+  assert.equal(app.timers.size, 0);
+});
+
+test("an opening acknowledgment failure or stop cannot send the next opening command", async () => {
+  for (const mode of ["timeout", "stop"]) {
+    const app = setup();
+    const provider = await app.connect();
+    const socket = app.sockets[0];
+    const opening = provider.beginConversation();
+    const rejected = assert.rejects(opening, { code: "command_failed" });
+    if (mode === "timeout") app.fire(3000);
+    else {
+      app.controller.abort();
+      socket.ack(0);
+    }
+    socket.event(ended);
+    await rejected;
+    await provider.close();
+    assert.equal(
+      socket.sent.some((event) => event.type === "session.commentary.append"),
+      false,
+    );
+    assert.equal(app.timers.size, 0);
+  }
 });
