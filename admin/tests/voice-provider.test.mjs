@@ -420,7 +420,12 @@ test("normal close drains final transcripts and confirms provider finalization o
       startMs: 100,
       endMs: 400,
     },
-    { type: "closed", reason: "close_requested", confirmed: true },
+    {
+      type: "closed",
+      reason: "close_requested",
+      confirmed: true,
+      usage: { model: "gpt-live-1", seconds: null },
+    },
   ]);
   app.controller.abort();
   assert.equal(socket.sent.length, 1);
@@ -434,10 +439,63 @@ test("close timeout terminates transport without claiming provider finalization"
   await closing;
   assert.deepEqual(app.events, [
     { type: "error", code: "close_unconfirmed" },
-    { type: "closed", reason: "close_timeout", confirmed: false },
+    {
+      type: "closed",
+      reason: "close_timeout",
+      confirmed: false,
+      usage: { model: "gpt-live-1", seconds: null },
+    },
   ]);
   assert.equal(app.sockets[0].terminated, true);
   assert.equal(app.timers.size, 0);
+});
+
+test("only final Live usage is emitted once, preserving reported fractions and zero", async () => {
+  for (const seconds of [0, 12.125]) {
+    const app = setup();
+    const provider = await app.connect();
+    const socket = app.sockets[0];
+    socket.event({
+      type: "session.usage.updated",
+      event_id: "interim-1",
+      usage: { seconds: 3 },
+    });
+    socket.event({
+      type: "session.usage.updated",
+      event_id: "interim-2",
+      usage: { seconds: 8 },
+    });
+    assert.equal(app.events.length, 0);
+    const closing = provider.close();
+    socket.event({
+      ...ended,
+      session: { id: "live_test", model: "gpt-live-1-observed" },
+      usage: { seconds },
+    });
+    socket.event({ ...ended, usage: { seconds: 50 } });
+    await closing;
+    assert.equal(app.events.length, 1);
+    assert.deepEqual(app.events[0].usage, {
+      model: "gpt-live-1-observed",
+      seconds,
+    });
+  }
+});
+
+test("invalid final duration does not invent zero or prevent confirmed provider shutdown", async () => {
+  for (const seconds of [-1, NaN, Infinity, "private provider value"]) {
+    const app = setup();
+    const provider = await app.connect();
+    const closing = provider.close();
+    app.sockets[0].event({ ...ended, usage: { seconds } });
+    await closing;
+    assert.equal(app.events.at(-1).confirmed, true);
+    assert.equal(app.events.at(-1).usage.seconds, null);
+    assert.doesNotMatch(
+      JSON.stringify(app.logs),
+      /private provider value|live_test/,
+    );
+  }
 });
 
 test("unexpected sideband loss closes without reconnect or raw error leakage", async () => {
@@ -448,7 +506,12 @@ test("unexpected sideband loss closes without reconnect or raw error leakage", a
   await provider.close();
   assert.deepEqual(app.events, [
     { type: "error", code: "connection_failed" },
-    { type: "closed", reason: "connection_lost", confirmed: false },
+    {
+      type: "closed",
+      reason: "connection_lost",
+      confirmed: false,
+      usage: { model: "gpt-live-1", seconds: null },
+    },
   ]);
   assert.equal(app.sockets.length, 1);
   assert.equal(app.timers.size, 0);

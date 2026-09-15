@@ -40,6 +40,8 @@ const bundle = await build({
         export const runVoiceDelegation = (...args) => mock.delegate(...args);`;
           else if (args.path.includes("conversations"))
             contents = `export const getModelHistory = (...args) => mock.history(...args);`;
+          else if (args.path.includes("usage"))
+            contents = `export const recordVoiceUsage = (...args) => mock.usage(...args);`;
           else
             contents = `export const reserveVoiceSession = (...args) => mock.reserve(...args);
         export const activateVoiceSession = (...args) => mock.activate(...args);
@@ -82,10 +84,16 @@ function setup() {
     delegate: [],
     cancelDelegation: [],
     heartbeat: [],
+    usage: [],
   };
   let api;
   const mock = {
     beforeReserve: undefined,
+    usage: async (...args) => {
+      await mock.beforeUsage?.(...args);
+      calls.usage.push(plain(args));
+      order.push("usage-saved");
+    },
     beforeCreate: undefined,
     beforeCaption: undefined,
     onProviderClose: undefined,
@@ -314,6 +322,36 @@ test("voice returns SDP before native readiness and opens once after its late st
   assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.calls.caption.length, 0);
   await state.stop();
+});
+
+test("stop drains final trusted usage before closing the durable voice session", async () => {
+  const state = setup();
+  const gate = deferred();
+  state.mock.beforeUsage = () => gate.promise;
+  state.mock.onProviderClose = async (record) =>
+    record.options.onEvent({
+      type: "closed",
+      reason: "close_requested",
+      confirmed: true,
+      usage: { model: "gpt-live-1", seconds: 12.125 },
+    });
+  await state.start();
+  const stopped = state.stop();
+  await flush();
+  assert.equal(state.calls.cancel.length, 0);
+  gate.resolve();
+  await stopped;
+  assert.deepEqual(state.calls.usage, [
+    [
+      state.conversationId,
+      state.input.requestId,
+      { model: "gpt-live-1", seconds: 12.125 },
+    ],
+  ]);
+  assert.ok(
+    state.order.indexOf("usage-saved") <
+      state.order.indexOf("cancel-persisted"),
+  );
 });
 
 test("an early native started event waits for provider creation and activation without blocking SDP on the opening", async () => {

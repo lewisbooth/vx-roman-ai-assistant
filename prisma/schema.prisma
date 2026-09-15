@@ -50,6 +50,7 @@ model Conversation {
   toolInvocations     ToolInvocation[]
   voiceSessions       VoiceSession[]
   voiceTranscripts    VoiceTranscript[]
+  modelUsage          ModelUsage[]
 
   @@index([shop, createdAt])
 }
@@ -69,6 +70,7 @@ model ConversationMessage {
   createdAt      DateTime     @default(now())
   completedAt    DateTime?
   toolInvocations ToolInvocation[]
+  modelUsage     ModelUsage[]
 
   @@unique([conversationId, requestId, role])
   @@unique([conversationId, sequence])
@@ -101,6 +103,8 @@ model VoiceSession {
   conversation   Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   clientId       String
   providerId     String?
+  model          String?
+  usageSeconds   Float?
   status         String            @default("starting")
   leaseExpiresAt DateTime
   createdAt      DateTime          @default(now())
@@ -110,6 +114,26 @@ model VoiceSession {
 
   // The migration additionally enforces one starting/active session per conversation.
   @@index([conversationId, status])
+}
+
+model ModelUsage {
+  id                 String              @id
+  conversationId     String
+  conversation       Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  assistantId        String
+  assistant          ConversationMessage @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  model              String
+  serviceTier        String?
+  status             String
+  inputTokens        Int?
+  cachedInputTokens  Int?
+  outputTokens       Int?
+  reasoningTokens    Int?
+  totalTokens        Int?
+  createdAt          DateTime            @default(now())
+  completedAt        DateTime?
+
+  @@index([conversationId, createdAt])
 }
 
 model VoiceTranscript {

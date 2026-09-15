@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { randomUUID } from "node:crypto";
 import type {
   Response,
   ResponseInput,
@@ -12,6 +13,7 @@ import {
   parseNavigationCall,
 } from "../../shared/navigation-tool";
 import type { BrowserToolOutcome } from "./browser-tools.server";
+import type { ModelUsageUpdate } from "../usage/contracts";
 import {
   ROMAN_ADVISOR_PROMPT,
   ROMAN_VOICE_BRIEFING_PROMPT,
@@ -39,6 +41,58 @@ export interface ModelReply {
 
 let client: OpenAI | undefined;
 
+function reportedTokens(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 2_147_483_647
+    ? value
+    : null;
+}
+
+function responseUsage(
+  id: string,
+  status: ModelUsageUpdate["status"],
+  response?: Response,
+): ModelUsageUpdate {
+  const usage = response?.usage;
+  const inputTokens = reportedTokens(usage?.input_tokens);
+  const outputTokens = reportedTokens(usage?.output_tokens);
+  const cachedInputTokens = reportedTokens(
+    usage?.input_tokens_details?.cached_tokens,
+  );
+  const reasoningTokens = reportedTokens(
+    usage?.output_tokens_details?.reasoning_tokens,
+  );
+  return {
+    id,
+    status,
+    model:
+      response?.model && /^[a-zA-Z0-9._:-]{1,100}$/.test(response.model)
+        ? response.model
+        : TEXT_MODEL,
+    serviceTier:
+      response?.service_tier && /^[a-z0-9_-]{1,40}$/.test(response.service_tier)
+        ? response.service_tier
+        : null,
+    inputTokens,
+    cachedInputTokens:
+      cachedInputTokens !== null &&
+      inputTokens !== null &&
+      cachedInputTokens > inputTokens
+        ? null
+        : cachedInputTokens,
+    outputTokens,
+    reasoningTokens:
+      reasoningTokens !== null &&
+      outputTokens !== null &&
+      reasoningTokens > outputTokens
+        ? null
+        : reasoningTokens,
+    totalTokens: reportedTokens(usage?.total_tokens),
+  };
+}
+
 export async function generateReply(
   history: ModelMessage[],
   onText: (text: string) => void,
@@ -49,6 +103,7 @@ export async function generateReply(
     input: unknown,
   ) => Promise<BrowserToolOutcome>,
   mode: "text" | "voice" = "text",
+  onUsage?: (usage: ModelUsageUpdate) => Promise<void>,
 ): Promise<ModelReply> {
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
   const input: ResponseInput = history.map(({ role, text }) => ({
@@ -70,51 +125,81 @@ export async function generateReply(
           ...(!presentationAttempted ? [showProductsDefinition] : []),
         ]
       : [];
-    const stream = await client.responses.create(
-      {
-        model: TEXT_MODEL,
-        service_tier: TEXT_SERVICE_TIER,
-        reasoning: { effort: "low" },
-        instructions:
-          mode === "voice" ? ROMAN_VOICE_BRIEFING_PROMPT : ROMAN_ADVISOR_PROMPT,
-        input,
-        include: ["reasoning.encrypted_content"],
-        ...(tools.length
-          ? {
-              tools,
-              parallel_tool_calls: false,
-              tool_choice: "auto" as const,
-            }
-          : {}),
-        max_output_tokens: 1600,
-        store: false,
-        stream: true,
-      },
-      { signal },
-    );
+    const usageId = randomUUID();
+    const attempt = responseUsage(usageId, "pending");
+    // Persist the attempt before issuing a billed request. The callback remains
+    // independent of reply completion so cancellation cannot discard usage.
+    await onUsage?.(attempt);
+    let terminalReceived = false;
     let text = "";
     let completed: Response | undefined;
-    for await (const event of stream) {
-      if (event.type === "response.output_text.delta") {
-        text += event.delta;
-        onText(accumulated + text);
-      } else if (event.type === "response.completed") {
-        // Refusals are displayable responses too, without exposing reasoning items.
-        text = event.response.output
-          .flatMap((item) => (item.type === "message" ? item.content : []))
-          .map((part) =>
-            part.type === "output_text" ? part.text : part.refusal,
-          )
-          .join("");
-        completed = event.response;
-        break;
-      } else if (
-        event.type === "response.failed" ||
-        event.type === "response.incomplete" ||
-        event.type === "error"
-      ) {
-        throw new Error("The model did not complete its reply.");
+    try {
+      signal.throwIfAborted();
+      const stream = await client.responses.create(
+        {
+          model: TEXT_MODEL,
+          service_tier: TEXT_SERVICE_TIER,
+          reasoning: { effort: "low" },
+          instructions:
+            mode === "voice"
+              ? ROMAN_VOICE_BRIEFING_PROMPT
+              : ROMAN_ADVISOR_PROMPT,
+          input,
+          include: ["reasoning.encrypted_content"],
+          ...(tools.length
+            ? {
+                tools,
+                parallel_tool_calls: false,
+                tool_choice: "auto" as const,
+              }
+            : {}),
+          max_output_tokens: 1600,
+          store: false,
+          stream: true,
+        },
+        { signal },
+      );
+      for await (const event of stream) {
+        if (
+          event.type === "response.completed" ||
+          event.type === "response.failed" ||
+          event.type === "response.incomplete"
+        ) {
+          terminalReceived = true;
+          await onUsage?.(
+            responseUsage(
+              usageId,
+              event.type.slice(
+                "response.".length,
+              ) as ModelUsageUpdate["status"],
+              event.response,
+            ),
+          );
+        }
+        if (event.type === "response.output_text.delta") {
+          text += event.delta;
+          onText(accumulated + text);
+        } else if (event.type === "response.completed") {
+          // Refusals are displayable responses too, without exposing reasoning items.
+          text = event.response.output
+            .flatMap((item) => (item.type === "message" ? item.content : []))
+            .map((part) =>
+              part.type === "output_text" ? part.text : part.refusal,
+            )
+            .join("");
+          completed = event.response;
+          break;
+        } else if (
+          event.type === "response.failed" ||
+          event.type === "response.incomplete" ||
+          event.type === "error"
+        ) {
+          throw new Error("The model did not complete its reply.");
+        }
       }
+    } finally {
+      if (!terminalReceived)
+        await onUsage?.({ ...attempt, status: "unavailable" });
     }
     if (!completed)
       throw new Error("The model connection ended before its reply completed.");

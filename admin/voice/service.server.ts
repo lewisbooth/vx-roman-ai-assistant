@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { JourneyInput } from "../../shared/conversation";
 import type { VoiceStartResult } from "../../shared/voice";
 import { ConversationError } from "../conversations/errors.server";
+import { recordVoiceUsage } from "../usage/repository.server";
 import { getModelHistory } from "../conversations/repository.server";
 import {
   cancelVoiceDelegation,
@@ -172,6 +173,19 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
     return;
   }
   if (event.type === "closed") {
+    const usage = event.usage;
+    if (usage && owner.reserved) {
+      // Keep final provider usage in the same drain as captions. It remains
+      // writable even if stopping already retired the conversation's reply.
+      owner.events = owner.events
+        .then(() =>
+          recordVoiceUsage(owner.conversationId, owner.voiceId, usage),
+        )
+        .catch(() => {
+          owner.error ??= "Voice stopped, but its usage could not be saved.";
+          console.error("[Roman] Voice usage could not be saved.");
+        });
+    }
     if (!owner.stopping) fail(owner, disconnected, "provider_closed");
     return;
   }

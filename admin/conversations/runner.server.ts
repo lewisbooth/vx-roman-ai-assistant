@@ -5,6 +5,7 @@ import type {
 import { ConversationError } from "./errors.server";
 import { requestBrowserTool } from "./browser-tools.server";
 import { generateReply, TEXT_MODEL, type ModelReply } from "./model.server";
+import { recordModelUsage } from "../usage/repository.server";
 import {
   beginTurn,
   failPending,
@@ -127,6 +128,7 @@ async function completeTurn(
       (callId, name, input) =>
         requestBrowserTool(id, assistantId, callId, name, input, signal),
       turn.voiceId ? "voice" : "text",
+      (usage) => recordModelUsage(id, assistantId, usage),
     );
     signal.throwIfAborted();
     await finishTurn(id, assistantId, { ...reply, status: "complete" });

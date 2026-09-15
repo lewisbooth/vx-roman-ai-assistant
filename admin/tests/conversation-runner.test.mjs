@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import process from "node:process";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import { setImmediate } from "node:timers";
 import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
+
+const require = createRequire(import.meta.url);
 
 const bundle = await build({
   stdin: {
@@ -40,7 +43,9 @@ const bundle = await build({
             }`
               : args.path.endsWith("browser-tools.server")
                 ? `export const requestBrowserTool=(...args)=>mock.browserTool(...args);`
-                : `export const beginTurn=(...args)=>mock.begin(...args);
+                : args.path.includes("usage")
+                  ? `export const recordModelUsage=(...args)=>mock.usage(...args);`
+                  : `export const beginTurn=(...args)=>mock.begin(...args);
              export const failPending=(...args)=>mock.recover(...args);
              export const finishTurn=(...args)=>mock.finish(...args);
              export const getSnapshot=(...args)=>mock.snapshot(...args);
@@ -113,6 +118,7 @@ function setup() {
     deadlines: [],
     browserTools: [],
     ends: [],
+    usage: [],
   };
   const ensure = (id) => {
     if (!rows.has(id))
@@ -142,6 +148,7 @@ function setup() {
   let api;
   const mock = {
     clients: [],
+    usage: async (...args) => calls.usage.push(plain(args)),
     beforeBegin: undefined,
     afterFinish: undefined,
     createResponse: async (input, options) => {
@@ -241,6 +248,7 @@ function setup() {
   runInNewContext(bundle.outputFiles[0].text, {
     module,
     exports: module.exports,
+    require,
     mock,
     URL,
     AbortController,
@@ -357,6 +365,7 @@ test("the global concurrency bound counts initializing owners and releases finis
   generations[0].complete();
   await flush();
   await env.api.startTurn("chat-4", firstInput);
+  await flush();
   assert.equal(env.calls.requests.length, 5);
   generations.slice(1).forEach((generation) => generation.complete());
   await flush();
@@ -423,6 +432,7 @@ test("model failure persists safe failed state and releases ownership without an
   const next = pendingReply();
   env.streams.push(next.stream);
   await env.api.startTurn("one", secondInput);
+  await flush();
   assert.equal(env.calls.requests.length, 2);
   next.complete();
   await flush();
@@ -442,6 +452,7 @@ test("a failed initialization releases its owner and permits a later explicit at
   const generation = pendingReply();
   env.streams.push(generation.stream);
   await env.api.startTurn("one", firstInput);
+  await flush();
   assert.equal(env.calls.requests.length, 1);
   generation.complete();
   await flush();
@@ -472,6 +483,42 @@ test("restart reads ask persistence to fail abandoned replies without generating
   assert.match(result.messages[1].error, /restarted/);
   assert.deepEqual(env.calls.recoveries, ["restored"]);
   assert.equal(env.calls.requests.length, 0);
+});
+
+test("reported usage retains its original assistant owner after the chat is ended", async () => {
+  const env = setup();
+  const terminal = deferred();
+  env.streams.push(
+    (async function* () {
+      yield await terminal.promise;
+    })(),
+  );
+  await env.api.startTurn("one", firstInput);
+  await flush();
+  assert.equal(env.calls.usage.length, 1);
+  const [conversationId, assistantId, initial] = env.calls.usage[0];
+  assert.equal(conversationId, "one");
+  assert.equal(initial.status, "pending");
+  await env.api.endTurn("one");
+  terminal.resolve(
+    completed("Late response", {
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        input_tokens_details: { cached_tokens: 3 },
+        output_tokens_details: { reasoning_tokens: 2 },
+      },
+    }),
+  );
+  await flush();
+  assert.equal(env.calls.usage.length, 2);
+  assert.equal(env.calls.usage[1][0], conversationId);
+  assert.equal(env.calls.usage[1][1], assistantId);
+  assert.equal(env.calls.usage[1][2].id, initial.id);
+  assert.equal(env.calls.usage[1][2].totalTokens, 15);
+  assert.equal(env.rows.get("one").status, "ended");
+  assert.equal(env.calls.finishes.length, 0);
 });
 
 test("completed request replays never call the model again or duplicate messages", async () => {

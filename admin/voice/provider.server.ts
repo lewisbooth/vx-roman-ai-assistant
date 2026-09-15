@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import OpenAI from "openai";
+import type { VoiceUsage } from "../usage/contracts";
 import { SidebandWS } from "openai/resources/live/sideband/ws";
 import type { ConnectServerEvent } from "openai/resources/live/sideband/sideband";
 import type { InitialItem } from "openai/resources/live/live";
@@ -53,7 +54,7 @@ export type VoiceProviderEvent =
       delegationId: string;
       offsetMs: number;
     }
-  | { type: "closed"; reason: string; confirmed: boolean }
+  | { type: "closed"; reason: string; confirmed: boolean; usage?: VoiceUsage }
   | { type: "error"; code: VoiceProviderErrorCode };
 
 export interface VoiceProvider {
@@ -135,6 +136,7 @@ export async function createVoiceProvider(options: {
   let sideband: SidebandWS | undefined;
   let closing = false;
   let closed = false;
+  const providerModel = VOICE_MODEL;
   let closePromise: Promise<void> | undefined;
   let finishClose: (() => void) | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -153,7 +155,11 @@ export async function createVoiceProvider(options: {
   const emit = (event: VoiceProviderEvent) => {
     options.onEvent(event);
   };
-  const stop = (reason: string, confirmed: boolean) => {
+  const stop = (
+    reason: string,
+    confirmed: boolean,
+    usage: VoiceUsage = { model: providerModel, seconds: null },
+  ) => {
     if (closed) return;
     closed = true;
     closing = true;
@@ -174,7 +180,7 @@ export async function createVoiceProvider(options: {
     sideband?.close();
     sideband?.socket.platformSocket.terminate();
     finishClose?.();
-    emit({ type: "closed", reason, confirmed });
+    emit({ type: "closed", reason, confirmed, usage });
   };
   const sendClose = () => {
     if (!closed && sideband?.socket.readyState === 1) {
@@ -243,8 +249,26 @@ export async function createVoiceProvider(options: {
         ];
         if (!reasons.includes(event.reason))
           throw new VoiceProviderError("invalid_event");
+        const seconds = event.usage?.seconds;
+        const validSeconds =
+          typeof seconds === "number" &&
+          Number.isFinite(seconds) &&
+          seconds >= 0 &&
+          seconds <= Number.MAX_SAFE_INTEGER;
+        if (seconds !== undefined && !validSeconds)
+          console.error("[Roman] Provider usage was unavailable.", {
+            provider: "live",
+            field: "usage.seconds",
+          });
+        const model = event.session?.model;
         invalidField = "event_handler";
-        stop(event.reason, true);
+        stop(event.reason, true, {
+          model:
+            typeof model === "string" && /^[a-zA-Z0-9._:-]{1,100}$/.test(model)
+              ? model
+              : providerModel,
+          seconds: validSeconds ? seconds : null,
+        });
       } else if (event.type === "session.started") {
         invalidField = "event_handler";
         emit({ type: "started", eventId: event.event_id });
@@ -461,16 +485,8 @@ export async function createVoiceProvider(options: {
       providerId: created.session.id,
       sdp: created.transport.sdp,
       beginConversation: async () => {
-        await append(
-          "instructions",
-          null,
-          openingPrompt,
-        );
-        await append(
-          "commentary",
-          null,
-          ROMAN_VOICE_OPENING_CUE,
-        );
+        await append("instructions", null, openingPrompt);
+        await append("commentary", null, ROMAN_VOICE_OPENING_CUE);
       },
       appendThinking: (text) => append("thinking", null, text),
       appendCommentary: (delegationId, text) =>
