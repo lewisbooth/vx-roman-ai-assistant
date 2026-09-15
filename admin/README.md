@@ -1,6 +1,6 @@
 # Admin console
 
-The merchant-facing Roman AI Assistant console is a React Router framework app with Tailwind CSS 4 and Shopify Polaris web components. It owns Shopify authentication, embedded Admin pages, authenticated webhooks, and Prisma session storage. Future assistant server endpoints belong here; customer UI belongs in [`frontend/`](../frontend/README.md).
+The Roman backend is a React Router framework app with a separate embedded admin console, Tailwind CSS 4 and Shopify Polaris web components. It owns Shopify authentication, webhooks, customer conversation APIs and persistence. Customer UI belongs in [`frontend/`](../frontend/README.md).
 
 Run all commands from the repository root. Both apps share its package manifest and lockfile.
 
@@ -8,9 +8,25 @@ Run all commands from the repository root. Both apps share its package manifest 
 
 This server and its embedded admin UI run together locally in Docker for now; the same image can run on one Azure VM later. Customer sidebar API routes also belong in this app, outside the merchant-only `/app` layout. They need their own customer/session authorization; storefront visitors do not have Shopify Admin sessions. Keep AI clients and data-access logic in server-only modules, with browser-safe request/response types shared only when needed.
 
-Prisma's existing `Session` model is reserved for Shopify authentication. Future customer conversations, generation jobs, and usage records need separate models scoped to the relevant shop and customer or anonymous session. The admin console will read those records through authenticated routes. Store OpenAI API keys in the server's environment or secret store; the admin UI can show connection status without returning the keys.
+Prisma's `Session` model stores Shopify authentication. Separate `Conversation` and `ConversationMessage` models store anonymous shop-scoped chat, ordered messages, completion state and actual model/service tier. SQLite lives in the Docker volume, independently of the image. Transcripts survive app uninstall; authorization stops when the offline installation or required scope is removed.
 
-AI endpoints, file storage, conversation recording, and metrics are future features. Add their configuration and dependencies with the first working feature rather than creating unused placeholders now.
+## Text conversations
+
+Phase 1 connects `gpt-5.6-luna` through the Responses API with `service_tier: "fast"`, low reasoning and `store: false`. OpenAI currently reports Fast responses as `priority`; the actual returned tier is persisted. Set `OPENAI_API_KEY` in the private root `.env`. Docker must be recreated after environment changes. Roman's database is the conversation source of truth; provider conversation IDs are not used.
+
+| Module                                           | Owns                                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `conversations/prompt.server.ts`                 | Roman's shop-at-home advisor character and current capability boundaries   |
+| `conversations/model.server.ts`                  | OpenAI request and streamed text extraction                                |
+| `conversations/runner.server.ts`                 | One active turn per conversation, bounded generation and partial snapshots |
+| `conversations/repository.server.ts`             | Durable ordering, idempotency, credential hashes and restart recovery      |
+| `conversations/auth.server.ts`, `http.server.ts` | Shopify signature, bearer/origin authorization and bounded HTTP inputs     |
+
+The first message bootstraps through Shopify's signed `/apps/roman/bootstrap` proxy. It requires an installed offline session and approved `write_app_proxy` scope. Only `hd-dev-single` and `hd-dev-multi` are enabled in this phase. Subsequent `/api/conversations/:id` reads and `/messages` submissions require a random conversation bearer credential and the exact authorized storefront origin. Credentials expire after seven days; the frontend keeps them in tab-scoped storage. CORS does not replace bearer authorization, and localhost has no authentication bypass.
+
+Generation continues if the browser disconnects. Request UUIDs deduplicate submissions; a restart marks unfinished replies failed instead of replaying them. The browser polls partial snapshots while a reply is pending because Cloudflare Quick Tunnels do not support SSE. Limits are 4 concurrent replies, 90 seconds per reply, 4,000 input characters, 40 turns per conversation, 20 new conversations per shop per 10 minutes and 100 per day. These are development bounds, not a production abuse-control service.
+
+Voice, model-triggered shopping tools, journey events, inline widgets, uploads and the session dashboard are subsequent phases. Current text chat gives general advice and cannot inspect the live storefront or execute the developer drawer's actions.
 
 The [frontend tool drawer](../frontend/README.md#developer-tools) currently executes public catalog calls and browser-owned cart/navigation actions directly. It needs no admin server. When voice is added, this backend will create [GPT-Live-1 sessions](https://developers.openai.com/api/reference/typescript/resources/live/methods/create) using a server-only OpenAI key; the browser will carry audio over WebRTC to OpenAI. A [server sideband connection](https://developers.openai.com/api/reference/resources/live/sideband-websocket) can handle session events and delegated work. OpenAI hosts the model; Docker hosts Roman's application, authorization and persistence, with no model weights or GPU required. Keep browser actions at their current owner and return their results to the server; put privileged tools and future model orchestration in server-only modules here. Add shared tool contracts only when both apps consume them.
 

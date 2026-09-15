@@ -32,3 +32,37 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model Conversation {
+  id                  String                @id
+  shop                String
+  origin              String
+  credentialHash      String                @unique
+  credentialExpiresAt DateTime
+  turnCount           Int                   @default(0)
+  pendingRequestId    String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  messages            ConversationMessage[]
+
+  @@index([shop, createdAt])
+}
+
+model ConversationMessage {
+  id             String       @id
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  requestId      String
+  sequence       Int
+  role           String
+  status         String
+  text           String       @default("")
+  error          String?
+  model          String?
+  serviceTier    String?
+  createdAt      DateTime     @default(now())
+  completedAt    DateTime?
+
+  @@unique([conversationId, requestId, role])
+  @@unique([conversationId, sequence])
+}
