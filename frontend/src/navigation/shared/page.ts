@@ -462,29 +462,16 @@ function loadAsset(
   });
 }
 
-export async function loadPageAssets(
-  page: PreparedPage,
-  signal: AbortSignal,
-): Promise<void> {
-  await loadPayPalSdk(page.paypalSdk, signal);
-  async function load(url: URL, kind: "script" | "style", signal: AbortSignal) {
-    try {
-      await loadAsset(url, kind, signal);
-    } catch (error) {
-      // Only ordinary resource failures are nonfatal. Cancellation, unexpected
-      // exceptions and the runtime-error guard must still stop navigation.
-      if (signal.aborted || !(error instanceof AssetLoadError)) throw error;
-      console.warn(
-        `[Roman] ${error.message} Continuing navigation; some storefront features may be unavailable.`,
-      );
-    }
-  }
-  const loading = new AbortController();
+function captureThemeErrors(page: PreparedPage, onFailure?: () => void) {
   let runtimeError: Error | null = null;
-  const abort = () => loading.abort();
   const onError = (event: ErrorEvent) => {
     if (!event.filename) return;
-    const asset = new URL(event.filename, document.baseURI);
+    let asset: URL;
+    try {
+      asset = new URL(event.filename, document.baseURI);
+    } catch {
+      return;
+    }
     if (
       !isThemeAsset(asset) &&
       !page.integration.modules?.some((module) => module.href === asset.href)
@@ -506,10 +493,38 @@ export async function loadPageAssets(
       : new Error(
           `Theme script ${asset.pathname} failed to initialize: ${event.message}. Reload this page before continuing.`,
         );
-    loading.abort();
+    onFailure?.();
   };
-  signal.addEventListener("abort", abort, { once: true });
   window.addEventListener("error", onError);
+  return {
+    get error() {
+      return runtimeError;
+    },
+    dispose() {
+      window.removeEventListener("error", onError);
+    },
+  };
+}
+
+export async function loadPageAssets(
+  page: PreparedPage,
+  signal: AbortSignal,
+): Promise<void> {
+  await loadPayPalSdk(page.paypalSdk, signal);
+  async function load(url: URL, kind: "script" | "style", signal: AbortSignal) {
+    try {
+      await loadAsset(url, kind, signal);
+    } catch (error) {
+      if (signal.aborted || !(error instanceof AssetLoadError)) throw error;
+      console.warn(
+        `[Roman] ${error.message} Continuing navigation; some storefront features may be unavailable.`,
+      );
+    }
+  }
+  const loading = new AbortController();
+  const abort = () => loading.abort();
+  const captured = captureThemeErrors(page, abort);
+  signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) loading.abort();
   try {
     // Finish CSS attempts before modules connect Lit components and adopt styles.
@@ -528,14 +543,14 @@ export async function loadPageAssets(
         ).values(),
       ].map((url) => load(url, "script", loading.signal)),
     );
-    if (runtimeError) throw runtimeError;
+    if (captured.error) throw captured.error;
     if (page.integration.modules?.length) checkWalletElements(page.main);
   } catch (error) {
     loading.abort();
-    throw runtimeError ?? error;
+    throw captured.error ?? error;
   } finally {
     signal.removeEventListener("abort", abort);
-    window.removeEventListener("error", onError);
+    captured.dispose();
   }
   if (signal.aborted)
     throw new DOMException("Navigation cancelled", "AbortError");
@@ -569,73 +584,83 @@ export function commitPage(
   main: HTMLElement;
   error?: string;
 } {
-  const previous = mainElement(document);
-  // Keep custom elements inert until insertion, so constructors see the new
-  // page's DOM and globals rather than caching nodes from the outgoing page.
-  const main = page.main.cloneNode(true) as HTMLElement;
-  const metadata = Array.from(
-    page.document.head.querySelectorAll(pageMetadata),
-    (node) => {
-      const clone = document.importNode(node, true);
-      if (clone instanceof HTMLLinkElement)
-        clone.href = new URL(clone.getAttribute("href")!, page.url).href;
-      return clone;
-    },
-  );
-  if (page.globals) {
-    const context = page.globals;
-    themeWindow.__ADMIN_COLLECTION_ID__ = context.collectionId;
-    themeWindow.__CART__ = context.cart;
-    themeWindow.__CART_COLOR_SWATCHES__ = context.cartSwatches;
-    const provider = previous.parentElement as HTMLElement & {
-      cart?: JsonObject;
-    };
-    if ("cart" in provider) provider.cart = context.cart;
-    const analytics = (themeWindow.ShopifyAnalytics ??= {});
-    const meta = (analytics.meta ??= {});
-    for (const key of pageMetaKeys) delete meta[key];
-    pageMetaKeys.clear();
-    for (const [key, value] of Object.entries(context.meta)) {
-      if (key === "__proto__" || key === "constructor" || key === "prototype")
-        continue;
-      meta[key] = value;
-      if (key !== "currency" && key !== "shop") pageMetaKeys.add(key);
-    }
-  }
-  for (const name of [...document.body.classList]) {
-    if (name.startsWith("template-")) document.body.classList.remove(name);
-  }
-  document.body.classList.add(
-    ...[...page.document.body.classList].filter((name) =>
-      name.startsWith("template-"),
-    ),
-  );
-  document.title = page.title;
-  document.head.querySelectorAll(pageMetadata).forEach((node) => node.remove());
-  document.head.append(...metadata);
-  preservePayPalSdk(previous);
-  beforeReplace?.();
-  previous.replaceWith(main);
-  // main-header caches these flags at connection; preserve its listeners and context.
-  const header = document.querySelector("main-header") as
-    | (HTMLElement & {
-        isProductPage?: boolean;
-        hasStickyGallery?: boolean;
-      })
-    | null;
-  if (header && "isProductPage" in header)
-    header.isProductPage = document.body.classList.contains("template-product");
-  if (header && "hasStickyGallery" in header)
-    header.hasStickyGallery =
-      document.querySelector("[data-sticky-gallery]") !== null;
+  const captured = captureThemeErrors(page);
   try {
-    themeWindow.Shopify?.PaymentButton?.init?.();
-  } catch {
-    return {
-      main,
-      error:
-        "The page loaded, but Shopify payment controls could not initialize. Reload this page before purchasing.",
-    };
+    const previous = mainElement(document);
+    // Keep custom elements inert until insertion, so constructors see the new
+    // page's DOM and globals rather than caching nodes from the outgoing page.
+    const main = page.main.cloneNode(true) as HTMLElement;
+    const metadata = Array.from(
+      page.document.head.querySelectorAll(pageMetadata),
+      (node) => {
+        const clone = document.importNode(node, true);
+        if (clone instanceof HTMLLinkElement)
+          clone.href = new URL(clone.getAttribute("href")!, page.url).href;
+        return clone;
+      },
+    );
+    if (page.globals) {
+      const context = page.globals;
+      themeWindow.__ADMIN_COLLECTION_ID__ = context.collectionId;
+      themeWindow.__CART__ = context.cart;
+      themeWindow.__CART_COLOR_SWATCHES__ = context.cartSwatches;
+      const provider = previous.parentElement as HTMLElement & {
+        cart?: JsonObject;
+      };
+      if ("cart" in provider) provider.cart = context.cart;
+      const analytics = (themeWindow.ShopifyAnalytics ??= {});
+      const meta = (analytics.meta ??= {});
+      for (const key of pageMetaKeys) delete meta[key];
+      pageMetaKeys.clear();
+      for (const [key, value] of Object.entries(context.meta)) {
+        if (key === "__proto__" || key === "constructor" || key === "prototype")
+          continue;
+        meta[key] = value;
+        if (key !== "currency" && key !== "shop") pageMetaKeys.add(key);
+      }
+    }
+    for (const name of [...document.body.classList]) {
+      if (name.startsWith("template-")) document.body.classList.remove(name);
+    }
+    document.body.classList.add(
+      ...[...page.document.body.classList].filter((name) =>
+        name.startsWith("template-"),
+      ),
+    );
+    document.title = page.title;
+    document.head
+      .querySelectorAll(pageMetadata)
+      .forEach((node) => node.remove());
+    document.head.append(...metadata);
+    preservePayPalSdk(previous);
+    beforeReplace?.();
+    previous.replaceWith(main);
+    // main-header caches these flags at connection; preserve its listeners and context.
+    const header = document.querySelector("main-header") as
+      | (HTMLElement & {
+          isProductPage?: boolean;
+          hasStickyGallery?: boolean;
+        })
+      | null;
+    if (header && "isProductPage" in header)
+      header.isProductPage =
+        document.body.classList.contains("template-product");
+    if (header && "hasStickyGallery" in header)
+      header.hasStickyGallery =
+        document.querySelector("[data-sticky-gallery]") !== null;
+    try {
+      themeWindow.Shopify?.PaymentButton?.init?.();
+    } catch {
+      if (captured.error) throw captured.error;
+      return {
+        main,
+        error:
+          "The page loaded, but Shopify payment controls could not initialize. Reload this page before purchasing.",
+      };
+    }
+    if (captured.error) throw captured.error;
+    return { main };
+  } finally {
+    captured.dispose();
   }
-  return { main };
 }

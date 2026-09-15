@@ -49,6 +49,7 @@ const bundle = await build({
              export const failPending=(...args)=>mock.recover(...args);
              export const finishTurn=(...args)=>mock.finish(...args);
              export const getSnapshot=(...args)=>mock.snapshot(...args);
+             export const getReadRevision=(...args)=>mock.readRevision(...args);
              export const endConversation=(...args)=>mock.end(...args);`,
         }));
       },
@@ -115,6 +116,7 @@ function setup() {
     begins: [],
     finishes: [],
     recoveries: [],
+    snapshots: [],
     deadlines: [],
     browserTools: [],
     ends: [],
@@ -209,6 +211,7 @@ function setup() {
         if (message.status === "pending" && message.abandoned) {
           message.status = "failed";
           message.error = "The server restarted before this reply finished.";
+          ensure(id).revision++;
         }
       });
     },
@@ -217,10 +220,20 @@ function setup() {
       const message = ensure(id).messages.find(
         (message) => message.id === assistantId,
       );
-      if (message?.status === "pending") Object.assign(message, result);
+      if (message?.status === "pending") {
+        Object.assign(message, result);
+        ensure(id).revision++;
+      }
       await mock.afterFinish?.(id, assistantId, result);
     },
-    snapshot: async (id) => snapshot(id),
+    snapshot: async (id) => {
+      calls.snapshots.push(id);
+      return snapshot(id);
+    },
+    readRevision: async (id, recoverPending) => {
+      if (recoverPending) await mock.recover(id);
+      return ensure(id).revision ?? 0;
+    },
     browserTool: async (...args) => {
       calls.browserTools.push(args);
       return mock.executeTool(...args);
@@ -412,6 +425,73 @@ test("partial snapshots belong to the active assistant while HTTP acceptance sta
   );
   assert.equal(env.calls.finishes[0].result.model, "gpt-5.6-luna-actual");
   assert.equal(env.calls.finishes[0].result.serviceTier, "fast");
+});
+
+test("versioned reads skip history until durable state or active partial text changes", async () => {
+  const env = setup();
+  const next = deferred();
+  const finish = deferred();
+  env.streams.push(
+    (async function* () {
+      yield { type: "response.output_text.delta", delta: "First" };
+      await next.promise;
+      yield { type: "response.output_text.delta", delta: " second" };
+      yield await finish.promise;
+    })(),
+  );
+  await env.api.startTurn("one", firstInput);
+  await flush();
+  const first = await env.api.readConversation("one");
+  assert.equal(first.streamRevision, 1);
+  const count = env.calls.snapshots.length;
+  for (let index = 0; index < 20; index++)
+    assert.deepEqual(plain(await env.api.readConversation("one", first)), {
+      id: "one",
+      revision: first.revision,
+      streamRevision: 1,
+      unchanged: true,
+    });
+  assert.equal(
+    env.calls.snapshots.length,
+    count,
+    "unchanged reads never load history",
+  );
+  next.resolve();
+  await flush();
+  const second = await env.api.readConversation("one", first);
+  assert.equal(second.revision, first.revision);
+  assert.equal(second.streamRevision, 2);
+  assert.equal(second.messages[1].parts[0].text, "First second");
+  assert.equal(env.calls.snapshots.length, count + 1);
+  finish.resolve(completed("A finished answer."));
+  await flush();
+  const done = await env.api.readConversation("one", second);
+  assert.ok(done.revision > second.revision);
+  assert.equal(done.streamRevision, 0);
+  assert.equal(done.busy, false);
+  assert.equal(done.messages[1].parts[0].text, "A finished answer.");
+});
+
+test("an ended turn cannot publish late partial text or return unchanged old state", async () => {
+  const env = setup();
+  const generation = pendingReply("An unfinished answer.");
+  env.streams.push(generation.stream);
+  await env.api.startTurn("one", firstInput);
+  await flush();
+  const partial = await env.api.readConversation("one");
+  await env.api.endTurn("one");
+  generation.complete("A late answer.");
+  await flush();
+  const ended = await env.api.readConversation("one", partial);
+  assert.equal(ended.status, "ended");
+  assert.equal(ended.streamRevision, 0);
+  assert.equal(ended.messages[1].status, "failed");
+  assert.ok(
+    ended.messages.every(
+      (message) =>
+        !message.parts.some((part) => part.text === "A late answer."),
+    ),
+  );
 });
 
 test("model failure persists safe failed state and releases ownership without an automatic retry", async () => {

@@ -1,4 +1,9 @@
-import type { CostEstimate, CostSummary, ModelPrice } from "./contracts";
+import type {
+  CostEstimate,
+  CostSummary,
+  ModelPrice,
+  TokenPrices,
+} from "./contracts";
 import { MODEL_PRICES } from "./rates.server";
 
 interface ModelUsage {
@@ -41,6 +46,28 @@ function rateFor(
   );
 }
 
+/** Linear charge calculation, after each request's rate band and counts are validated. */
+export function tokenCostUsd(
+  counts: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    cacheWriteInputTokens: number;
+    outputTokens: number;
+  },
+  charges: TokenPrices,
+): number {
+  return (
+    ((counts.inputTokens -
+      counts.cachedInputTokens -
+      counts.cacheWriteInputTokens) *
+      charges.inputPerMillion +
+      counts.cachedInputTokens * charges.cachedInputPerMillion +
+      counts.cacheWriteInputTokens * charges.cacheWriteInputPerMillion +
+      counts.outputTokens * charges.outputPerMillion) /
+    1_000_000
+  );
+}
+
 export function estimateModelUsage(
   usage: ModelUsage,
   prices: readonly ModelPrice[] = MODEL_PRICES,
@@ -73,12 +100,15 @@ export function estimateModelUsage(
       ? rate.longContext.prices
       : rate.prices;
   // Cache reads/writes are subsets of input. Reasoning is already in output.
-  const usd =
-    ((input - cached - written) * charges.inputPerMillion +
-      cached * charges.cachedInputPerMillion +
-      written * charges.cacheWriteInputPerMillion +
-      output * charges.outputPerMillion) /
-    1_000_000;
+  const usd = tokenCostUsd(
+    {
+      inputTokens: input,
+      cachedInputTokens: cached,
+      cacheWriteInputTokens: written,
+      outputTokens: output,
+    },
+    charges,
+  );
   return Number.isFinite(usd)
     ? { usd, rateId: rate.id, reason: null }
     : unpriced("invalid_usage");

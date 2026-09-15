@@ -5,12 +5,17 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
+import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { PrismaClient } from "@prisma/client";
 import { build } from "esbuild";
 
 const require = createRequire(import.meta.url);
 const bundle = await build({
-  entryPoints: ["admin/insights/repository.server.ts"],
+  stdin: {
+    contents: `export * from './admin/insights/repository.server'; export * from './admin/insights/costs.server'; export * from './admin/pricing/estimate.server'; export * from './admin/pricing/rates.server';`,
+    resolveDir: process.cwd(),
+  },
   bundle: true,
   write: false,
   format: "cjs",
@@ -24,12 +29,15 @@ const previousGlobal = global.prismaGlobal;
 let directory;
 let database;
 let repository;
+const queries = [];
 
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "roman-insights-"));
   database = new PrismaClient({
     datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+    log: [{ emit: "event", level: "query" }],
   });
+  database.$on("query", (event) => queries.push(event.query));
   global.prismaGlobal = database;
   const migrations = (
     await readdir("prisma/migrations", { withFileTypes: true })
@@ -58,6 +66,9 @@ before(async () => {
 });
 
 beforeEach(async () => {
+  // Remove the large synthetic usage fixture before parent cascades; cleanup
+  // should not benchmark foreign-key deletion instead of reporting reads.
+  await database.modelUsage.deleteMany();
   await database.conversation.deleteMany();
 });
 after(async () => {
@@ -336,7 +347,7 @@ test("per-call prices use recorded start dates and leave historical or unknown r
   assert.equal(overview.summary.usage.cacheWriteInputTokens, 10);
 });
 
-test("shop estimates scan all cost metadata in bounded batches without repeating rows", async () => {
+test("shop estimates aggregate all cost metadata without repeating individual calls", async () => {
   const own = await conversation();
   const reply = await message(own.id);
   const foreign = await conversation({ shop: otherShop });
@@ -391,7 +402,184 @@ test("shop estimates scan all cost metadata in bounded batches without repeating
   assert.equal(overview.summary.usage.modelCalls, count);
   assert.equal(overview.summary.usage.voiceSessions, count);
   const detail = await repository.getConversationInspection(shop, own.id);
-  assert.deepEqual(detail.cost, overview.summary.cost);
+  assertCostsEqual(detail.cost, overview.summary.cost);
+});
+
+function assertCostsEqual(actual, expected) {
+  for (const [key, value] of Object.entries(expected)) {
+    if (key.endsWith("Usd") && value !== null) {
+      assert.ok(
+        Math.abs(actual[key] - value) <= Math.max(1, Math.abs(value)) * 1e-12,
+        `${key} differs: ${actual[key]} versus ${value}`,
+      );
+    } else assert.equal(actual[key], value, key);
+  }
+}
+
+test("database cost groups match per-call pricing across UTC boundaries, tiers and context bands", async () => {
+  const own = await conversation();
+  const reply = await message(own.id);
+  const tokenPrice = repository.MODEL_PRICES.find(
+    (price) => price.kind === "tokens" && price.serviceTier === "priority",
+  );
+  const voicePrice = repository.MODEL_PRICES.find(
+    (price) => price.kind === "voice",
+  );
+  const prices = [
+    { ...tokenPrice, id: "first", effectiveTo: "2026-09-16T00:00:00.000Z" },
+    {
+      ...tokenPrice,
+      id: "second",
+      effectiveFrom: "2026-09-16T00:00:00.000Z",
+      effectiveTo: "2026-09-17T00:00:00.000Z",
+      prices: {
+        inputPerMillion: 1,
+        cachedInputPerMillion: 0.1,
+        cacheWriteInputPerMillion: 1.5,
+        outputPerMillion: 5,
+      },
+    },
+    {
+      ...tokenPrice,
+      id: "after-gap",
+      effectiveFrom: "2026-09-18T00:00:00.000Z",
+    },
+    {
+      ...voicePrice,
+      id: "voice-first",
+      effectiveTo: "2026-09-16T00:00:00.000Z",
+    },
+    {
+      ...voicePrice,
+      id: "voice-second",
+      effectiveFrom: "2026-09-16T00:00:00.000Z",
+      perMinute: 0.1,
+    },
+  ];
+  const modelRows = [];
+  for (const overrides of [
+    { createdAt: new Date("2026-09-14T23:59:59.999Z") },
+    { createdAt: new Date("2026-09-15T00:00:00.000Z"), inputTokens: 272000 },
+    {
+      createdAt: new Date("2026-09-15T23:59:59.999Z"),
+      inputTokens: 272001,
+      cacheWriteInputTokens: 10,
+    },
+    { createdAt: new Date("2026-09-16T00:00:00.000Z"), serviceTier: "fast" },
+    { createdAt: new Date("2026-09-17T00:00:00.000Z") },
+    {
+      createdAt: new Date("2026-09-18T00:00:00.000Z"),
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    },
+    { serviceTier: "unknown" },
+    { model: "unknown" },
+    { cacheWriteInputTokens: null },
+    { inputTokens: -1 },
+    { cachedInputTokens: 100, cacheWriteInputTokens: 1 },
+  ])
+    modelRows.push(await usage(own.id, reply.id, overrides));
+  const voiceRows = [];
+  for (const overrides of [
+    { createdAt: new Date("2026-09-14T23:59:59.999Z"), usageSeconds: 10 },
+    { createdAt: new Date("2026-09-15T23:59:59.999Z"), usageSeconds: 12.5 },
+    { createdAt: new Date("2026-09-16T00:00:00.000Z"), usageSeconds: 60 },
+    { usageSeconds: 0 },
+    { usageSeconds: -1 },
+    { usageSeconds: null },
+    { usageSeconds: 50, model: "unknown" },
+  ])
+    voiceRows.push(await voice(own.id, { model: "gpt-live-1", ...overrides }));
+  const expected = repository.emptyCostSummary();
+  for (const row of modelRows)
+    repository.addCost(
+      expected,
+      "model",
+      repository.estimateModelUsage(row, prices),
+    );
+  for (const row of voiceRows)
+    repository.addCost(
+      expected,
+      "voice",
+      repository.estimateVoiceUsage(row, prices),
+    );
+  assertCostsEqual(await repository.getShopCostSummary(shop, prices), expected);
+  const unpriced = await repository.getShopCostSummary(shop, []);
+  assert.equal(unpriced.totalUsd, null);
+  assert.equal(unpriced.unpricedModelCalls, modelRows.length);
+  assert.equal(unpriced.unpricedVoiceSessions, voiceRows.length);
+});
+
+test("large retained history uses a fixed number of read statements while another connection writes", async (t) => {
+  const count = 100_000;
+  const conversations = count / 40;
+  const timestamp = pricedAt.getTime();
+  await database.$executeRawUnsafe(
+    `WITH RECURSIVE seq(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM seq WHERE i<?)
+    INSERT INTO Conversation (id,shop,origin,credentialHash,credentialExpiresAt,createdAt,updatedAt)
+    SELECT printf('00000000-0000-4000-a000-%012x',i),?,?,'synthetic-'||i,0,?,? FROM seq`,
+    conversations,
+    shop,
+    `https://${shop}`,
+    timestamp,
+    timestamp,
+  );
+  await database.$executeRawUnsafe(
+    `INSERT INTO ConversationMessage (id,conversationId,requestId,sequence,role,status,createdAt)
+    SELECT id,id,id,1,'assistant','complete',? FROM Conversation`,
+    timestamp,
+  );
+  await database.$executeRawUnsafe(
+    `WITH RECURSIVE seq(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM seq WHERE i<?)
+    INSERT INTO ModelUsage (id,conversationId,assistantId,model,serviceTier,status,inputTokens,cachedInputTokens,cacheWriteInputTokens,outputTokens,totalTokens,createdAt,completedAt)
+    SELECT printf('10000000-0000-4000-a000-%012x',i),printf('00000000-0000-4000-a000-%012x',1+((i-1)/40)),printf('00000000-0000-4000-a000-%012x',1+((i-1)/40)),
+    'gpt-5.6-luna','priority','completed',1000,200,0,200,1200,?,? FROM seq`,
+    count,
+    timestamp,
+    timestamp,
+  );
+  const writer = new PrismaClient({
+    datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+  });
+  await writer.$connect();
+  try {
+    queries.length = 0;
+    const started = performance.now();
+    const overview = repository.getConversationOverview(shop);
+    await delay(5);
+    const writeStarted = performance.now();
+    const write = writer.$transaction(async (transaction) => {
+      await transaction.conversation.update({
+        where: { id: "00000000-0000-4000-a000-000000000001" },
+        data: { revision: { increment: 1 } },
+      });
+      return performance.now() - writeStarted;
+    });
+    const [result, writeMs] = await Promise.all([overview, write]);
+    const elapsedMs = performance.now() - started;
+    assert.equal(result.summary.cost.pricedModelCalls, count);
+    assert.equal(result.summary.usage.modelCalls, count);
+    assert.equal(result.conversations.length, 25);
+    assert.equal(
+      queries.some((query) => /^BEGIN|^COMMIT|^ROLLBACK/.test(query)),
+      false,
+      "overview must not acquire an interactive transaction",
+    );
+    assert.ok(
+      queries.length <= 12,
+      `overview emitted ${queries.length} queries`,
+    );
+    assert.equal(
+      queries.filter((query) => /GROUP BY band/.test(query)).length,
+      2,
+    );
+    t.diagnostic(
+      `100000 usage rows: overview plus concurrent write ${elapsedMs.toFixed(1)} ms; write ${writeMs.toFixed(1)} ms; ${queries.length} reporting statements. Synthetic local timing, not a production latency guarantee.`,
+    );
+  } finally {
+    await writer.$disconnect();
+  }
 });
 
 test("detail refuses a foreign conversation and exposes only the ordered inspection projection", async () => {

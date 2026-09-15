@@ -8,6 +8,7 @@ import {
   estimateVoiceUsage,
 } from "../pricing/estimate.server";
 import { MODEL_PRICES } from "../pricing/rates.server";
+import { getShopCostSummary } from "./costs.server";
 import type {
   ConversationInspection,
   ConversationListItem,
@@ -16,7 +17,6 @@ import type {
 } from "./contracts";
 
 const pageSize = 25;
-const costBatchSize = 500;
 const modelCostFields = {
   id: true,
   model: true,
@@ -102,90 +102,46 @@ async function usageSummary(
   };
 }
 
-async function shopCostSummary(
-  transaction: Prisma.TransactionClient,
-  shop: string,
-) {
-  const summary = emptyCostSummary();
-  let afterModel: string | undefined;
-  do {
-    const rows = await transaction.modelUsage.findMany({
-      where: {
-        conversation: { shop },
-        ...(afterModel ? { id: { gt: afterModel } } : {}),
-      },
-      select: modelCostFields,
-      orderBy: { id: "asc" },
-      take: costBatchSize,
-    });
-    for (const row of rows) addCost(summary, "model", estimateModelUsage(row));
-    afterModel = rows.length === costBatchSize ? rows.at(-1)!.id : undefined;
-  } while (afterModel);
-  let afterVoice: string | undefined;
-  do {
-    const rows = await transaction.voiceSession.findMany({
-      where: {
-        conversation: { shop },
-        ...(afterVoice ? { id: { gt: afterVoice } } : {}),
-      },
-      select: voiceCostFields,
-      orderBy: { id: "asc" },
-      take: costBatchSize,
-    });
-    for (const row of rows) addCost(summary, "voice", estimateVoiceUsage(row));
-    afterVoice = rows.length === costBatchSize ? rows.at(-1)!.id : undefined;
-  } while (afterVoice);
-  return summary;
-}
-
 export async function getConversationOverview(
   shop: string,
   page = 1,
 ): Promise<ConversationOverview> {
   if (!Number.isSafeInteger(page) || page < 1 || page > 10_000)
     throw new RangeError("Invalid conversation page.");
-  return prisma.$transaction(async (transaction) => {
-    const [
-      rows,
-      conversations,
-      endedConversations,
-      failedReplies,
-      usage,
-      cost,
-    ] = await Promise.all([
-      transaction.conversation.findMany({
+  const [rows, conversations, endedConversations, failedReplies, usage, cost] =
+    await Promise.all([
+      prisma.conversation.findMany({
         where: { shop },
         select: conversationSummary,
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         skip: (page - 1) * pageSize,
         take: pageSize + 1,
       }),
-      transaction.conversation.count({ where: { shop } }),
-      transaction.conversation.count({ where: { shop, status: "ended" } }),
-      transaction.conversationMessage.count({
+      prisma.conversation.count({ where: { shop } }),
+      prisma.conversation.count({ where: { shop, status: "ended" } }),
+      prisma.conversationMessage.count({
         where: {
           conversation: { shop },
           role: { in: ["assistant", "context"] },
           status: "failed",
         },
       }),
-      usageSummary(transaction, shop),
-      shopCostSummary(transaction, shop),
+      usageSummary(prisma, shop),
+      getShopCostSummary(shop),
     ]);
-    return {
-      page,
-      hasNextPage: rows.length > pageSize,
-      summary: {
-        conversations,
-        endedConversations,
-        failedReplies,
-        usage,
-        cost,
-      },
-      conversations: rows.slice(0, pageSize).map(listItem),
-      prices: MODEL_PRICES,
-    };
-  });
+  return {
+    page,
+    hasNextPage: rows.length > pageSize,
+    summary: {
+      conversations,
+      endedConversations,
+      failedReplies,
+      usage,
+      cost,
+    },
+    conversations: rows.slice(0, pageSize).map(listItem),
+    prices: MODEL_PRICES,
+  };
 }
 
 export async function getConversationInspection(

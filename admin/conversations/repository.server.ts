@@ -28,7 +28,11 @@ import { parseCatalogCall } from "../../shared/catalog-tools";
 import { parseNavigationCall } from "../../shared/navigation-tool";
 import { isStorefrontPagePath } from "../../shared/journey";
 import { groupVoiceTranscript } from "../../shared/voice-transcript";
-import { expireVoiceSessions, getVoiceState } from "../voice/repository.server";
+import {
+  expireVoiceSessions,
+  expiredVoiceSessionWhere,
+  recoverVoiceSessions,
+} from "../voice/repository.server";
 import prisma from "../db.server";
 import { ConversationError } from "./errors.server";
 import {
@@ -454,8 +458,44 @@ export async function authorizeCredential(id: string, token: string) {
 }
 
 export async function getSnapshot(id: string): Promise<ConversationSnapshot> {
-  await getVoiceState(id);
+  await recoverVoiceSessions(id);
   return snapshot(await loadConversation(prisma, id));
+}
+
+/** Probe only revision/recovery metadata before loading any transcript history. */
+export async function getReadRevision(id: string, recoverPending: boolean) {
+  const current = await prisma.conversation.findUnique({
+    where: { id },
+    select: {
+      revision: true,
+      messages: {
+        where: abandonedReplyWhere,
+        take: 1,
+        select: { id: true },
+      },
+      voiceSessions: {
+        where: expiredVoiceSessionWhere(),
+        take: 1,
+        select: { id: true },
+      },
+    },
+  });
+  if (!current)
+    throw new ConversationError(
+      404,
+      "This chat could not be found. Start a new chat.",
+    );
+  const staleReply = recoverPending && current.messages.length > 0;
+  const staleVoice = current.voiceSessions.length > 0;
+  if (!staleReply && !staleVoice) return current.revision;
+  if (staleReply) await failPending(id);
+  if (staleVoice) await recoverVoiceSessions(id);
+  return (
+    await prisma.conversation.findUniqueOrThrow({
+      where: { id },
+      select: { revision: true },
+    })
+  ).revision;
 }
 
 export async function getModelHistory(id: string) {
@@ -754,14 +794,25 @@ export async function finishTurn(
   });
 }
 
+const abandonedReplyWhere = {
+  role: { in: ["assistant", "context"] },
+  status: "pending",
+  createdAt: { lt: processStartedAt },
+};
+
 export async function failPending(id: string): Promise<void> {
+  if (
+    !(await prisma.conversationMessage.findFirst({
+      where: { conversationId: id, ...abandonedReplyWhere },
+      select: { id: true },
+    }))
+  )
+    return;
   await prisma.$transaction(async (transaction) => {
     const abandoned = await transaction.conversationMessage.findMany({
       where: {
         conversationId: id,
-        role: { in: ["assistant", "context"] },
-        status: "pending",
-        createdAt: { lt: processStartedAt },
+        ...abandonedReplyWhere,
       },
       select: { id: true, requestId: true },
     });
@@ -769,9 +820,7 @@ export async function failPending(id: string): Promise<void> {
     await transaction.conversationMessage.updateMany({
       where: {
         conversationId: id,
-        role: { in: ["assistant", "context"] },
-        status: "pending",
-        createdAt: { lt: processStartedAt },
+        ...abandonedReplyWhere,
       },
       data: {
         status: "failed",
@@ -785,7 +834,13 @@ export async function failPending(id: string): Promise<void> {
         id,
         pendingRequestId: { in: abandoned.map((message) => message.requestId) },
       },
-      data: { pendingRequestId: null, revision: { increment: 1 } },
+      data: { pendingRequestId: null },
+    });
+    // Recovered historical rows still change the displayed snapshot when a
+    // newer request owns pendingRequestId (or a prior shutdown cleared it).
+    await transaction.conversation.update({
+      where: { id },
+      data: { revision: { increment: 1 } },
     });
     await transaction.toolInvocation.updateMany({
       where: {

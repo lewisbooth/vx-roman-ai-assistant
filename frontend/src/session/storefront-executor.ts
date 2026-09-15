@@ -14,14 +14,30 @@ import type { AssistantTools } from "../tools";
 
 const DISPLAY_CACHE_MS = 60_000;
 const MAX_DISPLAY_PRODUCTS = 60;
+const MAX_FOREGROUND_JOBS = 12;
+// A conversation permits 40 turns. Visibility normally keeps this much lower.
+const MAX_DISPLAY_JOBS = 40;
+
+interface StorefrontJob {
+  kind: "foreground" | "display";
+  operation(signal: AbortSignal): Promise<unknown>;
+  controller?: AbortController;
+  preempted: boolean;
+  cancelled: boolean;
+  resolve(value: unknown): void;
+  reject(error: unknown): void;
+  cleanup(): void;
+}
 
 // Only card hydration reuses recent public products. Model tools always fetch
 // Shopify, and all network work shares the theme owner's single-flight queue.
 export function createStorefrontExecutor(
   tools: Pick<AssistantTools, "execute">,
 ) {
-  let tail: Promise<unknown> = Promise.resolve();
-  let queued = 0;
+  const jobs = new Set<StorefrontJob>();
+  const foreground: StorefrontJob[] = [];
+  const display: StorefrontJob[] = [];
+  let active: StorefrontJob | undefined;
   let disposed = false;
   const storefrontOrigin = window.location.origin;
   const displayProducts = new Map<
@@ -69,24 +85,90 @@ export function createStorefrontExecutor(
     return { products, messages, missing };
   }
 
-  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    if (disposed || queued >= 12)
+  function pump() {
+    if (active || disposed) return;
+    const job = foreground.shift() ?? display.shift();
+    if (!job) return;
+    active = job;
+    job.preempted = false;
+    const controller = new AbortController();
+    job.controller = controller;
+    void Promise.resolve()
+      .then(() => {
+        requireCurrentStore();
+        controller.signal.throwIfAborted();
+        return job.operation(controller.signal);
+      })
+      .then((value) => {
+        controller.signal.throwIfAborted();
+        job.resolve(value);
+      })
+      .catch((error) => {
+        if (job.preempted && !job.cancelled && !disposed) display.unshift(job);
+        else job.reject(error);
+      })
+      .finally(() => {
+        if (!job.preempted || job.cancelled || disposed) {
+          jobs.delete(job);
+          job.cleanup();
+        }
+        active = undefined;
+        pump();
+      });
+  }
+
+  function enqueue<T>(
+    kind: StorefrontJob["kind"],
+    operation: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    const limit =
+      kind === "foreground" ? MAX_FOREGROUND_JOBS : MAX_DISPLAY_JOBS;
+    if (
+      disposed ||
+      [...jobs].filter((job) => job.kind === kind).length >= limit
+    )
       return Promise.reject(
         new Error(
           "Please wait for the current storefront tools, then try again.",
         ),
       );
-    queued++;
-    const result = tail
-      .then(() => {
-        requireCurrentStore();
-        return operation();
-      })
-      .finally(() => {
-        queued--;
-      });
-    tail = result.catch(() => undefined);
-    return result;
+    return new Promise<T>((resolve, reject) => {
+      const queue = kind === "foreground" ? foreground : display;
+      const job: StorefrontJob = {
+        kind,
+        operation,
+        preempted: false,
+        cancelled: false,
+        resolve: (value) => resolve(value as T),
+        reject,
+        cleanup: () => signal?.removeEventListener("abort", cancel),
+      };
+      const cancel = () => {
+        job.cancelled = true;
+        job.controller?.abort(signal?.reason);
+        const index = queue.indexOf(job);
+        if (index !== -1) queue.splice(index, 1);
+        jobs.delete(job);
+        job.cleanup();
+        reject(
+          signal?.reason ??
+            new DOMException("Product loading cancelled", "AbortError"),
+        );
+      };
+      jobs.add(job);
+      queue.push(job);
+      signal?.addEventListener("abort", cancel, { once: true });
+      // Only display reads can yield; foreground actions are never replayed.
+      if (kind === "foreground" && active?.kind === "display") {
+        active.preempted = true;
+        active.controller?.abort(
+          new DOMException("Display loading yielded to a tool", "AbortError"),
+        );
+      }
+      pump();
+    });
   }
 
   async function fetchCatalog(
@@ -137,50 +219,62 @@ export function createStorefrontExecutor(
       name === "navigate"
         ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
         : parseCatalogCall(name, input);
-    return enqueue(async () => {
-      signal?.throwIfAborted();
-      if (call.name !== "navigate") return fetchCatalog(call, signal);
-      const raw = await tools.execute(call.name, call.arguments, signal);
-      requireCurrentStore();
-      signal?.throwIfAborted();
-      if (
-        !raw ||
-        typeof raw !== "object" ||
-        !("url" in raw) ||
-        typeof raw.url !== "string" ||
-        !("pending" in raw) ||
-        raw.pending !== false ||
-        !("status" in raw) ||
-        raw.status !== "navigated"
-      )
-        throw new Error(
-          "Storefront navigation did not finish. Check the page before trying again.",
-        );
-      let url: URL;
-      try {
-        url = new URL(raw.url);
-      } catch {
-        throw new Error("Storefront navigation returned an invalid page URL.");
-      }
-      if (
-        url.origin !== window.location.origin ||
-        url.username ||
-        url.password ||
-        url.href !== window.location.href
-      )
-        throw new Error(
-          "Storefront navigation did not finish. Check the page before trying again.",
-        );
-      const { path } = parseNavigationCall({
-        path: `${url.pathname}${url.search}${url.hash}`,
-      });
-      return { status: "navigated" as const, path };
-    });
+    return enqueue(
+      "foreground",
+      async (signal) => {
+        signal?.throwIfAborted();
+        if (call.name !== "navigate") return fetchCatalog(call, signal);
+        const raw = await tools.execute(call.name, call.arguments, signal, {
+          navigationSource: "model",
+        });
+        requireCurrentStore();
+        signal?.throwIfAborted();
+        if (
+          !raw ||
+          typeof raw !== "object" ||
+          !("url" in raw) ||
+          typeof raw.url !== "string" ||
+          !("pending" in raw) ||
+          raw.pending !== false ||
+          !("status" in raw) ||
+          raw.status !== "navigated"
+        )
+          throw new Error(
+            "Storefront navigation did not finish. Check the page before trying again.",
+          );
+        let url: URL;
+        try {
+          url = new URL(raw.url);
+        } catch {
+          throw new Error(
+            "Storefront navigation returned an invalid page URL.",
+          );
+        }
+        if (
+          url.origin !== window.location.origin ||
+          url.username ||
+          url.password ||
+          url.href !== window.location.href
+        )
+          throw new Error(
+            "Storefront navigation did not finish. Check the page before trying again.",
+          );
+        const { path } = parseNavigationCall({
+          path: `${url.pathname}${url.search}${url.hash}`,
+        });
+        return { status: "navigated" as const, path };
+      },
+      signal,
+    );
   }
   return {
     execute,
-    async loadProducts(ids: readonly string[]): Promise<CatalogResult> {
+    async loadProducts(
+      ids: readonly string[],
+      signal?: AbortSignal,
+    ): Promise<CatalogResult> {
       requireCurrentStore();
+      signal?.throwIfAborted();
       const call = parseCatalogCall("lookup_catalog", { ids: [...ids] });
       const selectedIds = call.arguments.ids as string[];
       const cached = displaySelection(selectedIds);
@@ -189,26 +283,41 @@ export function createStorefrontExecutor(
           products: [...cached.products.values()],
           messages: [...cached.messages.values()],
         };
-      return enqueue(async () => {
-        // Earlier queued work may have fetched these products while we waited.
-        const { products, messages, missing } = displaySelection(selectedIds);
-        if (missing.length) {
-          const fresh = await fetchCatalog(
-            parseCatalogCall("lookup_catalog", { ids: missing }),
-          );
-          for (const product of fresh.products)
-            if (missing.includes(product.id)) products.set(product.id, product);
-          for (const message of fresh.messages)
-            messages.set(JSON.stringify(message), message);
-        }
-        return {
-          products: selectedIds.flatMap((id) => products.get(id) ?? []),
-          messages: [...messages.values()],
-        };
-      });
+      return enqueue(
+        "display",
+        async (signal) => {
+          // Earlier queued work may have fetched these products while we waited.
+          const { products, messages, missing } = displaySelection(selectedIds);
+          if (missing.length) {
+            const fresh = await fetchCatalog(
+              parseCatalogCall("lookup_catalog", { ids: missing }),
+              signal,
+            );
+            for (const product of fresh.products)
+              if (missing.includes(product.id))
+                products.set(product.id, product);
+            for (const message of fresh.messages)
+              messages.set(JSON.stringify(message), message);
+          }
+          return {
+            products: selectedIds.flatMap((id) => products.get(id) ?? []),
+            messages: [...messages.values()],
+          };
+        },
+        signal,
+      );
     },
     dispose() {
       disposed = true;
+      for (const job of jobs) {
+        job.cancelled = true;
+        job.controller?.abort();
+        job.cleanup();
+        job.reject(new Error("Roman has been removed."));
+      }
+      jobs.clear();
+      foreground.length = 0;
+      display.length = 0;
       displayProducts.clear();
     },
   };

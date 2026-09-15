@@ -5,6 +5,7 @@ import {
   resetHeaderAtTop,
 } from "./page";
 import { selectStore } from "../themes";
+import { parseNavigationCall } from "../../../../shared/navigation-tool";
 
 export type NavigationSnapshot = {
   url: string;
@@ -18,7 +19,11 @@ export type NavigationOutcome =
 export type StorefrontNavigation = {
   getSnapshot: () => NavigationSnapshot;
   subscribe: (listener: () => void) => () => void;
-  navigate: (path: string, signal?: AbortSignal) => Promise<NavigationOutcome>;
+  navigate: (
+    path: string,
+    signal?: AbortSignal,
+    options?: { source: "model" },
+  ) => Promise<NavigationOutcome>;
   setSidebarOpen: (open: boolean) => void;
   dispose: () => void;
 };
@@ -85,6 +90,7 @@ export function createStorefrontNavigation(
   let previousScrollRestoration: ScrollRestoration;
   let displayedEntry: HistoryEntry | undefined;
   let handingOff = false;
+  let currentPageFailed = false;
 
   function publish(update: Partial<NavigationSnapshot>) {
     snapshot = { ...snapshot, ...update };
@@ -151,6 +157,7 @@ export function createStorefrontNavigation(
     path: string,
     fromHistory = false,
     signal?: AbortSignal,
+    source?: "model",
   ): Promise<NavigationOutcome> {
     if (disposed || signal?.aborted) return "cancelled";
     if (handingOff) return "handed_off";
@@ -179,6 +186,7 @@ export function createStorefrontNavigation(
           "Roman navigation is not configured for this storefront.",
         );
       }
+      if (source === "model") path = parseNavigationCall({ path }).path;
       const url = storefrontUrl(path);
       const previewTheme = new URL(currentUrl).searchParams.get(
         "preview_theme_id",
@@ -204,6 +212,7 @@ export function createStorefrontNavigation(
       if (
         !fromHistory &&
         !snapshot.pending &&
+        !currentPageFailed &&
         url.href === window.location.href
       ) {
         publish({ url: url.href, pending: false, error: null });
@@ -216,8 +225,18 @@ export function createStorefrontNavigation(
         credentials: "same-origin",
         headers: { Accept: "text/html" },
         signal: request.signal,
+        ...(source === "model" ? { redirect: "error" as const } : {}),
       });
       const finalUrl = storefrontUrl(response.url || url.href);
+      if (
+        source === "model" &&
+        (response.redirected ||
+          finalUrl.pathname !== url.pathname ||
+          finalUrl.search !== url.search)
+      )
+        throw new Error(
+          "Roman cannot follow a page redirect. Open the storefront link to continue.",
+        );
       // Fetch strips the requested fragment; native navigation must retain it.
       if (!finalUrl.hash) finalUrl.hash = url.hash;
       destination = finalUrl;
@@ -261,6 +280,7 @@ export function createStorefrontNavigation(
       });
       currentUrl = finalUrl.href;
       if (initializationError) throw new Error(initializationError);
+      currentPageFailed = false;
       publish({
         url: currentUrl,
         pending: false,
@@ -293,7 +313,8 @@ export function createStorefrontNavigation(
         return "cancelled";
       }
       const cause = request.signal.aborted ? request.signal.reason : error;
-      if (destination) {
+      if (replacedUrl) currentPageFailed = true;
+      if (destination && source !== "model") {
         // Error messages can contain asset/request URLs. Keep useful context
         // without copying their credentials, query parameters or fragments.
         const reason = (
@@ -335,6 +356,15 @@ export function createStorefrontNavigation(
         else window.location.replace(destination.href);
         return "handed_off";
       }
+      if (destination && source === "model")
+        console.error(
+          "[Roman] Model navigation stopped; open the storefront link to continue.",
+          {
+            destination: destination.pathname,
+            reason:
+              "Redirects or theme initialization require customer-controlled navigation.",
+          },
+        );
       publish({
         url: currentUrl,
         pending: false,
@@ -435,7 +465,8 @@ export function createStorefrontNavigation(
         listeners.delete(listener);
       };
     },
-    navigate: (path, signal) => visit(path, false, signal),
+    navigate: (path, signal, options) =>
+      visit(path, false, signal, options?.source),
     setSidebarOpen(isOpen) {
       if (disposed || !store || open === isOpen) return;
       open = isOpen;

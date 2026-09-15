@@ -1,5 +1,8 @@
 import type {
   ConversationSnapshot,
+  ConversationRead,
+  ConversationReadSnapshot,
+  ConversationReadVersion,
   SendMessageInput,
 } from "../../shared/conversation";
 import { ConversationError } from "./errors.server";
@@ -11,6 +14,7 @@ import {
   failPending,
   finishTurn,
   getSnapshot,
+  getReadRevision,
   endConversation,
 } from "./repository.server";
 
@@ -18,6 +22,7 @@ interface ActiveTurn {
   requestId: string;
   assistantId: string | null;
   text: string;
+  streamRevision: number;
   ready: Promise<void>;
   controller: AbortController;
   voiceId?: string;
@@ -29,13 +34,25 @@ const active = new Map<string, ActiveTurn>();
 const ending = new Set<string>();
 const MAX_CONCURRENT_TURNS = 4;
 
+export function readConversation(id: string): Promise<ConversationReadSnapshot>;
+export function readConversation(
+  id: string,
+  known: ConversationReadVersion | undefined,
+): Promise<ConversationRead>;
 export async function readConversation(
   id: string,
-): Promise<ConversationSnapshot> {
+  known?: ConversationReadVersion,
+): Promise<ConversationRead> {
   await active.get(id)?.ready;
-  if (!active.has(id)) await failPending(id);
+  const revision = await getReadRevision(id, !active.has(id));
+  const current = active.get(id);
+  const streamRevision =
+    current && !current.voiceId ? current.streamRevision : 0;
+  if (known?.revision === revision && known.streamRevision === streamRevision)
+    return { id, revision, streamRevision, unchanged: true };
   const snapshot = await getSnapshot(id);
   const turn = active.get(id);
+  let projectedStreamRevision = 0;
   if (turn?.assistantId && !turn.voiceId) {
     snapshot.messages = snapshot.messages.map((message) =>
       message.id === turn.assistantId && message.status === "pending"
@@ -48,8 +65,15 @@ export async function readConversation(
           }
         : message,
     );
+    if (
+      snapshot.messages.some(
+        (message) =>
+          message.id === turn.assistantId && message.status === "pending",
+      )
+    )
+      projectedStreamRevision = turn.streamRevision;
   }
-  return snapshot;
+  return { ...snapshot, streamRevision: projectedStreamRevision };
 }
 
 export async function startTurn(
@@ -83,6 +107,7 @@ export async function startTurn(
     requestId: input.requestId,
     assistantId: null,
     text: "",
+    streamRevision: 0,
     controller: new AbortController(),
     ready: new Promise<void>((resolve) => {
       initialized = resolve;
@@ -122,7 +147,11 @@ async function completeTurn(
     const reply = await generateReply(
       history,
       (text) => {
-        turn.text = text;
+        if (turn.controller.signal.aborted || active.get(id) !== turn) return;
+        if (turn.text !== text) {
+          turn.text = text;
+          turn.streamRevision++;
+        }
       },
       signal,
       (callId, name, input) =>
@@ -185,6 +214,7 @@ export async function runVoiceDelegation(
     requestId,
     assistantId: null,
     text: "",
+    streamRevision: 0,
     voiceId,
     ready: new Promise<void>((resolve) => {
       initialized = resolve;

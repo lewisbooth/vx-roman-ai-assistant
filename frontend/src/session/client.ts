@@ -5,6 +5,7 @@ import {
   type ConversationBootstrap,
   type ConversationCredential,
   type ConversationSnapshot,
+  type ConversationReadVersion,
   type BrowserToolInvocation,
   type ToolClaim,
 } from "../../../shared/conversation";
@@ -188,6 +189,7 @@ export function createConversationClient(
   let pollAfterCurrent = false;
   let apiSequence = 0;
   let appliedSequence = 0;
+  let readVersion: ConversationReadVersion | undefined;
   let epoch = 0;
   let ending = false;
   let voiceEpoch = 0;
@@ -216,7 +218,13 @@ export function createConversationClient(
   const lifetime = new AbortController();
 
   function update(change: Partial<ConversationClientState>) {
-    if (disposed) return;
+    if (
+      disposed ||
+      Object.entries(change).every(
+        ([key, value]) => state[key as keyof ConversationClientState] === value,
+      )
+    )
+      return;
     state = { ...state, ...change };
     listeners.forEach((listener) => listener());
   }
@@ -344,6 +352,7 @@ export function createConversationClient(
       apiBaseUrl: boot.apiBaseUrl,
     };
     resumeAccess = null;
+    readVersion = undefined;
     persist();
     update({ conversation: boot.conversation });
   }
@@ -377,17 +386,59 @@ export function createConversationClient(
   async function api(path = "", body?: unknown) {
     if (!access) throw new SessionRequestError("Start a conversation first.");
     const sequence = ++apiSequence;
-    const result = await rawApi(path, body);
+    const isRead = path === "" && body === undefined;
+    const requestedVersion = isRead ? readVersion : undefined;
+    const query = requestedVersion
+      ? `?revision=${requestedVersion.revision}&streamRevision=${requestedVersion.streamRevision}`
+      : "";
+    const result = await rawApi(`${path}${query}`, body);
+    const version =
+      record(result) &&
+      Number.isSafeInteger(result.revision) &&
+      Number(result.revision) >= 0 &&
+      Number.isSafeInteger(result.streamRevision) &&
+      Number(result.streamRevision) >= 0
+        ? {
+            revision: Number(result.revision),
+            streamRevision: Number(result.streamRevision),
+          }
+        : undefined;
+    if (record(result) && result.unchanged === true) {
+      if (
+        !isRead ||
+        !requestedVersion ||
+        !version ||
+        result.id !== access?.conversationId ||
+        version.revision !== requestedVersion.revision ||
+        version.streamRevision !== requestedVersion.streamRevision
+      )
+        throw new SessionRequestError(
+          "Roman received an invalid conversation version.",
+        );
+      // An intervening mutation can supersede this read. Retry only work from
+      // the current authoritative state, including a lost tool-result response.
+      void executePendingTool();
+      return;
+    }
+    if (isRead && !version)
+      throw new SessionRequestError(
+        "Roman received an invalid conversation version.",
+      );
     if (!snapshot(result) || result.id !== access?.conversationId)
       throw new SessionRequestError(
         "Roman received an invalid conversation response.",
       );
     const revision = state.conversation?.revision ?? -1;
+    const currentStream =
+      readVersion?.revision === revision ? readVersion.streamRevision : 0;
     if (
       result.revision > revision ||
-      (result.revision === revision && sequence >= appliedSequence)
+      (result.revision === revision &&
+        ((version && version.streamRevision > currentStream) ||
+          (!readVersion && sequence >= appliedSequence)))
     ) {
       appliedSequence = Math.max(sequence, appliedSequence);
+      readVersion = version;
       // A spoken correction can retire work before it completes in this page.
       // Cancel the browser action as soon as its authoritative invocation ends.
       if (
@@ -422,6 +473,10 @@ export function createConversationClient(
         }
         void executePendingTool();
       }
+    } else {
+      // Same-version snapshots can arrive from idempotent mutation responses.
+      // They must not replace streamed text or retrigger transcript rendering.
+      void executePendingTool();
     }
   }
 
@@ -432,6 +487,7 @@ export function createConversationClient(
     toolController?.abort();
     epoch++;
     access = null;
+    readVersion = undefined;
     resumeAccess = null;
     uncertainSubmission = null;
     toolAttempts.clear();
@@ -1008,7 +1064,7 @@ export function createConversationClient(
       journeyQueue = task.catch(() => undefined);
       return task;
     },
-    loadProducts(ids) {
+    loadProducts(ids, signal) {
       if (
         !executor ||
         disposed ||
@@ -1018,7 +1074,7 @@ export function createConversationClient(
         return Promise.reject(
           new Error("Start a chat to load these products."),
         );
-      return executor.loadProducts(ids);
+      return executor.loadProducts(ids, signal);
     },
     startVoice,
     setVoice,

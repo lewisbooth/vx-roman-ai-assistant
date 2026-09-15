@@ -2,132 +2,122 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import jsdomInternals from "jsdom/lib/jsdom/living/generated/utils.js";
 
-const origin = "https://hd-dev-single.myshopify.com";
+const origin = "https://hd-dev-multi.myshopify.com";
+const asset = `${origin}/cdn/shop/t/370/assets/-pricing.js`;
 const bundle = await build({
-  entryPoints: ["frontend/src/navigation/shared/page.ts"],
+  entryPoints: ["frontend/src/navigation/shared/index.ts"],
   bundle: true,
   write: false,
   format: "iife",
-  globalName: "RomanPage",
+  globalName: "RomanNavigation",
   platform: "browser",
 });
-
-function page(path, content) {
-  return `<!doctype html><html data-roman-preview="true"><head>
-    <title>Store ${path}</title></head>
-    <body class="template-${path === "/" ? "index" : "collection"}">
-    <app-provider><header>Persistent header</header>
-    <main id="main">${content}</main></app-provider>
-    <roman-ai-assistant></roman-ai-assistant></body></html>`;
+function html(extra = "") {
+  return `<!doctype html><html data-roman-preview="true"><head><title>Blinds</title>
+    <script type="module" src="${asset}"></script></head><body><app-provider>
+    <main id="main"><h1>Blinds</h1>${extra}</main></app-provider>
+    <roman-ai-assistant data-shop="hd-dev-multi.myshopify.com"></roman-ai-assistant></body></html>`;
+}
+function setup(t, code, source = asset) {
+  const dom = new JSDOM(html(), {
+    url: origin,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  const { window } = dom;
+  const reports = [];
+  const native = [];
+  window.addEventListener("error", (event) => event.preventDefault());
+  const runtimeObservers = new Set();
+  const add = window.addEventListener.bind(window);
+  const remove = window.removeEventListener.bind(window);
+  window.addEventListener = (type, listener, ...options) => {
+    if (type === "error") runtimeObservers.add(listener);
+    return add(type, listener, ...options);
+  };
+  window.removeEventListener = (type, listener, ...options) => {
+    if (type === "error") runtimeObservers.delete(listener);
+    return remove(type, listener, ...options);
+  };
+  window.console.error = (...args) => reports.push(args);
+  window.scrollTo = () => {};
+  const location = jsdomInternals.implForWrapper(window.location);
+  for (const method of ["assign", "replace", "reload"])
+    location[method] = () => native.push(method);
+  window.fetch = async (url) => ({
+    ok: true,
+    url: String(url),
+    headers: { get: () => "text/html" },
+    text: async () => html("<pricing-control></pricing-control>"),
+  });
+  window.eval(`${code}\n//# sourceURL=${source}`);
+  window.eval(
+    `${bundle.outputFiles[0].text}\nwindow.RomanNavigation=RomanNavigation;`,
+  );
+  const host = window.document.querySelector("roman-ai-assistant");
+  host.attachShadow({ mode: "open" });
+  const navigation = window.RomanNavigation.createStorefrontNavigation(host);
+  t.after(() => {
+    navigation.dispose();
+    window.close();
+  });
+  return { window, navigation, reports, native, runtimeObservers };
 }
 
-for (const initialPath of ["/", "/collections/all"]) {
-  test(`collection constructors bind to the inserted page when navigating from ${initialPath}`, async (t) => {
-    const dom = new JSDOM(
-      page(
-        initialPath,
-        initialPath === "/"
-          ? "<h1>Home</h1>"
-          : '<section id="collection"><div product-grid-container class="loading">Old grid</div></section>',
-      ),
-      { url: origin + initialPath, runScripts: "outside-only" },
+for (const callback of [
+  "constructor() { super(); throw new Error('pricing failed'); }",
+  "connectedCallback() { throw new Error('pricing failed'); }",
+]) {
+  test(`theme ${callback.startsWith("constructor") ? "constructor" : "connection"} failure reaches native recovery after DOM insertion`, async (t) => {
+    const ctx = setup(
+      t,
+      `customElements.define('pricing-control', class extends HTMLElement { ${callback} });`,
     );
-    t.after(() => dom.window.close());
-    const { window } = dom;
-    const { document } = window;
-    const previousMain = document.querySelector("main");
-    const previousGrid = previousMain.querySelector("[product-grid-container]");
-    const header = document.querySelector("header");
-    const assistant = document.querySelector("roman-ai-assistant");
-    let finishPricing;
-    const pricingReady = new Promise((resolve) => {
-      finishPricing = resolve;
-    });
-    const constructions = [];
-
-    // The current HD facets constructor caches document.getElementById rather
-    // than a relative query. Its initial-load handler later clears this grid.
-    window.customElements.define(
-      "facet-filters-form",
-      class extends window.HTMLElement {
-        constructor() {
-          super();
-          this.collectionSection = document.getElementById("collection");
-          constructions.push({
-            section: this.collectionSection,
-            connected: this.isConnected,
-            pathname: window.location.pathname,
-            collectionTemplate: document.body.classList.contains(
-              "template-collection",
-            ),
-          });
-        }
-
-        connectedCallback() {
-          this.initialLoad = pricingReady.then(() => {
-            this.collectionSection
-              ?.querySelector("[product-grid-container]")
-              ?.classList.remove("loading");
-          });
-        }
-      },
-    );
-    window.eval(`${bundle.outputFiles[0].text}\nwindow.RomanPage = RomanPage;`);
-    const destination = new URL("/collections/blackout-blinds", origin);
-    const prepared = window.RomanPage.preparePage(
-      page(
-        destination.pathname,
-        '<section id="collection"><facet-filters-form></facet-filters-form><collection-grid product-grid-container class="loading">New grid</collection-grid></section>',
-      ),
-      destination,
-      { id: "test", prepare: () => ({}) },
-    );
-    assert.equal(constructions.length, 0, "preparation must remain inert");
-
-    const { main } = window.RomanPage.commitPage(prepared, () => {
-      assert.equal(
-        constructions.length,
-        0,
-        "URL changes precede component construction",
-      );
-      window.history.pushState({}, "", destination.href);
-    });
-    const section = main.querySelector("#collection");
-    const grid = section.querySelector("[product-grid-container]");
-    const facets = section.querySelector("facet-filters-form");
-
-    assert.deepEqual(constructions, [
-      {
-        section,
-        connected: true,
-        pathname: destination.pathname,
-        collectionTemplate: true,
-      },
-    ]);
-    assert.equal(main.ownerDocument, document);
-    assert.equal(previousMain.isConnected, false);
-    assert.equal(document.querySelector("header"), header);
-    assert.equal(document.querySelector("roman-ai-assistant"), assistant);
     assert.equal(
-      grid.classList.contains("loading"),
-      true,
-      "pricing still owns readiness",
+      await ctx.navigation.navigate("/products/blind"),
+      "handed_off",
     );
-
-    finishPricing();
-    await facets.initialLoad;
-    assert.equal(
-      grid.classList.contains("loading"),
-      false,
-      "the theme clears the new grid",
-    );
-    if (previousGrid) {
-      assert.equal(
-        previousGrid.classList.contains("loading"),
-        true,
-        "the old page is untouched",
-      );
-    }
+    assert.equal(ctx.native.length, 1);
+    assert.match(ctx.reports[0][1].reason, /pricing failed/);
+    assert.equal(ctx.navigation.getSnapshot().pending, false);
+    assert.equal(ctx.runtimeObservers.size, 0);
   });
 }
+
+test("successful connections and unrelated third-party errors do not trigger theme recovery", async (t) => {
+  const ctx = setup(
+    t,
+    `customElements.define('pricing-control', class extends HTMLElement { connectedCallback() { this.setAttribute('ready', 'true'); window.dispatchEvent(new ErrorEvent('error', {filename:'https://analytics.example/script.js', message:'analytics failed'})); } });`,
+  );
+  assert.equal(await ctx.navigation.navigate("/products/blind"), "navigated");
+  assert.equal(
+    ctx.window.document.querySelector("pricing-control").getAttribute("ready"),
+    "true",
+  );
+  assert.deepEqual(ctx.native, []);
+  assert.deepEqual(ctx.reports, []);
+  assert.equal(ctx.runtimeObservers.size, 0);
+  ctx.window.dispatchEvent(
+    new ctx.window.ErrorEvent("error", {
+      filename: asset,
+      message: "later unrelated work",
+    }),
+  );
+  assert.deepEqual(
+    ctx.reports,
+    [],
+    "The commit error listener is not retained after activation",
+  );
+});
+
+
+test("retrying a model page with failed initialization cannot succeed via the same-page shortcut", async (t) => {
+  const ctx = setup(t, "customElements.define('pricing-control', class extends HTMLElement { connectedCallback() { throw new Error('pricing failed'); } });");
+  assert.equal(await ctx.navigation.navigate("/products/blind", undefined, { source: "model" }), "failed");
+  assert.ok(ctx.navigation.getSnapshot().error);
+  assert.equal(await ctx.navigation.navigate("/products/blind", undefined, { source: "model" }), "failed");
+  assert.ok(ctx.navigation.getSnapshot().error);
+  assert.deepEqual(ctx.native, []);
+});

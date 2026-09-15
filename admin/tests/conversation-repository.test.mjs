@@ -23,6 +23,7 @@ const origin = `https://${shop}`;
 let directory;
 let database;
 let repository;
+const queries = [];
 const previousAppUrl = process.env.SHOPIFY_APP_URL;
 const previousGlobal = global.prismaGlobal;
 
@@ -40,7 +41,9 @@ before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "roman-conversations-"));
   database = new PrismaClient({
     datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+    log: [{ emit: "event", level: "query" }],
   });
+  database.$on("query", ({ query }) => queries.push(query));
   global.prismaGlobal = database;
   process.env.SHOPIFY_APP_URL = "https://roman.example.test";
   const migrations = (
@@ -85,6 +88,134 @@ after(async () => {
   global.prismaGlobal = previousGlobal;
   if (previousAppUrl === undefined) delete process.env.SHOPIFY_APP_URL;
   else process.env.SHOPIFY_APP_URL = previousAppUrl;
+});
+
+test("healthy version probes do not write or read transcript contents at the caption bound", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const voiceId = randomUUID();
+  await database.voiceSession.create({
+    data: {
+      id: voiceId,
+      conversationId: id,
+      clientId: randomUUID(),
+      status: "active",
+      leaseExpiresAt: new Date(Date.now() + 45_000),
+    },
+  });
+  await database.conversationMessage.createMany({
+    data: Array.from({ length: 20 }, (_, sequence) => ({
+      id: randomUUID(),
+      conversationId: id,
+      requestId: randomUUID(),
+      sequence,
+      role: "assistant",
+      status: "complete",
+      partsJson: '[{"type":"text","text":"**Synthetic** reply."}]',
+    })),
+  });
+  await database.voiceTranscript.createMany({
+    data: Array.from({ length: 1100 }, (_, index) => ({
+      id: randomUUID(),
+      voiceId,
+      conversationId: id,
+      providerEventId: `fixture-${index}`,
+      sequence: index + 20,
+      role: "assistant",
+      text: "Synthetic caption. ",
+      startMs: index * 100,
+      endMs: index * 100 + 90,
+    })),
+  });
+  queries.length = 0;
+  for (let index = 0; index < 20; index++)
+    assert.equal(await repository.getReadRevision(id, true), 0);
+  assert.equal(
+    queries.length,
+    60,
+    "each read uses three bounded metadata selects",
+  );
+  assert.ok(queries.every((query) => /^SELECT\b/.test(query)));
+  assert.ok(
+    queries.every(
+      (query) => !/VoiceTranscript|ToolInvocation|partsJson|"text"/.test(query),
+    ),
+  );
+  queries.length = 0;
+  await repository.failPending(id);
+  assert.equal(queries.length, 1);
+  assert.match(queries[0], /^SELECT\b/);
+});
+
+test("version probes recover stale replies and voices once, then remain read-only", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const started = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Hello",
+  });
+  const old = new Date(0);
+  await database.conversationMessage.updateMany({
+    where: { conversationId: id },
+    data: { createdAt: old },
+  });
+  await database.voiceSession.create({
+    data: {
+      id: randomUUID(),
+      conversationId: id,
+      clientId: randomUUID(),
+      createdAt: old,
+      leaseExpiresAt: old,
+    },
+  });
+  assert.equal(
+    await repository.getReadRevision(id, true),
+    started.snapshot.revision + 2,
+  );
+  const recovered = await repository.getSnapshot(id);
+  assert.equal(recovered.busy, false);
+  assert.equal(recovered.voice.status, "failed");
+  assert.equal(recovered.messages[1].status, "failed");
+  queries.length = 0;
+  assert.equal(await repository.getReadRevision(id, true), recovered.revision);
+  assert.ok(queries.every((query) => /^SELECT\b/.test(query)));
+  await assert.rejects(repository.getReadRevision(randomUUID(), true), {
+    status: 404,
+  });
+});
+
+test("recovery advances the version without clearing a different current request", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const old = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Earlier question",
+  });
+  await database.conversationMessage.updateMany({
+    where: { id: old.assistantId },
+    data: { createdAt: new Date(0) },
+  });
+  const currentRequest = randomUUID();
+  await database.conversation.update({
+    where: { id },
+    data: { pendingRequestId: currentRequest },
+  });
+  assert.equal(
+    await repository.getReadRevision(id, true),
+    old.snapshot.revision + 1,
+  );
+  assert.equal(
+    (await database.conversation.findUnique({ where: { id } }))
+      .pendingRequestId,
+    currentRequest,
+  );
+  assert.equal((await repository.getSnapshot(id)).messages[1].status, "failed");
 });
 
 test("credentials are hashed, scoped to their conversation, and expire", async () => {
@@ -586,7 +717,11 @@ test("navigation persists a claimed storefront action without product evidence o
     name: "navigate",
     arguments: { path: "/products/dalmatians?variant=123#measurements" },
   };
-  const tool = await repository.createToolInvocation(id, turn.assistantId, input);
+  const tool = await repository.createToolInvocation(
+    id,
+    turn.assistantId,
+    input,
+  );
   assert.deepEqual(tool, {
     id: tool.id,
     name: input.name,
@@ -613,11 +748,15 @@ test("navigation persists a claimed storefront action without product evidence o
     { status: 400 },
   );
   assert.deepEqual(await repository.getSnapshot(id), claimed);
-  await repository.completeToolInvocation(id, tool.id, claim, { productIds: [] });
+  await repository.completeToolInvocation(id, tool.id, claim, {
+    productIds: [],
+  });
   const completed = await repository.getSnapshot(id);
   assert.deepEqual(completed.tools, []);
   assert.deepEqual(completed.messages[1].parts, [{ type: "text", text: "" }]);
-  await repository.completeToolInvocation(id, tool.id, claim, { productIds: [] });
+  await repository.completeToolInvocation(id, tool.id, claim, {
+    productIds: [],
+  });
   assert.deepEqual(await repository.getSnapshot(id), completed);
   const persisted = await database.toolInvocation.findUniqueOrThrow({
     where: { id: tool.id },
@@ -707,7 +846,9 @@ test("a completed reply atomically presents one ordered subset of current-turn c
     requestId: randomUUID(),
     text: "Show two plain blackout options.",
   });
-  const productIds = [1, 2, 3].map((number) => `gid://shopify/Product/${number}`);
+  const productIds = [1, 2, 3].map(
+    (number) => `gid://shopify/Product/${number}`,
+  );
   await completedCatalog(id, turn.assistantId, productIds.slice(0, 2));
   await completedCatalog(id, turn.assistantId, productIds.slice(2), {
     name: "lookup_catalog",
@@ -778,8 +919,9 @@ test("invalid or ungrounded presentations cannot partially complete a reply", as
     requestId: randomUUID(),
     text: "Show recommendations.",
   });
-  const available = Array.from({ length: 7 }, (_, index) =>
-    `gid://shopify/Product/${index + 1}`,
+  const available = Array.from(
+    { length: 7 },
+    (_, index) => `gid://shopify/Product/${index + 1}`,
   );
   await completedCatalog(id, turn.assistantId, available);
   const before = await repository.getSnapshot(id);

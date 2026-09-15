@@ -70,6 +70,19 @@ function requireActiveConversation(status: string) {
 }
 
 /** Reusable inside text-turn transactions so mode changes share the same DB lock. */
+export function expiredVoiceSessionWhere(
+  now = new Date(),
+): Prisma.VoiceSessionWhereInput {
+  return {
+    status: { in: activeStatuses },
+    OR: [
+      { leaseExpiresAt: { lte: now } },
+      { createdAt: { lte: new Date(now.getTime() - MAX_VOICE_DURATION_MS) } },
+      { createdAt: { lt: processStartedAt } },
+    ],
+  };
+}
+
 export async function expireVoiceSessions(
   transaction: Prisma.TransactionClient,
   conversationId: string,
@@ -78,12 +91,7 @@ export async function expireVoiceSessions(
   const changed = await transaction.voiceSession.updateMany({
     where: {
       conversationId,
-      status: { in: activeStatuses },
-      OR: [
-        { leaseExpiresAt: { lte: now } },
-        { createdAt: { lte: new Date(now.getTime() - MAX_VOICE_DURATION_MS) } },
-        { createdAt: { lt: processStartedAt } },
-      ],
+      ...expiredVoiceSessionWhere(now),
     },
     data: {
       status: "failed",
@@ -96,6 +104,18 @@ export async function expireVoiceSessions(
       where: { id: conversationId },
       data: { revision: { increment: 1 } },
     });
+}
+
+/** Healthy reads never acquire a writer; the transaction rechecks a stale probe. */
+export async function recoverVoiceSessions(conversationId: string) {
+  const stale = await prisma.voiceSession.findFirst({
+    where: { conversationId, ...expiredVoiceSessionWhere() },
+    select: { id: true },
+  });
+  if (stale)
+    await prisma.$transaction((transaction) =>
+      expireVoiceSessions(transaction, conversationId),
+    );
 }
 
 // Commit expiry recovery even when the requested operation then reports a conflict.
@@ -180,19 +200,17 @@ export async function reserveVoiceSession(
 export async function getVoiceState(
   conversationId: string,
 ): Promise<VoiceSession | null> {
-  return voiceTransaction(async (transaction) => {
-    await requireConversation(transaction, conversationId);
-    await expireVoiceSessions(transaction, conversationId);
-    return (
-      (await transaction.voiceSession.findFirst({
-        where: { conversationId, status: { in: activeStatuses } },
-      })) ??
-      transaction.voiceSession.findFirst({
-        where: { conversationId },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      })
-    );
-  });
+  await requireConversation(prisma, conversationId);
+  await recoverVoiceSessions(conversationId);
+  return (
+    (await prisma.voiceSession.findFirst({
+      where: { conversationId, status: { in: activeStatuses } },
+    })) ??
+    prisma.voiceSession.findFirst({
+      where: { conversationId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    })
+  );
 }
 
 export async function activateVoiceSession(

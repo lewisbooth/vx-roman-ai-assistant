@@ -132,6 +132,7 @@ export function createAssistantTools(
       name: string,
       input: unknown,
       signal?: AbortSignal,
+      options?: { navigationSource?: "model" },
     ): Promise<unknown> {
       if (disposed) throw new Error("Roman tools have been disposed.");
       signal?.throwIfAborted();
@@ -296,7 +297,13 @@ export function createAssistantTools(
             case "navigate": {
               const args = argumentsObject(input, ["path"]);
               const path = textArgument(args, "path", 2048);
-              const status = await navigation.navigate(path, request.signal);
+              const status = await navigation.navigate(
+                path,
+                request.signal,
+                options?.navigationSource === "model"
+                  ? { source: "model" }
+                  : undefined,
+              );
               const state = navigation.getSnapshot();
               if (state.error) throw new Error(state.error);
               return { status, url: state.url, pending: state.pending };

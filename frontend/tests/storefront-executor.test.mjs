@@ -40,6 +40,8 @@ function setup(execute) {
     window: { location },
     URL,
     Intl,
+    AbortController,
+    DOMException,
     Date: class extends Date {
       static now() {
         return clock.now;
@@ -449,7 +451,10 @@ test("a completed navigation cannot publish a result after its session is cancel
   const gate = deferred();
   const controller = new AbortController();
   const { executor, calls } = setup((_name, _args, signal) => {
-    assert.equal(signal, controller.signal);
+    assert.equal(signal.aborted, false);
+    controller.signal.addEventListener("abort", () =>
+      assert.equal(signal.aborted, true),
+    );
     return gate.promise;
   });
   const navigation = executor.execute(
@@ -463,4 +468,87 @@ test("a completed navigation cannot publish a result after its session is cancel
   gate.resolve({ status: "navigated", url: `${origin}/`, pending: false });
   await rejected;
   assert.equal(calls.length, 1);
+});
+
+test("twenty historical carousels cannot reject or delay a foreground tool behind display reads", async () => {
+  let running = 0;
+  let maximum = 0;
+  let firstSignal;
+  const { executor, calls } = setup(async (name, _args, signal) => {
+    running++;
+    maximum = Math.max(maximum, running);
+    try {
+      if (name === "lookup_catalog" && !firstSignal) {
+        firstSignal = signal;
+        await new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        );
+      }
+      return { products: [product] };
+    } finally {
+      running--;
+    }
+  });
+  const cards = Array.from({ length: 20 }, () =>
+    executor.loadProducts([product.id]),
+  );
+  await flush();
+  const foreground = executor.execute("search_products", { query: "shade" });
+  assert.equal(firstSignal.aborted, true);
+  assert.equal((await foreground).products[0].id, product.id);
+  const results = await Promise.all(cards);
+  assert.equal(results.length, 20);
+  assert.ok(results.every((value) => value.products[0].id === product.id));
+  assert.deepEqual(
+    calls.map(([name]) => name),
+    ["lookup_catalog", "search_products"],
+  );
+  assert.equal(
+    maximum,
+    1,
+    "The cancelled physical request settles before foreground dispatch",
+  );
+});
+
+test("obsolete active and queued card requests cancel without blocking later work", async () => {
+  let first = true;
+  const { executor, calls } = setup(async (_name, _args, signal) => {
+    if (first) {
+      first = false;
+      await new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        }),
+      );
+    }
+    return { products: [product] };
+  });
+  const active = new AbortController();
+  const queued = new AbortController();
+  const firstResult = executor.loadProducts([product.id], active.signal);
+  const secondResult = executor.loadProducts([product.id], queued.signal);
+  const rejected = [
+    assert.rejects(firstResult, { name: "AbortError" }),
+    assert.rejects(secondResult, { name: "AbortError" }),
+  ];
+  await flush();
+  queued.abort();
+  active.abort();
+  await Promise.all(rejected);
+  await executor.execute("search_products", { query: "shade" });
+  assert.equal(calls.length, 2);
+});
+
+test("model navigation carries its restricted source through the storefront owner", async () => {
+  const { executor } = setup(async (name, _args, _signal, options) => {
+    assert.equal(name, "navigate");
+    assert.deepEqual(plain(options), { navigationSource: "model" });
+    return { status: "navigated", url: `${origin}/`, pending: false };
+  });
+  assert.equal(
+    (await executor.execute("navigate", { path: "/" })).status,
+    "navigated",
+  );
 });

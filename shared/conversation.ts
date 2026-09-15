@@ -70,6 +70,22 @@ export interface ConversationSnapshot {
   voice?: VoiceSessionSnapshot | null;
 }
 
+/** Durable state plus the current in-process text stream, scoped to one chat. */
+export interface ConversationReadVersion {
+  revision: number;
+  streamRevision: number;
+}
+
+export type ConversationReadSnapshot = ConversationSnapshot &
+  ConversationReadVersion;
+
+export interface ConversationUnchanged extends ConversationReadVersion {
+  id: string;
+  unchanged: true;
+}
+
+export type ConversationRead = ConversationReadSnapshot | ConversationUnchanged;
+
 export interface ConversationCredential {
   conversationId: string;
   token: string;

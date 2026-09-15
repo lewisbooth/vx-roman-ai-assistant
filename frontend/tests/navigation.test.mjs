@@ -54,6 +54,31 @@ function page(path, extra = "") {
     </body></html>`;
 }
 
+test("automatic navigation blocks mutation paths and never follows redirects or native fallback", async (t) => {
+  const ctx = setup(t, async (_url, options) => {
+    assert.equal(options.redirect, "error");
+    throw new TypeError("Redirect blocked");
+  });
+  for (const path of ["/cart/123:1?storefront=true", "/cart/clear", "/en-gb/%63art/add", "/apps/redirect"]) {
+    assert.equal(await ctx.navigation.navigate(path, undefined, { source: "model" }), "failed");
+  }
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(await ctx.navigation.navigate(productOne, undefined, { source: "model" }), "failed");
+  assert.equal(ctx.calls.length, 1);
+  assert.deepEqual(ctx.native, []);
+  assert.equal(ctx.window.location.href, `${origin}/`);
+});
+
+test("automatic navigation still commits an ordinary product page", async (t) => {
+  const ctx = setup(t);
+  assert.equal(await ctx.navigation.navigate(productOne, undefined, { source: "model" }), "navigated");
+  assert.equal(ctx.calls[0].options.redirect, "error");
+  assert.equal(ctx.window.location.pathname, productOne);
+  assert.deepEqual(ctx.native, []);
+});
+
+
+
 function response(path, options = {}) {
   return {
     ok: true,

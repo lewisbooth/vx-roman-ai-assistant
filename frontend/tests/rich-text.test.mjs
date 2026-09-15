@@ -35,6 +35,27 @@ const bundle = await build({
   platform: "browser",
   jsx: "automatic",
   define: { "process.env.NODE_ENV": '"production"' },
+  plugins: [
+    {
+      name: "count-markdown-work",
+      setup(build) {
+        build.onResolve({ filter: /^react-markdown$/ }, (args) =>
+          args.namespace === "counter"
+            ? undefined
+            : { path: args.path, namespace: "counter" },
+        );
+        build.onLoad({ filter: /.*/, namespace: "counter" }, () => ({
+          contents: `import Markdown from 'react-markdown';
+          export default function CountedMarkdown(props) {
+            window.romanMarkdownRenders = (window.romanMarkdownRenders || 0) + 1;
+            return <Markdown {...props} />;
+          }`,
+          loader: "jsx",
+          resolveDir: cwd(),
+        }));
+      },
+    },
+  ],
 });
 
 function setup(t) {
@@ -64,6 +85,34 @@ function setup(t) {
   });
   return { window, container, calls, ...view };
 }
+
+test("unchanged history and control renders do not reparse Markdown; one changed reply does", (t) => {
+  const { window, timeline } = setup(t);
+  const messages = Array.from({ length: 40 }, (_, index) => ({
+    id: `reply-${index}`,
+    role: "assistant",
+    status: "complete",
+    createdAt: "2026-09-15T10:00:00Z",
+    parts: [
+      {
+        type: "text",
+        text: `**Reply ${index}** with a [product](/products/shade-${index}).`,
+      },
+    ],
+  }));
+  timeline(messages);
+  assert.equal(window.romanMarkdownRenders, 40);
+  for (let index = 0; index < 10; index++)
+    timeline(JSON.parse(JSON.stringify(messages)));
+  assert.equal(
+    window.romanMarkdownRenders,
+    40,
+    "historical Markdown should not rerender with new snapshot objects",
+  );
+  messages[39].parts[0].text += " More streamed text.";
+  timeline(messages);
+  assert.equal(window.romanMarkdownRenders, 41);
+});
 
 test("assistant CommonMark has semantic paragraphs, emphasis, nested lists, headings and code", (t) => {
   const { container, render } = setup(t);

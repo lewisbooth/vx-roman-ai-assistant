@@ -20,7 +20,7 @@ export interface ConversationClient {
   /** Resolves when the server has accepted the message, before generation ends. */
   sendMessage(text: string): Promise<void>;
   recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;
-  loadProducts(ids: string[]): Promise<CatalogResult>;
+  loadProducts(ids: string[], signal?: AbortSignal): Promise<CatalogResult>;
   startVoice(): Promise<void>;
   setVoice(voice: LiveVoice): void;
   stopVoice(): Promise<void>;

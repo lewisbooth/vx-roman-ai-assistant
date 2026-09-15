@@ -72,7 +72,7 @@ For a price change, close the existing period at the change timestamp and append
 
 `pricing/estimate.server.ts` chooses the rate using each request's recorded model, returned service tier and start time. `fast` and `priority` select Fast rates; `default` selects Standard. Input above the configured long-context threshold uses the higher rates for the entire request. Ordinary input is `input − cached − cache writes`; each category has its own per-million rate, and output already includes reasoning. GPT-Live uses reported cumulative seconds × the per-minute rate ÷ 60. A voice connection spanning a price change uses its start-time rate for the whole connection; Roman does not have a billing split across that boundary.
 
-Missing usage fields, unknown models/tiers and gaps in pricing history stay unpriced, with coverage counts beside partial totals. Historical missing cache-write counts are not assumed to be zero. Estimates are calculated from saved usage without rounding individual calls; rounding is for display only. They use direct API list prices and exclude taxes, discounts, regional surcharges and hosting, so they are not invoice reconciliation. Overview calculations read only shop-scoped usage metadata in bounded batches.
+Missing usage fields, unknown models/tiers and gaps in pricing history stay unpriced, with coverage counts beside partial totals. Historical missing cache-write counts are not assumed to be zero. Estimates are calculated from saved usage without rounding individual calls; rounding is for display only. They use direct API list prices and exclude taxes, discounts, regional surcharges and hosting, so they are not invoice reconciliation. Lifetime overview costs use database totals grouped by price period and per-request context band; individual usage rows are loaded only for one conversation's inspection. Overview reads do not hold an interactive transaction across the report, so totals can advance independently while customer activity continues.
 
 ## Local Docker backend
 
@@ -137,3 +137,5 @@ npm run deploy -- --config local
 - [Deploy a Shopify app to a hosting service](https://shopify.dev/docs/apps/launch/deployment/deploy-to-hosting-service)
 - [Shopify development networking](https://shopify.dev/docs/apps/build/cli-for-apps/networking-options)
 - [Compose environment files](https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/), [named volumes](https://docs.docker.com/reference/compose-file/volumes/) and [stopping services](https://docs.docker.com/reference/cli/docker/compose/down/)
+
+Conversation polls send durable and active-text versions; unchanged responses omit history. Healthy reads perform no recovery writes, and historical Markdown is memoized. Deploy backend changes before the frontend when changing the read contract.

@@ -229,6 +229,56 @@ const run = (route, request) =>
   });
 const json = (value) => JSON.stringify(value);
 
+test("conditional conversation reads validate both versions after independent authorization", async () => {
+  const env = setup();
+  env.mock.read = async (id, version) => {
+    assert.equal(id, ID);
+    assert.deepEqual(JSON.parse(JSON.stringify(version)), {
+      revision: 12,
+      streamRevision: 3,
+    });
+    return { id, ...version, unchanged: true };
+  };
+  const response = await run(
+    env.api.conversation,
+    request(`/api/conversations/${ID}?revision=12&streamRevision=3`),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(env.calls.authorize, 1);
+  assert.deepEqual(await response.json(), {
+    id: ID,
+    revision: 12,
+    streamRevision: 3,
+    unchanged: true,
+  });
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+  env.mock.read = () =>
+    assert.fail("invalid versions must not reach the read owner");
+  for (const query of [
+    "revision=1",
+    "streamRevision=1",
+    "revision=-1&streamRevision=0",
+    "revision=1&streamRevision=1.5",
+    "revision=9007199254740992&streamRevision=0",
+    "revision=1&revision=2&streamRevision=0",
+    "revision=1&streamRevision=",
+  ]) {
+    const invalid = await run(
+      env.api.conversation,
+      request(`/api/conversations/${ID}?${query}`),
+    );
+    assert.equal(invalid.status, 400, query);
+  }
+  const denied = await run(
+    env.api.conversation,
+    request(`/api/conversations/${ID}?revision=12&streamRevision=3`, {
+      authorization: false,
+    }),
+  );
+  assert.equal(denied.status, 401);
+});
+
 test("signed bootstrap creates only for the authenticated offline development shop", async () => {
   const env = setup();
   const response = await run(

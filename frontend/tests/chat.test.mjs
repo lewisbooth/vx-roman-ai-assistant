@@ -60,6 +60,7 @@ async function setup(t, options = {}) {
   const { window } = dom;
   const errors = [];
   window.console.error = (...args) => errors.push(args);
+  options.beforeImport?.(window);
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanChatTest = RomanChatTest;`,
   );
@@ -104,10 +105,10 @@ async function setup(t, options = {}) {
       await options.onEnd?.(window);
       update({ conversation: null, error: null });
     },
-    loadProducts: async (ids) => {
+    loadProducts: async (ids, signal) => {
       productCalls.push([...ids]);
       return (
-        (await options.onLoadProducts?.(ids, window)) ?? {
+        (await options.onLoadProducts?.(ids, window, signal)) ?? {
           products: [],
           messages: [],
         }
@@ -433,6 +434,73 @@ function productsMessage() {
     ],
   };
 }
+
+test("restored carousels hydrate only near the viewport and cancel obsolete display reads", async (t) => {
+  const observers = [];
+  const signals = [];
+  const messages = Array.from({ length: 20 }, (_, index) => {
+    const row = productsMessage();
+    row.id = `cards-${index}`;
+    row.parts[1].invocationId = `catalog-${index}`;
+    return row;
+  });
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation(messages) },
+    beforeImport: (window) => {
+      window.IntersectionObserver = class {
+        constructor(callback, options) {
+          this.callback = callback;
+          this.options = options;
+          observers.push(this);
+        }
+        observe(target) {
+          this.target = target;
+        }
+        disconnect() {
+          this.disconnected = true;
+        }
+      };
+    },
+    onLoadProducts: (_ids, _window, signal) => {
+      signals.push(signal);
+      if (signals.length === 1)
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        );
+      return catalog;
+    },
+  });
+  await until(
+    () => observers.length === 20,
+    "Historical card observers were not mounted",
+  );
+  assert.equal(ctx.productCalls.length, 0);
+  assert.equal(
+    observers[19].options.root,
+    ctx.container.querySelector(".roman-chat-scroll"),
+  );
+  observers[19].callback([{ isIntersecting: true }]);
+  await until(
+    () => signals.length === 1,
+    "Visible products did not start loading",
+  );
+  observers[19].callback([{ isIntersecting: false }]);
+  await until(() => signals[0].aborted, "Offscreen lookup was not cancelled");
+  observers[19].callback([{ isIntersecting: true }]);
+  await until(
+    () => ctx.container.querySelector(".roman-product-card"),
+    "Visible products did not resume loading",
+  );
+  assert.equal(ctx.productCalls.length, 2);
+  assert.equal(ctx.container.querySelectorAll(".roman-product-card").length, 1);
+  ctx.update({ conversation: null });
+  await until(
+    () => observers.every((observer) => observer.disconnected),
+    "Card observers were not disposed",
+  );
+});
 
 const catalog = {
   products: [

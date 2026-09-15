@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { StorefrontLink } from "./StorefrontLink";
@@ -24,7 +24,7 @@ const allowedElements = [
   "hr",
 ];
 
-export function RichText({
+export const RichText = memo(function RichText({
   text,
   navigation,
 }: {
@@ -57,4 +57,4 @@ export function RichText({
       </Markdown>
     </div>
   );
-}
+});

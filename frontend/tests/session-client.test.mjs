@@ -134,6 +134,8 @@ function setup(
     window.close();
   });
   function finish(call, body, status = 200) {
+    if (call.init.method === "GET" && body?.id && Array.isArray(body.messages))
+      body = { streamRevision: 0, ...body };
     call.resolve({
       ok: status >= 200 && status < 300,
       status,
@@ -238,6 +240,121 @@ test("resumption verifies through the signed proxy and adopts its current backen
     "Hello from Roman.",
   );
   assert.equal(ctx.timers.size, 0);
+});
+
+test("unchanged polls retain state identity and notifications while later partial text advances", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, pending);
+  const initial = ctx.client.getSnapshot();
+  const notifications = ctx.notifications();
+  ctx.client.clearError();
+  assert.equal(ctx.notifications(), notifications);
+  for (let index = 0; index < 10; index++) {
+    ctx.tick();
+    const call = ctx.calls.length - 1;
+    assert.match(ctx.calls[call].url, /\?revision=1&streamRevision=0$/);
+    ctx.respond(call, {
+      id: conversationId,
+      revision: 1,
+      streamRevision: 0,
+      unchanged: true,
+    });
+    await until(
+      () => ctx.timers.size === 1,
+      "Unchanged poll did not reschedule",
+    );
+    assert.equal(ctx.client.getSnapshot(), initial);
+    assert.equal(ctx.notifications(), notifications);
+  }
+  ctx.tick();
+  ctx.respond(ctx.calls.length - 1, {
+    ...pending,
+    streamRevision: 1,
+    messages: [
+      pending.messages[0],
+      {
+        ...pending.messages[1],
+        parts: [{ type: "text", text: "A streamed answer" }],
+      },
+    ],
+  });
+  await until(
+    () => ctx.client.getSnapshot().conversation.messages[1].parts.length > 0,
+    "Partial text was dropped",
+  );
+  assert.equal(ctx.client.getSnapshot().conversation.revision, 1);
+  assert.equal(
+    ctx.client.getSnapshot().conversation.messages[1].parts[0].text,
+    "A streamed answer",
+  );
+  const advanced = ctx.client.getSnapshot();
+  const page = ctx.client.recordPage({
+    title: "Home",
+    path: "/",
+    occurredAt: "2026-09-15T12:00:00Z",
+  });
+  await until(
+    () => ctx.calls.at(-1).url.endsWith("/journey"),
+    "Journey did not start",
+  );
+  ctx.respond(ctx.calls.length - 1, pending);
+  await page;
+  assert.equal(
+    ctx.client.getSnapshot(),
+    advanced,
+    "an equal durable-only response must not erase partial text",
+  );
+});
+
+test("stale unchanged responses cannot override a newer durable mutation", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, pending);
+  ctx.tick();
+  const read = ctx.calls.length - 1;
+  const page = ctx.client.recordPage({
+    title: "Home",
+    path: "/",
+    occurredAt: "2026-09-15T12:00:00Z",
+  });
+  await until(
+    () => ctx.calls.at(-1).url.endsWith("/journey"),
+    "Journey did not start",
+  );
+  ctx.respond(ctx.calls.length - 1, { ...pending, revision: 2 });
+  await page;
+  const current = ctx.client.getSnapshot();
+  ctx.respond(read, {
+    id: conversationId,
+    revision: 1,
+    streamRevision: 0,
+    unchanged: true,
+  });
+  await until(() => ctx.timers.size === 1, "Poll did not finish");
+  assert.equal(ctx.client.getSnapshot(), current);
+  ctx.tick();
+  assert.equal(
+    ctx.calls.at(-1).url,
+    `${access.apiBaseUrl}/${conversationId}`,
+    "a mutation invalidates the last GET version",
+  );
+});
+
+test("unsolicited or mismatched unchanged responses are rejected", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, pending);
+  ctx.tick();
+  ctx.respond(ctx.calls.length - 1, {
+    id: conversationId,
+    revision: 1,
+    streamRevision: 999,
+    unchanged: true,
+  });
+  await until(
+    () => ctx.client.getSnapshot().error,
+    "Invalid version was accepted",
+  );
+  assert.match(ctx.client.getSnapshot().error, /invalid conversation version/);
+  assert.equal(ctx.client.getSnapshot().conversation.revision, 1);
 });
 
 test("pending replies poll until completion and release their timer", async (t) => {
