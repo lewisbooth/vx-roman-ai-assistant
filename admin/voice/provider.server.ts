@@ -372,7 +372,7 @@ export async function createVoiceProvider(options: {
       {
         session: {
           model: VOICE_MODEL,
-          audio: { output: { voice: "ballad" } },
+          audio: { output: { voice: "gleam" } },
           store: false,
           delegation: { type: "client" },
           instructions: ROMAN_VOICE_PROMPT,
