@@ -1,7 +1,13 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { toolDefinitions, type AssistantTools, type ToolName } from ".";
 
-export function ToolDrawer({ tools }: { tools: AssistantTools }) {
+export function ToolDrawer({
+  tools,
+  children,
+}: {
+  tools: AssistantTools;
+  children?: ReactNode;
+}) {
   const id = useId();
   const [name, setName] = useState<ToolName>("search_products");
   const [input, setInput] = useState(
@@ -49,6 +55,7 @@ export function ToolDrawer({ tools }: { tools: AssistantTools }) {
       <summary className="cursor-pointer py-[8px] text-[16px]">
         Developer tools
       </summary>
+      {children}
       <p className="my-[12px]">
         Run Roman&apos;s tools directly. These actions use this store and your
         current cart.

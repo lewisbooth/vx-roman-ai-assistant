@@ -15,11 +15,18 @@ import {
   type NavigationResult,
 } from "../../../shared/navigation-tool";
 import type { createStorefrontExecutor } from "./storefront-executor";
+import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
 import { createVoiceConnection } from "./voice-connection";
-import type { VoiceClientState } from "../../../shared/voice";
+import {
+  DEFAULT_LIVE_VOICE,
+  isLiveVoice,
+  type LiveVoice,
+  type VoiceClientState,
+} from "../../../shared/voice";
 
 const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
+const VOICE_STORAGE_KEY = "roman:voice";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const idleVoice: VoiceClientState = {
   status: "idle",
@@ -170,6 +177,7 @@ export function createConversationClient(
     restoring: false,
     error: null,
     voice: idleVoice,
+    selectedVoice: DEFAULT_LIVE_VOICE,
   };
   let access: ConversationCredential | null = null;
   let resumeAccess: ConversationCredential | null = null;
@@ -177,6 +185,7 @@ export function createConversationClient(
   let pollTimer: number | undefined;
   let pollFailures = 0;
   let polling = false;
+  let pollAfterCurrent = false;
   let apiSequence = 0;
   let appliedSequence = 0;
   let epoch = 0;
@@ -187,6 +196,7 @@ export function createConversationClient(
   let heartbeatTimer: number | undefined;
   let voiceLimitTimer: number | undefined;
   let voiceStop: Promise<void> | undefined;
+  let voiceStorageWarned = false;
   let journeyQueue: Promise<unknown> = Promise.resolve();
   let processingTool = false;
   let toolController: AbortController | undefined;
@@ -220,6 +230,48 @@ export function createConversationClient(
       console.warn(
         "[Roman] Conversation storage is unavailable; this conversation cannot resume after a page reload.",
       );
+    }
+  }
+
+  function warnVoiceStorage() {
+    if (voiceStorageWarned) return;
+    voiceStorageWarned = true;
+    console.warn(
+      "[Roman] Voice preference storage is unavailable; the default will return after a page reload.",
+    );
+  }
+
+  function restoreVoiceChoice() {
+    try {
+      const saved = window.sessionStorage.getItem(VOICE_STORAGE_KEY);
+      update({
+        selectedVoice: isLiveVoice(saved) ? saved : DEFAULT_LIVE_VOICE,
+      });
+    } catch {
+      warnVoiceStorage();
+    }
+  }
+
+  function setVoice(voice: LiveVoice) {
+    if (disposed) throw new Error("Roman has been removed.");
+    if (!isLiveVoice(voice))
+      throw new Error("Choose one of the available voices.");
+    if (
+      ending ||
+      voiceId ||
+      state.voice.status === "starting" ||
+      state.voice.status === "active" ||
+      state.voice.status === "stopping" ||
+      (state.voice.status === "error" && state.voice.muted) ||
+      state.conversation?.voice?.status === "starting" ||
+      state.conversation?.voice?.status === "active"
+    )
+      throw new Error("Switch to text before changing the voice.");
+    update({ selectedVoice: voice });
+    try {
+      window.sessionStorage.setItem(VOICE_STORAGE_KEY, voice);
+    } catch {
+      warnVoiceStorage();
     }
   }
 
@@ -259,20 +311,19 @@ export function createConversationClient(
 
   async function bootstrap(resume: ConversationCredential | null) {
     const requestedEpoch = epoch;
-    const result = await request(
-      new URL("/apps/roman/bootstrap", window.location.origin).href,
-      {
-        method: "POST",
-        mode: "same-origin",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          resume
-            ? { conversationId: resume.conversationId, token: resume.token }
-            : {},
-        ),
-      },
-    );
+    const url = new URL("/apps/roman/bootstrap", window.location.origin);
+    url.searchParams.set("storefront_origin", window.location.origin);
+    const result = await request(url.href, {
+      method: "POST",
+      mode: "same-origin",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        resume
+          ? { conversationId: resume.conversationId, token: resume.token }
+          : {},
+      ),
+    });
     if (requestedEpoch !== epoch || disposed)
       throw new SessionRequestError("The conversation has changed.");
     if (
@@ -384,6 +435,7 @@ export function createConversationClient(
     resumeAccess = null;
     uncertainSubmission = null;
     toolAttempts.clear();
+    pollAfterCurrent = false;
     window.clearTimeout(pollTimer);
     persist();
     update({
@@ -418,11 +470,14 @@ export function createConversationClient(
     if (!tool) return;
     processingTool = true;
     const startedEpoch = epoch;
+    const startedVoiceEpoch = voiceEpoch;
     const controller = new AbortController();
     toolController = controller;
     activeToolId = tool.id;
+    let submitted = false;
     try {
-      await executeTool(tool, startedEpoch, controller.signal);
+      submitted =
+        (await executeTool(tool, startedEpoch, controller.signal)) === true;
     } catch (error) {
       if (!disposed && startedEpoch === epoch && !ending)
         update({
@@ -436,6 +491,19 @@ export function createConversationClient(
       if (toolController === controller) {
         toolController = undefined;
         activeToolId = undefined;
+      }
+      if (
+        submitted &&
+        !disposed &&
+        !ending &&
+        startedEpoch === epoch &&
+        startedVoiceEpoch === voiceEpoch
+      ) {
+        if (polling) pollAfterCurrent = true;
+        else if (pollFailures === 0) {
+          window.clearTimeout(pollTimer);
+          void poll();
+        }
       }
     }
   }
@@ -484,13 +552,25 @@ export function createConversationClient(
       ...attempt.outcome,
     });
     toolAttempts.delete(tool.id);
+    return true;
   }
 
-  function schedulePoll(delay = 500) {
+  function hasPendingWork() {
+    return (
+      state.pending ||
+      state.conversation?.busy ||
+      !!state.conversation?.tools.length ||
+      !!state.conversation?.messages.some(
+        (message) => message.status === "pending",
+      )
+    );
+  }
+
+  function schedulePoll(delay = hasPendingWork() ? 250 : 500) {
     window.clearTimeout(pollTimer);
     if (
       !disposed &&
-      (state.conversation?.busy ||
+      (hasPendingWork() ||
         state.conversation?.voice?.status === "starting" ||
         state.conversation?.voice?.status === "active" ||
         voiceId)
@@ -522,6 +602,19 @@ export function createConversationClient(
         schedulePoll(Math.min(500 * 2 ** pollFailures, 8000));
     } finally {
       polling = false;
+      if (pollAfterCurrent) {
+        pollAfterCurrent = false;
+        if (
+          pollFailures === 0 &&
+          requestedEpoch === epoch &&
+          !disposed &&
+          !ending &&
+          state.voice.status !== "stopping"
+        ) {
+          window.clearTimeout(pollTimer);
+          void poll();
+        }
+      }
     }
   }
 
@@ -673,13 +766,14 @@ export function createConversationClient(
       state.voice.status === "stopping"
     )
       throw new Error("Wait for Roman's current session to finish.");
-    if (!window.location.hostname.endsWith(".myshopify.com")) {
+    if (!isConversationStorefront(window.location.origin)) {
       const error =
         "Voice is available on the installed development storefronts.";
       update({ voice: { status: "error", muted: false, error } });
       throw new Error(error);
     }
     const startedVoiceEpoch = ++voiceEpoch;
+    const selectedVoice = state.selectedVoice;
     const startedEpoch = epoch;
     const current = () =>
       !disposed &&
@@ -705,7 +799,12 @@ export function createConversationClient(
       if (!current()) return;
       const id = window.crypto.randomUUID();
       voiceId = id;
-      const result = await rawApi("/voice", { requestId: id, clientId, sdp });
+      const result = await rawApi("/voice", {
+        requestId: id,
+        clientId,
+        sdp,
+        voice: selectedVoice,
+      });
       if (!current()) {
         bestEffortVoiceStop(id);
         return;
@@ -720,7 +819,13 @@ export function createConversationClient(
         throw new Error("Roman received an invalid voice connection response.");
       scheduleHeartbeat(id, startedVoiceEpoch);
       schedulePoll();
-      await connection.connect(result.sdp);
+      await connection.connect(result.sdp, async () => {
+        if (!current()) throw new Error("Voice was stopped.");
+        const ready = await rawApi(`/voice/${id}/ready`, { clientId });
+        if (!current()) return;
+        if (!record(ready) || ready.ok !== true)
+          throw new Error("Roman could not begin voice. Please try again.");
+      });
       if (!current()) return;
       update({ voice: { status: "active", muted: false, error: null } });
       voiceLimitTimer = window.setTimeout(() => {
@@ -800,9 +905,13 @@ export function createConversationClient(
         if (restoredEpoch === epoch) update({ restoring: false });
       });
   }
+  restoreVoiceChoice();
   restore();
   function onPageShow(event: PageTransitionEvent) {
-    if (event.persisted) restore();
+    if (event.persisted) {
+      restoreVoiceChoice();
+      restore();
+    }
   }
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("pagehide", onPageHide);
@@ -834,7 +943,7 @@ export function createConversationClient(
         state.conversation?.busy
       )
         throw new Error("Wait for Roman's current reply.");
-      if (!window.location.hostname.endsWith(".myshopify.com")) {
+      if (!isConversationStorefront(window.location.origin)) {
         const error =
           "Text chat is available on the installed development storefronts. This local preview shows the interface only.";
         update({ error });
@@ -909,9 +1018,10 @@ export function createConversationClient(
         return Promise.reject(
           new Error("Start a chat to load these products."),
         );
-      return executor.execute("lookup_catalog", { ids });
+      return executor.loadProducts(ids);
     },
     startVoice,
+    setVoice,
     stopVoice,
     setVoiceMuted(muted) {
       if (state.voice.status !== "active") return;

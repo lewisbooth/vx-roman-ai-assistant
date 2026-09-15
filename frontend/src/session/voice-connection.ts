@@ -8,14 +8,36 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
   let connected = false;
   let started = false;
   let audioReady = false;
+  let trackAttached = false;
+  let transportSignalled = false;
+  let openingAccepted = false;
+  let notifyTransportReady: (() => Promise<void>) | undefined;
   let ready = false;
   let timer: number | undefined;
   let resolveReady: (() => void) | undefined;
   let rejectReady: ((error: Error) => void) | undefined;
+  const beganAt = performance.now();
+  const stages: Record<string, number> = {};
+  let timingReported = false;
+
+  function mark(stage: string) {
+    stages[stage] = Math.round(performance.now() - beganAt);
+  }
+
+  function reportTiming(status: "ready" | "failed" | "stopped") {
+    if (timingReported) return;
+    timingReported = true;
+    mark("total");
+    console.debug("[Roman] Voice startup timing.", {
+      status,
+      elapsedMs: { ...stages },
+    });
+  }
 
   function close() {
     if (closed) return;
     closed = true;
+    reportTiming("stopped");
     window.clearTimeout(timer);
     stream?.getTracks().forEach((track) => {
       track.onended = null;
@@ -42,14 +64,47 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
 
   function fail(message: string) {
     if (closed) return;
+    reportTiming("failed");
     rejectReady?.(new Error(message));
     close();
     onFailure(message);
   }
 
   function checkReady() {
-    if (!closed && connected && started && audioReady) {
+    if (
+      !closed &&
+      connected &&
+      started &&
+      trackAttached &&
+      !transportSignalled &&
+      notifyTransportReady
+    ) {
+      transportSignalled = true;
+      mark("transportReady");
+      // play() can wait for the welcome's first audio; requesting the welcome
+      // must therefore depend on the transport, not the playback promise.
+      void Promise.resolve()
+        .then(() => {
+          if (closed) throw new Error("Voice was stopped.");
+          return notifyTransportReady!();
+        })
+        .then(() => {
+          if (closed) return;
+          openingAccepted = true;
+          mark("openingAccepted");
+          checkReady();
+        })
+        .catch((error: unknown) => {
+          fail(
+            error instanceof Error
+              ? error.message
+              : "Roman could not begin voice. Please try again.",
+          );
+        });
+    }
+    if (!closed && connected && started && audioReady && openingAccepted) {
       ready = true;
+      reportTiming("ready");
       window.clearTimeout(timer);
       resolveReady?.();
     }
@@ -63,6 +118,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
         );
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mark("microphone");
       } catch {
         throw new Error(
           "Allow microphone access in your browser to talk to Roman.",
@@ -82,7 +138,9 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
         void audio
           .play()
           .then(() => {
+            if (closed) return;
             audioReady = true;
+            mark("playback");
             checkReady();
           })
           .catch(() => {
@@ -90,6 +148,8 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
               "Your browser blocked Roman's audio. Stop voice and start it again.",
             );
           });
+        trackAttached = true;
+        checkReady();
       };
       peer.onconnectionstatechange = () => {
         if (closed || !peer) return;
@@ -137,10 +197,15 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       const sdp = peer.localDescription?.sdp;
       if (!sdp || sdp.length > 49_152)
         throw new Error("Roman could not prepare voice audio.");
+      mark("offer");
       return sdp;
     },
-    async connect(sdp: string): Promise<void> {
+    async connect(
+      sdp: string,
+      onTransportReady: () => Promise<void>,
+    ): Promise<void> {
       if (closed || !peer) throw new Error("Voice was stopped.");
+      notifyTransportReady = onTransportReady;
       const waiting = new Promise<void>((resolve, reject) => {
         resolveReady = resolve;
         rejectReady = reject;
@@ -152,6 +217,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       // Install rejection handling before awaiting the SDP operation.
       void waiting.catch(() => undefined);
       await peer.setRemoteDescription({ type: "answer", sdp });
+      mark("answer");
       checkReady();
       await waiting;
     },

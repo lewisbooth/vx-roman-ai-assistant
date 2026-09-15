@@ -218,14 +218,24 @@
     @apply flex shrink-0 flex-wrap items-center gap-[8px] px-[26px] pt-[10px] text-[12px] text-[#4e0e0e];
   }
 
-  .roman-voice-controls button {
+  .roman-voice-controls button,
+  .roman-voice-choice select {
     @apply min-h-[36px] cursor-pointer rounded-full border border-solid border-[#d1cbc0] bg-[#f7f5ef] px-[12px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
   }
 
-  .roman-voice-controls button:focus-visible {
+  .roman-voice-controls button:focus-visible,
+  .roman-voice-choice select:focus-visible {
     outline: 2px solid #4e0e0e;
     outline-offset: 3px;
+  }
+
+  .roman-voice-choice {
+    @apply my-[12px] flex w-full flex-wrap items-center gap-x-[8px] gap-y-[4px];
+  }
+
+  .roman-voice-choice-hint {
+    @apply w-full text-[11px] text-[#797366];
   }
 
   .roman-voice-controls .roman-chat-error {

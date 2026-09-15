@@ -16,6 +16,7 @@ import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
 import { ToolDrawer } from "./tools/ToolDrawer";
+import { VoiceChoice } from "./tools/VoiceChoice";
 
 type AssistantProps = {
   logoUrl: string;
@@ -135,7 +136,14 @@ function Assistant({
         ) : (
           <Welcome logoUrl={logoUrl} />
         )}
-        {showTools && <Development navigation={navigation} tools={tools} />}
+        {showTools && (
+          <Development
+            navigation={navigation}
+            tools={tools}
+            session={session}
+            ending={ending}
+          />
+        )}
       </div>
       <VoiceControls
         session={session}
@@ -181,7 +189,11 @@ function Assistant({
 function Development({
   navigation,
   tools,
-}: Pick<AssistantProps, "navigation" | "tools">) {
+  session,
+  ending,
+}: Pick<AssistantProps, "navigation" | "tools" | "session"> & {
+  ending: boolean;
+}) {
   const { url, pending, error } = useSyncExternalStore(
     navigation.subscribe,
     navigation.getSnapshot,
@@ -234,7 +246,9 @@ function Development({
           {error}
         </p>
       )}
-      <ToolDrawer tools={tools} />
+      <ToolDrawer tools={tools}>
+        <VoiceChoice session={session} disabled={ending} />
+      </ToolDrawer>
     </details>
   );
 }

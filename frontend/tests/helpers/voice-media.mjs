@@ -1,7 +1,8 @@
 export function voiceMedia(window, options = {}) {
   const peers = [];
   const tracks = [];
-  const calls = { microphone: 0, play: 0, pause: 0 };
+  const calls = { microphone: 0, play: 0, pause: 0, debug: [] };
+  window.console.debug = (...args) => calls.debug.push(args);
   const track = {
     enabled: true,
     stopped: false,

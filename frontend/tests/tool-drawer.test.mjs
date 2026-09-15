@@ -74,17 +74,28 @@ async function setup(t, shop = "hd-dev-multi.myshopify.com") {
   return { window, host, container, runtime, requests, errors };
 }
 
+function controlByLabel(container, text) {
+  const label = [...container.querySelectorAll("label")].find(
+    (element) => element.textContent.trim() === text,
+  );
+  assert.ok(label, `Missing ${text} label`);
+  const control = container.querySelector(`[id="${label.htmlFor}"]`);
+  assert.ok(control, `Missing ${text} control`);
+  return control;
+}
+
 async function selectTool(window, container, name = "get_cart", args = {}) {
   const development = container.querySelector(".roman-development");
   if (!development.open) development.querySelector("summary").click();
   const drawer = development.querySelector(".roman-tools");
   if (!drawer.open) drawer.querySelector("summary").click();
-  const select = drawer.querySelector("select");
+  const select = controlByLabel(drawer, "Tool");
   select.value = name;
   select.dispatchEvent(new window.Event("change", { bubbles: true }));
   await until(
     () =>
-      drawer.querySelector("textarea").value === JSON.stringify(args, null, 2),
+      controlByLabel(drawer, "Arguments (JSON)").value ===
+      JSON.stringify(args, null, 2),
     `choosing ${name} did not populate its arguments`,
   );
   return drawer;
@@ -158,7 +169,7 @@ test("manual cart actions use the real executor, prevent duplicate submission an
   );
   assert.equal(requests[0].options.credentials, "same-origin");
   assert.equal(drawer.querySelector("form").getAttribute("aria-busy"), "true");
-  assert.equal(drawer.querySelector("select").disabled, true);
+  assert.equal(controlByLabel(drawer, "Tool").disabled, true);
   requests[0].resolve(cartResponse());
   await until(
     () => drawer.querySelector('[aria-label="Tool result"]'),
@@ -242,6 +253,21 @@ test("the explicit clear-cart button invokes one theme action and displays only 
   };
   const drawer = await selectTool(window, container, "clear_cart");
   const submit = drawer.querySelector('button[type="submit"]');
+  assert.equal(submit.textContent, "Clear entire cart");
+  assert.equal(requests.length, 0);
+  assert.equal(submissions, 0);
+
+  // Voice belongs to the same drawer, but changing it must never submit or
+  // retarget the selected cart mutation.
+  const voice = controlByLabel(drawer, "Voice");
+  voice.value = "gleam";
+  voice.dispatchEvent(new window.Event("change", { bubbles: true }));
+  await until(
+    () => window.sessionStorage.getItem("roman:voice") === "gleam",
+    "the voice preference did not change",
+  );
+  assert.equal(controlByLabel(drawer, "Tool").value, "clear_cart");
+  assert.equal(controlByLabel(drawer, "Arguments (JSON)").value, "{}");
   assert.equal(submit.textContent, "Clear entire cart");
   assert.equal(requests.length, 0);
   assert.equal(submissions, 0);

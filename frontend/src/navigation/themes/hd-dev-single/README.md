@@ -1,6 +1,8 @@
 # HD dev single
 
-This folder owns `hd-dev-single.myshopify.com` and the supplied POC destinations:
+This folder owns the permanent Shopify identity `hd-dev-single.myshopify.com`, now served at `https://shopify-single-dev.hdecom.com`, and the supplied POC destinations. Domain changes do not change the theme profile; chat's allowed storefront origins live in root [`shared/storefronts.ts`](../../../../../shared/storefronts.ts).
+
+POC destinations:
 
 - `/collections/blackout-blinds`
 - `/collections/all`

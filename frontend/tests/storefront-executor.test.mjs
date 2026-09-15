@@ -33,12 +33,18 @@ function setup(execute) {
   const module = { exports: {} };
   const warnings = [];
   const location = { origin, href: `${origin}/` };
+  const clock = { now: Date.now() };
   runInNewContext(bundle.outputFiles[0].text, {
     module,
     exports: module.exports,
     window: { location },
     URL,
     Intl,
+    Date: class extends Date {
+      static now() {
+        return clock.now;
+      }
+    },
     console: { warn: (...args) => warnings.push(args) },
   });
   const calls = [];
@@ -48,7 +54,7 @@ function setup(execute) {
       return execute(...args);
     },
   });
-  return { executor, calls, warnings, location };
+  return { executor, calls, warnings, location, clock };
 }
 
 test("rejected product data logs the failing field without dumping the catalog", async () => {
@@ -66,7 +72,7 @@ test("rejected product data logs the failing field without dumping the catalog",
   assert.doesNotMatch(JSON.stringify(warnings), /private\.example|Live shade/);
 });
 
-test("model search and product-card lookups share serial execution and fresh projection", async () => {
+test("model catalog tools share serial execution and always fetch fresh projections", async () => {
   const gate = deferred();
   let count = 0;
   const { executor, calls } = setup(async () => {
@@ -103,6 +109,163 @@ test("model search and product-card lookups share serial execution and fresh pro
     calls.length,
     3,
     "a later lookup does not reuse cached products",
+  );
+});
+
+test("display hydration reuses a pending search and concurrent card lookups without exposing mutable cache data", async () => {
+  const gate = deferred();
+  const { executor, calls } = setup(() => gate.promise);
+  const search = executor.execute("search_products", { query: "shade" });
+  const first = executor.loadProducts([product.id]);
+  const second = executor.loadProducts([product.id]);
+  gate.resolve({
+    products: [product],
+    messages: [{ type: "warning", content: "Starting price only." }],
+  });
+  const modelResult = await search;
+  modelResult.products[0].title = "Changed outside the cache";
+  const firstCards = await first;
+  firstCards.products[0].title = "Changed by one carousel";
+  firstCards.messages[0].text = "Changed warning";
+  const secondCards = await second;
+  assert.equal(secondCards.products[0].title, product.title);
+  assert.equal(secondCards.messages[0].text, "Starting price only.");
+  assert.equal(calls.length, 1, "two carousels reuse the one real search");
+});
+
+test("display hydration fetches only missing IDs and preserves requested order without duplicate or unrelated cards", async () => {
+  const other = {
+    ...product,
+    id: "gid://shopify/Product/456",
+    title: "Other shade",
+  };
+  const unrelated = { ...product, id: "gid://shopify/Product/999" };
+  const absent = "gid://shopify/Product/789";
+  let count = 0;
+  const { executor, calls } = setup(async () => ({
+    products: ++count === 1 ? [product] : [unrelated, other, other],
+    messages: [{ type: "warning", content: "Starting price only." }],
+  }));
+  await executor.execute("search_products", { query: "shade" });
+  const cards = await executor.loadProducts([
+    other.id,
+    product.id,
+    other.id,
+    absent,
+  ]);
+  assert.deepEqual(plain(calls[1]), [
+    "lookup_catalog",
+    { ids: [other.id, absent] },
+  ]);
+  assert.deepEqual(plain(cards.products.map((item) => item.id)), [
+    other.id,
+    product.id,
+  ]);
+  assert.deepEqual(plain(cards.messages), [
+    { type: "warning", text: "Starting price only." },
+  ]);
+});
+
+test("cached cards render while unrelated network work is pending and expire without renewal on read", async () => {
+  const gate = deferred();
+  let count = 0;
+  const { executor, calls, clock } = setup(async () => {
+    if (++count === 2) return gate.promise;
+    return { products: [{ ...product, title: `Shade ${count}` }] };
+  });
+  await executor.execute("search_products", { query: "shade" });
+  clock.now += 59_999;
+  const working = executor.execute("search_products", { query: "other" });
+  assert.equal(
+    (await executor.loadProducts([product.id])).products[0].title,
+    "Shade 1",
+  );
+  assert.equal(
+    calls.length,
+    2,
+    "cached cards do not wait for the unrelated lookup",
+  );
+  gate.resolve({ products: [] });
+  await working;
+  clock.now++;
+  assert.equal(
+    (await executor.loadProducts([product.id])).products[0].title,
+    "Shade 3",
+  );
+  assert.deepEqual(plain(calls[2]), ["lookup_catalog", { ids: [product.id] }]);
+});
+
+test("the display cache evicts older products after sixty entries", async () => {
+  let page = 0;
+  const products = Array.from({ length: 70 }, (_, index) => ({
+    ...product,
+    id: `gid://shopify/Product/${index + 1}`,
+  }));
+  const { executor, calls } = setup(async (name) => ({
+    products:
+      name === "search_products"
+        ? products.slice(page++ * 10, page * 10)
+        : [products[0]],
+  }));
+  for (let index = 0; index < 7; index++)
+    await executor.execute("search_products", { query: `page ${index}` });
+  assert.equal(
+    (await executor.loadProducts([products[10].id, products[69].id])).products
+      .length,
+    2,
+  );
+  assert.equal(calls.length, 7);
+  await executor.loadProducts([products[0].id]);
+  assert.equal(calls.length, 8, "the oldest evicted product is fetched again");
+});
+
+test("fresh tool failures and missing products never fall back to older display data", async () => {
+  let count = 0;
+  const { executor, calls } = setup(async () => {
+    if (++count === 1) return { products: [product] };
+    if (count === 2) throw new Error("Shopify unavailable");
+    return { products: [] };
+  });
+  await executor.execute("search_products", { query: "shade" });
+  await assert.rejects(
+    executor.execute("get_product", { id: product.id }),
+    /Shopify unavailable/,
+  );
+  assert.deepEqual(plain(await executor.loadProducts([product.id])), {
+    products: [],
+    messages: [],
+  });
+  assert.equal(
+    calls.length,
+    3,
+    "a failed targeted refresh evicts older display data",
+  );
+});
+
+test("display data stays within one storefront runtime and disposal rejects late hydration", async () => {
+  const ctx = setup(async () => ({ products: [product] }));
+  await ctx.executor.execute("search_products", { query: "shade" });
+  ctx.location.origin = "https://another-store.myshopify.com";
+  await assert.rejects(
+    ctx.executor.loadProducts([product.id]),
+    /storefront changed/,
+  );
+  ctx.location.origin = origin;
+  ctx.executor.dispose();
+  await assert.rejects(ctx.executor.loadProducts([product.id]), /removed/);
+
+  const gate = deferred();
+  const fresh = setup(() => gate.promise);
+  const hydration = fresh.executor.loadProducts([product.id]);
+  const rejected = assert.rejects(hydration, /removed/);
+  await flush();
+  fresh.executor.dispose();
+  gate.resolve({ products: [product] });
+  await rejected;
+  assert.equal(
+    fresh.calls.length,
+    1,
+    "a new runtime cannot reuse the old cache",
   );
 });
 

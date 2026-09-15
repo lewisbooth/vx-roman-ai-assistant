@@ -79,6 +79,7 @@ async function setup(t, options = {}) {
     restoring: false,
     error: null,
     voice: { status: "idle", muted: false, error: null },
+    selectedVoice: "willow",
     ...options.state,
   };
   const update = (changes) => {
@@ -116,6 +117,7 @@ async function setup(t, options = {}) {
     startVoice: async () => {
       update({ voice: { status: "active", muted: false, error: null } });
     },
+    setVoice: (selectedVoice) => update({ selectedVoice }),
     stopVoice: async () => {
       update({ voice: { status: "idle", muted: false, error: null } });
     },
@@ -471,6 +473,23 @@ test("product references load live cards once across snapshot refreshes and use 
     "Product card did not render",
   );
   const card = ctx.container.querySelector(".roman-product-card");
+  ctx.update({
+    conversation: activeConversation([
+      productsMessage(),
+      message("later", "assistant", "A later streamed response"),
+    ]),
+  });
+  await until(
+    () => ctx.container.textContent.includes("A later streamed response"),
+    "The next snapshot did not render",
+  );
+  assert.equal(ctx.container.querySelector(".roman-product-card"), card);
+  assert.equal(
+    ctx.productCalls.length,
+    1,
+    "New part and ID-array identities must not remount loaded cards",
+  );
+  assert.doesNotMatch(ctx.container.textContent, /Loading products/);
   assert.equal(card.href, catalog.products[0].url);
   assert.equal(card.querySelector("img").src, catalog.products[0].imageUrl);
   assert.equal(card.querySelector("img").getAttribute("loading"), "lazy");
@@ -845,4 +864,79 @@ test("a restored server voice shows an explicit switch to text without activatin
   );
   assert.equal(ctx.input().disabled, true);
   assert.equal(ctx.voiceDock.childElementCount, 0);
+});
+
+test("voice selector offers all Live voices, defaults to Willow and changes only a stopped connection", async (t) => {
+  const ctx = await setup(t, { showTools: true });
+  const selector = ctx.container.querySelector(".roman-voice-choice select");
+  assert.ok(selector.closest(".roman-tools"));
+  assert.ok(selector.closest(".roman-development"));
+  assert.equal(
+    ctx.container.querySelector(".roman-voice-controls select"),
+    null,
+  );
+  assert.equal(selector.value, "willow");
+  assert.equal(selector.options.length, 22);
+  assert.ok([...selector.options].some((option) => option.value === "gleam"));
+  assert.equal(
+    ctx.container.querySelector(`label[for="${selector.id}"]`).textContent,
+    "Voice",
+  );
+  selector.value = "gleam";
+  selector.dispatchEvent(new ctx.window.Event("change", { bubbles: true }));
+  await until(
+    () => selector.value === "gleam",
+    "Voice selection did not update",
+  );
+  const button = (text) =>
+    [...ctx.container.querySelectorAll("button")].find(
+      (node) => node.textContent === text,
+    );
+  button("Start voice").click();
+  await until(() => selector.disabled, "Active voice selector stayed enabled");
+  assert.match(
+    ctx.container.querySelector(".roman-voice-choice-hint").textContent,
+    /Switch to text/,
+  );
+  assert.equal(ctx.voiceDock.querySelectorAll("select").length, 0);
+  button("Switch to text").click();
+  await until(
+    () => !selector.disabled,
+    "Stopped voice selector stayed disabled",
+  );
+  assert.equal(selector.value, "gleam");
+});
+
+test("starting, stopping and restored remote voice disable changing the voice", async (t) => {
+  for (const state of [
+    { voice: { status: "starting", muted: false, error: null } },
+    { voice: { status: "stopping", muted: true, error: null } },
+    {
+      conversation: {
+        id: "restored",
+        messages: [],
+        voice: { id: "voice", clientId: "old", status: "active" },
+      },
+    },
+  ]) {
+    const ctx = await setup(t, { state, showTools: true });
+    assert.equal(
+      ctx.container.querySelector(".roman-voice-choice select").disabled,
+      true,
+    );
+    assert.match(
+      ctx.container.querySelector(".roman-voice-choice-hint").textContent,
+      /Switch to text/,
+    );
+  }
+});
+
+test("voice selection stays out of the customer controls when developer tools are hidden", async (t) => {
+  const ctx = await setup(t);
+  assert.equal(ctx.container.querySelector(".roman-voice-choice"), null);
+  assert.ok(
+    [...ctx.container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Start voice",
+    ),
+  );
 });

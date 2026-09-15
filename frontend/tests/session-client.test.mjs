@@ -82,6 +82,8 @@ function setup(
     url = "https://hd-dev-single.myshopify.com/",
     executor,
     mediaOptions,
+    savedVoice,
+    holdReady = false,
   } = {},
 ) {
   const dom = new JSDOM("<!doctype html>", { url, runScripts: "outside-only" });
@@ -93,7 +95,10 @@ function setup(
   window.AbortSignal = globalThis.AbortSignal;
   if (saved)
     window.sessionStorage.setItem("roman:conversation", JSON.stringify(saved));
+  if (savedVoice !== undefined)
+    window.sessionStorage.setItem("roman:voice", savedVoice);
   const calls = [];
+  const readyCalls = [];
   const timers = new Map();
   let nextTimer = 0;
   window.setTimeout = (callback, ms) => {
@@ -104,13 +109,17 @@ function setup(
   window.clearTimeout = (id) => timers.delete(id);
   window.fetch = (url, init) =>
     new Promise((resolve, reject) => {
-      calls.push({
+      const call = {
         url: String(url),
         init,
         body: init.body ? JSON.parse(init.body) : undefined,
         resolve,
         reject,
-      });
+      };
+      if (String(url).endsWith("/ready")) {
+        readyCalls.push(call);
+        if (!holdReady) finish(call, { ok: true });
+      } else calls.push(call);
     });
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanSession = RomanSession;`,
@@ -124,13 +133,16 @@ function setup(
     client.dispose();
     window.close();
   });
-  function respond(index, body, status = 200) {
-    calls[index].resolve({
+  function finish(call, body, status = 200) {
+    call.resolve({
       ok: status >= 200 && status < 300,
       status,
       headers: { get: () => "application/json" },
       json: async () => body,
     });
+  }
+  function respond(index, body, status = 200) {
+    finish(calls[index], body, status);
   }
   function tick() {
     const [id, timer] = timers.entries().next().value;
@@ -142,8 +154,11 @@ function setup(
     media,
     window,
     calls,
+    readyCalls,
     timers,
     respond,
+    respondReady: (index, body, status = 200) =>
+      finish(readyCalls[index], body, status),
     tick,
     notifications: () => notifications,
   };
@@ -157,7 +172,7 @@ test("session creation is lazy and first send uses the signed proxy then the aut
   assert.equal(ctx.calls.length, 1);
   assert.equal(
     ctx.calls[0].url,
-    "https://hd-dev-single.myshopify.com/apps/roman/bootstrap",
+    "https://hd-dev-single.myshopify.com/apps/roman/bootstrap?storefront_origin=https%3A%2F%2Fhd-dev-single.myshopify.com",
   );
   assert.equal(ctx.calls[0].init.credentials, "same-origin");
   assert.equal(ctx.calls[0].init.mode, "same-origin");
@@ -202,7 +217,7 @@ test("resumption verifies through the signed proxy and adopts its current backen
   assert.equal(ctx.calls.length, 1);
   assert.equal(
     ctx.calls[0].url,
-    "https://hd-dev-single.myshopify.com/apps/roman/bootstrap",
+    "https://hd-dev-single.myshopify.com/apps/roman/bootstrap?storefront_origin=https%3A%2F%2Fhd-dev-single.myshopify.com",
   );
   assert.deepEqual(ctx.calls[0].body, { conversationId, token: access.token });
   ctx.respond(0, { ...access, conversation: complete });
@@ -337,6 +352,45 @@ test("local preview and invalid input fail before session creation", async (t) =
       /up to 4000 characters/,
     );
   assert.equal(store.calls.length, 0);
+});
+
+test("the installed custom storefront can bootstrap text and an explicit voice connection", async (t) => {
+  const url = "https://shopify-single-dev.hdecom.com/";
+  const text = setup(t, { url });
+  const sending = text.client.sendMessage("Hello");
+  const expectedBootstrap = `${url}apps/roman/bootstrap?storefront_origin=https%3A%2F%2Fshopify-single-dev.hdecom.com`;
+  assert.equal(text.calls[0].url, expectedBootstrap);
+  text.respond(0, { ...access, conversation: empty });
+  await until(
+    () => text.calls.length === 2,
+    "Custom storefront did not send text",
+  );
+  text.respond(1, pending);
+  await sending;
+  const voice = setup(t, { url, mediaOptions: {} });
+  await activeVoice(voice);
+  assert.equal(voice.calls[0].url, expectedBootstrap);
+  assert.equal(voice.client.getSnapshot().voice.status, "active");
+});
+
+test("unsupported origins cannot request a microphone or create conversations", async (t) => {
+  for (const url of [
+    "http://127.0.0.1:5173/",
+    "https://uninstalled.myshopify.com/",
+    "https://shopify-single-dev.hdecom.com.example.com/",
+  ]) {
+    const ctx = setup(t, { url, mediaOptions: {} });
+    await assert.rejects(
+      ctx.client.startVoice(),
+      /installed development storefronts/,
+    );
+    await assert.rejects(
+      ctx.client.sendMessage("Hello"),
+      /installed development storefronts/,
+    );
+    assert.equal(ctx.media.calls.microphone, 0);
+    assert.equal(ctx.calls.length, 0);
+  }
 });
 
 test("an older refresh cannot replace a newer accepted message snapshot", async (t) => {
@@ -747,6 +801,7 @@ async function activeVoice(ctx) {
   assert.match(request.url, /\/voice$/);
   assert.equal(request.init.headers.Authorization, `Bearer ${access.token}`);
   assert.match(request.body.sdp, /roman-offer/);
+  assert.equal(request.body.voice, ctx.client.getSnapshot().selectedVoice);
   const voice = {
     id: request.body.requestId,
     clientId: request.body.clientId,
@@ -759,6 +814,13 @@ async function activeVoice(ctx) {
   );
   ctx.media.connect();
   await starting;
+  assert.equal(ctx.readyCalls.length, 1);
+  assert.match(ctx.readyCalls[0].url, new RegExp(`/voice/${voice.id}/ready$`));
+  assert.equal(ctx.readyCalls[0].body.clientId, voice.clientId);
+  assert.equal(
+    ctx.readyCalls[0].init.headers.Authorization,
+    `Bearer ${access.token}`,
+  );
   await until(
     () => ctx.calls.length === 3,
     "Active voice did not refresh the transcript",
@@ -1153,4 +1215,177 @@ test("a server correction aborts retired navigation before executing its replace
     () => !ctx.client.getSnapshot().conversation.busy,
     "Replacement did not finish",
   );
+});
+
+test("voice choice defaults to Willow, validates tab preferences and survives ended chat", async (t) => {
+  const ctx = setup(t, { saved: access });
+  assert.equal(ctx.client.getSnapshot().selectedVoice, "willow");
+  ctx.client.setVoice("gleam");
+  assert.equal(ctx.window.sessionStorage.getItem("roman:voice"), "gleam");
+  await resume(ctx);
+  const ending = ctx.client.end();
+  ctx.respond(2, { ...complete, status: "ended", revision: 3 });
+  await ending;
+  assert.equal(ctx.client.getSnapshot().selectedVoice, "gleam");
+  assert.equal(ctx.window.sessionStorage.getItem("roman:voice"), "gleam");
+  assert.throws(() => ctx.client.setVoice("invented"), /available voices/);
+  assert.equal(
+    setup(t, { savedVoice: "gleam" }).client.getSnapshot().selectedVoice,
+    "gleam",
+  );
+  assert.equal(
+    setup(t, { savedVoice: "invented" }).client.getSnapshot().selectedVoice,
+    "willow",
+  );
+});
+
+test("selected voice is fixed during startup and active media, then can change after stop", async (t) => {
+  const ctx = setup(t, { mediaOptions: {}, savedVoice: "gleam" });
+  const activating = activeVoice(ctx);
+  assert.throws(() => ctx.client.setVoice("willow"), /Switch to text/);
+  await assert.rejects(ctx.client.startVoice(), /current session/);
+  const voice = await activating;
+  assert.equal(ctx.calls[1].body.voice, "gleam");
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.throws(() => ctx.client.setVoice("willow"), /Switch to text/);
+  const stopping = ctx.client.stopVoice();
+  assert.throws(() => ctx.client.setVoice("willow"), /Switch to text/);
+  ctx.respond(3, {
+    ...empty,
+    revision: 2,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  ctx.client.setVoice("willow");
+  assert.equal(ctx.client.getSnapshot().selectedVoice, "willow");
+});
+
+test("transport-ready request precedes playback completion and a late acknowledgement cannot revive stopped voice", async (t) => {
+  let allowPlayback;
+  const ctx = setup(t, {
+    holdReady: true,
+    mediaOptions: {
+      play: () =>
+        new Promise((resolve) => {
+          allowPlayback = resolve;
+        }),
+    },
+  });
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 1, "Missing bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Missing voice offer");
+  const id = ctx.calls[1].body.requestId;
+  ctx.respond(1, { voiceId: id, sdp: "answer" });
+  await until(
+    () => !!ctx.media.peers[0].remoteDescription,
+    "Missing SDP answer",
+  );
+  ctx.media.connect();
+  await until(
+    () => ctx.readyCalls.length === 1,
+    "Ready was blocked by pending playback",
+  );
+  assert.equal(ctx.client.getSnapshot().voice.status, "starting");
+  const stopping = ctx.client.stopVoice();
+  ctx.respond(2, {
+    ...empty,
+    revision: 1,
+    voice: { id, clientId: ctx.calls[1].body.clientId, status: "closed" },
+  });
+  await stopping;
+  ctx.respondReady(0, { ok: true });
+  allowPlayback();
+  await starting;
+  await delay(0);
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.equal(ctx.readyCalls.length, 1);
+});
+
+test("busy polling uses 250ms while connection failures retain exponential backoff", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, pending);
+  assert.equal([...ctx.timers.values()][0].ms, 250);
+  ctx.tick();
+  ctx.calls[2].reject(new Error("network unavailable"));
+  await until(() => ctx.timers.size === 1, "Failure did not schedule retry");
+  assert.equal([...ctx.timers.values()][0].ms, 1000);
+  ctx.tick();
+  ctx.calls[3].reject(new Error("network unavailable"));
+  await until(
+    () => ctx.timers.size === 1,
+    "Second failure did not schedule retry",
+  );
+  assert.equal([...ctx.timers.values()][0].ms, 2000);
+});
+
+test("successful tool results queue one immediate poll behind an existing poll and release the next tool", async (t) => {
+  const executed = [];
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: async (...args) => {
+        executed.push(args);
+        return catalogResult;
+      },
+    },
+  });
+  await resume(ctx, needsTool);
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Tool result was not sent");
+  ctx.client.clearError();
+  assert.equal(ctx.calls.length, 5);
+  ctx.respond(3, { ...pending, revision: 2 });
+  await delay(0);
+  assert.equal(ctx.calls.length, 5, "Follow-up poll overlapped existing poll");
+  ctx.respond(4, { ...pending, revision: 2 });
+  await until(
+    () => ctx.calls.length === 6,
+    "Tool completion waited for a polling timer",
+  );
+  const next = {
+    ...needsTool,
+    revision: 3,
+    tools: [
+      { ...needsTool.tools[0], id: "44444444-4444-4444-8444-444444444444" },
+    ],
+  };
+  ctx.respond(5, next);
+  await until(
+    () => ctx.calls.length === 7,
+    "Replacement tool was not claimed after follow-up",
+  );
+  ctx.respond(6, { claimed: true });
+  await until(
+    () => ctx.calls.length === 8,
+    "Replacement result was not submitted",
+  );
+  assert.equal(executed.length, 2);
+  ctx.respond(7, { ...complete, revision: 4 });
+  await until(
+    () => ctx.calls.length === 9,
+    "Final tool did not refresh immediately",
+  );
+  ctx.respond(8, { ...complete, revision: 4 });
+  await delay(0);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("product widgets use the display lookup without changing fresh model execution", async (t) => {
+  const calls = [];
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      loadProducts: async (ids) => {
+        calls.push(ids);
+        return catalogResult;
+      },
+      execute: () => assert.fail("Widget bypassed the display lookup"),
+    },
+  });
+  await resume(ctx);
+  const ids = ["gid://shopify/Product/123"];
+  assert.equal(await ctx.client.loadProducts(ids), catalogResult);
+  assert.deepEqual(calls, [ids]);
 });

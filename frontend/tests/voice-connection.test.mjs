@@ -40,9 +40,11 @@ test("voice requests audio only on prepare, and waits for started, peer and play
   });
   assert.equal(media.peers[0].channel.name, "oai-events");
   let ready = false;
-  const connecting = connection.connect("v=0\r\no=answer").then(() => {
-    ready = true;
-  });
+  const connecting = connection
+    .connect("v=0\r\no=answer", async () => {})
+    .then(() => {
+      ready = true;
+    });
   media.connect({ started: false });
   await Promise.resolve();
   assert.equal(ready, false);
@@ -86,9 +88,11 @@ test("native startup remains pending until delayed playback succeeds and lifecyc
   });
   await connection.prepare();
   let ready = false;
-  const connecting = connection.connect("answer").then(() => {
-    ready = true;
-  });
+  const connecting = connection
+    .connect("answer", async () => {})
+    .then(() => {
+      ready = true;
+    });
   media.connect();
   await Promise.resolve();
   await Promise.resolve();
@@ -113,7 +117,7 @@ test("stopping during delayed playback cannot reactivate voice when play later r
       }),
   });
   await connection.prepare();
-  const connecting = connection.connect("answer");
+  const connecting = connection.connect("answer", async () => {});
   media.connect();
   connection.close();
   await assert.rejects(connecting, /stopped/);
@@ -129,7 +133,7 @@ test("stopping during delayed playback cannot reactivate voice when play later r
 test("browser data messages cannot execute tools or upload captions", async (t) => {
   const { connection, media, errors } = setup(t);
   await connection.prepare();
-  const connecting = connection.connect("answer");
+  const connecting = connection.connect("answer", async () => {});
   media.event("function_call", {
     name: "navigate",
     arguments: '{"path":"/cart"}',
@@ -148,7 +152,7 @@ test("blocked audio playback closes microphone and reports an actionable error",
     play: () => Promise.reject(new Error("not allowed")),
   });
   await connection.prepare();
-  const connecting = connection.connect("answer");
+  const connecting = connection.connect("answer", async () => {});
   media.connect();
   await assert.rejects(connecting, /blocked Roman's audio/);
   assert.equal(media.tracks[0].stopped, true);
@@ -159,7 +163,7 @@ test("blocked audio playback closes microphone and reports an actionable error",
 test("a peer disconnect stops microphone and playback rather than reconnecting", async (t) => {
   const { connection, media, errors } = setup(t);
   await connection.prepare();
-  const connecting = connection.connect("answer");
+  const connecting = connection.connect("answer", async () => {});
   media.connect();
   await connecting;
   media.peers[0].connectionState = "disconnected";
@@ -173,11 +177,89 @@ test("a peer disconnect stops microphone and playback rather than reconnecting",
 test("removing the microphone ends voice without opening another device", async (t) => {
   const { connection, media, errors } = setup(t);
   await connection.prepare();
-  const connecting = connection.connect("answer");
+  const connecting = connection.connect("answer", async () => {});
   media.connect();
   await connecting;
   media.tracks[0].onended();
   assert.equal(media.peers[0].closed, true);
   assert.equal(media.calls.microphone, 1);
   assert.match(errors[0], /microphone disconnected/);
+});
+
+test("transport readiness fires once before playback resolves and both acknowledgements are required", async (t) => {
+  let allowPlayback;
+  let acknowledgeReady;
+  let notifications = 0;
+  const { connection, media } = setup(t, {
+    play: () =>
+      new Promise((resolve) => {
+        allowPlayback = resolve;
+      }),
+  });
+  await connection.prepare();
+  let ready = false;
+  const connecting = connection
+    .connect("answer", () => {
+      notifications++;
+      return new Promise((resolve) => {
+        acknowledgeReady = resolve;
+      });
+    })
+    .then(() => {
+      ready = true;
+    });
+  media.connect({ audio: false });
+  await Promise.resolve();
+  assert.equal(notifications, 0);
+  media.peers[0].ontrack({ track: media.tracks[0], streams: [media.stream] });
+  await Promise.resolve();
+  assert.equal(notifications, 1);
+  assert.equal(ready, false);
+  allowPlayback();
+  await Promise.resolve();
+  assert.equal(ready, false);
+  media.event("session.started");
+  media.peers[0].onconnectionstatechange();
+  assert.equal(notifications, 1);
+  acknowledgeReady();
+  await connecting;
+  assert.equal(ready, true);
+  assert.equal(media.calls.debug.length, 1);
+  const timing = media.calls.debug[0][1];
+  assert.equal(timing.status, "ready");
+  assert.ok(
+    Object.values(timing.elapsedMs).every(
+      (value) => typeof value === "number" && value >= 0,
+    ),
+  );
+  assert.ok(timing.elapsedMs.playback >= timing.elapsedMs.transportReady);
+});
+
+test("failed or cancelled readiness never leaves microphone or playback active", async (t) => {
+  for (const cancellation of [false, true]) {
+    let rejectReady;
+    const { connection, media, errors, window } = setup(t);
+    await connection.prepare();
+    const connecting = connection.connect(
+      "answer",
+      () =>
+        new Promise((_, reject) => {
+          rejectReady = reject;
+        }),
+    );
+    const rejected = assert.rejects(
+      connecting,
+      cancellation ? /stopped/ : /opening unavailable/,
+    );
+    media.connect();
+    await Promise.resolve();
+    if (cancellation) connection.close();
+    rejectReady(new window.Error("opening unavailable"));
+    await rejected;
+    await Promise.resolve();
+    assert.equal(media.tracks[0].stopped, true);
+    assert.equal(media.peers[0].closed, true);
+    assert.equal(errors.length, cancellation ? 0 : 1);
+    assert.equal(media.calls.debug.length, 1);
+  }
 });
