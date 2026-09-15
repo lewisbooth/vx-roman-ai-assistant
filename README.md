@@ -1,6 +1,6 @@
 # Roman AI Assistant
 
-A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. AI conversations, measuring advice and home visualization are not implemented yet.
+A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. Development stores now have persistent Luna text chat and the illustrated Roman home screen. Voice, model-triggered shopping actions, journey tracking and home visualization follow in later phases.
 
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 
@@ -10,7 +10,7 @@ Two React Router apps with Tailwind CSS 4 share one npm installation and lockfil
 | [admin/](admin/README.md)                                             | Embedded admin console, authentication, webhooks and backend | Local Docker; same image on Azure later   |
 | [extensions/vx-roman-ai-assistant/](extensions/vx-roman-ai-assistant) | Liquid app embed and asset loader                            | Shopify                                   |
 
-Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication, separately from future customer conversations. AI credentials and privileged calls belong on the admin/backend server.
+Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation models persist customer chat. AI credentials and privileged calls belong on the admin/backend server.
 
 ## Setup and development
 
@@ -23,7 +23,7 @@ npm ci
 Copy-Item .env.example .env
 ```
 
-Set `SHOPIFY_API_SECRET` in the root `.env` for admin development. Keep an existing `.env` when reinstalling. The customer preview needs neither Shopify credentials nor a database.
+Set `SHOPIFY_API_SECRET`, `OPENAI_API_KEY` and `SCOPES=write_app_proxy` in the root `.env` for chat development. Keep an existing `.env` when reinstalling. The customer preview needs neither Shopify credentials nor a database.
 
 Build and start the backend, then start the customer preview:
 
@@ -43,7 +43,7 @@ npm run check
 npm run build
 ```
 
-`check` runs lint, TypeScript and frontend tests. `build` builds both apps. GitHub Actions runs these commands after `npm ci` on pushes and pull requests; it does not publish. Use `npm test`, `build:frontend` or `build:admin` for focused iteration.
+`check` runs lint, TypeScript and frontend/backend tests. `build` builds both apps. GitHub Actions runs these commands after `npm ci` on pushes and pull requests; it does not publish. Use `npm test`, `build:frontend` or `build:admin` for focused iteration.
 
 Validate Shopify changes without publishing:
 
@@ -63,7 +63,7 @@ npm run deploy
 
 This runs checks, rebuilds the frontend and releases Shopify configuration and extension assets. Use `npm run deploy -- --version vx-roman-ai-assistant-your-release` with a unique label for predictable release names. The Shopify display name remains **Roman AI Assistant**.
 
-Enable **Assistant icon** under **App embeds** in the target theme, save and refresh the storefront. An app release reaches every store where this app is installed; a theme preview does not isolate it. Use a separate development app registration before experimenting with an app installed on production stores. Preserve the extension UID and `roman-assistant` block handle.
+After adding the app-proxy scope, open Roman in each development store's Shopify admin and approve the updated permissions. Enable **Assistant icon** under **App embeds** in the target theme, save and refresh the storefront. An app release reaches every store where this app is installed; a theme preview does not isolate it. Use a separate development app registration before experimenting with an app installed on production stores. Preserve the extension UID and `roman-assistant` block handle.
 
 **Run the admin/backend separately** using the [Docker instructions](admin/README.md). It runs locally now; the same image can run on one Azure VM later. Shopify CLI does not host that server. Local Docker development uses an HTTPS tunnel, matching `SHOPIFY_APP_URL` in `.env`, and ignored `shopify.app.local.toml` selected with `shopify app config use local`. Publish that configuration explicitly with `npm run deploy -- --config local`; keep Docker and the tunnel running while using the embedded admin. The checked-in `shopify.app.toml` retains placeholder URLs until a stable host is available. Retain the database volume across deployments. Pushing to GitHub alone publishes neither app.
 

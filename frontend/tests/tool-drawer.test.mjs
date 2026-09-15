@@ -75,7 +75,9 @@ async function setup(t, shop = "hd-dev-multi.myshopify.com") {
 }
 
 async function selectTool(window, container, name = "get_cart", args = {}) {
-  const drawer = container.querySelector("details");
+  const development = container.querySelector(".roman-development");
+  if (!development.open) development.querySelector("summary").click();
+  const drawer = development.querySelector(".roman-tools");
   if (!drawer.open) drawer.querySelector("summary").click();
   const select = drawer.querySelector("select");
   select.value = name;
@@ -122,8 +124,11 @@ test("the real runtime exposes manual tools only on development shops and makes 
   ]) {
     await t.test(shop, async (t) => {
       const { container, requests } = await setup(t, shop);
-      assert.ok(container.querySelector('nav[aria-label="Browse store"]'));
-      const drawer = container.querySelector("details");
+      assert.equal(
+        Boolean(container.querySelector('nav[aria-label="Browse store"]')),
+        visible,
+      );
+      const drawer = container.querySelector(".roman-development");
       assert.equal(Boolean(drawer), visible);
       if (drawer) {
         assert.equal(drawer.open, false);

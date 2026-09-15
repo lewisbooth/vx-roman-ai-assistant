@@ -19,7 +19,15 @@ export default defineConfig(({ mode }) => ({
       apply: "build",
       buildStart() {
         if (mode !== "bootstrap") return;
-        for (const fileName of ["roman-logo.svg", "ivory-texture.png"]) {
+        for (const fileName of [
+          "roman-logo.svg",
+          "ivory-texture.png",
+          "roman-tile-measure-line.png",
+          "roman-tile-measure-colour.png",
+          "roman-tile-visualize.png",
+          "roman-tile-style.png",
+          "roman-tile-no-drill.png",
+        ]) {
           const path = fileURLToPath(
             new URL(`./src/assets/${fileName}`, import.meta.url),
           );

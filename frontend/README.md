@@ -1,10 +1,10 @@
 # Roman AI Assistant frontend
 
-The customer React Router app uses Tailwind CSS 4 inside a Shadow DOM. Its bottom-left **R** button logs `Hello from Roman` and opens a 400px sidebar on the right. At viewport widths of 1024px and above the storefront reserves that space; smaller screens use an overlay. The host, launcher and sidebar use z-index `2147483647` to sit above theme widgets. The React instance persists across successful in-place navigation and sidebar toggles. No AI connection is implemented yet.
+The customer React Router app uses Tailwind CSS 4 inside a Shadow DOM. Its bottom-left **R** button logs `Hello from Roman` and opens a 400px sidebar on the right. At viewport widths of 1024px and above the storefront reserves that space; smaller screens use an overlay. The host, launcher and sidebar use z-index `2147483647` to sit above theme widgets. The React instance persists across successful in-place navigation and sidebar toggles. Development stores connect to persistent Luna text chat through the separate Roman backend.
 
-For a new session, only the small launcher script runs on page load. The first click immediately opens the ivory shell and requests the React bundle, logo and texture. A logo and indeterminate loading bar remain until React commits and at least one second has passed since loading began. This deliberate development delay applies once per page load, including cached loads and automatic restoration; reopening or remounting on the same page does not restart it. Slow downloads add no extra delay. Closing keeps the runtime mounted, and load failures offer an explicit retry. The loaded view contains the Roman by SelectBlinds logo, conversation heading and POC navigation links.
+For a new session, only the small launcher script runs on page load. The first click immediately opens the ivory shell and requests the React bundle, logo and texture. A logo and indeterminate loading bar remain until React commits and at least one second has passed since loading began. This deliberate development delay applies once per page load, including cached loads and automatic restoration; reopening or remounting on the same page does not restart it. Slow downloads add no extra delay. Closing keeps the runtime mounted, and load failures offer an explicit retry. The home view contains the Roman by SelectBlinds logo, conversation heading, four exact Figma illustrations and a working text composer. The tiles are disabled until their features arrive. POC navigation and tools are inside a collapsed Development section on development stores.
 
-Open/closed state is saved in `sessionStorage` for the current tab and storefront origin. Normal navigation or reload automatically reopens and mounts Roman when it was open, without taking focus from the storefront. Back/Forward cache restores follow the latest saved state. Closing it keeps subsequent pages collapsed and lazy. If browser storage is unavailable, the sidebar remains usable and logs one warning per page. Only visibility is saved; full page loads create a fresh React runtime.
+Open/closed state is saved in `sessionStorage` for the current tab and storefront origin. Normal navigation or reload automatically reopens and mounts Roman when it was open, without taking focus from the storefront. Back/Forward cache restores follow the latest saved state. Closing it keeps subsequent pages collapsed and lazy. If browser storage is unavailable, the sidebar remains usable and logs one warning per page. Conversation credentials are also saved per tab once a first message starts a session. Reloads create a fresh React runtime and restore the same server transcript through Shopify's signed proxy. Closing does not end an active model reply; reopening refreshes its result. Journey tracking while closed and voice reconnection are later phases.
 
 The loading bar intentionally animates regardless of the browser's reduced-motion preference.
 
@@ -24,7 +24,7 @@ npm run build:frontend
 npm run deploy
 ```
 
-`npm test` runs the frontend DOM tests. `build:frontend` builds both extension bundles and copies the design assets; `watch:frontend` rebuilds them on changes. `deploy` checks and rebuilds before releasing through Shopify CLI; see the [root publishing instructions](../README.md#publish) for release scope and version labels. Enable **Assistant icon** in the theme's **App embeds**, save and refresh. Admin hosting is separate.
+`npm test` runs frontend and backend behavior tests. `build:frontend` builds both extension bundles and copies the design assets; `watch:frontend` rebuilds them on changes. `deploy` checks and rebuilds before releasing through Shopify CLI; see the [root publishing instructions](../README.md#publish) for release scope and version labels. Enable **Assistant icon** in the theme's **App embeds**, save and refresh. Admin hosting is separate.
 
 The build enforces Shopify's 10 KB limit for the initial script. Keep React and theme navigation in the lazy runtime.
 
@@ -45,9 +45,17 @@ The memory router owns only assistant routes. The shared storefront navigator ac
 
 Removing the embed disposes its React root, router, navigation listeners, pending work and layout styles. Theme-handled forms, modified clicks, external links and links marked `data-roman-native-navigation` retain native behavior and can end the current assistant instance. Ordinary same-origin links use Roman navigation while the sidebar is open.
 
+## Text chat ownership
+
+`src/session/` owns bootstrap, tab-scoped credentials, polling, retry identity and disposal. `src/chat/` owns the Figma home screen, composer and safely rendered transcript; `app.tsx` connects them through a narrow external-store interface. Browser-safe conversation DTOs live in root `shared/conversation.ts`. Model prompts, OpenAI credentials, authorization and persistence belong in [admin](../admin/README.md#text-conversations).
+
+Chat creates no server conversation until the first message. Pending text refreshes through bounded JSON polling; a lost submission response is reconciled without starting another generation. The same request ID is retained for retry. Typed text parts render as React text, and the part container permits horizontal overflow for later widgets; no model HTML is injected. User scroll-up is preserved while Roman replies.
+
+The standalone preview displays the interface only. Verify real chat on an installed development store after approving `write_app_proxy` in Shopify admin. Voice, model tool calls and inline widgets are not connected in this phase.
+
 ## Developer tools
 
-On `hd-dev-multi`, `hd-dev-single` and the local preview, expand **Developer tools** below the navigation links. Select a tool, edit its JSON arguments and run it. The drawer calls `createAssistantTools(...).execute(name, arguments)` directly; no LLM or OpenAI key is involved. The same validated functions can serve future model calls. The drawer is hidden on production stores.
+On `hd-dev-multi`, `hd-dev-single` and the local preview, expand **Development**, then **Developer tools** below the navigation links. Select a tool, edit its JSON arguments and run it. The drawer calls `createAssistantTools(...).execute(name, arguments)` directly; no LLM or OpenAI key is involved. The same validated functions can serve future model calls. The drawer is hidden on production stores.
 
 | Tool                | Arguments                 | Behavior                                                                           |
 | ------------------- | ------------------------- | ---------------------------------------------------------------------------------- |

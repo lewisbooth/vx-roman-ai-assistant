@@ -5,6 +5,7 @@ import { createAssistantRouter } from "./app";
 import { createStorefrontNavigation } from "./navigation/shared";
 import type { AssistantRuntime } from "./runtime";
 import { createAssistantTools } from "./tools";
+import { createConversationClient } from "./session/client";
 import styles from "./styles.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
@@ -27,6 +28,7 @@ export function mountAssistant(
   });
   const navigation = createStorefrontNavigation(host);
   const tools = createAssistantTools(host, navigation);
+  const session = createConversationClient();
   let router: ReturnType<typeof createAssistantRouter> | undefined;
   let root: Root | undefined;
   let disposed = false;
@@ -49,6 +51,7 @@ export function mountAssistant(
       logoUrl,
       navigation,
       tools,
+      session,
       showTools:
         host.dataset.shop === "hd-dev-multi.myshopify.com" ||
         host.dataset.shop === "hd-dev-single.myshopify.com",
@@ -69,6 +72,7 @@ export function mountAssistant(
     root?.unmount();
     router?.dispose();
     tools.dispose();
+    session.dispose();
     navigation.dispose();
     throw error;
   }
@@ -87,6 +91,7 @@ export function mountAssistant(
       root?.unmount();
       router?.dispose();
       tools.dispose();
+      session.dispose();
       navigation.dispose();
     },
   };

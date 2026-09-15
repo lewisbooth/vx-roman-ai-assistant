@@ -1,6 +1,15 @@
-import { useEffect, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { createMemoryRouter, useRouteError } from "react-router";
+import { Composer } from "./chat/Composer";
+import { Timeline } from "./chat/Timeline";
+import { Welcome } from "./chat/Welcome";
 import type { StorefrontNavigation } from "./navigation/shared";
+import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
 import { ToolDrawer } from "./tools/ToolDrawer";
 
@@ -8,6 +17,7 @@ type AssistantProps = {
   logoUrl: string;
   navigation: StorefrontNavigation;
   tools: AssistantTools;
+  session: ConversationClient;
   showTools: boolean;
   onReady: () => void;
   onError: (error: unknown) => void;
@@ -17,35 +27,87 @@ function Assistant({
   logoUrl,
   navigation,
   tools,
+  session,
   showTools,
   onReady,
 }: AssistantProps) {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const viewport = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  const messages = state.conversation?.messages;
+  const hasMessages = !!messages?.length;
+
+  useEffect(() => onReady(), [onReady]);
+
+  useLayoutEffect(() => {
+    const scroll = viewport.current;
+    if (hasMessages && following.current && scroll)
+      scroll.scrollTop = scroll.scrollHeight;
+  }, [messages, hasMessages]);
+
+  return (
+    <div className="roman-content roman-chat">
+      {(hasMessages || state.restoring) && (
+        <header className="roman-chat-header">
+          <img
+            src={logoUrl}
+            alt="Roman by SelectBlinds"
+            width={95}
+            height={40}
+            className="h-[40px] w-[95px] object-contain"
+          />
+        </header>
+      )}
+      <div
+        ref={viewport}
+        className="roman-chat-scroll"
+        onScroll={(event) => {
+          const scroll = event.currentTarget;
+          following.current =
+            scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
+        }}
+      >
+        {state.restoring ? (
+          <p className="roman-chat-restoring" role="status">
+            Restoring your conversation…
+          </p>
+        ) : hasMessages ? (
+          <Timeline messages={messages!} />
+        ) : (
+          <Welcome logoUrl={logoUrl} />
+        )}
+        {showTools && <Development navigation={navigation} tools={tools} />}
+      </div>
+      <Composer
+        busy={state.pending || state.restoring || !!state.conversation?.busy}
+        error={state.error}
+        onClearError={session.clearError}
+        onSend={(text) => {
+          following.current = true;
+          return session.sendMessage(text);
+        }}
+      />
+    </div>
+  );
+}
+
+function Development({
+  navigation,
+  tools,
+}: Pick<AssistantProps, "navigation" | "tools">) {
   const { url, pending, error } = useSyncExternalStore(
     navigation.subscribe,
     navigation.getSnapshot,
   );
   const pathname = new URL(url, window.location.origin).pathname;
 
-  useEffect(() => onReady(), [onReady]);
-
   return (
-    <div className="roman-content flex flex-col items-center px-[24px] pt-[107px] pb-[40px] font-serif font-normal text-[#4E0E0E]">
-      <img
-        src={logoUrl}
-        alt="Roman by SelectBlinds"
-        width={121}
-        height={50}
-        className="block h-[50px] w-[121px] shrink-0"
-      />
-
-      <h1 className="mt-[57px] mb-0 w-[303px] max-w-full text-center text-[41.809px] leading-[0.88575] font-normal tracking-[-0.02em]">
-        A brighter home <em>starts</em> with a conversation.
-      </h1>
-
+    <details className="roman-development">
+      <summary>Development</summary>
       <nav
         aria-label="Browse store"
         aria-busy={pending}
-        className="mt-[48px] flex w-[303px] max-w-full flex-col items-center text-center text-[18px] leading-[1.3]"
+        className="mt-[12px] flex w-full flex-col items-start text-[14px] leading-[1.3]"
       >
         {navigation.destinations.map((destination) => (
           <a
@@ -85,8 +147,8 @@ function Assistant({
           {error}
         </p>
       )}
-      {showTools && <ToolDrawer tools={tools} />}
-    </div>
+      <ToolDrawer tools={tools} />
+    </details>
   );
 }
 

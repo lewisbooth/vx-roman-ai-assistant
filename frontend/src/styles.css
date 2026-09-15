@@ -1,7 +1,8 @@
-@layer theme, utilities;
+@layer theme, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @source "./app.tsx";
+@source "./chat";
 @source "./tools/ToolDrawer.tsx";
 
 @theme {
@@ -14,6 +15,131 @@
 .roman-content,
 .roman-content * {
   box-sizing: border-box;
+}
+
+@layer components {
+  .roman-chat {
+    @apply flex h-full min-h-0 w-full flex-col overflow-hidden font-serif font-normal text-[#4e0e0e];
+  }
+
+  .roman-chat-header {
+    @apply flex h-[80px] shrink-0 items-center justify-center px-[56px];
+  }
+
+  .roman-chat-scroll {
+    @apply min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain;
+    scrollbar-gutter: stable;
+  }
+
+  .roman-chat-restoring {
+    @apply m-0 px-[26px] py-[32px] text-center text-[16px];
+  }
+
+  .roman-timeline {
+    @apply m-0 flex list-none flex-col gap-[24px] px-[26px] pt-[19px] pb-[24px];
+  }
+
+  .roman-message {
+    @apply min-w-0 text-[15px] leading-[1.5] text-[#402b2b];
+  }
+
+  .roman-message-user {
+    @apply ml-auto max-w-[calc(100%-38px)] rounded-[14px] bg-[#e3e0d8] px-[14px] py-[9px];
+  }
+
+  .roman-message-assistant {
+    @apply w-full;
+  }
+
+  .roman-message-parts {
+    @apply min-w-0 max-w-full overflow-x-auto overscroll-x-contain;
+  }
+
+  .roman-message-text {
+    @apply m-0 whitespace-pre-wrap [overflow-wrap:anywhere];
+  }
+
+  .roman-message-text + .roman-message-text {
+    margin-top: 12px;
+  }
+
+  .roman-message-status {
+    @apply m-0 text-[14px] italic text-[#797366];
+  }
+
+  .roman-development {
+    @apply mx-[26px] mt-[16px] mb-[12px] border-0 border-t border-solid border-[#e3e0d8] pt-[12px] text-[13px] text-[#545046];
+  }
+
+  .roman-development > summary {
+    @apply cursor-pointer py-[8px];
+  }
+
+  .roman-composer {
+    @apply z-10 shrink-0 px-[26px] pt-[14px] pb-[24px];
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, #f7f5ef 14px);
+  }
+
+  .roman-composer form {
+    @apply flex items-end gap-[10px];
+  }
+
+  .roman-composer textarea {
+    @apply block min-h-[54px] min-w-0 flex-1 resize-none rounded-[27px] border border-solid border-[#e3e0d8] bg-white px-[18px] py-[15px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
+    font-family: inherit;
+  }
+
+  .roman-composer button {
+    @apply flex min-h-[54px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-[#c59745] px-[15px] text-[16px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
+    font-family: inherit;
+  }
+
+  .roman-chat-error {
+    @apply m-0 pb-[12px] text-[14px] leading-[1.4] text-[#8d2525];
+  }
+
+  .roman-composer .roman-chat-retry {
+    @apply mt-[8px] min-h-[36px] rounded-full border border-solid border-[#8d2525] bg-transparent px-[12px] text-[13px] text-[#8d2525];
+  }
+
+  .roman-chat :is(button, textarea, summary, a):focus-visible {
+    outline: 2px solid #4e0e0e;
+    outline-offset: 3px;
+  }
+
+  .roman-welcome {
+    @apply flex w-full flex-col items-center px-[26px] pt-[107px] pb-[24px] text-center;
+  }
+
+  .roman-welcome-title {
+    @apply mt-[57px] mb-0 min-h-[128px] w-[303px] max-w-full font-normal text-[41.809px] leading-[0.88575] tracking-[-0.02em];
+  }
+
+  .roman-welcome-question {
+    @apply mt-[69px] mb-0 text-[18px] leading-[1.2] tracking-[-0.02em];
+  }
+
+  .roman-welcome-tiles {
+    @apply mt-[19px] grid w-full max-w-[344px] grid-cols-2 gap-x-[10px] gap-y-[12px];
+  }
+
+  .roman-welcome-tile {
+    @apply flex min-h-[185px] min-w-0 cursor-default flex-col items-center overflow-hidden rounded-[16px] border border-solid border-[#e3e0d8] bg-white px-[4px] pt-[16px] pb-[23px] text-[#402b2b] opacity-100 [box-shadow:0_2px_0_#00000014];
+    font: inherit;
+  }
+
+  .roman-tile-art {
+    @apply relative flex h-[100px] w-full shrink-0 items-center justify-center;
+  }
+
+  .roman-tile-title {
+    @apply block text-[16px] leading-[24px];
+  }
+
+  .roman-tile-description {
+    @apply block text-[13px] leading-[20px] text-[#545046];
+  }
 }
 
 .roman-tools :is(select, button) {
