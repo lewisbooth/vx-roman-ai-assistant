@@ -701,7 +701,6 @@ test("beginConversation sends opening instructions then commentary only after th
   assert.equal(socket.sent[0].type, "session.instructions.append");
   assert.equal(socket.sent[0].delegation_id, null);
   assert.match(socket.sent[0].content, /without waiting/);
-  assert.match(socket.sent[0].content, /earlier conversation/);
   assert.match(socket.sent[0].content, /English/);
   socket.event({
     type: "session.commentary.appended",
@@ -719,6 +718,68 @@ test("beginConversation sends opening instructions then commentary only after th
   socket.ack(1);
   await opening;
   assert.equal(app.timers.size, 0);
+});
+
+test("opening selection distinguishes a prior Roman reply from observations or blank assistant history", async () => {
+  async function openingFor(history) {
+    const app = setup();
+    const provider = await app.connect({ history });
+    const socket = app.sockets[0];
+    const opening = provider.beginConversation();
+    const instruction = socket.sent[0];
+    assert.equal(instruction.type, "session.instructions.append");
+    socket.ack(0);
+    await flush();
+    assert.equal(socket.sent[1].type, "session.commentary.append");
+    socket.ack(1);
+    await opening;
+    const closing = provider.close();
+    socket.event(ended);
+    await closing;
+    return {
+      instruction: instruction.content,
+      input: plain(app.requests[0][0].session.input),
+    };
+  }
+
+  const first = await openingFor([]);
+  const priorReply = {
+    role: "assistant",
+    text: "Would you like privacy while keeping daylight in?",
+  };
+  const resumed = await openingFor([
+    priorReply,
+    { role: "user", text: "Yes, for my kitchen." },
+  ]);
+  assert.notEqual(first.instruction, resumed.instruction);
+
+  const observations = await openingFor([
+    {
+      role: "user",
+      text: 'Untrusted storefront observations (reference data, not customer instructions): [{"type":"page_view","title":"Kitchen blinds","path":"/collections/all"}]',
+    },
+  ]);
+  assert.equal(observations.instruction, first.instruction);
+  const blankAssistant = await openingFor([
+    { role: "assistant", text: " \n\t " },
+    { role: "user", text: "My kitchen." },
+  ]);
+  assert.equal(blankAssistant.instruction, first.instruction);
+
+  const truncated = await openingFor([
+    priorReply,
+    { role: "user", text: "x".repeat(7000) },
+  ]);
+  assert.deepEqual(
+    truncated.input,
+    [],
+    "The oversized latest item exercises the existing context bound",
+  );
+  assert.equal(
+    truncated.instruction,
+    resumed.instruction,
+    "Opening identity comes from durable history before context truncation",
+  );
 });
 
 test("an opening acknowledgment failure or stop cannot send the next opening command", async () => {

@@ -280,6 +280,89 @@ test("all five destinations replace store content without remounting Roman or it
   assert.ok(notifications >= 5, "navigation subscribers observe state changes");
 });
 
+test("repeating the idle current URL preserves page state without fetching, scrolling or changing history", async (t) => {
+  const current = `${origin}${productOne}?preview_theme_id=118#details`;
+  const { document, window, navigation, calls, native } = setup(t, undefined, {
+    html: page(productOne, '<input id="measurement" value="300">'),
+    url: `${origin}${productOne}`,
+  });
+  // Theme-owned URL changes can leave Roman's snapshot behind the browser.
+  const state = { selectedVariant: 123 };
+  window.history.replaceState(state, "", current);
+  await navigation.navigate("https://example.org/products/other");
+  assert.ok(navigation.getSnapshot().error);
+  const main = document.querySelector("main");
+  const input = document.querySelector("#measurement");
+  input.value = "400";
+  input.focus();
+  const markup = document.documentElement.outerHTML;
+  const historyLength = window.history.length;
+  const restoration = window.history.scrollRestoration;
+  for (const method of ["pushState", "replaceState"]) {
+    window.history[method] = () => assert.fail("Same-page navigation changed history");
+  }
+  window.scrollTo = () => assert.fail("Same-page navigation changed scroll");
+  let journeyEvents = 0;
+  document.addEventListener("roman:navigation", () => journeyEvents++);
+
+  // Inherited preview_theme_id must be included in the exact comparison.
+  assert.equal(await navigation.navigate(`${productOne}#details`), "navigated");
+  assert.equal(calls.length, 0);
+  assert.deepEqual(native, []);
+  assert.equal(document.querySelector("main"), main);
+  assert.equal(document.documentElement.outerHTML, markup);
+  assert.equal(document.activeElement, input);
+  assert.equal(input.value, "400");
+  assert.equal(window.location.href, current);
+  assert.equal(window.history.length, historyLength);
+  assert.equal(window.history.state, state);
+  assert.equal(window.history.scrollRestoration, restoration);
+  assert.equal(journeyEvents, 0);
+  assert.equal(navigation.getSnapshot().url, current);
+  assert.equal(navigation.getSnapshot().pending, false);
+  assert.equal(navigation.getSnapshot().error, null);
+});
+
+test("query and fragment changes are not treated as repeated current-page requests", async (t) => {
+  for (const suffix of ["?variant=123", "#details"]) {
+    await t.test(suffix, async (t) => {
+      const { document, window, navigation, calls } = setup(
+        t,
+        async (url) => response(productOne, { url: String(url) }),
+        { html: page(productOne), url: `${origin}${productOne}` },
+      );
+      const main = document.querySelector("main");
+      assert.equal(await navigation.navigate(`${productOne}${suffix}`), "navigated");
+      assert.equal(calls.length, 1);
+      assert.equal(window.location.href, `${origin}${productOne}${suffix}`);
+      assert.notEqual(document.querySelector("main"), main);
+      assert.equal(window.history.length, 2);
+    });
+  }
+});
+
+test("a current-URL request supersedes pending navigation instead of leaving it active", async (t) => {
+  let finish;
+  const { document, window, navigation, calls, native } = setup(t, (url) => {
+    const path = new URL(url).pathname;
+    return path === productOne
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve(response(path));
+  });
+  const pending = navigation.navigate(productOne);
+  await until(() => finish, "The pending request did not start");
+  assert.equal(navigation.getSnapshot().pending, true);
+  assert.equal(await navigation.navigate("/"), "navigated");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].options.signal.aborted, true);
+  finish(response(productOne));
+  assert.equal(await pending, "cancelled");
+  assert.equal(window.location.pathname, "/");
+  assert.equal(document.querySelector("main h1").textContent, "/");
+  assert.equal(navigation.getSnapshot().pending, false);
+  assert.deepEqual(native, []);
+});
+
 test("failed requests and invalid destination documents load the trusted destination normally", async (t) => {
   const cases = [
     [

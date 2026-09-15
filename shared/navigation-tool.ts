@@ -7,7 +7,7 @@ export const navigationToolDefinition = {
   type: "function",
   name: "navigate",
   description:
-    "Navigate the customer's current storefront to a known page when they ask to visit it. Use a root-relative path from the catalog or conversation, including any query or fragment. The storefront may require a full page reload.",
+    "Navigate the customer's current storefront when asked to visit a known page, or proactively open the PDP for their clearly chosen product as the next step. Respect requests to stay in chat and skip if already on that PDP. Use a verified root-relative path from the catalog or conversation, including any query or fragment. The storefront may require a full page reload.",
   strict: true,
   parameters: {
     type: "object",

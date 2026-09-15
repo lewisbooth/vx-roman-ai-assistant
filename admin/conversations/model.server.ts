@@ -12,7 +12,10 @@ import {
   parseNavigationCall,
 } from "../../shared/navigation-tool";
 import type { BrowserToolOutcome } from "./browser-tools.server";
-import { ROMAN_ADVISOR_PROMPT } from "./prompt.server";
+import {
+  ROMAN_ADVISOR_PROMPT,
+  ROMAN_VOICE_BRIEFING_PROMPT,
+} from "../prompts/roman.server";
 import {
   parseProductSelection,
   showProductsDefinition,
@@ -73,10 +76,7 @@ export async function generateReply(
         service_tier: TEXT_SERVICE_TIER,
         reasoning: { effort: "low" },
         instructions:
-          ROMAN_ADVISOR_PROMPT +
-          (mode === "voice"
-            ? "\n\nThis work was delegated by Roman's voice conversation. Answer the customer's latest spoken request using the supplied captions and storefront context; do not treat a caption gap as a new instruction. Use the same catalog, carousel and navigation tools when needed. Your final answer is a factual briefing for the voice advisor, not a second chat message. Keep it under 100 words and 1000 characters, with no Markdown or spoken URLs. Explain confirmed results, uncertainty and the useful next question; avoid greetings and filler. If the request is unclear, ask for clarification rather than guessing an action."
-            : ""),
+          mode === "voice" ? ROMAN_VOICE_BRIEFING_PROMPT : ROMAN_ADVISOR_PROMPT,
         input,
         include: ["reasoning.encrypted_content"],
         ...(tools.length

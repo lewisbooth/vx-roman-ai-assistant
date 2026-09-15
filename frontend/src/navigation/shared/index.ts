@@ -201,6 +201,16 @@ export function createStorefrontNavigation(
           "The theme must have app-provider > main#main outside Roman.",
         );
       }
+      // A model may repeat a destination. History visits still need to restore
+      // their DOM, and pending work may not yet match the browser's URL.
+      if (
+        !fromHistory &&
+        !snapshot.pending &&
+        url.href === window.location.href
+      ) {
+        publish({ url: url.href, pending: false, error: null });
+        return "navigated";
+      }
       start();
       if (!fromHistory) saveScroll();
       publish({ pending: true, error: null });
