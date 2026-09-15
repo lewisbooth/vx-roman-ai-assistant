@@ -1217,9 +1217,9 @@ test("a server correction aborts retired navigation before executing its replace
   );
 });
 
-test("voice choice defaults to Willow, validates tab preferences and survives ended chat", async (t) => {
+test("voice choice defaults to Marin, validates tab preferences and survives ended chat", async (t) => {
   const ctx = setup(t, { saved: access });
-  assert.equal(ctx.client.getSnapshot().selectedVoice, "willow");
+  assert.equal(ctx.client.getSnapshot().selectedVoice, "marin");
   ctx.client.setVoice("gleam");
   assert.equal(ctx.window.sessionStorage.getItem("roman:voice"), "gleam");
   await resume(ctx);
@@ -1234,8 +1234,13 @@ test("voice choice defaults to Willow, validates tab preferences and survives en
     "gleam",
   );
   assert.equal(
-    setup(t, { savedVoice: "invented" }).client.getSnapshot().selectedVoice,
+    setup(t, { savedVoice: "willow" }).client.getSnapshot().selectedVoice,
     "willow",
+    "A new default must not replace an existing voice preference",
+  );
+  assert.equal(
+    setup(t, { savedVoice: "invented" }).client.getSnapshot().selectedVoice,
+    "marin",
   );
 });
 

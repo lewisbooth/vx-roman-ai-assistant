@@ -84,7 +84,6 @@ function setup(t, options = {}) {
     originalClearTimeout(id);
   };
   const navigation = {
-    destinations: [],
     getSnapshot: () => snapshot,
     navigate: async (path, signal) => {
       visits.push(path);

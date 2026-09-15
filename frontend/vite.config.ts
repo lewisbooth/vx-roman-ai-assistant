@@ -2,12 +2,20 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
-import { selectStore } from "./src/navigation/themes";
 
-const previewStore = selectStore("hd-dev-multi.myshopify.com");
-if (!previewStore)
-  throw new Error("The local preview store is not configured.");
-const { destinations } = previewStore;
+const previewPages = [
+  { label: "Home", path: "/" },
+  { label: "All blinds", path: "/collections/all" },
+  {
+    label: "Traditional zebra shades",
+    path: "/products/traditional-room-darkening-zebra-shades",
+  },
+  {
+    label: "LEVOLOR faux wood blinds",
+    path: "/products/2-inch-levolor-classic-neutral-faux-wood-blinds",
+  },
+  { label: "Cart", path: "/cart" },
+];
 
 export default defineConfig(({ mode }) => ({
   root: fileURLToPath(new URL("./", import.meta.url)),
@@ -61,8 +69,8 @@ export default defineConfig(({ mode }) => ({
           "http://localhost",
         ).pathname;
         const page =
-          destinations.find((destination) => destination.path === pathname) ??
-          destinations[0];
+          previewPages.find((destination) => destination.path === pathname) ??
+          previewPages[0];
         const template = page.path.startsWith("/products/")
           ? "product"
           : page.path.startsWith("/collections/")
@@ -70,7 +78,7 @@ export default defineConfig(({ mode }) => ({
             : page.path === "/cart"
               ? "cart"
               : "index";
-        const links = destinations
+        const links = previewPages
           .map(({ label, path }) => `<li><a href="${path}">${label}</a></li>`)
           .join("");
         return html

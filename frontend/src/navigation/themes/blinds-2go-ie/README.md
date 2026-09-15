@@ -1,6 +1,6 @@
 # Blinds 2go Ireland theme
 
-This module serves `blinds2go-ireland.myshopify.com` at [www.blinds-2go.ie](https://www.blinds-2go.ie/). Destinations use the inspected roller-blinds collection and Sevilla product.
+This module serves `blinds2go-ireland.myshopify.com` at [www.blinds-2go.ie](https://www.blinds-2go.ie/).
 
 `prepare()` replaces the observed cart Continue-shopping `history.back()` handler with a supported navigation link. Continue shopping goes Back within Roman's recorded history segment, otherwise Home; its native link opens Home after Roman is removed. Shared navigation owns page replacement, history, theme assets, globals and metadata. The older pricing and cart components remain theme-owned.
 

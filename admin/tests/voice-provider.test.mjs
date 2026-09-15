@@ -233,7 +233,7 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
   });
   assert.match(request.session.instructions, /Roman.*shop-at-home/);
   assert.deepEqual(plain(request.session.audio), {
-    output: { voice: "willow" },
+    output: { voice: "marin" },
   });
   assert.match(request.session.instructions, /Interruption policy:/);
   assert.match(request.session.instructions, /Luna/);
@@ -946,15 +946,15 @@ test("nonempty reflected audio and blank captions cannot suppress the startup cu
   assert.deepEqual(app.logs, []);
 });
 
-test("Willow requests Irish English while other selected voices retain their natural character", async () => {
-  for (const voice of [undefined, "willow", "coral", "gleam"]) {
+test("Marin defaults to its natural character and only explicitly selected Willow requests Irish English", async () => {
+  for (const voice of [undefined, "marin", "willow", "coral", "gleam"]) {
     const app = setup();
     await app.connect({ voice });
     const { session } = app.requests[0][0];
-    assert.equal(session.audio.output.voice, voice ?? "willow");
+    assert.equal(session.audio.output.voice, voice ?? "marin");
     assert.match(session.instructions, /warm, lively and attentive/);
     assert.match(session.instructions, /natural conversational pace/);
-    if (voice === undefined || voice === "willow") {
+    if (voice === "willow") {
       assert.match(session.instructions, /natural Irish English accent/);
     } else {
       assert.doesNotMatch(session.instructions, /Irish English/);

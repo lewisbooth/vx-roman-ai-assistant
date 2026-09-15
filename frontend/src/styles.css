@@ -200,12 +200,8 @@
     @apply m-0 text-[14px] italic text-[#797366];
   }
 
-  .roman-development {
+  .roman-tools {
     @apply mx-[26px] mt-[16px] mb-[12px] border-0 border-t border-solid border-[#e3e0d8] pt-[12px] text-[13px] text-[#545046];
-  }
-
-  .roman-development > summary {
-    @apply cursor-pointer py-[8px];
   }
 
   .roman-composer {

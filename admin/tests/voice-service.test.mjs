@@ -281,7 +281,7 @@ test("voice starts once per exact owner, voice and SDP, resuming duplicate HTTP 
   await flush();
   assert.equal(state.calls.reserve.length, 1);
   assert.equal(state.providers.length, 1);
-  assert.equal(state.providers[0].options.voice, "willow");
+  assert.equal(state.providers[0].options.voice, "marin");
   await assert.rejects(
     state.api.startVoice(state.conversationId, {
       ...state.input,

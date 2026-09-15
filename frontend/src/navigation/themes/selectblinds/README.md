@@ -1,6 +1,6 @@
 # SelectBlinds theme
 
-This module owns `select-blinds-us.myshopify.com` ([production](https://www.selectblinds.com/)) and its destinations. [HD dev multi](../hd-dev-multi/README.md) reuses these theme hooks and owns its own links. Home and Cart are added centrally.
+This module owns the theme hooks for `select-blinds-us.myshopify.com` ([production](https://www.selectblinds.com/)). [HD dev multi](../hd-dev-multi/README.md) reuses these hooks.
 
 `prepare()` normalizes the observed cart Continue-shopping handler and identifies Shopify wallet modules. Continue shopping goes Back within Roman's recorded history segment, otherwise Home; its native link opens Home after Roman is removed. Shared navigation owns page replacement, history, theme assets, globals, metadata and optional PayPal handling.
 

@@ -757,13 +757,9 @@ test("the actual React runtime keeps its rendered content and storefront state a
   );
   const content = host.shadowRoot.querySelector("[data-roman-content]");
   const heading = content.querySelector("h1");
-  const browse = content.querySelector('nav[aria-label="Browse store"]');
+  const drawer = content.querySelector(".roman-tools");
   assert.ok(heading);
-  assert.ok(browse);
-  assert.equal(
-    browse.querySelector('a[aria-current="page"]').getAttribute("href"),
-    "/",
-  );
+  assert.ok(drawer);
   assert.equal(window.location.href, `${origin}/`);
   close().click();
   launcher().click();
@@ -771,7 +767,7 @@ test("the actual React runtime keeps its rendered content and storefront state a
   assert.equal(mounts, 1);
   assert.equal(disposals, 0);
   assert.equal(content.querySelector("h1"), heading);
-  assert.equal(content.querySelector('nav[aria-label="Browse store"]'), browse);
+  assert.equal(content.querySelector(".roman-tools"), drawer);
   assert.equal(requests.length, 1);
   host.remove();
   await delay(0);

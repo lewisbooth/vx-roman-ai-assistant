@@ -79,7 +79,7 @@ async function setup(t, options = {}) {
     restoring: false,
     error: null,
     voice: { status: "idle", muted: false, error: null },
-    selectedVoice: "willow",
+    selectedVoice: "marin",
     ...options.state,
   };
   const update = (changes) => {
@@ -135,7 +135,6 @@ async function setup(t, options = {}) {
     logoUrl:
       "https://cdn.shopify.com/extensions/version/assets/roman-logo.svg?v=1",
     navigation: {
-      destinations: [{ label: "Home", path: "/" }],
       getSnapshot: () => navigationState,
       subscribe: () => () => {},
       navigate: async (path) => {
@@ -186,7 +185,7 @@ async function setup(t, options = {}) {
   };
 }
 
-test("welcome uses original asset paths, unavailable tiles and a collapsed development section", async (t) => {
+test("welcome uses original asset paths, unavailable tiles and one collapsed developer tools section", async (t) => {
   const { container } = await setup(t, { showTools: true });
   const tiles = [...container.querySelectorAll(".roman-welcome-tile")];
   assert.equal(tiles.length, 4);
@@ -207,9 +206,12 @@ test("welcome uses original asset paths, unavailable tiles and a collapsed devel
       image.src,
       /^https:\/\/cdn\.shopify\.com\/extensions\/version\/assets\/roman-tile-.+\.png$/,
     );
-  const development = container.querySelector(".roman-development");
-  assert.equal(development.open, false);
-  assert.ok(development.querySelector('nav[aria-label="Browse store"]'));
+  const drawer = container.querySelector(".roman-tools");
+  assert.equal(drawer.open, false);
+  assert.equal(container.querySelectorAll("details").length, 1);
+  assert.ok(drawer.querySelector(".roman-voice-choice select"));
+  assert.ok(drawer.querySelector("form"));
+  assert.equal(container.querySelector('nav[aria-label="Browse store"]'), null);
 });
 
 test("accepted submissions clear the draft and same-tick repeats cannot send twice", async (t) => {
@@ -866,16 +868,16 @@ test("a restored server voice shows an explicit switch to text without activatin
   assert.equal(ctx.voiceDock.childElementCount, 0);
 });
 
-test("voice selector offers all Live voices, defaults to Willow and changes only a stopped connection", async (t) => {
+test("voice selector offers all Live voices, defaults to Marin and changes only a stopped connection", async (t) => {
   const ctx = await setup(t, { showTools: true });
   const selector = ctx.container.querySelector(".roman-voice-choice select");
   assert.ok(selector.closest(".roman-tools"));
-  assert.ok(selector.closest(".roman-development"));
+  assert.equal(ctx.container.querySelectorAll("details").length, 1);
   assert.equal(
     ctx.container.querySelector(".roman-voice-controls select"),
     null,
   );
-  assert.equal(selector.value, "willow");
+  assert.equal(selector.value, "marin");
   assert.equal(selector.options.length, 22);
   assert.ok([...selector.options].some((option) => option.value === "gleam"));
   assert.equal(

@@ -9,11 +9,3 @@ export const blinds2goUkTheme: StorefrontTheme = {
     return { modules: takeWalletModules(source, url) };
   },
 };
-
-export const blinds2goUkDestinations = [
-  { label: "Wooden blinds", path: "/collections/wooden-blinds" },
-  {
-    label: "Sevilla blackout grey roller blind",
-    path: "/products/sevilla-blackout-grey-roller-blind",
-  },
-] as const;

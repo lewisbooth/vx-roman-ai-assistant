@@ -1,6 +1,6 @@
 # Blinds 2go UK theme
 
-This module serves `blinds-2go.myshopify.com` at [shop.blinds-2go.co.uk](https://shop.blinds-2go.co.uk/). Destinations use the inspected wooden-blinds collection and Sevilla product.
+This module serves `blinds-2go.myshopify.com` at [shop.blinds-2go.co.uk](https://shop.blinds-2go.co.uk/).
 
 `prepare()` normalizes the observed cart Continue-shopping handler and identifies the Shopify wallet module. Continue shopping goes Back within Roman's recorded history segment, otherwise Home; its native link opens Home after Roman is removed. Shared navigation owns page replacement, history, theme assets, globals and metadata. Product pricing and controls remain theme-owned.
 

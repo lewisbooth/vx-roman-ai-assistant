@@ -137,12 +137,9 @@ function Assistant({
           <Welcome logoUrl={logoUrl} />
         )}
         {showTools && (
-          <Development
-            navigation={navigation}
-            tools={tools}
-            session={session}
-            ending={ending}
-          />
+          <ToolDrawer tools={tools}>
+            <VoiceChoice session={session} disabled={ending} />
+          </ToolDrawer>
         )}
       </div>
       <VoiceControls
@@ -183,73 +180,6 @@ function Assistant({
         }}
       />
     </div>
-  );
-}
-
-function Development({
-  navigation,
-  tools,
-  session,
-  ending,
-}: Pick<AssistantProps, "navigation" | "tools" | "session"> & {
-  ending: boolean;
-}) {
-  const { url, pending, error } = useSyncExternalStore(
-    navigation.subscribe,
-    navigation.getSnapshot,
-  );
-  const pathname = new URL(url, window.location.origin).pathname;
-
-  return (
-    <details className="roman-development">
-      <summary>Development</summary>
-      <nav
-        aria-label="Browse store"
-        aria-busy={pending}
-        className="mt-[12px] flex w-full flex-col items-start text-[14px] leading-[1.3]"
-      >
-        {navigation.destinations.map((destination) => (
-          <a
-            key={destination.path}
-            href={destination.path}
-            aria-current={pathname === destination.path ? "page" : undefined}
-            aria-disabled={pending || undefined}
-            onClick={(event) => {
-              if (
-                event.defaultPrevented ||
-                event.button !== 0 ||
-                event.metaKey ||
-                event.ctrlKey ||
-                event.shiftKey ||
-                event.altKey
-              ) {
-                return;
-              }
-              event.preventDefault();
-              if (!pending) void navigation.navigate(destination.path);
-            }}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-sm px-[8px] py-[8px] text-inherit no-underline decoration-[#C59745] decoration-1 underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-[#4E0E0E] aria-[current=page]:underline aria-disabled:cursor-wait aria-disabled:opacity-50"
-          >
-            {destination.label}
-          </a>
-        ))}
-      </nav>
-
-      <p role="status" className="m-0 mt-[12px] text-center text-[15px]">
-        {pending ? "Opening page…" : ""}
-      </p>
-      {error && (
-        <p
-          role="alert"
-          className="m-0 mt-[12px] w-[303px] max-w-full text-center text-[15px] leading-[1.4]"
-        >
-          {error}
-        </p>
-      )}
-      <ToolDrawer tools={tools}>
-        <VoiceChoice session={session} disabled={ending} />
-      </ToolDrawer>
-    </details>
   );
 }
 

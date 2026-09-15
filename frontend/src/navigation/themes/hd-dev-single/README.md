@@ -1,15 +1,15 @@
 # HD dev single
 
-This folder owns the permanent Shopify identity `hd-dev-single.myshopify.com`, now served at `https://shopify-single-dev.hdecom.com`, and the supplied POC destinations. Domain changes do not change the theme profile; chat's allowed storefront origins live in root [`shared/storefronts.ts`](../../../../../shared/storefronts.ts).
+This folder owns the permanent Shopify identity `hd-dev-single.myshopify.com`, now served at `https://shopify-single-dev.hdecom.com`. Domain changes do not change the theme profile; chat's allowed storefront origins live in root [`shared/storefronts.ts`](../../../../../shared/storefronts.ts).
 
-POC destinations:
+Representative pages for theme checks:
 
 - `/collections/blackout-blinds`
 - `/collections/all`
 - `/products/lottie-mojito-roman-blind`
 - `/products/bifold-clickfit-duoshade-obsidian-pleated-blind`
 
-Home and Cart are added centrally in [the theme registry](../index.ts). This profile currently reuses the [Blinds 2go UK hooks](../blinds-2go-uk/README.md) for Shopify wallets and cart Continue shopping. Shared navigation and its unsafe-script, cart-module and persistent-shell checks remain in force.
+This profile currently reuses the [Blinds 2go UK hooks](../blinds-2go-uk/README.md) for Shopify wallets and cart Continue shopping. Shared navigation and its unsafe-script, cart-module and persistent-shell checks remain in force.
 
 Public theme assets match the shared HD app-provider, header and product conventions. Both PDPs include `https://www.paypal.com/sdk/js` inside the dynamic-pricing form. The [shared PayPal handler](../../shared/paypal.ts) validates and initializes it for every store. Authenticated Home and both PDP responses pass page preparation; Home has no PayPal SDK and needs no load.
 

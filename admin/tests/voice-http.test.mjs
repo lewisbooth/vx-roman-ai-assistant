@@ -167,7 +167,7 @@ test("voice start authorizes the conversation and passes only the validated offe
     sdp: "synthetic-answer",
   });
   assert.deepEqual(env.calls.authorize, [{ id: ID, token: TOKEN }]);
-  assert.deepEqual(env.calls.start, [[ID, { ...START, voice: "willow" }]]);
+  assert.deepEqual(env.calls.start, [[ID, { ...START, voice: "marin" }]]);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
   assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
@@ -312,7 +312,7 @@ test("start accepts a bounded SDP offer and rejects unexpected fields or invalid
     (await run(env, "start", request("start", { body: input }))).status,
     200,
   );
-  assert.deepEqual(env.calls.start, [[ID, { ...input, voice: "willow" }]]);
+  assert.deepEqual(env.calls.start, [[ID, { ...input, voice: "marin" }]]);
 });
 
 test("start accepts each built-in voice and passes the validated selection", async () => {

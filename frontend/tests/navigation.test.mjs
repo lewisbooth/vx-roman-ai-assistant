@@ -5,10 +5,14 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import jsdomInternals from "jsdom/lib/jsdom/living/generated/utils.js";
+import {
+  productOne,
+  productTwo,
+  storeFixtures,
+} from "./helpers/navigation-stores.mjs";
 
-const origin = "https://hd-dev-multi.myshopify.com";
-const productOne = "/products/traditional-room-darkening-zebra-shades";
-const productTwo = "/products/2-inch-levolor-classic-neutral-faux-wood-blinds";
+const origin = storeFixtures.devMulti.origin;
+const stores = Object.values(storeFixtures);
 const bundle = await build({
   entryPoints: ["frontend/src/navigation/shared/index.ts"],
   bundle: true,
@@ -234,7 +238,7 @@ function installThemeHeader(
   return { header, content, resets, observed, hide };
 }
 
-test("all five destinations replace store content without remounting Roman or its surrounding theme", async (t) => {
+test("representative destinations replace store content without remounting Roman or its surrounding theme", async (t) => {
   const { document, window, host, instance, navigation } = setup(t);
   const provider = document.querySelector("app-provider");
   const header = document.querySelector("header");
@@ -299,7 +303,8 @@ test("repeating the idle current URL preserves page state without fetching, scro
   const historyLength = window.history.length;
   const restoration = window.history.scrollRestoration;
   for (const method of ["pushState", "replaceState"]) {
-    window.history[method] = () => assert.fail("Same-page navigation changed history");
+    window.history[method] = () =>
+      assert.fail("Same-page navigation changed history");
   }
   window.scrollTo = () => assert.fail("Same-page navigation changed scroll");
   let journeyEvents = 0;
@@ -332,7 +337,10 @@ test("query and fragment changes are not treated as repeated current-page reques
         { html: page(productOne), url: `${origin}${productOne}` },
       );
       const main = document.querySelector("main");
-      assert.equal(await navigation.navigate(`${productOne}${suffix}`), "navigated");
+      assert.equal(
+        await navigation.navigate(`${productOne}${suffix}`),
+        "navigated",
+      );
       assert.equal(calls.length, 1);
       assert.equal(window.location.href, `${origin}${productOne}${suffix}`);
       assert.notEqual(document.querySelector("main"), main);
@@ -346,7 +354,9 @@ test("a current-URL request supersedes pending navigation instead of leaving it 
   const { document, window, navigation, calls, native } = setup(t, (url) => {
     const path = new URL(url).pathname;
     return path === productOne
-      ? new Promise((resolve) => { finish = resolve; })
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
       : Promise.resolve(response(path));
   });
   const pending = navigation.navigate(productOne);
@@ -917,16 +927,12 @@ test("navigation preserves variant and filter history updates made by the theme"
   }
 });
 
-test("Back restores the initial page even when it is outside the five shortcuts", async (t) => {
+test("Back restores an arbitrary initial product page", async (t) => {
   const path = "/products/other-product";
   const { document, window, host, navigation } = setup(t, undefined, {
     html: page(path),
     url: `${origin}${path}`,
   });
-  assert.equal(
-    navigation.destinations.some((destination) => destination.path === path),
-    false,
-  );
   await navigation.navigate("/");
   assert.equal(document.querySelector("main h1").textContent, "/");
   window.history.back();
@@ -1966,27 +1972,6 @@ test("duplicate-registration events after cancellation cannot fall back or distu
   }
 });
 
-const storeFixtures = {
-  devMulti: { shop: "hd-dev-multi.myshopify.com", origin },
-  devSingle: {
-    shop: "hd-dev-single.myshopify.com",
-    origin: "https://hd-dev-single.myshopify.com",
-  },
-  selectBlinds: {
-    shop: "select-blinds-us.myshopify.com",
-    origin: "https://www.selectblinds.com",
-  },
-  blinds2goUk: {
-    shop: "blinds-2go.myshopify.com",
-    origin: "https://shop.blinds-2go.co.uk",
-  },
-  blinds2goIe: {
-    shop: "blinds2go-ireland.myshopify.com",
-    origin: "https://www.blinds-2go.ie",
-  },
-};
-const stores = Object.values(storeFixtures);
-
 function storePage(store, path, options = {}) {
   return themePage(path, options).replaceAll(origin, store.origin);
 }
@@ -2365,9 +2350,9 @@ test("all storefront profiles warn and continue for an ordinary missing module",
         },
       );
       const main = document.querySelector("main");
-      const destination = navigation.destinations.find(({ path }) =>
+      const destination = store.routes.find((path) =>
         path.startsWith("/products/"),
-      ).path;
+      );
       const visiting = navigation.navigate(destination);
       const selector = `script[src="${moduleUrl}"]`;
       await until(
@@ -2441,21 +2426,7 @@ test("verified Shopify identities select working shared navigation on their stor
       assert.equal(document.documentElement.dataset.romanPreview, "false");
       assert.equal(window.RomanPage.selectStore(store.shop).shop, store.shop);
       const provider = document.querySelector("app-provider");
-      assert.equal(
-        navigation.destinations.filter(({ path }) => path === "/").length,
-        1,
-      );
-      assert.equal(
-        navigation.destinations.filter(({ path }) => path === "/cart").length,
-        1,
-      );
-      assert.equal(
-        new Set(navigation.destinations.map(({ path }) => path)).size,
-        navigation.destinations.length,
-      );
-      for (const { path } of navigation.destinations.filter(
-        ({ path }) => path !== "/",
-      )) {
+      for (const path of store.routes.filter((path) => path !== "/")) {
         await navigation.navigate(path);
         assert.equal(navigation.getSnapshot().error, null);
         assert.equal(window.location.origin, store.origin);
@@ -2480,32 +2451,14 @@ test("verified Shopify identities select working shared navigation on their stor
   }
 });
 
-test("development store shortcuts stay isolated without restricting same-origin navigation", async (t) => {
-  const singleRoutes = [
-    "/collections/blackout-blinds",
-    "/collections/all",
-    "/products/lottie-mojito-roman-blind",
-    "/products/bifold-clickfit-duoshade-obsidian-pleated-blind",
-  ];
-  for (const { store, routes, foreignRoutes, foreignStore } of [
+test("development stores accept arbitrary same-origin routes and reject other origins", async (t) => {
+  for (const { store, foreignStore } of [
     {
       store: storeFixtures.devMulti,
-      routes: ["/collections/all", productOne, productTwo],
-      foreignRoutes: [
-        ...singleRoutes.filter((path) => path !== "/collections/all"),
-        "/products/classic-roman-shades",
-      ],
       foreignStore: storeFixtures.devSingle,
     },
     {
       store: storeFixtures.devSingle,
-      routes: singleRoutes,
-      foreignRoutes: [
-        productOne,
-        productTwo,
-        "/collections/wooden-blinds",
-        "/products/sevilla-blackout-grey-roller-blind",
-      ],
       foreignStore: storeFixtures.devMulti,
     },
   ]) {
@@ -2523,16 +2476,14 @@ test("development store shortcuts stay isolated without restricting same-origin 
           html: storePage(store, "/"),
         },
       );
-      assert.deepEqual(
-        new Set(navigation.destinations.map(({ path }) => path)),
-        new Set(["/", ...routes, "/cart"]),
+      const product = store.routes.find((path) =>
+        path.startsWith("/products/"),
       );
-      const product = routes.find((path) => path.startsWith("/products/"));
       const scopedProduct = `/collections/all${product}`;
       await navigation.navigate(scopedProduct);
       assert.equal(navigation.getSnapshot().error, null);
       assert.equal(window.location.pathname, scopedProduct);
-      for (const path of foreignRoutes.flatMap((path) =>
+      for (const path of foreignStore.routes.flatMap((path) =>
         path.startsWith("/products/")
           ? [path, `/collections/all${path}`]
           : [path],
@@ -2560,7 +2511,6 @@ test("an unrecognized Shopify identity remains inert without changing history or
     html: themePage("/"),
   });
   const main = document.querySelector("main");
-  assert.equal(navigation.destinations.length, 0);
   assert.ok(navigation.getSnapshot().error);
   navigation.setSidebarOpen(true);
   await navigation.navigate(productOne);
@@ -2683,12 +2633,12 @@ test("UK and Ireland cart return controls use managed Back after closing Roman a
           html: storePage(store, "/"),
         },
       );
-      const product = navigation.destinations.find(({ path }) =>
+      const product = store.routes.find((path) =>
         path.startsWith("/products/"),
       );
       assert.ok(product);
       navigation.setSidebarOpen(true);
-      await navigation.navigate(product.path);
+      await navigation.navigate(product);
       await navigation.navigate("/cart");
       assert.equal(navigation.getSnapshot().error, null);
       const control = document.querySelector("#continue-shopping");
@@ -2710,7 +2660,7 @@ test("UK and Ireland cart return controls use managed Back after closing Roman a
       );
       assert.equal(intercepted, true);
       await until(
-        () => document.querySelector("main h1").textContent === product.path,
+        () => document.querySelector("main h1").textContent === product,
         "cart return control did not restore the previous product",
       );
       assert.equal(document.querySelector("roman-ai-assistant"), host);
@@ -2762,7 +2712,7 @@ test("cart handler normalization refuses extra code and cross-origin fallback de
   }
 });
 
-test("collection-scoped URLs can reach products beyond the sidebar shortcuts", async (t) => {
+test("collection-scoped URLs can reach arbitrary products", async (t) => {
   const { document, window, navigation, calls } = setup(t, async (url) =>
     response(new URL(url).pathname),
   );

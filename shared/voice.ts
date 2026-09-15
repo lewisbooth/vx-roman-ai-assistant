@@ -26,7 +26,7 @@ export const LIVE_VOICES = [
 ] as const;
 
 export type LiveVoice = (typeof LIVE_VOICES)[number];
-export const DEFAULT_LIVE_VOICE: LiveVoice = "willow";
+export const DEFAULT_LIVE_VOICE: LiveVoice = "marin";
 
 export function isLiveVoice(value: unknown): value is LiveVoice {
   return (

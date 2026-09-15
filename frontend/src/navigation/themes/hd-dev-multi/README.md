@@ -1,6 +1,6 @@
 # HD dev multi
 
-This folder owns `hd-dev-multi.myshopify.com` and its POC links: All blinds, Traditional zebra shades and LEVOLOR faux wood blinds. Home and Cart are added centrally in [the theme registry](../index.ts). The local preview uses this store.
+This folder owns the `hd-dev-multi.myshopify.com` theme profile. The local preview uses this store's hooks; its demo pages are defined in `frontend/vite.config.ts`.
 
 It reuses the [SelectBlinds hooks](../selectblinds/README.md) for Shopify wallets and cart Continue shopping. Shared navigation owns optional PayPal handling and retains the cart-module and persistent-shell safety checks.
 

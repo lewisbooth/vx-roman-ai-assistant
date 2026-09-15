@@ -51,7 +51,7 @@ export function ToolDrawer({
   }
 
   return (
-    <details className="roman-tools mt-[24px] w-full pt-[16px] font-sans text-[13px] leading-[1.5]">
+    <details className="roman-tools font-sans text-[13px] leading-[1.5]">
       <summary className="cursor-pointer py-[8px] text-[16px]">
         Developer tools
       </summary>

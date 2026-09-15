@@ -1,5 +1,3 @@
-export type Destination = { label: string; path: string };
-
 export type ThemePageHooks = {
   modules?: URL[];
 };
@@ -11,6 +9,5 @@ export type StorefrontTheme = {
 
 export type StorefrontStore = {
   shop: string;
-  destinations: readonly Destination[];
   theme: StorefrontTheme;
 };

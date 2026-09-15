@@ -16,7 +16,6 @@ export type NavigationOutcome =
   "navigated" | "handed_off" | "cancelled" | "failed";
 
 export type StorefrontNavigation = {
-  destinations: readonly { label: string; path: string }[];
   getSnapshot: () => NavigationSnapshot;
   subscribe: (listener: () => void) => () => void;
   navigate: (path: string, signal?: AbortSignal) => Promise<NavigationOutcome>;
@@ -69,7 +68,6 @@ export function createStorefrontNavigation(
   host: HTMLElement,
 ): StorefrontNavigation {
   const store = selectStore(host.dataset.shop);
-  const destinations = store?.destinations ?? [];
   const listeners = new Set<() => void>();
   let currentUrl = window.location.href;
   let snapshot: NavigationSnapshot = {
@@ -430,7 +428,6 @@ export function createStorefrontNavigation(
   }
 
   return {
-    destinations,
     getSnapshot: () => snapshot,
     subscribe: (listener) => {
       listeners.add(listener);

@@ -85,9 +85,7 @@ function controlByLabel(container, text) {
 }
 
 async function selectTool(window, container, name = "get_cart", args = {}) {
-  const development = container.querySelector(".roman-development");
-  if (!development.open) development.querySelector("summary").click();
-  const drawer = development.querySelector(".roman-tools");
+  const drawer = container.querySelector(".roman-tools");
   if (!drawer.open) drawer.querySelector("summary").click();
   const select = controlByLabel(drawer, "Tool");
   select.value = name;
@@ -136,13 +134,14 @@ test("the real runtime exposes manual tools only on development shops and makes 
     await t.test(shop, async (t) => {
       const { container, requests } = await setup(t, shop);
       assert.equal(
-        Boolean(container.querySelector('nav[aria-label="Browse store"]')),
-        visible,
+        container.querySelector('nav[aria-label="Browse store"]'),
+        null,
       );
-      const drawer = container.querySelector(".roman-development");
+      const drawer = container.querySelector(".roman-tools");
       assert.equal(Boolean(drawer), visible);
       if (drawer) {
         assert.equal(drawer.open, false);
+        assert.equal(drawer.querySelector("details"), null);
         drawer.querySelector("summary").click();
         await delay(0);
       }

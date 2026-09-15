@@ -8,11 +8,3 @@ export const blinds2goIeTheme: StorefrontTheme = {
     return {};
   },
 };
-
-export const blinds2goIeDestinations = [
-  { label: "Roller blinds", path: "/collections/roller-blinds" },
-  {
-    label: "Sevilla blackout grey roller blind",
-    path: "/products/sevilla-blackout-grey-roller-blind",
-  },
-] as const;
