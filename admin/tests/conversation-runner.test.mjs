@@ -242,6 +242,7 @@ function setup() {
     module,
     exports: module.exports,
     mock,
+    URL,
     AbortController,
     AbortSignal: {
       any: (signals) => AbortSignal.any(signals),
@@ -698,7 +699,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   assert.deepEqual(plain(executions), [
     ["call-1", "search_products", { query: "no drill" }],
   ]);
-  for (const { input } of env.calls.requests) {
+  for (const [index, { input }] of env.calls.requests.entries()) {
     assert.equal(input.service_tier, "fast");
     assert.deepEqual(input.reasoning, { effort: "low" });
     assert.deepEqual(input.include, ["reasoning.encrypted_content"]);
@@ -706,7 +707,13 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
     assert.equal(input.parallel_tool_calls, false);
     assert.deepEqual(
       input.tools.map(({ name }) => name),
-      ["search_products", "get_product", "lookup_catalog"],
+      [
+        "search_products",
+        "get_product",
+        "lookup_catalog",
+        "navigate",
+        ...(index === 1 ? ["show_products"] : []),
+      ],
     );
   }
   assert.ok(
@@ -722,6 +729,11 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   assert.doesNotMatch(
     JSON.stringify({ reply, partials }),
     /ENCRYPTED|reasoning|function_call/,
+  );
+  assert.equal(
+    reply.presentation,
+    undefined,
+    "Reading products does not select cards",
   );
   await env.api.generateReply(
     [{ role: "user", text: "A separate turn" }],
@@ -759,12 +771,13 @@ test("catalog call budget disables tools after four lookups and rejects an extra
         return { products: [], messages: [] };
       },
     );
-    if (extraCall) await assert.rejects(generation, /lookup limit/);
+    if (extraCall) await assert.rejects(generation, /storefront tool limit/);
     else
       assert.equal((await generation).text, "These are the current options.");
     assert.equal(executions, 4);
     assert.equal(env.calls.requests.length, 5);
-    assert.equal(env.calls.requests[4].input.tool_choice, "none");
+    assert.equal(env.calls.requests[4].input.tools, undefined);
+    assert.equal(env.calls.requests[4].input.tool_choice, undefined);
   }
 });
 
@@ -803,6 +816,297 @@ test("invalid or failed catalog calls return a safe error to the model without f
       call.name === "search_products" && call.arguments !== "not JSON" ? 1 : 0,
     );
     assert.equal(reply.text, "I could not check that catalog.");
+  }
+});
+
+const productGid = (id) => `gid://shopify/Product/${id}`;
+const catalogResult = (...ids) => ({
+  products: ids.map((id) => ({
+    id: productGid(id),
+    title: `Shade ${id}`,
+    description: "",
+    url: `https://hd-dev-single.myshopify.com/products/shade-${id}`,
+  })),
+  messages: [],
+});
+const showCall = (ids, callId = "show-1") =>
+  catalogCall(callId, "show_products", { productIds: ids.map(productGid) });
+
+test("explicit product presentation selects only the requested ordered subset without browser dispatch", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [catalogCall("catalog-1")] })),
+    events(completed("", { output: [showCall([456, 123])] })),
+    events(completed("These two blackout options fit your preferences.")),
+  );
+  const dispatched = [];
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (...args) => {
+      dispatched.push(args);
+      return catalogResult(123, 456, 789);
+    },
+  );
+  assert.equal(dispatched.length, 1, "Presentation is a server-local tool");
+  assert.deepEqual(plain(reply.presentation), {
+    callId: "show-1",
+    productIds: [productGid(456), productGid(123)],
+  });
+  const acknowledged = env.calls.requests[2].input.input.find(
+    (item) => item.type === "function_call_output" && item.call_id === "show-1",
+  );
+  assert.deepEqual(JSON.parse(acknowledged.output), {
+    selectedProductIds: [productGid(456), productGid(123)],
+  });
+  assert.equal(
+    env.calls.requests[2].input.tools.some(
+      (tool) => tool.name === "show_products",
+    ),
+    false,
+    "A successful selection consumes the one presentation attempt",
+  );
+});
+
+test("invalid selections cannot present duplicate, variant, unknown or historical product IDs", async (t) => {
+  for (const [name, selection] of [
+    ["duplicate", { productIds: [productGid(123), productGid(123)] }],
+    ["variant", { productIds: ["gid://shopify/ProductVariant/123"] }],
+    ["unknown", { productIds: [productGid(999)] }],
+    ["empty", { productIds: [] }],
+    ["too many", { productIds: [1, 2, 3, 4, 5, 6, 7].map(productGid) }],
+    ["extra fields", { productIds: [productGid(123)], title: "Forged" }],
+    ["invalid JSON", "not JSON"],
+  ]) {
+    await t.test(name, async () => {
+      const env = setup();
+      env.streams.push(
+        events(completed("", { output: [catalogCall("catalog-1")] })),
+        events(
+          completed("", {
+            output: [catalogCall("show-1", "show_products", selection)],
+          }),
+        ),
+        events(completed("I can explain the available option.")),
+      );
+      const reply = await env.api.generateReply(
+        [
+          {
+            role: "assistant",
+            text: `Earlier product reference: ${productGid(999)}`,
+          },
+        ],
+        () => {},
+        new AbortController().signal,
+        async () => catalogResult(123, 1, 2, 3, 4, 5, 6, 7),
+      );
+      assert.equal(reply.presentation, undefined);
+      const result = env.calls.requests[2].input.input.find(
+        (item) =>
+          item.type === "function_call_output" && item.call_id === "show-1",
+      );
+      assert.deepEqual(Object.keys(JSON.parse(result.output)), ["error"]);
+      assert.equal(
+        env.calls.requests[2].input.tools.some(
+          (tool) => tool.name === "show_products",
+        ),
+        false,
+        "An invalid selection also consumes the presentation attempt",
+      );
+    });
+  }
+});
+
+test("a second presentation attempt fails without replacing the first selection", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [catalogCall("catalog-1")] })),
+    events(completed("", { output: [showCall([123])] })),
+    events(completed("", { output: [showCall([456], "show-2")] })),
+  );
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => catalogResult(123, 456),
+    ),
+    /presentation limit/,
+  );
+  assert.equal(env.calls.requests.length, 3);
+});
+
+test("four browser calls and one local presentation leave a final answer round without tools", async () => {
+  const env = setup();
+  for (let index = 0; index < 3; index++)
+    env.streams.push(
+      events(
+        completed("", {
+          output: [catalogCall(`catalog-${index}`)],
+        }),
+      ),
+    );
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          catalogCall("navigate-1", "navigate", {
+            path: "/products/shade-123",
+          }),
+        ],
+      }),
+    ),
+    events(completed("", { output: [showCall([123])] })),
+    events(completed("I opened the product and selected this option.")),
+  );
+  const dispatched = [];
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (...args) => {
+      dispatched.push(args);
+      return args[1] === "navigate"
+        ? { status: "navigated", path: "/products/shade-123" }
+        : catalogResult(123);
+    },
+  );
+  assert.equal(dispatched.length, 4);
+  assert.deepEqual(plain(dispatched[3]), [
+    "navigate-1",
+    "navigate",
+    { path: "/products/shade-123" },
+  ]);
+  assert.deepEqual(
+    env.calls.requests[4].input.tools.map((tool) => tool.name),
+    ["show_products"],
+  );
+  assert.equal(env.calls.requests[5].input.tools, undefined);
+  assert.equal(reply.presentation.productIds[0], productGid(123));
+});
+
+test("navigation success is passed to the model without creating product evidence", async () => {
+  const env = setup();
+  env.streams.push(
+    events(
+      completed("", {
+        output: [catalogCall("navigate-1", "navigate", { path: "/cart" })],
+      }),
+    ),
+    events(completed("The cart is open.")),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => ({ status: "navigated", path: "/cart" }),
+  );
+  const result = env.calls.requests[1].input.input.find(
+    (item) => item.type === "function_call_output",
+  );
+  assert.deepEqual(JSON.parse(result.output), {
+    status: "navigated",
+    path: "/cart",
+  });
+  assert.equal(reply.presentation, undefined);
+  assert.equal(
+    env.calls.requests[1].input.tools.some(
+      (tool) => tool.name === "show_products",
+    ),
+    false,
+  );
+});
+
+test("invalid or interrupted navigation yields an honest error without automatic replay", async (t) => {
+  for (const path of ["https://other-store.test/products/shade", "/cart"]) {
+    await t.test(path, async () => {
+      const env = setup();
+      env.streams.push(
+        events(
+          completed("", {
+            output: [catalogCall("navigate-1", "navigate", { path })],
+          }),
+        ),
+        events(completed("I could not confirm that navigation.")),
+      );
+      let dispatched = 0;
+      const reply = await env.api.generateReply(
+        [],
+        () => {},
+        new AbortController().signal,
+        async () => {
+          dispatched++;
+          throw new Error("PRIVATE_NAVIGATION_FAILURE");
+        },
+      );
+      assert.equal(dispatched, path === "/cart" ? 1 : 0);
+      const result = env.calls.requests[1].input.input.find(
+        (item) => item.type === "function_call_output",
+      );
+      assert.match(JSON.parse(result.output).error, /could not be confirmed/);
+      assert.doesNotMatch(result.output, /PRIVATE_NAVIGATION_FAILURE/);
+      assert.equal(reply.presentation, undefined);
+    });
+  }
+});
+
+test("product evidence does not survive into another model turn", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [catalogCall("catalog-1")] })),
+    events(completed("", { output: [showCall([123])] })),
+    events(completed("Here is a shade.")),
+    events(completed("", { output: [showCall([123], "show-later")] })),
+    events(completed("I need a fresh lookup to recommend it again.")),
+  );
+  const execute = async () => catalogResult(123);
+  await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    execute,
+  );
+  const reply = await env.api.generateReply(
+    [{ role: "assistant", text: `Earlier product: ${productGid(123)}` }],
+    () => {},
+    new AbortController().signal,
+    execute,
+  );
+  assert.equal(reply.presentation, undefined);
+  assert.equal(
+    env.calls.requests[3].input.tools.some(
+      (tool) => tool.name === "show_products",
+    ),
+    false,
+  );
+});
+
+test("a selected carousel is not returned when the final answer fails or is cancelled", async (t) => {
+  for (const mode of ["failed", "cancelled"]) {
+    await t.test(mode, async () => {
+      const env = setup();
+      const controller = new AbortController();
+      env.streams.push(
+        events(completed("", { output: [catalogCall("catalog-1")] })),
+        events(completed("", { output: [showCall([123])] })),
+        (async function* () {
+          if (mode === "cancelled") controller.abort(new Error("Ended"));
+          yield mode === "failed"
+            ? { type: "response.failed" }
+            : completed("A late answer.");
+        })(),
+      );
+      await assert.rejects(
+        env.api.generateReply(
+          [],
+          () => {},
+          controller.signal,
+          async () => catalogResult(123),
+        ),
+      );
+      assert.equal(env.calls.requests.length, 3);
+    });
   }
 });
 

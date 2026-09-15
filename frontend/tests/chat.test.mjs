@@ -483,6 +483,64 @@ test("product references load live cards once across snapshot refreshes and use 
   assert.equal(ctx.navigationCalls.length, 1);
 });
 
+test("product cards show only the selected IDs in their recommendation order", async (t) => {
+  const selected = productsMessage();
+  selected.parts[1].productIds = [
+    "gid://shopify/Product/456",
+    "gid://shopify/Product/123",
+    "gid://shopify/Product/789",
+  ];
+  const second = {
+    ...catalog.products[0],
+    id: "gid://shopify/Product/456",
+    title: "Selected blackout blind",
+    url: "https://hd-dev-single.myshopify.com/products/selected-blackout",
+  };
+  const unrelated = {
+    ...catalog.products[0],
+    id: "gid://shopify/Product/999",
+    title: "An unrelated catalog match",
+    url: "https://hd-dev-single.myshopify.com/products/unrelated",
+  };
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([selected]) },
+    onLoadProducts: () => ({
+      products: [unrelated, catalog.products[0], second],
+      messages: [{ type: "info", text: "One selected item is unavailable." }],
+    }),
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-product-card"),
+    "Selected product cards did not render",
+  );
+  assert.deepEqual(ctx.productCalls, [selected.parts[1].productIds]);
+  assert.deepEqual(
+    [...ctx.container.querySelectorAll(".roman-product-card")].map(
+      (card) => card.href,
+    ),
+    [second.url, catalog.products[0].url],
+  );
+  assert.doesNotMatch(ctx.container.textContent, /An unrelated catalog match/);
+  assert.match(ctx.container.textContent, /One selected item is unavailable/);
+});
+
+test("unrelated lookup matches cannot replace an unavailable selected product", async (t) => {
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([productsMessage()]) },
+    onLoadProducts: () => ({
+      products: [{ ...catalog.products[0], id: "gid://shopify/Product/999" }],
+      messages: [],
+    }),
+  });
+  await until(
+    () =>
+      ctx.container.textContent.includes("These products are no longer available"),
+    "The unavailable selected product was replaced with an unrelated match",
+  );
+  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  assert.doesNotMatch(ctx.container.textContent, /Final price depends/);
+});
+
 test("product errors have an explicit retry, and missing products remain honest", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {

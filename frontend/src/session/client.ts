@@ -9,7 +9,11 @@ import {
 } from "../../../shared/conversation";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
 import type { CatalogResult } from "../../../shared/catalog";
-import type { createCatalogExecutor } from "./catalog-executor";
+import {
+  parseNavigationCall,
+  type NavigationResult,
+} from "../../../shared/navigation-tool";
+import type { createStorefrontExecutor } from "./storefront-executor";
 import type { ConversationClient, ConversationClientState } from "./types";
 
 const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
@@ -66,7 +70,8 @@ function snapshot(value: unknown): value is ConversationSnapshot {
       )
         return false;
       try {
-        parseCatalogCall(String(tool.name), tool.arguments);
+        if (tool.name === "navigate") parseNavigationCall(tool.arguments);
+        else parseCatalogCall(String(tool.name), tool.arguments);
         return true;
       } catch {
         return false;
@@ -121,7 +126,7 @@ class SessionRequestError extends Error {
 }
 
 export function createConversationClient(
-  catalog?: ReturnType<typeof createCatalogExecutor>,
+  executor?: ReturnType<typeof createStorefrontExecutor>,
 ): ConversationClient {
   let state: ConversationClientState = {
     conversation: null,
@@ -141,13 +146,15 @@ export function createConversationClient(
   let ending = false;
   let journeyQueue: Promise<unknown> = Promise.resolve();
   let processingTool = false;
+  let toolController: AbortController | undefined;
   const clientId = window.crypto.randomUUID();
   const toolAttempts = new Map<
     string,
     {
       claim: ToolClaim;
       attempts: number;
-      outcome?: { result: CatalogResult } | { error: string };
+      outcome?:
+        { result: CatalogResult | NavigationResult } | { error: string };
     }
   >();
   let uncertainSubmission: { requestId: string; text: string } | null = null;
@@ -293,6 +300,7 @@ export function createConversationClient(
   }
 
   function reset() {
+    toolController?.abort();
     epoch++;
     access = null;
     resumeAccess = null;
@@ -313,7 +321,7 @@ export function createConversationClient(
       disposed ||
       ending ||
       processingTool ||
-      !catalog ||
+      !executor ||
       state.conversation?.status !== "active"
     )
       return;
@@ -323,24 +331,28 @@ export function createConversationClient(
     if (!tool) return;
     processingTool = true;
     const startedEpoch = epoch;
+    const controller = new AbortController();
+    toolController = controller;
     try {
-      await executeTool(tool, startedEpoch);
+      await executeTool(tool, startedEpoch, controller.signal);
     } catch (error) {
       if (!disposed && startedEpoch === epoch && !ending)
         update({
           error:
             error instanceof Error
               ? error.message
-              : "The storefront lookup could not finish.",
+              : "The storefront tool could not finish.",
         });
     } finally {
       processingTool = false;
+      if (toolController === controller) toolController = undefined;
     }
   }
 
   async function executeTool(
     tool: BrowserToolInvocation,
     startedEpoch: number,
+    signal: AbortSignal,
   ) {
     let attempt = toolAttempts.get(tool.id);
     if (!attempt) {
@@ -360,13 +372,16 @@ export function createConversationClient(
       if (disposed || ending || startedEpoch !== epoch) return;
       try {
         attempt.outcome = {
-          result: await catalog!.execute(tool.name, tool.arguments),
+          result:
+            tool.name === "navigate"
+              ? await executor!.execute("navigate", tool.arguments, signal)
+              : await executor!.execute(tool.name, tool.arguments, signal),
         };
       } catch (error) {
         attempt.outcome = {
           error: (error instanceof Error
             ? error.message
-            : "The storefront lookup failed."
+            : "The storefront tool failed."
           ).slice(0, 500),
         };
       }
@@ -423,6 +438,7 @@ export function createConversationClient(
       if (access || resumeAccess || state.restoring || saved != null) reset();
       return;
     }
+    toolController?.abort();
     const restoredEpoch = ++epoch;
     resumeAccess = saved;
     update({ restoring: true });
@@ -548,7 +564,7 @@ export function createConversationClient(
     },
     loadProducts(ids) {
       if (
-        !catalog ||
+        !executor ||
         disposed ||
         ending ||
         state.conversation?.status !== "active"
@@ -556,11 +572,12 @@ export function createConversationClient(
         return Promise.reject(
           new Error("Start a chat to load these products."),
         );
-      return catalog.execute("lookup_catalog", { ids });
+      return executor.execute("lookup_catalog", { ids });
     },
     async end() {
       if (!access || disposed || ending) return;
       ending = true;
+      toolController?.abort();
       update({ pending: true, error: null });
       try {
         await api("/end", {});
@@ -580,6 +597,7 @@ export function createConversationClient(
     },
     dispose() {
       disposed = true;
+      toolController?.abort();
       lifetime.abort();
       window.removeEventListener("pageshow", onPageShow);
       window.clearTimeout(pollTimer);

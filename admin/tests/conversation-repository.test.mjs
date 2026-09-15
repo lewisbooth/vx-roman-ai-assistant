@@ -408,7 +408,6 @@ test("journey and turns share one durable order with idempotent revisions and un
     rows.map((row) => row.sequence),
     [0, 1, 2, 3],
   );
-  assert.equal(await repository.getConversationOrigin(id), origin);
 });
 
 test("journey rejects sensitive URLs, unbounded timestamps and excess rows without storing them", async () => {
@@ -481,6 +480,11 @@ test("competing catalog executors receive one durable claim and cannot complete 
     origin,
   );
   const { tool, turn, input } = await pendingLookup(id);
+  assert.deepEqual(await repository.getBrowserToolContext(id, tool.id), {
+    origin,
+    name: input.name,
+    arguments: input.arguments,
+  });
   assert.deepEqual(
     await repository.createToolInvocation(id, turn.assistantId, input),
     tool,
@@ -525,7 +529,7 @@ test("competing catalog executors receive one durable claim and cannot complete 
   );
 });
 
-test("catalog completion persists only product IDs once and final text preserves its widget", async () => {
+test("catalog completion persists IDs idempotently without adding a recommendation widget", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
@@ -541,12 +545,7 @@ test("catalog completion persists only product IDs once and final text preserves
   let state = await repository.getSnapshot(id);
   assert.equal(state.revision, 4);
   assert.deepEqual(state.tools, []);
-  assert.deepEqual(state.messages[1].parts[1], {
-    type: "products",
-    version: 1,
-    invocationId: tool.id,
-    ...result,
-  });
+  assert.deepEqual(state.messages[1].parts, [{ type: "text", text: "" }]);
   const persisted = await database.toolInvocation.findUniqueOrThrow({
     where: { id: tool.id },
   });
@@ -561,11 +560,200 @@ test("catalog completion persists only product IDs once and final text preserves
   });
   state = await repository.getSnapshot(id);
   assert.equal(state.revision, 5);
-  assert.equal(state.messages[1].parts.length, 2);
+  assert.equal(state.messages[1].parts.length, 1);
   assert.equal(state.messages[1].parts[0].text, "These are worth exploring.");
   assert.deepEqual(
     await repository.claimToolInvocation(id, tool.id, executor()),
     { claimed: false },
+  );
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "show_products" } }),
+    0,
+  );
+});
+
+test("navigation persists a claimed storefront action without product evidence or automatic cards", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Take me to that blind.",
+  });
+  const input = {
+    providerCallId: randomUUID(),
+    name: "navigate",
+    arguments: { path: "/products/dalmatians?variant=123#measurements" },
+  };
+  const tool = await repository.createToolInvocation(id, turn.assistantId, input);
+  assert.deepEqual(tool, {
+    id: tool.id,
+    name: input.name,
+    arguments: input.arguments,
+    status: "pending",
+  });
+  const reloaded = loadRepository();
+  assert.deepEqual((await reloaded.getSnapshot(id)).tools, [tool]);
+  assert.deepEqual(await reloaded.getBrowserToolContext(id, tool.id), {
+    origin,
+    name: input.name,
+    arguments: input.arguments,
+  });
+  const claim = executor();
+  assert.deepEqual(await repository.claimToolInvocation(id, tool.id, claim), {
+    claimed: true,
+  });
+  const claimed = await repository.getSnapshot(id);
+  assert.equal(claimed.tools[0].status, "running");
+  await assert.rejects(
+    repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: ["gid://shopify/Product/123"],
+    }),
+    { status: 400 },
+  );
+  assert.deepEqual(await repository.getSnapshot(id), claimed);
+  await repository.completeToolInvocation(id, tool.id, claim, { productIds: [] });
+  const completed = await repository.getSnapshot(id);
+  assert.deepEqual(completed.tools, []);
+  assert.deepEqual(completed.messages[1].parts, [{ type: "text", text: "" }]);
+  await repository.completeToolInvocation(id, tool.id, claim, { productIds: [] });
+  assert.deepEqual(await repository.getSnapshot(id), completed);
+  const persisted = await database.toolInvocation.findUniqueOrThrow({
+    where: { id: tool.id },
+  });
+  assert.equal(persisted.name, "navigate");
+  assert.equal(persisted.status, "complete");
+  assert.deepEqual(JSON.parse(persisted.argumentsJson), input.arguments);
+  assert.deepEqual(JSON.parse(persisted.productIdsJson), []);
+  await assert.rejects(
+    repository.finishTurn(id, turn.assistantId, {
+      text: "An ungrounded recommendation.",
+      status: "complete",
+      presentation: {
+        callId: randomUUID(),
+        productIds: ["gid://shopify/Product/123"],
+      },
+    }),
+    { status: 400 },
+  );
+  await repository.finishTurn(id, turn.assistantId, {
+    text: "You are now on the blind page.",
+    status: "complete",
+  });
+  assert.deepEqual((await repository.getSnapshot(id)).messages[1].parts, [
+    { type: "text", text: "You are now on the blind page." },
+  ]);
+});
+
+test("navigation rejects external and malformed arguments before creating an invocation", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Open a page.",
+  });
+  const before = await repository.getSnapshot(id);
+  for (const args of [
+    { path: "https://other.example/products/blind" },
+    { path: `${origin}/products/blind` },
+    { path: "//other.example/products/blind" },
+    { path: "/\\other.example/products/blind" },
+    { path: "/products/\nblind" },
+    { path: "javascript:alert(1)" },
+    { path: "" },
+    { path: `/${"x".repeat(2048)}` },
+    { path: "/products/blind", extra: true },
+    { path: 123 },
+    {},
+  ]) {
+    await assert.rejects(
+      repository.createToolInvocation(id, turn.assistantId, {
+        providerCallId: randomUUID(),
+        name: "navigate",
+        arguments: args,
+      }),
+      { status: 400 },
+    );
+  }
+  assert.deepEqual(await repository.getSnapshot(id), before);
+  assert.equal(
+    await database.toolInvocation.count({ where: { conversationId: id } }),
+    0,
+  );
+});
+
+async function completedCatalog(id, assistantId, productIds, overrides = {}) {
+  const tool = await repository.createToolInvocation(id, assistantId, {
+    providerCallId: randomUUID(),
+    name: "search_products",
+    arguments: { query: "blackout blinds" },
+    ...overrides,
+  });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, claim);
+  await repository.completeToolInvocation(id, tool.id, claim, { productIds });
+  return tool;
+}
+
+test("a completed reply atomically presents one ordered subset of current-turn catalog matches", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show two plain blackout options.",
+  });
+  const productIds = [1, 2, 3].map((number) => `gid://shopify/Product/${number}`);
+  await completedCatalog(id, turn.assistantId, productIds.slice(0, 2));
+  await completedCatalog(id, turn.assistantId, productIds.slice(2), {
+    name: "lookup_catalog",
+    arguments: { ids: [productIds[2]] },
+  });
+  const before = await repository.getSnapshot(id);
+  assert.deepEqual(before.messages[1].parts, [{ type: "text", text: "" }]);
+  const presentation = {
+    callId: randomUUID(),
+    productIds: [productIds[2], productIds[0]],
+  };
+  const reply = {
+    text: "These two meet your preference.",
+    status: "complete",
+    presentation,
+  };
+  await repository.finishTurn(id, turn.assistantId, reply);
+  const state = await loadRepository().getSnapshot(id);
+  assert.equal(state.busy, false);
+  assert.equal(state.revision, before.revision + 1);
+  assert.deepEqual(state.tools, []);
+  const shown = await database.toolInvocation.findFirstOrThrow({
+    where: { conversationId: id, name: "show_products" },
+  });
+  assert.equal(shown.assistantId, turn.assistantId);
+  assert.equal(shown.providerCallId, presentation.callId);
+  assert.equal(shown.status, "complete");
+  assert.deepEqual(JSON.parse(shown.productIdsJson), presentation.productIds);
+  assert.equal(shown.claimClientId, null);
+  await assert.rejects(repository.getBrowserToolContext(id, shown.id), {
+    status: 400,
+  });
+  assert.deepEqual(state.messages[1].parts, [
+    { type: "text", text: reply.text },
+    {
+      type: "products",
+      version: 1,
+      invocationId: shown.id,
+      productIds: presentation.productIds,
+    },
+  ]);
+  await repository.finishTurn(id, turn.assistantId, reply);
+  assert.deepEqual(await repository.getSnapshot(id), state);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "show_products" } }),
+    1,
   );
   const next = await repository.beginTurn(id, {
     requestId: randomUUID(),
@@ -576,9 +764,138 @@ test("catalog completion persists only product IDs once and final text preserves
       (entry) =>
         entry.role === "user" &&
         entry.text.startsWith("Untrusted storefront observations") &&
-        entry.text.includes(result.productIds[0]),
+        entry.text.includes(productIds[2]),
     ),
   );
+});
+
+test("invalid or ungrounded presentations cannot partially complete a reply", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show recommendations.",
+  });
+  const available = Array.from({ length: 7 }, (_, index) =>
+    `gid://shopify/Product/${index + 1}`,
+  );
+  await completedCatalog(id, turn.assistantId, available);
+  const before = await repository.getSnapshot(id);
+  for (const presentation of [
+    { callId: randomUUID(), productIds: [] },
+    { callId: randomUUID(), productIds: available },
+    { callId: randomUUID(), productIds: [available[0], available[0]] },
+    { callId: randomUUID(), productIds: ["gid://shopify/Product/999"] },
+    { callId: randomUUID(), productIds: ["gid://shopify/ProductVariant/1"] },
+    { callId: "", productIds: [available[0]] },
+    { callId: "x".repeat(201), productIds: [available[0]] },
+  ]) {
+    await assert.rejects(
+      repository.finishTurn(id, turn.assistantId, {
+        text: "This must not persist.",
+        status: "complete",
+        presentation,
+      }),
+      { status: 400 },
+    );
+    assert.deepEqual(await repository.getSnapshot(id), before);
+    assert.equal(
+      await database.toolInvocation.count({ where: { name: "show_products" } }),
+      0,
+    );
+  }
+});
+
+test("presentation grounding excludes previous turns, other conversations and unsuccessful lookups", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const first = await pendingLookup(id);
+  const claim = executor();
+  await repository.claimToolInvocation(id, first.tool.id, claim);
+  await repository.completeToolInvocation(id, first.tool.id, claim, {
+    productIds: ["gid://shopify/Product/1"],
+  });
+  await repository.finishTurn(id, first.turn.assistantId, {
+    text: "A previous answer.",
+    status: "complete",
+  });
+  const current = await pendingLookup(id);
+  const { conversationId: otherId } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const other = await pendingLookup(otherId);
+  await completedCatalog(otherId, other.turn.assistantId, [
+    "gid://shopify/Product/2",
+  ]);
+  const failed = await repository.createToolInvocation(
+    id,
+    current.turn.assistantId,
+    {
+      providerCallId: randomUUID(),
+      name: "get_product",
+      arguments: { id: "gid://shopify/Product/3" },
+    },
+  );
+  await repository.failToolInvocation(id, failed.id, "Catalog unavailable.");
+  const before = await repository.getSnapshot(id);
+  for (const productId of [1, 2, 3]) {
+    await assert.rejects(
+      repository.finishTurn(id, current.turn.assistantId, {
+        text: "Stale or unknown recommendation.",
+        status: "complete",
+        presentation: {
+          callId: randomUUID(),
+          productIds: [`gid://shopify/Product/${productId}`],
+        },
+      }),
+      { status: 400 },
+    );
+  }
+  assert.deepEqual(await repository.getSnapshot(id), before);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "show_products" } }),
+    0,
+  );
+});
+
+test("failed and ended replies do not publish a selected carousel", async () => {
+  for (const ended of [false, true]) {
+    const { conversationId: id } = await repository.createConversation(
+      shop,
+      origin,
+    );
+    const turn = await repository.beginTurn(id, {
+      requestId: randomUUID(),
+      text: "Show recommendations.",
+    });
+    const productIds = ["gid://shopify/Product/1"];
+    await completedCatalog(id, turn.assistantId, productIds);
+    if (ended) await repository.endConversation(id);
+    await repository.finishTurn(id, turn.assistantId, {
+      text: "An incomplete answer.",
+      status: ended ? "complete" : "failed",
+      error: ended ? undefined : "The reply failed.",
+      presentation: { callId: randomUUID(), productIds },
+    });
+    const state = await repository.getSnapshot(id);
+    assert.equal(state.busy, false);
+    assert.equal(state.messages[1].status, "failed");
+    assert.equal(
+      state.messages[1].parts.some((part) => part.type === "products"),
+      false,
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { conversationId: id, name: "show_products" },
+      }),
+      0,
+    );
+  }
 });
 
 test("invalid tool arguments and results cannot persist and lookups have a per-reply bound", async () => {

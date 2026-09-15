@@ -25,9 +25,11 @@ export type ConversationPart = TextPart | ProductListPart | PageViewPart;
 export type CatalogToolName =
   "search_products" | "get_product" | "lookup_catalog";
 
+export type BrowserToolName = CatalogToolName | "navigate";
+
 export interface BrowserToolInvocation {
   id: string;
-  name: CatalogToolName;
+  name: BrowserToolName;
   arguments: Record<string, unknown>;
   status: "pending" | "running";
 }

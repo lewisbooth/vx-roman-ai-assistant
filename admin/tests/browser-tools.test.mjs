@@ -23,7 +23,7 @@ const bundle = await build({
         export const createToolInvocation=(...args)=>mock.create(...args);
         export const completeToolInvocation=(...args)=>mock.complete(...args);
         export const failToolInvocation=(...args)=>mock.fail(...args);
-        export const getConversationOrigin=(...args)=>mock.origin(...args);
+        export const getBrowserToolContext=(...args)=>mock.context(...args);
       `,
         }));
       },
@@ -58,7 +58,7 @@ function deferred() {
 }
 
 function setup() {
-  const calls = { create: [], complete: [], fail: [], origin: [] };
+  const calls = { create: [], complete: [], fail: [], context: [] };
   const deadlines = [];
   let sequence = 0;
   const mock = {
@@ -76,9 +76,13 @@ function setup() {
     fail: async (...args) => {
       calls.fail.push(args);
     },
-    origin: async (...args) => {
-      calls.origin.push(args);
-      return origin;
+    context: async (...args) => {
+      calls.context.push(args);
+      return {
+        origin,
+        name: mock.toolName ?? "search_products",
+        arguments: {},
+      };
     },
   };
   const module = { exports: {} };
@@ -293,7 +297,7 @@ test("lookup deadlines and End aborts fail durable work and release the conversa
     const env = setup();
     const controller = new AbortController();
     const pending = request(env, controller.signal);
-    const rejected = assert.rejects(pending, /lookup did not finish/);
+    const rejected = assert.rejects(pending, /action did not finish/);
     await flush();
     await assert.rejects(request(env), /already running/);
     if (cause === "deadline") env.deadlines[0].controller.abort();
@@ -303,7 +307,7 @@ test("lookup deadlines and End aborts fail durable work and release the conversa
       [
         "conversation-1",
         "invocation-1",
-        "The storefront lookup was interrupted or timed out.",
+        "The storefront action was interrupted or timed out.",
       ],
     ]);
     const next = request(env);
@@ -350,10 +354,70 @@ test("abort during durable invocation creation still fails and cleans up the cre
   const controller = new AbortController();
   env.mock.beforeCreate = () => gate.promise;
   const pending = request(env, controller.signal);
-  const rejected = assert.rejects(pending, /lookup did not finish/);
+  const rejected = assert.rejects(pending, /action did not finish/);
   controller.abort();
   gate.resolve();
   await rejected;
   assert.equal(env.calls.fail.length, 1);
   assert.equal(env.calls.fail[0][1], "invocation-1");
+});
+
+test("navigation validates its own result against the stored tool and releases after persistence", async () => {
+  const env = setup();
+  env.mock.toolName = "navigate";
+  const pending = env.api.requestBrowserTool(
+    "conversation-1",
+    "assistant-1",
+    "navigation-1",
+    "navigate",
+    { path: "/products/shade?variant=123#details" },
+    new AbortController().signal,
+  );
+  await flush();
+  for (const invalid of [
+    result,
+    { status: "navigated", path: "https://attacker.example/" },
+    { status: "navigated", path: "//attacker.example/" },
+    { status: "navigated", path: "/cart", extra: true },
+    { status: "pending", path: "/cart" },
+  ]) {
+    await assert.rejects(
+      env.api.submitBrowserToolResult(
+        "conversation-1",
+        "invocation-1",
+        claim,
+        invalid,
+      ),
+      { status: 400 },
+    );
+  }
+  assert.equal(env.calls.complete.length, 0);
+  const navigation = {
+    status: "navigated",
+    path: "/products/shade?variant=123#details",
+  };
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    navigation,
+  );
+  assert.deepEqual(plain(await pending), navigation);
+  assert.deepEqual(plain(env.calls.complete[0][3]), { productIds: [] });
+  assert.deepEqual(plain(env.calls.context[0]), [
+    "conversation-1",
+    "invocation-1",
+  ]);
+});
+
+test("a browser cannot submit a navigation result for a catalog invocation", async () => {
+  const env = setup();
+  await assert.rejects(
+    env.api.submitBrowserToolResult("conversation-1", "invocation-1", claim, {
+      status: "navigated",
+      path: "/cart",
+    }),
+    { status: 400 },
+  );
+  assert.equal(env.calls.complete.length, 0);
 });

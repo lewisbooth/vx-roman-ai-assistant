@@ -128,13 +128,20 @@ export function createAssistantTools(
   }
 
   return {
-    async execute(name: string, input: unknown): Promise<unknown> {
+    async execute(
+      name: string,
+      input: unknown,
+      signal?: AbortSignal,
+    ): Promise<unknown> {
       if (disposed) throw new Error("Roman tools have been disposed.");
+      signal?.throwIfAborted();
       if (active) throw new Error("Another tool is still running.");
       if (!selectStore(host.dataset.shop))
         throw new Error("Roman tools are not configured for this storefront.");
       const request = new AbortController();
       active = request;
+      const abort = () => request.abort(signal?.reason);
+      signal?.addEventListener("abort", abort, { once: true });
       // The navigator owns its request deadlines and cancellation.
       const timer =
         name === "navigate"
@@ -288,11 +295,11 @@ export function createAssistantTools(
             }
             case "navigate": {
               const args = argumentsObject(input, ["path"]);
-              const path = textArgument(args, "path");
-              await navigation.navigate(path);
+              const path = textArgument(args, "path", 2048);
+              const status = await navigation.navigate(path, request.signal);
               const state = navigation.getSnapshot();
               if (state.error) throw new Error(state.error);
-              return { url: state.url, pending: state.pending };
+              return { status, url: state.url, pending: state.pending };
             }
             default:
               throw new Error(`Unknown Roman tool: ${name}.`);
@@ -316,6 +323,7 @@ export function createAssistantTools(
       } catch (error) {
         throw request.signal.aborted ? request.signal.reason : error;
       } finally {
+        signal?.removeEventListener("abort", abort);
         window.clearTimeout(timer);
         if (active === request) active = undefined;
       }

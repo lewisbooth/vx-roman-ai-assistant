@@ -7,8 +7,17 @@ import {
   catalogToolDefinitions,
   parseCatalogCall,
 } from "../../shared/catalog-tools";
-import type { CatalogOutcome } from "./browser-tools.server";
+import {
+  navigationToolDefinition,
+  parseNavigationCall,
+} from "../../shared/navigation-tool";
+import type { BrowserToolOutcome } from "./browser-tools.server";
 import { ROMAN_ADVISOR_PROMPT } from "./prompt.server";
+import {
+  parseProductSelection,
+  showProductsDefinition,
+  type ProductPresentation,
+} from "./presentation.server";
 
 export const TEXT_MODEL = "gpt-5.6-luna";
 export const TEXT_SERVICE_TIER = "fast";
@@ -22,6 +31,7 @@ export interface ModelReply {
   text: string;
   model: string;
   serviceTier?: string;
+  presentation?: ProductPresentation;
 }
 
 let client: OpenAI | undefined;
@@ -34,17 +44,30 @@ export async function generateReply(
     callId: string,
     name: string,
     input: unknown,
-  ) => Promise<CatalogOutcome>,
+  ) => Promise<BrowserToolOutcome>,
 ): Promise<ModelReply> {
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
   const input: ResponseInput = history.map(({ role, text }) => ({
     role,
     content: text,
   }));
-  let calls = 0;
+  let browserCalls = 0;
+  let presentationAttempted = false;
+  let presentation: ProductPresentation | undefined;
+  const availableProductIds = new Set<string>();
   let accumulated = "";
-  for (let round = 0; round < 5; round++) {
+  for (let round = 0; round < 6; round++) {
     signal.throwIfAborted();
+    const tools = execute
+      ? [
+          ...(browserCalls < 4
+            ? [...catalogToolDefinitions, navigationToolDefinition]
+            : []),
+          ...(!presentationAttempted && availableProductIds.size
+            ? [showProductsDefinition]
+            : []),
+        ]
+      : [];
     const stream = await client.responses.create(
       {
         model: TEXT_MODEL,
@@ -53,11 +76,11 @@ export async function generateReply(
         instructions: ROMAN_ADVISOR_PROMPT,
         input,
         include: ["reasoning.encrypted_content"],
-        ...(execute
+        ...(tools.length
           ? {
-              tools: [...catalogToolDefinitions],
+              tools,
               parallel_tool_calls: false,
-              tool_choice: calls < 4 ? ("auto" as const) : ("none" as const),
+              tool_choice: "auto" as const,
             }
           : {}),
         max_output_tokens: 1600,
@@ -103,10 +126,13 @@ export async function generateReply(
         text: answer,
         model: completed.model,
         serviceTier: completed.service_tier ?? undefined,
+        ...(presentation ? { presentation } : {}),
       };
     }
-    if (!execute || calls + toolCalls.length > 4)
-      throw new Error("Roman reached the catalog lookup limit for this reply.");
+    if (!execute)
+      throw new Error(
+        "Roman reached the storefront tool limit for this reply.",
+      );
     if (text.trim()) accumulated += text + "\n\n";
     // Preserve provider reasoning/function items only within this turn. Never
     // expose them as chat content or persist a second provider-owned transcript.
@@ -120,17 +146,66 @@ export async function generateReply(
     );
     for (const call of toolCalls) {
       signal.throwIfAborted();
-      calls++;
-      let outcome: CatalogOutcome;
+      if (call.name === "show_products") {
+        if (presentationAttempted)
+          throw new Error(
+            "Roman reached the product presentation limit for this reply.",
+          );
+        presentationAttempted = true;
+        let outcome: { selectedProductIds: string[] } | { error: string };
+        try {
+          const productIds = parseProductSelection(JSON.parse(call.arguments));
+          if (
+            !call.call_id ||
+            call.call_id.length > 200 ||
+            !productIds.every((id) => availableProductIds.has(id))
+          )
+            throw new Error(
+              "Products must come from this reply's catalog results.",
+            );
+          presentation = { callId: call.call_id, productIds };
+          outcome = { selectedProductIds: [...productIds] };
+        } catch {
+          outcome = {
+            error:
+              "No product cards were selected. Use only distinct product IDs returned by successful catalog lookups in this reply. Do not claim that cards were displayed.",
+          };
+        }
+        input.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(outcome),
+        });
+        continue;
+      }
+      if (browserCalls >= 4)
+        throw new Error(
+          "Roman reached the storefront tool limit for this reply.",
+        );
+      browserCalls++;
+      let outcome: BrowserToolOutcome;
       try {
-        const parsed = parseCatalogCall(call.name, JSON.parse(call.arguments));
+        const argumentsValue: unknown = JSON.parse(call.arguments);
+        const parsed =
+          call.name === "navigate"
+            ? {
+                name: "navigate",
+                arguments: parseNavigationCall(argumentsValue),
+              }
+            : parseCatalogCall(call.name, argumentsValue);
         signal.throwIfAborted();
         outcome = await execute(call.call_id, parsed.name, parsed.arguments);
+        signal.throwIfAborted();
+        if ("products" in outcome)
+          for (const product of outcome.products)
+            availableProductIds.add(product.id);
       } catch {
         signal.throwIfAborted();
         outcome = {
           error:
-            "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
+            call.name === "navigate"
+              ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
+              : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
         };
       }
       input.push({
@@ -140,5 +215,5 @@ export async function generateReply(
       });
     }
   }
-  throw new Error("Roman reached the catalog lookup limit for this reply.");
+  throw new Error("Roman reached the tool limit for this reply.");
 }

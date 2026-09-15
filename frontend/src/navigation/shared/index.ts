@@ -12,11 +12,14 @@ export type NavigationSnapshot = {
   error: string | null;
 };
 
+export type NavigationOutcome =
+  "navigated" | "handed_off" | "cancelled" | "failed";
+
 export type StorefrontNavigation = {
   destinations: readonly { label: string; path: string }[];
   getSnapshot: () => NavigationSnapshot;
   subscribe: (listener: () => void) => () => void;
-  navigate: (path: string) => Promise<void>;
+  navigate: (path: string, signal?: AbortSignal) => Promise<NavigationOutcome>;
   setSidebarOpen: (open: boolean) => void;
   dispose: () => void;
 };
@@ -146,11 +149,18 @@ export function createStorefrontNavigation(
     window.addEventListener("scroll", onScroll, { passive: true });
   }
 
-  async function visit(path: string, fromHistory = false) {
-    if (disposed || handingOff) return;
+  async function visit(
+    path: string,
+    fromHistory = false,
+    signal?: AbortSignal,
+  ): Promise<NavigationOutcome> {
+    if (disposed || signal?.aborted) return "cancelled";
+    if (handingOff) return "handed_off";
     controller?.abort();
     const request = new AbortController();
     controller = request;
+    const abort = () => request.abort(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
     let timedOut = false;
     const timeout = window.setTimeout(() => {
       timedOut = true;
@@ -216,7 +226,7 @@ export function createStorefrontNavigation(
       const page = preparePage(html, finalUrl, store.theme);
       await loadPageAssets(page, request.signal);
       request.signal.throwIfAborted();
-      if (controller !== request || disposed) return;
+      if (controller !== request || disposed) return "cancelled";
 
       // Set the destination once, just before components connect. Temporary URL
       // changes also reach theme analytics and can produce duplicate pageviews.
@@ -267,9 +277,13 @@ export function createStorefrontNavigation(
       document.dispatchEvent(
         new CustomEvent("roman:navigation", { detail: { url: currentUrl } }),
       );
+      return "navigated";
     } catch (error) {
-      if (controller !== request || disposed) return;
-      if (request.signal.aborted && !timedOut) return;
+      if (controller !== request || disposed) return "cancelled";
+      if (request.signal.aborted && !timedOut) {
+        publish({ pending: false, error: null });
+        return "cancelled";
+      }
       const cause = request.signal.aborted ? request.signal.reason : error;
       if (destination) {
         // Error messages can contain asset/request URLs. Keep useful context
@@ -311,7 +325,7 @@ export function createStorefrontNavigation(
         else if (window.location.href === destination.href)
           window.location.reload();
         else window.location.replace(destination.href);
-        return;
+        return "handed_off";
       }
       publish({
         url: currentUrl,
@@ -321,7 +335,9 @@ export function createStorefrontNavigation(
             ? cause.message
             : "The page could not be loaded. Please retry.",
       });
+      return "failed";
     } finally {
+      signal?.removeEventListener("abort", abort);
       window.clearTimeout(timeout);
       if (controller === request) controller = undefined;
     }
@@ -412,7 +428,7 @@ export function createStorefrontNavigation(
         listeners.delete(listener);
       };
     },
-    navigate: (path) => visit(path),
+    navigate: (path, signal) => visit(path, false, signal),
     setSidebarOpen(isOpen) {
       if (disposed || !store || open === isOpen) return;
       open = isOpen;

@@ -72,6 +72,11 @@
     @apply min-w-0 whitespace-normal [overflow-wrap:anywhere];
   }
 
+  .roman-rich-text strong {
+    @apply font-bold;
+    font-synthesis-weight: auto;
+  }
+
   .roman-rich-text :is(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6) {
     margin: 0;
   }

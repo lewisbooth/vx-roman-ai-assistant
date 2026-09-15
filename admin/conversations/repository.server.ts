@@ -17,15 +17,20 @@ import type {
   SendMessageInput,
   ConversationPart,
   BrowserToolInvocation,
-  CatalogToolName,
+  BrowserToolName,
   JourneyInput,
   ToolClaim,
 } from "../../shared/conversation";
 import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import { parseCatalogCall } from "../../shared/catalog-tools";
+import { parseNavigationCall } from "../../shared/navigation-tool";
 import { isStorefrontPagePath } from "../../shared/journey";
 import prisma from "../db.server";
 import { ConversationError } from "./errors.server";
+import {
+  parseProductSelection,
+  type ProductPresentation,
+} from "./presentation.server";
 
 const processStartedAt = new Date();
 const credentialLifetimeMs = 7 * 24 * 60 * 60 * 1000;
@@ -96,7 +101,13 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
 function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
   if (tool.status !== "pending" && tool.status !== "running")
     throw new Error("Invalid pending tool status.");
-  const call = parseCatalogCall(tool.name, JSON.parse(tool.argumentsJson));
+  const call =
+    tool.name === "navigate"
+      ? {
+          name: "navigate" as const,
+          arguments: parseNavigationCall(JSON.parse(tool.argumentsJson)),
+        }
+      : parseCatalogCall(tool.name, JSON.parse(tool.argumentsJson));
   return { id: tool.id, ...call, status: tool.status };
 }
 
@@ -306,14 +317,23 @@ export async function getSnapshot(id: string): Promise<ConversationSnapshot> {
   return snapshot(await loadConversation(prisma, id));
 }
 
-export async function getConversationOrigin(id: string): Promise<string> {
-  const conversation = await prisma.conversation.findUnique({
-    where: { id },
-    select: { origin: true },
-  });
-  if (!conversation)
-    throw new ConversationError(404, "This chat could not be found.");
-  return conversation.origin;
+export async function getBrowserToolContext(id: string, invocationId: string) {
+  const conversation = await loadConversation(prisma, id);
+  const tool = invocation(conversation, invocationId);
+  if (
+    !["navigate", "search_products", "get_product", "lookup_catalog"].includes(
+      tool.name,
+    )
+  )
+    throw new ConversationError(400, "This invocation is not a browser tool.");
+  const call =
+    tool.name === "navigate"
+      ? {
+          name: "navigate" as const,
+          arguments: parseNavigationCall(JSON.parse(tool.argumentsJson)),
+        }
+      : parseCatalogCall(tool.name, JSON.parse(tool.argumentsJson));
+  return { origin: conversation.origin, ...call };
 }
 
 export async function beginTurn(
@@ -441,6 +461,7 @@ export async function finishTurn(
     error?: string;
     model?: string;
     serviceTier?: string;
+    presentation?: ProductPresentation;
   },
 ): Promise<void> {
   await prisma.$transaction(async (transaction) => {
@@ -455,16 +476,73 @@ export async function finishTurn(
       },
     });
     if (!message) return;
+    const content: ConversationPart[] = [{ type: "text", text: result.text }];
+    if (result.status === "complete" && result.presentation) {
+      let productIds: string[];
+      try {
+        productIds = parseProductSelection({
+          productIds: result.presentation.productIds,
+        });
+      } catch {
+        throw new ConversationError(400, "Invalid product selection.");
+      }
+      if (
+        typeof result.presentation.callId !== "string" ||
+        !result.presentation.callId ||
+        result.presentation.callId.length > 200
+      )
+        throw new ConversationError(
+          400,
+          "Invalid product presentation call ID.",
+        );
+      const available = new Set(
+        conversation.toolInvocations
+          .filter(
+            (tool) =>
+              tool.assistantId === assistantId &&
+              tool.status === "complete" &&
+              ["search_products", "get_product", "lookup_catalog"].includes(
+                tool.name,
+              ) &&
+              !tool.error,
+          )
+          .flatMap((tool) => {
+            const ids: unknown = JSON.parse(tool.productIdsJson ?? "[]");
+            if (!validProductIds(ids))
+              throw new Error("Invalid stored catalog references.");
+            return ids;
+          }),
+      );
+      if (productIds.some((productId) => !available.has(productId)))
+        throw new ConversationError(
+          400,
+          "Product cards must come from this reply's successful catalog lookups.",
+        );
+      const presentation = await transaction.toolInvocation.create({
+        data: {
+          id: randomUUID(),
+          conversationId: id,
+          assistantId,
+          providerCallId: result.presentation.callId,
+          name: "show_products",
+          argumentsJson: JSON.stringify({ productIds }),
+          productIdsJson: JSON.stringify(productIds),
+          status: "complete",
+          completedAt: new Date(),
+        },
+      });
+      content.push({
+        type: "products",
+        version: 1,
+        invocationId: presentation.id,
+        productIds,
+      });
+    }
     const finished = await transaction.conversationMessage.updateMany({
       where: { id: assistantId, conversationId: id, status: "pending" },
       data: {
         status: result.status,
-        partsJson: JSON.stringify([
-          { type: "text", text: result.text },
-          ...parts(message, conversation.origin).filter(
-            (part) => part.type !== "text",
-          ),
-        ]),
+        partsJson: JSON.stringify(content),
         model: result.model,
         serviceTier: result.serviceTier,
         error: result.error ?? null,
@@ -484,7 +562,7 @@ export async function finishTurn(
         },
         data: {
           status: "failed",
-          error: "The reply ended before this catalog lookup completed.",
+          error: "The reply ended before this storefront action completed.",
           completedAt: new Date(),
         },
       });
@@ -533,7 +611,7 @@ export async function failPending(id: string): Promise<void> {
       },
       data: {
         status: "failed",
-        error: "The server restarted before this catalog lookup completed.",
+        error: "The server restarted before this storefront action completed.",
         completedAt: new Date(),
       },
     });
@@ -646,7 +724,8 @@ export async function endConversation(
       where: { conversationId: id, status: { in: ["pending", "running"] } },
       data: {
         status: "failed",
-        error: "The conversation ended before this catalog lookup completed.",
+        error:
+          "The conversation ended before this storefront action completed.",
         completedAt: new Date(),
       },
     });
@@ -682,7 +761,10 @@ function invocation(
     (entry) => entry.id === invocationId,
   );
   if (!tool)
-    throw new ConversationError(404, "This catalog lookup could not be found.");
+    throw new ConversationError(
+      404,
+      "This storefront action could not be found.",
+    );
   return tool;
 }
 
@@ -709,17 +791,23 @@ export async function createToolInvocation(
   assistantId: string,
   input: {
     providerCallId: string;
-    name: CatalogToolName;
+    name: BrowserToolName;
     arguments: Record<string, unknown>;
   },
 ): Promise<BrowserToolInvocation> {
   if (!input.providerCallId || input.providerCallId.length > 200)
-    throw new ConversationError(400, "Invalid catalog call ID.");
+    throw new ConversationError(400, "Invalid storefront call ID.");
   let call;
   try {
-    call = parseCatalogCall(input.name, input.arguments);
+    call =
+      input.name === "navigate"
+        ? {
+            name: "navigate" as const,
+            arguments: parseNavigationCall(input.arguments),
+          }
+        : parseCatalogCall(input.name, input.arguments);
   } catch {
-    throw new ConversationError(400, "Invalid catalog tool arguments.");
+    throw new ConversationError(400, "Invalid storefront tool arguments.");
   }
   const argumentsJson = JSON.stringify(call.arguments);
   return prisma.$transaction(async (transaction) => {
@@ -736,12 +824,12 @@ export async function createToolInvocation(
       )
         throw new ConversationError(
           400,
-          "This catalog call ID already has different arguments.",
+          "This storefront call ID already has different arguments.",
         );
       if (existing.status !== "pending" && existing.status !== "running")
         throw new ConversationError(
           409,
-          "This catalog lookup has already finished.",
+          "This storefront action has already finished.",
         );
       return toolSnapshot(existing);
     }
@@ -752,7 +840,7 @@ export async function createToolInvocation(
     )
       throw new ConversationError(
         429,
-        "This reply has reached its catalog lookup limit.",
+        "This reply has reached its storefront action limit.",
       );
     const tool = await transaction.toolInvocation.create({
       data: {
@@ -818,7 +906,7 @@ export async function completeToolInvocation(
         result.error.length > 500 ||
         result.productIds.length > 0))
   )
-    throw new ConversationError(400, "Invalid catalog completion.");
+    throw new ConversationError(400, "Invalid storefront completion.");
   const productIdsJson = JSON.stringify(result.productIds);
   const error = result.error ?? null;
   await prisma.$transaction(async (transaction) => {
@@ -828,22 +916,27 @@ export async function completeToolInvocation(
     if (!ownsClaim(tool, claim))
       throw new ConversationError(
         401,
-        "This catalog result belongs to another executor.",
+        "This storefront result belongs to another executor.",
       );
     if (tool.status === "complete" || tool.status === "failed") {
       if (tool.productIdsJson === productIdsJson && tool.error === error)
         return;
       throw new ConversationError(
         409,
-        "This catalog lookup has already finished.",
+        "This storefront action has already finished.",
       );
     }
     if (tool.status !== "running")
       throw new ConversationError(
         409,
-        "Claim this catalog lookup before completing it.",
+        "Claim this storefront action before completing it.",
       );
-    const assistant = pendingAssistant(conversation, tool.assistantId);
+    if (tool.name === "navigate" && result.productIds.length)
+      throw new ConversationError(
+        400,
+        "Navigation cannot return product references.",
+      );
+    pendingAssistant(conversation, tool.assistantId);
     await transaction.toolInvocation.update({
       where: { id: invocationId },
       data: {
@@ -853,26 +946,6 @@ export async function completeToolInvocation(
         completedAt: new Date(),
       },
     });
-    if (!error && result.productIds.length > 0) {
-      const content = parts(assistant, conversation.origin);
-      if (
-        !content.some(
-          (part) =>
-            part.type === "products" && part.invocationId === invocationId,
-        )
-      ) {
-        content.push({
-          type: "products",
-          version: 1,
-          invocationId,
-          productIds: result.productIds,
-        });
-        await transaction.conversationMessage.update({
-          where: { id: assistant.id },
-          data: { partsJson: JSON.stringify(content) },
-        });
-      }
-    }
     await transaction.conversation.update({
       where: { id },
       data: { revision: { increment: 1 } },
@@ -886,7 +959,7 @@ export async function failToolInvocation(
   reason: string,
 ): Promise<void> {
   if (!reason.trim() || reason.length > 500)
-    throw new ConversationError(400, "Invalid catalog failure reason.");
+    throw new ConversationError(400, "Invalid storefront failure reason.");
   await prisma.$transaction(async (transaction) => {
     const failed = await transaction.toolInvocation.updateMany({
       where: {

@@ -30,8 +30,16 @@ export function ProductCards({
     void Promise.resolve().then(async () => {
       if (!current) return;
       try {
-        const value = await session.loadProducts(ids.split(","));
-        if (current) setResult(value);
+        const selectedIds = ids.split(",");
+        const value = await session.loadProducts(selectedIds);
+        const productsById = new Map(
+          value.products.map((product) => [product.id, product]),
+        );
+        if (current)
+          setResult({
+            ...value,
+            products: selectedIds.flatMap((id) => productsById.get(id) ?? []),
+          });
       } catch (cause) {
         if (current)
           setError(

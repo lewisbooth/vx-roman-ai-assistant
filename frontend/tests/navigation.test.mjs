@@ -253,7 +253,7 @@ test("all five destinations replace store content without remounting Roman or it
     "/cart",
     "/",
   ]) {
-    await navigation.navigate(path);
+    assert.equal(await navigation.navigate(path), "navigated");
     assert.equal(navigation.getSnapshot().error, null);
     assert.equal(window.location.pathname, path);
     assert.equal(document.title, `Store ${path}`);
@@ -414,7 +414,7 @@ test("fetch deadlines fall back once and scrub URL secrets from the diagnostic",
   const target = "/products/new?token=QUERY_SECRET#FRAGMENT_SECRET";
   const pending = navigation.navigate(target);
   expire();
-  await pending;
+  assert.equal(await pending, "handed_off");
   assert.deepEqual(native, [{ method: "assign", url: origin + target }]);
   assert.match(errors[0][1].reason, /timed out/);
   assert.doesNotMatch(JSON.stringify(errors), /SECRET|\?|#/);
@@ -449,13 +449,42 @@ test("an older response cannot overwrite a newer navigation even if fetch ignore
   const first = navigation.navigate(productOne);
   await until(() => resolveFirst, "first request did not start");
   const second = navigation.navigate(productTwo);
-  await second;
+  assert.equal(await second, "navigated");
   assert.equal(calls[0].options.signal.aborted, true);
   resolveFirst(response(productOne));
-  await first;
+  assert.equal(await first, "cancelled");
   assert.equal(window.location.pathname, productTwo);
   assert.equal(document.querySelector("main h1").textContent, productTwo);
   assert.equal(navigation.getSnapshot().error, null);
+});
+
+test("ending a model turn cancels its page fetch without committing or falling back to a full refresh", async (t) => {
+  let finish;
+  const { navigation, window, document, calls, native, errors } = setup(
+    t,
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const controller = new window.AbortController();
+  const previousMain = document.querySelector("main");
+  const pending = navigation.navigate(productOne, controller.signal);
+  await until(() => finish, "Page fetch did not start");
+  controller.abort();
+  assert.equal(calls[0].options.signal.aborted, true);
+  finish(response(productOne));
+  assert.equal(await pending, "cancelled");
+  assert.equal(document.querySelector("main"), previousMain);
+  assert.equal(window.location.pathname, "/");
+  assert.equal(navigation.getSnapshot().pending, false);
+  assert.deepEqual(native, []);
+  assert.deepEqual(errors, []);
+  assert.equal(
+    await navigation.navigate(productTwo, controller.signal),
+    "cancelled",
+  );
+  assert.equal(calls.length, 1, "Already-cancelled navigation never fetches");
 });
 
 test("ordinary same-origin links are intercepted only while the sidebar is open", async (t) => {
@@ -921,7 +950,7 @@ test("payment initialization failure reloads the inserted destination without ad
       },
     },
   };
-  await navigation.navigate(productTwo);
+  assert.equal(await navigation.navigate(productTwo), "handed_off");
   assert.match(errors[0][1].reason, /payment controls could not initialize/);
   assert.equal(navigation.getSnapshot().pending, false);
   assert.equal(document.querySelector("main h1").textContent, productTwo);

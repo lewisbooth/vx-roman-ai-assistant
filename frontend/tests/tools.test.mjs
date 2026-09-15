@@ -86,14 +86,16 @@ function setup(t, options = {}) {
   const navigation = {
     destinations: [],
     getSnapshot: () => snapshot,
-    navigate: async (path) => {
+    navigate: async (path, signal) => {
       visits.push(path);
-      if (options.navigate) snapshot = await options.navigate(path, snapshot);
+      if (options.navigate)
+        snapshot = await options.navigate(path, snapshot, signal);
       else
         snapshot = {
           ...snapshot,
           url: new window.URL(path, window.location.href).href,
         };
+      return snapshot.pending ? "cancelled" : "navigated";
     },
   };
   window.eval(`${bundle.outputFiles[0].text}\nwindow.RomanTools = RomanTools;`);
@@ -862,10 +864,55 @@ test("pending navigation keeps its own deadline and disposed tools reject late n
         await assert.rejects(pending, (error) => error.name === "AbortError");
       else
         assert.deepEqual(plain(await pending), {
+          status: "cancelled",
           url: `${origin}/cart`,
           pending: true,
         });
       assert.equal(timers.size, 0);
     });
   }
+});
+
+test("navigation tools support complete model paths up to 2048 characters", async (t) => {
+  const { tools, visits } = setup(t);
+  const path = "/search?q=" + "x".repeat(2038);
+  assert.equal(path.length, 2048);
+  assert.deepEqual(plain(await tools.execute("navigate", { path })), {
+    status: "navigated",
+    url: origin + path,
+    pending: false,
+  });
+  await assert.rejects(
+    tools.execute("navigate", { path: path + "x" }),
+    /path must be/,
+  );
+  assert.deepEqual(visits, [path]);
+});
+
+test("ending model navigation aborts the navigator request through the existing tool owner", async (t) => {
+  let navigationSignal;
+  const { tools, window, visits } = setup(t, {
+    navigate: (_path, _state, signal) =>
+      new Promise((_resolve, reject) => {
+        navigationSignal = signal;
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+  });
+  const controller = new window.AbortController();
+  const pending = tools.execute(
+    "navigate",
+    { path: "/cart" },
+    controller.signal,
+  );
+  const rejected = assert.rejects(
+    pending,
+    (error) => error.name === "AbortError",
+  );
+  controller.abort();
+  assert.equal(navigationSignal.aborted, true);
+  await rejected;
+  assert.deepEqual(visits, ["/cart"]);
+  await tools.execute("get_measurements", {});
 });

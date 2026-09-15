@@ -1,18 +1,23 @@
 import { parseCatalogResult, type CatalogResult } from "../../shared/catalog";
 import { parseCatalogCall } from "../../shared/catalog-tools";
+import {
+  parseNavigationCall,
+  type NavigationResult,
+} from "../../shared/navigation-tool";
 import type { ToolClaim } from "../../shared/conversation";
 import { ConversationError } from "./errors.server";
 import {
   completeToolInvocation,
   createToolInvocation,
   failToolInvocation,
-  getConversationOrigin,
+  getBrowserToolContext,
 } from "./repository.server";
 
-export type CatalogOutcome = CatalogResult | { error: string };
+export type BrowserToolOutcome =
+  CatalogResult | NavigationResult | { error: string };
 const waiting = new Map<
   string,
-  { invocationId: string; resolve: (result: CatalogOutcome) => void }
+  { invocationId: string; resolve: (result: BrowserToolOutcome) => void }
 >();
 
 export async function requestBrowserTool(
@@ -22,25 +27,28 @@ export async function requestBrowserTool(
   name: string,
   input: unknown,
   signal: AbortSignal,
-): Promise<CatalogOutcome> {
-  const call = parseCatalogCall(name, input);
+): Promise<BrowserToolOutcome> {
+  const call =
+    name === "navigate"
+      ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
+      : parseCatalogCall(name, input);
   signal.throwIfAborted();
   if (waiting.has(conversationId))
-    throw new Error("A storefront lookup is already running.");
+    throw new Error("A storefront action is already running.");
   const invocation = await createToolInvocation(conversationId, assistantId, {
     providerCallId,
     ...call,
   });
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(45_000)]);
   try {
-    return await new Promise<CatalogOutcome>((resolve, reject) => {
+    return await new Promise<BrowserToolOutcome>((resolve, reject) => {
       const onAbort = () =>
         reject(
           new Error(
-            "The storefront lookup did not finish. Please keep this storefront open and try again.",
+            "The storefront action did not finish. A full page load may have interrupted confirmation; check the current page before retrying.",
           ),
         );
-      const finish = (result: CatalogOutcome) => {
+      const finish = (result: BrowserToolOutcome) => {
         deadline.removeEventListener("abort", onAbort);
         resolve(result);
       };
@@ -55,7 +63,7 @@ export async function requestBrowserTool(
     await failToolInvocation(
       conversationId,
       invocation.id,
-      "The storefront lookup was interrupted or timed out.",
+      "The storefront action was interrupted or timed out.",
     );
     throw error;
   } finally {
@@ -70,21 +78,31 @@ export async function submitBrowserToolResult(
   result: unknown,
   error?: string,
 ): Promise<void> {
-  let outcome: CatalogOutcome;
+  let outcome: BrowserToolOutcome;
   if (error !== undefined) {
     if (typeof error !== "string" || !error.trim() || error.length > 500)
-      throw new ConversationError(400, "Invalid catalog error.");
+      throw new ConversationError(400, "Invalid storefront action error.");
     outcome = { error };
   } else {
+    const context = await getBrowserToolContext(conversationId, invocationId);
     try {
-      outcome = parseCatalogResult(
-        result,
-        await getConversationOrigin(conversationId),
-      );
+      if (context.name === "navigate") {
+        if (!result || typeof result !== "object" || Array.isArray(result))
+          throw new Error("Invalid navigation result.");
+        const value = result as Record<string, unknown>;
+        if (value.status !== "navigated" || Object.keys(value).length !== 2)
+          throw new Error("Invalid navigation result.");
+        outcome = {
+          status: "navigated",
+          ...parseNavigationCall({ path: value.path }),
+        };
+      } else {
+        outcome = parseCatalogResult(result, context.origin);
+      }
     } catch {
       throw new ConversationError(
         400,
-        "The storefront returned an invalid catalog result.",
+        "The storefront returned an invalid tool result.",
       );
     }
   }
@@ -94,7 +112,12 @@ export async function submitBrowserToolResult(
     claim,
     "error" in outcome
       ? { productIds: [], error: outcome.error }
-      : { productIds: outcome.products.map((product) => product.id) },
+      : {
+          productIds:
+            "products" in outcome
+              ? outcome.products.map((product) => product.id)
+              : [],
+        },
   );
   const pending = waiting.get(conversationId);
   if (pending?.invocationId === invocationId) pending.resolve(outcome);

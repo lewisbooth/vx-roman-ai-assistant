@@ -6,7 +6,7 @@ import { createStorefrontNavigation } from "./navigation/shared";
 import type { AssistantRuntime } from "./runtime";
 import { createAssistantTools } from "./tools";
 import { createConversationClient } from "./session/client";
-import { createCatalogExecutor } from "./session/catalog-executor";
+import { createStorefrontExecutor } from "./session/storefront-executor";
 import { createJourneyObserver } from "./session/journey";
 import styles from "./styles.css?inline";
 
@@ -30,8 +30,8 @@ export function mountAssistant(
   });
   const navigation = createStorefrontNavigation(host);
   const tools = createAssistantTools(host, navigation);
-  const catalog = createCatalogExecutor(tools);
-  const session = createConversationClient(catalog);
+  const executor = createStorefrontExecutor(tools);
+  const session = createConversationClient(executor);
   const stopJourney = createJourneyObserver(session, navigation);
   let router: ReturnType<typeof createAssistantRouter> | undefined;
   let root: Root | undefined;
@@ -76,7 +76,7 @@ export function mountAssistant(
     root?.unmount();
     router?.dispose();
     tools.dispose();
-    catalog.dispose();
+    executor.dispose();
     stopJourney();
     session.dispose();
     navigation.dispose();
@@ -97,7 +97,7 @@ export function mountAssistant(
       root?.unmount();
       router?.dispose();
       tools.dispose();
-      catalog.dispose();
+      executor.dispose();
       stopJourney();
       session.dispose();
       navigation.dispose();

@@ -76,7 +76,7 @@ async function until(condition, message) {
 
 function setup(
   t,
-  { saved, url = "https://hd-dev-single.myshopify.com/", catalog } = {},
+  { saved, url = "https://hd-dev-single.myshopify.com/", executor } = {},
 ) {
   const dom = new JSDOM("<!doctype html>", { url, runScripts: "outside-only" });
   const { window } = dom;
@@ -108,7 +108,7 @@ function setup(
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanSession = RomanSession;`,
   );
-  const client = window.RomanSession.createConversationClient(catalog);
+  const client = window.RomanSession.createConversationClient(executor);
   let notifications = 0;
   client.subscribe(() => {
     notifications++;
@@ -392,6 +392,13 @@ const needsTool = {
     },
   ],
 };
+const needsNavigation = {
+  ...needsTool,
+  tools: [
+    { ...needsTool.tools[0], name: "navigate", arguments: { path: "/cart" } },
+  ],
+};
+const navigationResult = { status: "navigated", path: "/cart" };
 
 async function resume(ctx, value = complete) {
   ctx.respond(0, { ...access, conversation: value });
@@ -407,7 +414,7 @@ test("only a tab granted the tool claim executes the catalog command", async (t)
   const executions = [];
   const first = setup(t, {
     saved: access,
-    catalog: {
+    executor: {
       execute: async (...args) => {
         executions.push(["first", ...args]);
         return catalogResult;
@@ -416,7 +423,7 @@ test("only a tab granted the tool claim executes the catalog command", async (t)
   });
   const second = setup(t, {
     saved: access,
-    catalog: {
+    executor: {
       execute: async (...args) => {
         executions.push(["second", ...args]);
         return catalogResult;
@@ -452,49 +459,90 @@ test("only a tab granted the tool claim executes the catalog command", async (t)
 });
 
 test("a lost tool-result response retries the same result without reexecuting or claiming again", async (t) => {
-  let executions = 0;
+  for (const [snapshot, result] of [
+    [needsTool, catalogResult],
+    [needsNavigation, navigationResult],
+  ]) {
+    await t.test(snapshot.tools[0].name, async (t) => {
+      let executions = 0;
+      const ctx = setup(t, {
+        saved: access,
+        executor: {
+          execute: async (name, args, signal) => {
+            assert.equal(name, snapshot.tools[0].name);
+            assert.deepEqual(
+              JSON.parse(JSON.stringify(args)),
+              snapshot.tools[0].arguments,
+            );
+            assert.equal(signal.aborted, false);
+            executions++;
+            return result;
+          },
+        },
+      });
+      await resume(ctx, snapshot);
+      await until(() => ctx.calls.length === 3, "Tool claim did not start");
+      ctx.respond(2, { claimed: true });
+      await until(() => ctx.calls.length === 4, "Tool result did not start");
+      const original = ctx.calls[3].body;
+      assert.deepEqual(original.result, result);
+      ctx.calls[3].reject(new TypeError("Lost result response"));
+      await until(
+        () => !!ctx.client.getSnapshot().error,
+        "Lost result was not surfaced",
+      );
+      assert.equal(executions, 1);
+      ctx.tick();
+      await until(() => ctx.calls.length === 5, "Pending tool was not polled");
+      ctx.respond(4, {
+        ...snapshot,
+        revision: 2,
+        tools: [{ ...snapshot.tools[0], status: "running" }],
+      });
+      await until(
+        () => ctx.calls.length === 6,
+        "Stored tool result was not retried",
+      );
+      assert.deepEqual(ctx.calls[5].body, original);
+      assert.match(ctx.calls[5].url, /\/result$/);
+      assert.equal(executions, 1);
+      assert.equal(
+        ctx.calls.filter((call) => call.url.endsWith("/claim")).length,
+        1,
+      );
+      ctx.respond(5, { ...complete, revision: 3 });
+      await until(
+        () => !ctx.client.getSnapshot().conversation.busy,
+        "Retried result did not finish",
+      );
+    });
+  }
+});
+
+test("a refreshed client never claims or repeats navigation already running in the previous page", async (t) => {
   const ctx = setup(t, {
     saved: access,
-    catalog: {
-      execute: async () => {
-        executions++;
-        return catalogResult;
-      },
+    executor: {
+      execute: () =>
+        assert.fail("Previously claimed navigation must not replay"),
     },
   });
-  await resume(ctx, needsTool);
-  await until(() => ctx.calls.length === 3, "Tool claim did not start");
-  ctx.respond(2, { claimed: true });
-  await until(() => ctx.calls.length === 4, "Tool result did not start");
-  const original = ctx.calls[3].body;
-  ctx.calls[3].reject(new TypeError("Lost result response"));
-  await until(
-    () => !!ctx.client.getSnapshot().error,
-    "Lost result was not surfaced",
-  );
-  assert.equal(executions, 1);
+  const running = {
+    ...needsNavigation,
+    tools: [{ ...needsNavigation.tools[0], status: "running" }],
+  };
+  await resume(ctx, running);
+  assert.equal(ctx.calls.length, 2);
   ctx.tick();
-  await until(() => ctx.calls.length === 5, "Pending tool was not polled");
-  ctx.respond(4, {
-    ...needsTool,
-    revision: 2,
-    tools: [{ ...needsTool.tools[0], status: "running" }],
-  });
   await until(
-    () => ctx.calls.length === 6,
-    "Stored tool result was not retried",
+    () => ctx.calls.length === 3,
+    "Pending conversation was not polled",
   );
-  assert.deepEqual(ctx.calls[5].body, original);
-  assert.match(ctx.calls[5].url, /\/result$/);
-  assert.equal(executions, 1);
+  ctx.respond(2, running);
+  await delay(0);
   assert.equal(
-    ctx.calls.filter((call) => call.url.endsWith("/claim")).length,
-    1,
-  );
-  ctx.respond(5, { ...complete, revision: 3 });
-  await until(
-    () => !ctx.client.getSnapshot().conversation.busy,
-    "Retried result did not finish",
+    ctx.calls.filter((call) => /\/(claim|result)$/.test(call.url)).length,
+    0,
   );
 });
 
@@ -625,33 +673,46 @@ test("a newer request cannot overwrite a snapshot with a lower durable revision"
   );
 });
 
-test("End prevents a late browser catalog result from being posted into the closed chat", async (t) => {
-  let resolveLookup;
-  const ctx = setup(t, {
-    saved: access,
-    catalog: {
-      execute: () =>
-        new Promise((resolve) => {
-          resolveLookup = resolve;
-        }),
-    },
-  });
-  await resume(ctx, needsTool);
-  await until(() => ctx.calls.length === 3, "Tool claim did not start");
-  ctx.respond(2, { claimed: true });
-  await until(() => !!resolveLookup, "Catalog execution did not start");
-  const ending = ctx.client.end();
-  assert.match(ctx.calls[3].url, /\/end$/);
-  ctx.respond(3, { ...complete, status: "ended", revision: 3 });
-  await ending;
-  resolveLookup(catalogResult);
-  await delay(0);
-  assert.equal(
-    ctx.calls.filter((call) => call.url.endsWith("/result")).length,
-    0,
-  );
-  assert.equal(ctx.client.getSnapshot().conversation, null);
-  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+test("End cancels browser tools and prevents late results from entering the closed chat", async (t) => {
+  for (const [snapshot, result] of [
+    [needsTool, catalogResult],
+    [needsNavigation, navigationResult],
+  ]) {
+    await t.test(snapshot.tools[0].name, async (t) => {
+      let resolveLookup;
+      let toolSignal;
+      const ctx = setup(t, {
+        saved: access,
+        executor: {
+          execute: (_name, _args, signal) =>
+            new Promise((resolve) => {
+              toolSignal = signal;
+              resolveLookup = resolve;
+            }),
+        },
+      });
+      await resume(ctx, snapshot);
+      await until(() => ctx.calls.length === 3, "Tool claim did not start");
+      ctx.respond(2, { claimed: true });
+      await until(() => !!resolveLookup, "Catalog execution did not start");
+      const ending = ctx.client.end();
+      assert.equal(toolSignal.aborted, true);
+      assert.match(ctx.calls[3].url, /\/end$/);
+      ctx.respond(3, { ...complete, status: "ended", revision: 3 });
+      await ending;
+      resolveLookup(result);
+      await delay(0);
+      assert.equal(
+        ctx.calls.filter((call) => call.url.endsWith("/result")).length,
+        0,
+      );
+      assert.equal(ctx.client.getSnapshot().conversation, null);
+      assert.equal(
+        ctx.window.sessionStorage.getItem("roman:conversation"),
+        null,
+      );
+    });
+  }
 });
 
 test("a late poll after End cannot restore the old conversation or display a stale error", async (t) => {
