@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { parseProductGuideUrl } from "../../../shared/product-guides";
 import type { StorefrontNavigation } from "../navigation/shared";
 
 export function StorefrontLink({
@@ -27,6 +28,22 @@ export function StorefrontLink({
   }
 
   if (!href) return <span className={className}>{children}</span>;
+  try {
+    const guideUrl = parseProductGuideUrl(href, window.location.origin);
+    return (
+      <a
+        href={guideUrl}
+        className={className}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {children}
+      </a>
+    );
+  } catch {
+    // Ordinary storefront pages retain in-place navigation. Store-linked PDFs
+    // open separately so a Markdown guide link cannot replace active voice.
+  }
   return (
     <a
       href={href}

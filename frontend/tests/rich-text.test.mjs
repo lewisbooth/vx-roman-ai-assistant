@@ -279,3 +279,29 @@ test("an existing focused link retains its DOM node while later reply text strea
   assert.equal(container.getRootNode().activeElement, link);
   assert.equal(container.querySelector("strong").textContent, "width");
 });
+
+test("store-linked PDF guides in Markdown open separately without replacing the voice storefront", (t) => {
+  const { window, container, calls, render } = setup(t);
+  render(
+    "[Measuring guide](/cdn/shop/files/measuring-roman.pdf?v=5729100873718235920)",
+  );
+  const link = container.querySelector("a");
+  assert.equal(
+    link.href,
+    "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring-roman.pdf?v=5729100873718235920",
+  );
+  assert.equal(link.target, "_blank");
+  assert.equal(link.rel, "noopener noreferrer");
+  const click = new window.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  link.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, false);
+  assert.deepEqual(calls, []);
+  render(
+    "[Foreign guide](https://foreign.example/cdn/shop/files/measuring.pdf)",
+  );
+  assert.equal(container.querySelector("a"), null);
+});

@@ -187,6 +187,49 @@ async function setup(t, options = {}) {
   };
 }
 
+test("saved guide cards open verified PDFs separately without fetching products, navigating or stopping voice", async t => {
+  const fetches = [];
+  const guides = [
+    { kind: "measuring", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1" },
+    { kind: "fitting", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=2" },
+  ];
+  const ctx = await setup(t, {
+    beforeImport: window => { window.fetch = (...args) => { fetches.push(args); throw new Error("Guide cards must not fetch PDF content"); }; },
+    state: { voice: { status: "active", muted: false, error: null }, conversation: {
+      id: "chat", status: "active", busy: false, tools: [], messages: [
+        { ...message("guide-message", "assistant", ""), parts: [{ type: "guides", version: 1, invocationId: "11111111-1111-4111-8111-111111111111", productPath: "/products/example", guides }] },
+      ],
+    } },
+  });
+  const list = ctx.container.querySelector('[aria-label="Product guides"]');
+  const links = [...list.querySelectorAll("a")];
+  assert.equal(links.length, 2);
+  assert.match(links[0].textContent, /Measuring guide/);
+  assert.match(links[1].textContent, /Fitting guide/);
+  for (const [index, link] of links.entries()) {
+    assert.equal(link.href, guides[index].url);
+    assert.equal(link.target, "_blank");
+    assert.equal(link.rel, "noopener noreferrer");
+    link.addEventListener("click", event => event.preventDefault(), { once: true });
+    link.dispatchEvent(new ctx.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  assert.deepEqual(ctx.navigationCalls, []);
+  assert.deepEqual(ctx.productCalls, []);
+  assert.deepEqual(fetches, []);
+  assert.equal(ctx.container.querySelector(".roman-composer textarea").disabled, true);
+  assert.match(ctx.voiceDock.textContent, /Voice is on.*Stop voice/);
+});
+
+test("malformed or foreign guide records never become active chat links", async t => {
+  const ctx = await setup(t, { state: { conversation: {
+    id: "chat", status: "active", busy: false, tools: [], messages: [
+      { ...message("unsafe-guide", "assistant", ""), parts: [{ type: "guides", version: 1, invocationId: "11111111-1111-4111-8111-111111111111", productPath: "/products/example", guides: [{ kind: "measuring", url: "https://evil.example/measuring.pdf" }] }] },
+    ],
+  } } });
+  assert.equal(ctx.container.querySelectorAll(".roman-guide-card").length, 0);
+  assert.match(ctx.container.textContent, /product guides are unavailable/);
+});
+
 test("cart approval stays actionable during voice and is also available in the closed-sidebar dock", async t => {
   const choices = [];
   const approval = { invocationId: "cart-one", title: "Remove this item?", details: ["Kitchen blind", "Remove quantity 2."] };

@@ -128,6 +128,125 @@ function request(env, signal = new AbortController().signal) {
   );
 }
 
+test("guide lookup preserves only verified current-product links and releases after durable completion", async () => {
+  const env = setup();
+  env.mock.toolName = "get_product_guides";
+  env.mock.toolArguments = { productPath: "/products/shade" };
+  const gate = deferred();
+  env.mock.beforeComplete = () => gate.promise;
+  let resolved = false;
+  const pending = env.api
+    .requestBrowserTool(
+      "conversation-1",
+      "assistant-1",
+      "guide-call",
+      "get_product_guides",
+      env.mock.toolArguments,
+      new AbortController().signal,
+    )
+    .then((value) => {
+      resolved = true;
+      return value;
+    });
+  await flush();
+  assert.deepEqual(plain(env.calls.create[0][2]), {
+    providerCallId: "guide-call",
+    name: "get_product_guides",
+    arguments: env.mock.toolArguments,
+  });
+  const guide = {
+    kind: "measuring",
+    url: `${origin}/cdn/shop/files/Shade_Measuring.pdf?v=123456`,
+  };
+  const result = {
+    status: "found",
+    productPath: "/products/shade",
+    guides: [guide],
+  };
+  for (const invalid of [
+    { ...result, productPath: "/products/other" },
+    {
+      ...result,
+      guides: [
+        {
+          ...guide,
+          url: "https://other-store.myshopify.com/cdn/shop/files/Measuring.pdf",
+        },
+      ],
+    },
+    {
+      ...result,
+      guides: [
+        {
+          ...guide,
+          url: `${origin}/cdn/shop/files/Measuring.pdf?download=true`,
+        },
+      ],
+    },
+    {
+      ...result,
+      guides: [{ ...guide, url: `${origin}/cdn/shop/files/Measuring.html` }],
+    },
+    { ...result, instructions: "Unverified PDF instructions" },
+  ])
+    await assert.rejects(
+      env.api.submitBrowserToolResult(
+        "conversation-1",
+        "invocation-1",
+        claim,
+        invalid,
+      ),
+      { status: 400 },
+    );
+  assert.equal(env.calls.complete.length, 0);
+  const submission = env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  await flush();
+  assert.equal(resolved, false);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [],
+    outcome: result,
+  });
+  gate.resolve();
+  await submission;
+  assert.deepEqual(plain(await pending), result);
+});
+
+test("unavailable current-product guides are an explicit empty result, not an invented guide", async () => {
+  const env = setup();
+  env.mock.toolName = "get_product_guides";
+  env.mock.toolArguments = { productPath: "/products/shade" };
+  const pending = env.api.requestBrowserTool(
+    "conversation-1",
+    "assistant-1",
+    "guide-call",
+    "get_product_guides",
+    env.mock.toolArguments,
+    new AbortController().signal,
+  );
+  await flush();
+  const result = {
+    status: "unavailable",
+    productPath: "/products/shade",
+    guides: [],
+  };
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await pending), result);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [],
+    outcome: result,
+  });
+});
+
 test("declined cart approval reaches the model only after its durable decision", async () => {
   const env = setup();
   const gate = deferred();

@@ -2,6 +2,7 @@ import type { ConversationMessage } from "../../../shared/conversation";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { ProductCards } from "./ProductCards";
+import { GuideCards } from "./GuideCards";
 import { RichText } from "./RichText";
 import { StorefrontLink } from "./StorefrontLink";
 
@@ -64,6 +65,8 @@ export function Timeline({
                     <p className="roman-message-text">{part.text}</p>
                   </div>
                 );
+              if (part.type === "guides")
+                return <GuideCards key={part.invocationId} part={part} />;
               return (
                 <ProductCards
                   key={part.invocationId}

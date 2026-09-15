@@ -20,6 +20,11 @@ import {
   type ApplyMeasurementsResult,
 } from "../../shared/measurements";
 import { getMeasurementDraft } from "../measurements/service.server";
+import {
+  parseProductGuidesCall,
+  parseProductGuidesResult,
+  type ProductGuidesResult,
+} from "../../shared/product-guides";
 import { ConversationError } from "./errors.server";
 import {
   completeToolInvocation,
@@ -34,6 +39,7 @@ export type BrowserToolOutcome =
   | NavigationResult
   | CartToolResult
   | ApplyMeasurementsResult
+  | ProductGuidesResult
   | { error: string };
 interface BrowserWaiter {
   invocationId?: string;
@@ -72,13 +78,18 @@ export async function requestBrowserTool(
   signal: AbortSignal,
 ): Promise<BrowserToolOutcome> {
   const call =
-    name === "apply_measurements"
-      ? await resolveMeasurements(conversationId, input)
-      : name === "navigate"
-        ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
-        : isCartTool(name)
-          ? parseCartCall(name, input)
-          : parseCatalogCall(name, input);
+    name === "get_product_guides"
+      ? {
+          name: "get_product_guides" as const,
+          arguments: parseProductGuidesCall(input),
+        }
+      : name === "apply_measurements"
+        ? await resolveMeasurements(conversationId, input)
+        : name === "navigate"
+          ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
+          : isCartTool(name)
+            ? parseCartCall(name, input)
+            : parseCatalogCall(name, input);
   signal.throwIfAborted();
   if (waiting.has(conversationId))
     throw new Error("A storefront action is already running.");
@@ -172,7 +183,11 @@ export async function submitBrowserToolResult(
         : { error };
   } else {
     try {
-      if (context.name === "navigate") {
+      if (context.name === "get_product_guides") {
+        outcome = parseProductGuidesResult(result, context.origin);
+        if (outcome.productPath !== context.arguments.productPath)
+          throw new Error("Guide links belong to another product.");
+      } else if (context.name === "navigate") {
         if (!result || typeof result !== "object" || Array.isArray(result))
           throw new Error("Invalid navigation result.");
         const value = result as Record<string, unknown>;
@@ -207,8 +222,15 @@ export async function submitBrowserToolResult(
             "products" in outcome
               ? outcome.products.map((product) => product.id)
               : [],
-          ...(isCartTool(context.name) || context.name === "apply_measurements"
-            ? { outcome: outcome as CartToolResult | ApplyMeasurementsResult }
+          ...(isCartTool(context.name) ||
+          context.name === "apply_measurements" ||
+          context.name === "get_product_guides"
+            ? {
+                outcome: outcome as
+                  | CartToolResult
+                  | ApplyMeasurementsResult
+                  | ProductGuidesResult,
+              }
             : {}),
         },
   );

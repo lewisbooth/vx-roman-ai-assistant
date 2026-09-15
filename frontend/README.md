@@ -51,7 +51,7 @@ Removing the embed disposes its React root, router, navigation listeners, pendin
 
 `src/session/` owns bootstrap, tab-scoped credentials, polling, retry identity, storefront tool execution and the session-gated journey observer. `src/chat/` owns the Figma home screen, composer and safely rendered transcript; `app.tsx` connects them through a narrow external-store interface. Browser-safe conversation DTOs live in root `shared/conversation.ts`. Model prompts, OpenAI credentials, authorization and persistence belong in [admin](../admin/README.md#text-conversations).
 
-Chat starts on the first message or an explicit **Start voice**. Pending text refreshes through bounded JSON polling; a lost submission response is reconciled without starting another generation. The same request ID is retained for retry. Typed parts render text, horizontally scrollable product cards, linked page observations and plain voice captions; no model HTML is injected. Product cards retain only selected IDs and fetch current catalog details when mounted, preserving that selection and order even if Shopify returns extra matches. Catalog reads do not add cards; the model explicitly selects recommendations with the server-owned `show_products` tool. User scroll-up is preserved while Roman replies.
+Chat starts on the first message or an explicit **Start voice**. Pending text refreshes through bounded JSON polling; a lost submission response is reconciled without starting another generation. The same request ID is retained for retry. Typed parts render text, horizontally scrollable product cards, linked page observations and plain voice captions; no model HTML is injected. Product cards retain only selected IDs and fetch current catalog details when mounted, preserving that selection and order even if Shopify returns extra matches. Catalog reads do not add cards; the model explicitly selects recommendations with the server-owned `show_products` tool. User scroll-up is preserved while Roman replies. Measuring/fitting cards show only PDF links discovered in the current product's own guide sections; the model explicitly selects them with `show_guides`. Links open in a new tab, preserving the storefront voice connection. Missing or ambiguous guides remain unavailable; Roman does not infer fitting steps from a product name or ingest PDF contents.
 
 `src/chat/RichText.tsx` renders assistant Markdown through `react-markdown`: paragraphs, emphasis, lists, headings, quotes, code and links. Customer text stays literal. Raw HTML and Markdown images are disabled; links use the existing same-store navigator. The parser is part of the lazy bundle, so the initial launcher stays small. Product recommendations link names to the exact URLs returned by catalog tools.
 
@@ -69,19 +69,20 @@ Closing the sidebar keeps voice running and shows a small mute/stop dock beside 
 
 On `hd-dev-multi`, `hd-dev-single` and the local preview, expand **Developer tools** to choose a voice or run a tool with editable JSON arguments. The drawer calls `createAssistantTools(...).execute(name, arguments)` directly; no LLM or OpenAI key is involved in manual tool execution. The same validated functions can serve future model calls. The drawer is hidden on production stores.
 
-| Tool                | Arguments                                | Behavior                                                                           |
-| ------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
-| `search_products`   | `{ query }`                              | Live catalog search, up to 10 results                                              |
-| `get_product`       | `{ id }`                                 | Details for a product or variant GID from search                                   |
-| `lookup_catalog`    | `{ ids }`                                | Batch lookup of 1–10 product/variant GIDs; retains matches and missing-ID messages |
-| `get_cart`          | `{}`                                     | Current cart totals and lines, including each `lineKey`                            |
-| `add_to_cart`       | `{}`                                     | Submit the configured current PDP through its theme form                           |
-| `remove_from_cart`  | `{ lineKey }`                            | Invoke the theme's removal control for that line                                   |
-| `set_cart_quantity` | `{ lineKey, quantity }`                  | Set a positive whole-number quantity through the theme                             |
-| `clear_cart`        | `{}`                                     | Empty the cart through the theme                                                   |
-| `set_measurements`  | `{ width, height, unit, kind?, mount? }` | Save a product-specific draft; units `mm`, `cm` or `in`                            |
-| `get_measurements`  | `{}`                                     | Read the current product's draft                                                   |
-| `navigate`          | `{ path }`                               | Any same-origin HTTP(S) path, with full-page fallback                              |
+| Tool                 | Arguments                                | Behavior                                                                           |
+| -------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `search_products`    | `{ query }`                              | Live catalog search, up to 10 results                                              |
+| `get_product`        | `{ id }`                                 | Details for a product or variant GID from search                                   |
+| `lookup_catalog`     | `{ ids }`                                | Batch lookup of 1–10 product/variant GIDs; retains matches and missing-ID messages |
+| `get_product_guides` | `{ productPath }`                        | Read the matching current PDP's store-linked measuring/fitting PDFs                |
+| `get_cart`           | `{}`                                     | Current cart totals and lines, including each `lineKey`                            |
+| `add_to_cart`        | `{}`                                     | Submit the configured current PDP through its theme form                           |
+| `remove_from_cart`   | `{ lineKey }`                            | Invoke the theme's removal control for that line                                   |
+| `set_cart_quantity`  | `{ lineKey, quantity }`                  | Set a positive whole-number quantity through the theme                             |
+| `clear_cart`         | `{}`                                     | Empty the cart through the theme                                                   |
+| `set_measurements`   | `{ width, height, unit, kind?, mount? }` | Save a product-specific draft; units `mm`, `cm` or `in`                            |
+| `get_measurements`   | `{}`                                     | Read the current product's draft                                                   |
+| `navigate`           | `{ path }`                               | Any same-origin HTTP(S) path, with full-page fallback                              |
 
 Catalog tools call Shopify's [UCP Catalog MCP](https://shopify.dev/docs/agents/catalog/storefront-catalog) at `/api/ucp/mcp`. The embed supplies Roman's public `roman-agent-profile.json` asset; publish the extension before testing profile negotiation. The existing profile supports `lookup_catalog`. These calls need no Admin API credentials. Catalog prices are not a measured-product quote.
 

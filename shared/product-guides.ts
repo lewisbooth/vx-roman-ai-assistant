@@ -1,0 +1,230 @@
+import type { GuidePart } from "./conversation";
+import { parseProductPath, productPathSchema } from "./product-path";
+
+export type ProductGuideKind = "measuring" | "fitting";
+export interface ProductGuide {
+  kind: ProductGuideKind;
+  url: string;
+}
+export interface ProductGuidesResult {
+  status: "found" | "unavailable";
+  productPath: string;
+  guides: ProductGuide[];
+}
+
+export const PRODUCT_GUIDE_LABELS = {
+  measuring: "Measuring guide",
+  fitting: "Fitting guide",
+} as const;
+
+const kinds = ["measuring", "fitting"] as const;
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const productGuidesToolDefinition = {
+  type: "function",
+  name: "get_product_guides",
+  description:
+    "Read the measuring and fitting PDF links explicitly attached to the currently open product page. Navigate to that verified product first. These are store-linked guides, not proof that a fitting method suits the customer's window. This tool does not read the PDFs; never invent their instructions, allowances or tolerances. An unavailable result means no supported link was verified on this page.",
+  strict: true,
+  parameters: {
+    type: "object",
+    properties: { productPath: productPathSchema },
+    required: ["productPath"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const showGuidesToolDefinition = {
+  type: "function",
+  name: "show_guides",
+  description:
+    "Show measuring and/or fitting PDF links for one product using a successful get_product_guides result from this reply. Choose only kinds returned for that exact product. Call once per reply. The card links to store documents; it does not validate measurements or provide instructions from unread PDFs.",
+  strict: true,
+  parameters: {
+    type: "object",
+    properties: {
+      productPath: productPathSchema,
+      kinds: {
+        type: "array",
+        items: { type: "string", enum: kinds },
+        minItems: 1,
+        maxItems: 2,
+      },
+    },
+    required: ["productPath", "kinds"],
+    additionalProperties: false,
+  },
+} as const;
+
+function object(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Product guides must be an object.");
+  return input as Record<string, unknown>;
+}
+
+function exact(value: Record<string, unknown>, keys: string[]) {
+  if (
+    Object.keys(value).length !== keys.length ||
+    keys.some((key) => !Object.hasOwn(value, key))
+  )
+    throw new Error("Unexpected product guide fields.");
+}
+
+export function parseProductGuidesCall(input: unknown): {
+  productPath: string;
+} {
+  const value = object(input);
+  exact(value, ["productPath"]);
+  return { productPath: parseProductPath(value.productPath) };
+}
+
+export function parseGuideSelection(input: unknown): {
+  productPath: string;
+  kinds: ProductGuideKind[];
+} {
+  const value = object(input);
+  exact(value, ["productPath", "kinds"]);
+  if (
+    !Array.isArray(value.kinds) ||
+    value.kinds.length < 1 ||
+    value.kinds.length > 2 ||
+    new Set(value.kinds).size !== value.kinds.length ||
+    !value.kinds.every((kind) => kinds.includes(kind))
+  )
+    throw new Error("Choose one or two distinct supported guide kinds.");
+  return {
+    productPath: parseProductPath(value.productPath),
+    kinds: [...value.kinds],
+  };
+}
+
+/** Preserve the exact file version; this validates links and never fetches PDFs. */
+export function parseProductGuideUrl(
+  input: unknown,
+  storefrontOrigin: string,
+): string {
+  if (
+    typeof input !== "string" ||
+    input.length > 2048 ||
+    /[\\\s]/.test(input) ||
+    [...input].some(
+      (character) =>
+        character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+    )
+  )
+    throw new Error("Invalid product guide URL.");
+  const origin = new URL(storefrontOrigin);
+  const url = new URL(input, origin.origin);
+  if (
+    origin.protocol !== "https:" ||
+    origin.origin !== storefrontOrigin ||
+    url.protocol !== "https:" ||
+    url.origin !== storefrontOrigin ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    !/^\/cdn\/shop\/files\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*\.pdf$/.test(
+      url.pathname,
+    )
+  )
+    throw new Error(
+      "Product guides must be PDF files on this storefront's Shopify CDN.",
+    );
+  // Reject raw dot/encoded path segments before URL normalization can hide them.
+  if (
+    input.includes("%") ||
+    /(?:^|\/)\.{1,2}(?:\/|$)/.test(input.split(/[?#]/, 1)[0])
+  )
+    throw new Error("Invalid product guide URL path.");
+  if (url.search && !/^\?v=\d{1,30}$/.test(url.search))
+    throw new Error(
+      "Product guide URLs support only the store's numeric file version.",
+    );
+  return url.href;
+}
+
+function parseGuides(input: unknown, storefrontOrigin: string): ProductGuide[] {
+  if (!Array.isArray(input) || input.length > 2)
+    throw new Error("A product has at most two supported guides.");
+  const found = new Set<ProductGuideKind>();
+  return input.map((entry) => {
+    const value = object(entry);
+    exact(value, ["kind", "url"]);
+    if (
+      !kinds.includes(value.kind as ProductGuideKind) ||
+      found.has(value.kind as ProductGuideKind)
+    )
+      throw new Error("Product guide kinds must be supported and distinct.");
+    const kind = value.kind as ProductGuideKind;
+    found.add(kind);
+    return { kind, url: parseProductGuideUrl(value.url, storefrontOrigin) };
+  });
+}
+
+export function parseProductGuidesResult(
+  input: unknown,
+  storefrontOrigin: string,
+): ProductGuidesResult {
+  const value = object(input);
+  exact(value, ["status", "productPath", "guides"]);
+  const guides = parseGuides(value.guides, storefrontOrigin);
+  if (
+    (value.status !== "found" && value.status !== "unavailable") ||
+    (value.status === "found") !== guides.length > 0
+  )
+    throw new Error("Product guide availability does not match its links.");
+  return {
+    status: value.status,
+    productPath: parseProductPath(value.productPath),
+    guides,
+  };
+}
+
+export function parseGuidePart(
+  input: unknown,
+  storefrontOrigin: string,
+): GuidePart {
+  const value = object(input);
+  exact(value, [
+    "type",
+    "version",
+    "invocationId",
+    "productPath",
+    "guides",
+    ...(value.voiceReply !== undefined ? ["voiceReply"] : []),
+  ]);
+  if (
+    value.type !== "guides" ||
+    value.version !== 1 ||
+    typeof value.invocationId !== "string" ||
+    !uuidPattern.test(value.invocationId)
+  )
+    throw new Error("Invalid saved product guide part.");
+  const result = parseProductGuidesResult(
+    { status: "found", productPath: value.productPath, guides: value.guides },
+    storefrontOrigin,
+  );
+  let voiceReply: GuidePart["voiceReply"];
+  if (value.voiceReply !== undefined) {
+    const voice = object(value.voiceReply);
+    exact(voice, ["voiceId", "afterSequence"]);
+    if (
+      typeof voice.voiceId !== "string" ||
+      !uuidPattern.test(voice.voiceId) ||
+      typeof voice.afterSequence !== "number" ||
+      !Number.isSafeInteger(voice.afterSequence) ||
+      voice.afterSequence < 0
+    )
+      throw new Error("Invalid guide voice association.");
+    voiceReply = { voiceId: voice.voiceId, afterSequence: voice.afterSequence };
+  }
+  return {
+    type: "guides",
+    version: 1,
+    invocationId: value.invocationId,
+    productPath: result.productPath,
+    guides: result.guides,
+    ...(voiceReply ? { voiceReply } : {}),
+  };
+}

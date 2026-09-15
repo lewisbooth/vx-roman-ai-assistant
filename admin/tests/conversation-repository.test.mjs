@@ -1353,6 +1353,270 @@ test("failed and ended replies do not publish a selected carousel", async () => 
   }
 });
 
+const guidePath = "/products/verified-shade";
+const guideOutcome = (kinds = ["measuring", "fitting"]) => ({
+  status: kinds.length ? "found" : "unavailable",
+  productPath: guidePath,
+  guides: kinds.map((kind) => ({
+    kind,
+    url: `${origin}/cdn/shop/files/${kind}.pdf?v=123`,
+  })),
+});
+async function guideLookup(id, assistantId, outcome = guideOutcome()) {
+  const sourceCallId = randomUUID();
+  const tool = await repository.createToolInvocation(id, assistantId, {
+    providerCallId: sourceCallId,
+    name: "get_product_guides",
+    arguments: { productPath: guidePath },
+  });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, claim);
+  if (outcome)
+    await repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome,
+    });
+  return { tool, claim, sourceCallId };
+}
+const guidePresentation = (sourceCallId, kinds = ["fitting", "measuring"]) => ({
+  callId: randomUUID(),
+  sourceCallId,
+  productPath: guidePath,
+  kinds,
+});
+
+test("guide results are durable evidence and explicit selection is ordered, atomic and idempotent", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show this blind's fitting and measuring guides.",
+  });
+  const source = await guideLookup(id, turn.assistantId);
+  const result = { productIds: [], outcome: guideOutcome() };
+  await repository.completeToolInvocation(
+    id,
+    source.tool.id,
+    source.claim,
+    result,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await database.toolInvocation.findUniqueOrThrow({
+          where: { id: source.tool.id },
+        })
+      ).resultJson,
+    ),
+    result.outcome,
+  );
+  assert.ok(
+    (await repository.getSnapshot(id)).messages.every((message) =>
+      message.parts.every((part) => part.type !== "guides"),
+    ),
+  );
+  const finish = {
+    status: "complete",
+    text: "Here are the product's guide links. I have not read the PDFs.",
+    guidePresentation: guidePresentation(source.sourceCallId),
+  };
+  await repository.finishTurn(id, turn.assistantId, finish);
+  const snapshot = await repository.getSnapshot(id);
+  const content = snapshot.messages[1].parts;
+  assert.deepEqual(
+    content.map((part) => part.type),
+    ["text", "guides"],
+  );
+  assert.deepEqual(content[1].guides, [...guideOutcome().guides].reverse());
+  assert.equal(content[1].productPath, guidePath);
+  assert.equal(content[1].voiceReply, undefined);
+  const history = await repository.getModelHistory(id);
+  assert.match(history.at(-1).text, /Untrusted storefront observations/);
+  assert.match(history.at(-1).text, /"type":"guides"/);
+  assert.match(history.at(-1).text, /fitting\.pdf\?v=123/);
+  await repository.finishTurn(id, turn.assistantId, finish);
+  await repository.completeToolInvocation(
+    id,
+    source.tool.id,
+    source.claim,
+    result,
+  );
+  assert.deepEqual(await repository.getSnapshot(id), snapshot);
+  assert.equal(
+    await database.toolInvocation.count({
+      where: { conversationId: id, name: "show_guides" },
+    }),
+    1,
+  );
+});
+
+test("guide completion and saved widgets both revalidate exact product and storefront origin", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show measuring.",
+  });
+  const source = await guideLookup(id, turn.assistantId, null);
+  const valid = guideOutcome();
+  const foreign = {
+    ...valid,
+    guides: [
+      {
+        kind: "measuring",
+        url: "https://other-store.myshopify.com/cdn/shop/files/measuring.pdf",
+      },
+    ],
+  };
+  for (const outcome of [foreign, { ...valid, productPath: "/products/other" }])
+    await assert.rejects(
+      repository.completeToolInvocation(id, source.tool.id, source.claim, {
+        productIds: [],
+        outcome,
+      }),
+    );
+  assert.equal(
+    (
+      await database.toolInvocation.findUniqueOrThrow({
+        where: { id: source.tool.id },
+      })
+    ).resultJson,
+    null,
+  );
+  await repository.completeToolInvocation(id, source.tool.id, source.claim, {
+    productIds: [],
+    outcome: valid,
+  });
+  const finish = {
+    status: "complete",
+    text: "Guide links.",
+    guidePresentation: guidePresentation(source.sourceCallId),
+  };
+  await database.toolInvocation.update({
+    where: { id: source.tool.id },
+    data: { resultJson: JSON.stringify(foreign) },
+  });
+  await assert.rejects(repository.finishTurn(id, turn.assistantId, finish));
+  assert.equal(
+    await database.toolInvocation.count({
+      where: { conversationId: id, name: "show_guides" },
+    }),
+    0,
+  );
+  await database.toolInvocation.update({
+    where: { id: source.tool.id },
+    data: { resultJson: JSON.stringify(valid) },
+  });
+  await repository.finishTurn(id, turn.assistantId, finish);
+  const parts = (await repository.getSnapshot(id)).messages[1].parts;
+  parts[1].guides = foreign.guides;
+  await database.conversationMessage.update({
+    where: { id: turn.assistantId },
+    data: { partsJson: JSON.stringify(parts) },
+  });
+  await assert.rejects(repository.getSnapshot(id));
+  await assert.rejects(repository.getModelHistory(id));
+});
+
+test("guide selection cannot use another conversation, a prior reply, unavailable kinds or failed lookups", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const first = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "First guide lookup.",
+  });
+  const prior = await guideLookup(id, first.assistantId);
+  await repository.finishTurn(id, first.assistantId, {
+    status: "complete",
+    text: "Guide available.",
+  });
+  const { conversationId: otherId } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const otherTurn = await repository.beginTurn(otherId, {
+    requestId: randomUUID(),
+    text: "Other customer.",
+  });
+  const other = await guideLookup(otherId, otherTurn.assistantId);
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Display guides.",
+  });
+  const unavailable = await guideLookup(id, turn.assistantId, guideOutcome([]));
+  const onlyMeasuring = await guideLookup(
+    id,
+    turn.assistantId,
+    guideOutcome(["measuring"]),
+  );
+  const failed = await guideLookup(id, turn.assistantId, null);
+  await repository.failToolInvocation(
+    id,
+    failed.tool.id,
+    "Product changed during lookup.",
+  );
+  const snapshot = await repository.getSnapshot(id);
+  for (const source of [prior, other, unavailable, onlyMeasuring, failed])
+    await assert.rejects(
+      repository.finishTurn(id, turn.assistantId, {
+        status: "complete",
+        text: "Not a verified guide selection.",
+        guidePresentation: guidePresentation(source.sourceCallId),
+      }),
+      { status: 400 },
+    );
+  assert.deepEqual(await repository.getSnapshot(id), snapshot);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "show_guides" } }),
+    0,
+  );
+});
+
+test("failed, cancelled and ended replies cannot publish selected guides even after a successful lookup", async () => {
+  for (const mode of ["failed", "cancelled", "ended"]) {
+    const { conversationId: id } = await repository.createConversation(
+      shop,
+      origin,
+    );
+    const turn = await repository.beginTurn(id, {
+      requestId: randomUUID(),
+      text: "Show the guides.",
+    });
+    const source = await guideLookup(id, turn.assistantId);
+    if (mode === "ended") await repository.endConversation(id);
+    if (mode === "cancelled")
+      await repository.finishTurn(id, turn.assistantId, {
+        status: "failed",
+        text: "",
+        error: "Cancelled.",
+      });
+    await repository.finishTurn(id, turn.assistantId, {
+      status: mode === "failed" ? "failed" : "complete",
+      text: "Late answer.",
+      guidePresentation: guidePresentation(source.sourceCallId),
+    });
+    const snapshot = await repository.getSnapshot(id);
+    assert.equal(snapshot.busy, false);
+    assert.ok(
+      snapshot.messages.every((message) =>
+        message.parts.every((part) => part.type !== "guides"),
+      ),
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { conversationId: id, name: "show_guides" },
+      }),
+      0,
+    );
+  }
+});
+
 test("invalid tool arguments and results cannot persist and lookups have a per-reply bound", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,

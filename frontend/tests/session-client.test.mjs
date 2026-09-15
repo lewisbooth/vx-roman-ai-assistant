@@ -589,6 +589,39 @@ async function resume(ctx, value = complete) {
   );
 }
 
+test("guide tools use the claimed read path without shopper approval or catalog parsing", async t => {
+  const result = { status: "found", productPath: "/products/shade", guides: [{ kind: "measuring", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1" }] };
+  const guideTool = { ...needsTool, tools: [{ ...needsTool.tools[0], name: "get_product_guides", arguments: { productPath: result.productPath } }] };
+  const executions = [];
+  const ctx = setup(t, { saved: access, executor: {
+    execute: async (...args) => { executions.push(args); return result; },
+    prepareApproval: () => assert.fail("Read-only guide tool needs no approval"),
+  } });
+  await resume(ctx, guideTool);
+  await until(() => ctx.calls.length === 3, "Guide read was not claimed");
+  assert.equal("confirmed" in ctx.calls[2].body, false);
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Guide result was not submitted");
+  assert.equal(executions[0][0], "get_product_guides");
+  assert.deepEqual(JSON.parse(JSON.stringify(executions[0][1])), { productPath: result.productPath });
+  assert.deepEqual(ctx.calls[3].body.result, result);
+  ctx.respond(3, complete);
+});
+
+test("restored guide widgets validate their store origin and reject unsafe later snapshots", async t => {
+  const part = { type: "guides", version: 1, invocationId, productPath: "/products/shade", guides: [{ kind: "fitting", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=2" }], voiceReply: { voiceId: "22222222-2222-4222-8222-222222222222", afterSequence: 3 } };
+  const snapshot = { ...complete, messages: [{ ...complete.messages[1], parts: [part] }] };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, snapshot);
+  const restored = ctx.client.getSnapshot().conversation;
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.messages[0].parts[0])), part);
+  ctx.client.clearError();
+  ctx.respond(2, { ...snapshot, revision: 3, messages: [{ ...snapshot.messages[0], parts: [{ ...part, guides: [{ kind: "fitting", url: "https://evil.example/fitting.pdf" }] }] }] });
+  await until(() => !!ctx.client.getSnapshot().error, "Unsafe guide response was accepted");
+  assert.equal(ctx.client.getSnapshot().conversation, restored);
+});
+
 test("only a tab granted the tool claim executes the catalog command", async (t) => {
   const executions = [];
   const first = setup(t, {

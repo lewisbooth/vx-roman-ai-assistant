@@ -11,6 +11,10 @@ import {
 } from "../../../shared/conversation";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
 import {
+  parseGuidePart,
+  parseProductGuidesCall,
+} from "../../../shared/product-guides";
+import {
   isCartTool,
   parseCartCall,
   requiresCartConfirmation,
@@ -62,6 +66,15 @@ function voiceSnapshot(value: unknown) {
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validGuidePart(value: unknown) {
+  try {
+    parseGuidePart(value, window.location.origin);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function credential(value: unknown): value is ConversationCredential {
@@ -117,6 +130,8 @@ function snapshot(value: unknown): value is ConversationSnapshot {
           parseCartCall(String(tool.name), tool.arguments);
         else if (tool.name === "apply_measurements")
           parseApplyMeasurementsCommand(tool.arguments);
+        else if (tool.name === "get_product_guides")
+          parseProductGuidesCall(tool.arguments);
         else parseCatalogCall(String(tool.name), tool.arguments);
         return true;
       } catch {
@@ -140,6 +155,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
           (part) =>
             record(part) &&
             ((part.type === "text" && typeof part.text === "string") ||
+              (part.type === "guides" && validGuidePart(part)) ||
               (part.type === "voice" &&
                 part.version === 1 &&
                 typeof part.voiceId === "string" &&
@@ -697,14 +713,20 @@ export function createConversationClient(
             ? await executor!.executeApproved(tool, attempt.approval!, signal)
             : tool.name === "navigate"
               ? await executor!.execute("navigate", tool.arguments, signal)
-              : tool.name === "get_cart"
-                ? await executor!.execute("get_cart", tool.arguments, signal)
-                : await executor!.execute(
-                    tool.name as
-                      "search_products" | "get_product" | "lookup_catalog",
+              : tool.name === "get_product_guides"
+                ? await executor!.execute(
+                    "get_product_guides",
                     tool.arguments,
                     signal,
-                  ),
+                  )
+                : tool.name === "get_cart"
+                  ? await executor!.execute("get_cart", tool.arguments, signal)
+                  : await executor!.execute(
+                      tool.name as
+                        "search_products" | "get_product" | "lookup_catalog",
+                      tool.arguments,
+                      signal,
+                    ),
         };
       } catch (error) {
         attempt.outcome = {

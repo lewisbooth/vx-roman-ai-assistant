@@ -4,6 +4,8 @@ import { getCart } from "./cart";
 import { clearCart, removeFromCart, setCartQuantity } from "./cart-actions";
 import { getProduct, lookupCatalog, searchProducts } from "./catalog";
 import { addConfiguredProduct } from "./product";
+import { getProductGuides } from "./product-guides";
+import { parseProductGuidesCall } from "../../../shared/product-guides";
 import {
   parseMeasurementCall,
   type MeasurementToolResult,
@@ -24,6 +26,12 @@ export const toolDefinitions = [
     name: "lookup_catalog",
     description: "Look up 1–10 product or variant IDs returned by the catalog.",
     example: { ids: [""] },
+  },
+  {
+    name: "get_product_guides",
+    description:
+      "Read the current product page's measuring and fitting PDF links. This does not read or interpret the documents.",
+    example: {},
   },
   {
     name: "get_cart",
@@ -133,8 +141,7 @@ export function createAssistantTools(
       /^(?:\/[a-z]{2}(?:-[a-z]{2})?)?(?:\/collections\/[^/]+)?\/products\/([^/]+)\/?$/i.exec(
         path,
       );
-    if (!match)
-      throw new Error("Open a product before using measurement tools.");
+    if (!match) throw new Error("Open a product before using this tool.");
     return `/products/${match[1]}`;
   }
 
@@ -174,6 +181,7 @@ export function createAssistantTools(
               "search_products",
               "get_product",
               "lookup_catalog",
+              "get_product_guides",
               "get_cart",
               "add_to_cart",
               "remove_from_cart",
@@ -218,6 +226,17 @@ export function createAssistantTools(
                 request.signal,
                 host.dataset.agentProfileUrl,
               );
+            }
+            case "get_product_guides": {
+              const args = argumentsObject(input, ["productPath"]);
+              const call = parseProductGuidesCall({
+                productPath: args.productPath ?? productPath(),
+              });
+              if (navigation.getSnapshot().pending)
+                throw new Error(
+                  "Wait for storefront navigation to finish before reading product guides.",
+                );
+              return getProductGuides(call.productPath, request.signal);
             }
             case "get_cart":
               argumentsObject(input, []);

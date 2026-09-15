@@ -2,6 +2,7 @@ export type MessageStatus = "pending" | "complete" | "failed";
 
 import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
 import type { CartToolName } from "./cart-tools";
+import type { ProductGuide } from "./product-guides";
 
 export interface TextPart {
   type: "text";
@@ -25,14 +26,28 @@ export interface PageViewPart {
   occurredAt: string;
 }
 
+export interface GuidePart {
+  type: "guides";
+  version: 1;
+  invocationId: string;
+  productPath: string;
+  guides: ProductGuide[];
+  /** Display association only; it does not assert that the shopper heard it. */
+  voiceReply?: { voiceId: string; afterSequence: number };
+}
+
 export type ConversationPart =
-  TextPart | ProductListPart | PageViewPart | VoiceCaptionPart;
+  TextPart | ProductListPart | GuidePart | PageViewPart | VoiceCaptionPart;
 
 export type CatalogToolName =
   "search_products" | "get_product" | "lookup_catalog";
 
 export type BrowserToolName =
-  CatalogToolName | CartToolName | "navigate" | "apply_measurements";
+  | CatalogToolName
+  | CartToolName
+  | "navigate"
+  | "apply_measurements"
+  | "get_product_guides";
 
 export interface BrowserToolInvocation {
   id: string;

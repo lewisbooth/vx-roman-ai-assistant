@@ -1,3 +1,5 @@
+import { parseProductPath, productPathSchema } from "./product-path";
+
 export type MeasurementToolName = "set_measurements" | "get_measurements";
 
 export type MeasurementInput = {
@@ -38,12 +40,6 @@ export interface ApplyMeasurementsCommand {
   draft: MeasurementDraft;
 }
 
-const productPathPattern = /^\/products\/[a-z0-9][a-z0-9-]*$/;
-const productPathSchema = {
-  type: "string",
-  pattern: productPathPattern.source,
-  maxLength: 255,
-} as const;
 const dimensionSchema = {
   type: "number",
   exclusiveMinimum: 0,
@@ -106,22 +102,12 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export function parseMeasurementProductPath(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length > 255 ||
-    !productPathPattern.test(value)
-  )
-    throw new Error("Measurements require a canonical /products/handle path.");
-  return value;
-}
-
 export function parseMeasurementCall(
   name: string,
   input: unknown,
 ): MeasurementCall {
   const value = object(input);
-  const productPath = parseMeasurementProductPath(value.productPath);
+  const productPath = parseProductPath(value.productPath);
   if (name === "get_measurements" && Object.keys(value).length === 1)
     return { name, arguments: { productPath } };
   if (
@@ -178,7 +164,7 @@ export function parseApplyMeasurementsCommand(
   input: unknown,
 ): ApplyMeasurementsCommand {
   const value = object(input);
-  const productPath = parseMeasurementProductPath(value.productPath);
+  const productPath = parseProductPath(value.productPath);
   const draft = parseMeasurementDraft(value.draft);
   if (
     Object.keys(value).length !== 2 ||
@@ -199,7 +185,7 @@ export function parseMeasurementToolResult(
     if (value.status === "not_found")
       return {
         status: value.status,
-        productPath: parseMeasurementProductPath(value.productPath),
+        productPath: parseProductPath(value.productPath),
       };
     if (value.status === "saved" || value.status === "found")
       return {
@@ -230,7 +216,7 @@ export function parseApplyMeasurementsResult(
     throw new Error("Invalid measurement application result.");
   return {
     status: value.status as ApplyMeasurementsResult["status"],
-    productPath: parseMeasurementProductPath(value.productPath),
+    productPath: parseProductPath(value.productPath),
     draftUpdatedAt: timestamp(value.draftUpdatedAt),
     message: value.message.trim(),
   };

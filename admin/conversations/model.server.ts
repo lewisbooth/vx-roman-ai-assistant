@@ -27,6 +27,13 @@ import {
 } from "../../shared/measurements";
 import type { ModelUsageUpdate } from "../usage/contracts";
 import {
+  productGuidesToolDefinition,
+  showGuidesToolDefinition,
+  parseProductGuidesCall,
+  parseGuideSelection,
+  type ProductGuideKind,
+} from "../../shared/product-guides";
+import {
   ROMAN_ADVISOR_PROMPT,
   ROMAN_VOICE_BRIEFING_PROMPT,
 } from "../prompts/roman.server";
@@ -34,6 +41,7 @@ import {
   parseProductSelection,
   showProductsDefinition,
   type ProductPresentation,
+  type GuidePresentation,
 } from "./presentation.server";
 
 export const TEXT_MODEL = "gpt-5.6-luna";
@@ -50,6 +58,7 @@ export interface ModelReply {
   model: string;
   serviceTier?: string;
   presentation?: ProductPresentation;
+  guidePresentation?: GuidePresentation;
 }
 
 let client: OpenAI | undefined;
@@ -136,9 +145,15 @@ export async function generateReply(
   let mutationAttempted = false;
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
+  let guidePresentationAttempted = false;
+  let guidePresentation: GuidePresentation | undefined;
+  const availableGuides = new Map<
+    string,
+    { sourceCallId: string; kinds: ProductGuideKind[] }
+  >();
   const availableProductIds = new Set<string>();
   let accumulated = "";
-  for (let round = 0; round < 6; round++) {
+  for (let round = 0; round < 7; round++) {
     signal.throwIfAborted();
     const tools = execute
       ? [
@@ -146,6 +161,7 @@ export async function generateReply(
             ? [
                 ...catalogToolDefinitions,
                 navigationToolDefinition,
+                productGuidesToolDefinition,
                 ...measurementToolDefinitions,
                 ...cartToolDefinitions.filter(
                   (tool) =>
@@ -157,6 +173,7 @@ export async function generateReply(
               ]
             : []),
           ...(!presentationAttempted ? [showProductsDefinition] : []),
+          ...(!guidePresentationAttempted ? [showGuidesToolDefinition] : []),
         ]
       : [];
     const usageId = randomUUID();
@@ -249,6 +266,7 @@ export async function generateReply(
         model: completed.model,
         serviceTier: completed.service_tier ?? undefined,
         ...(presentation ? { presentation } : {}),
+        ...(guidePresentation ? { guidePresentation } : {}),
       };
     }
     if (!execute)
@@ -268,6 +286,49 @@ export async function generateReply(
     );
     for (const call of toolCalls) {
       signal.throwIfAborted();
+      if (call.name === "show_guides") {
+        if (guidePresentationAttempted)
+          throw new Error(
+            "Roman reached the guide presentation limit for this reply.",
+          );
+        guidePresentationAttempted = true;
+        let outcome:
+          | { productPath: string; selectedKinds: ProductGuideKind[] }
+          | { error: string };
+        try {
+          const selection = parseGuideSelection(JSON.parse(call.arguments));
+          const source = availableGuides.get(selection.productPath);
+          if (
+            !call.call_id ||
+            call.call_id.length > 200 ||
+            !source ||
+            !selection.kinds.every((kind) => source.kinds.includes(kind))
+          )
+            throw new Error(
+              "Select only guides returned by this reply's successful current-product lookup.",
+            );
+          guidePresentation = {
+            callId: call.call_id,
+            sourceCallId: source.sourceCallId,
+            ...selection,
+          };
+          outcome = {
+            productPath: selection.productPath,
+            selectedKinds: selection.kinds,
+          };
+        } catch {
+          outcome = {
+            error:
+              "No guide cards were selected. First open the verified product and read its current guide links with get_product_guides, then select only returned guide kinds. Do not invent URLs or claim that instructions were read.",
+          };
+        }
+        input.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(outcome),
+        });
+        continue;
+      }
       if (call.name === "show_products") {
         if (presentationAttempted)
           throw new Error(
@@ -316,32 +377,50 @@ export async function generateReply(
             "Only one confirmed storefront change is allowed per reply.",
           );
         const parsed =
-          call.name === "navigate"
+          call.name === "get_product_guides"
             ? {
-                name: "navigate",
-                arguments: parseNavigationCall(argumentsValue),
+                name: call.name,
+                arguments: parseProductGuidesCall(argumentsValue),
               }
-            : isCartTool(call.name)
-              ? parseCartCall(call.name, argumentsValue)
-              : call.name === "apply_measurements"
-                ? {
-                    name: call.name,
-                    arguments: parseMeasurementCall(
-                      "get_measurements",
-                      argumentsValue,
-                    ).arguments,
-                  }
-                : call.name === "get_measurements" ||
-                    call.name === "set_measurements"
-                  ? parseMeasurementCall(call.name, argumentsValue)
-                  : parseCatalogCall(call.name, argumentsValue);
+            : call.name === "navigate"
+              ? {
+                  name: "navigate",
+                  arguments: parseNavigationCall(argumentsValue),
+                }
+              : isCartTool(call.name)
+                ? parseCartCall(call.name, argumentsValue)
+                : call.name === "apply_measurements"
+                  ? {
+                      name: call.name,
+                      arguments: parseMeasurementCall(
+                        "get_measurements",
+                        argumentsValue,
+                      ).arguments,
+                    }
+                  : call.name === "get_measurements" ||
+                      call.name === "set_measurements"
+                    ? parseMeasurementCall(call.name, argumentsValue)
+                    : parseCatalogCall(call.name, argumentsValue);
         if (mutation) mutationAttempted = true;
+        if (parsed.name === "get_product_guides")
+          availableGuides.delete(
+            parseProductGuidesCall(parsed.arguments).productPath,
+          );
         signal.throwIfAborted();
         outcome = await execute(call.call_id, parsed.name, parsed.arguments);
         signal.throwIfAborted();
         if ("products" in outcome)
           for (const product of outcome.products)
             availableProductIds.add(product.id);
+        if (
+          parsed.name === "get_product_guides" &&
+          "guides" in outcome &&
+          outcome.status === "found"
+        )
+          availableGuides.set(outcome.productPath, {
+            sourceCallId: call.call_id,
+            kinds: outcome.guides.map((guide) => guide.kind),
+          });
       } catch {
         signal.throwIfAborted();
         outcome = {
@@ -354,9 +433,11 @@ export async function generateReply(
                 : call.name === "get_measurements" ||
                     call.name === "set_measurements"
                   ? "The measurement draft could not be read or saved. Do not claim dimensions were saved or applied."
-                  : call.name === "navigate"
-                    ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
-                    : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
+                  : call.name === "get_product_guides"
+                    ? "The product's current guide links could not be verified. Do not invent a guide URL, display unavailable guides or claim its PDF instructions were read."
+                    : call.name === "navigate"
+                      ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
+                      : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
         };
       }
       input.push({

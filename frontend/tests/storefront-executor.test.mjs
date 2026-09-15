@@ -337,6 +337,30 @@ test("one failed lookup is not replayed and does not poison later queued work", 
   );
 });
 
+test("guide reads stay fresh, preserve the requested product and use no catalog normalization", async () => {
+  const guide = { kind: "measuring", url: `${origin}/cdn/shop/files/measuring.pdf?v=1` };
+  let reads = 0;
+  const { executor, calls } = setup(async name => {
+    assert.equal(name, "get_product_guides");
+    reads++;
+    return reads === 1 ? { status: "found", productPath: "/products/shade", guides: [guide] } : { status: "unavailable", productPath: "/products/shade", guides: [] };
+  });
+  assert.deepEqual(plain(await executor.execute("get_product_guides", { productPath: "/products/shade" })), { status: "found", productPath: "/products/shade", guides: [guide] });
+  assert.deepEqual(plain(await executor.execute("get_product_guides", { productPath: "/products/shade" })), { status: "unavailable", productPath: "/products/shade", guides: [] });
+  assert.deepEqual(plain(calls), [["get_product_guides", { productPath: "/products/shade" }], ["get_product_guides", { productPath: "/products/shade" }]]);
+});
+
+test("guide results reject a different product, unsafe URL or unrequested fields", async () => {
+  for (const result of [
+    { status: "unavailable", productPath: "/products/other", guides: [] },
+    { status: "found", productPath: "/products/shade", guides: [{ kind: "fitting", url: "https://evil.example/fitting.pdf" }] },
+    { status: "unavailable", productPath: "/products/shade", guides: [], instructions: "Invented fitting advice" },
+  ]) {
+    const { executor } = setup(async () => result);
+    await assert.rejects(executor.execute("get_product_guides", { productPath: "/products/shade" }));
+  }
+});
+
 test("only validated automatic tools reach the shared browser tool owner without approval", async () => {
   const { executor, calls } = setup(async () => ({ products: [] }));
   assert.throws(() => executor.execute("clear_cart", {}), /confirmation/);

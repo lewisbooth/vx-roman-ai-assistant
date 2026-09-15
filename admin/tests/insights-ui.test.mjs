@@ -140,6 +140,26 @@ function setupRoutes() {
   return { ...module.exports, calls, mock };
 }
 
+test("inspection shows the same verified guide selection using safe PDF links", t => {
+  const { render, container } = setupView(t);
+  const part = { type: "guides", version: 1, invocationId: ID, productPath: "/products/shade", guides: [
+    { kind: "fitting", url: `${ORIGIN}/cdn/shop/files/fitting.pdf?v=2` },
+    { kind: "measuring", url: `${ORIGIN}/cdn/shop/files/measuring.pdf?v=1` },
+  ] };
+  const message = { id: "guides", role: "assistant", status: "complete", createdAt: NOW, parts: [part] };
+  render("ConversationTimeline", { origin: ORIGIN, messages: [message] });
+  const links = [...container.querySelectorAll("a")];
+  assert.deepEqual(links.map(link => link.textContent), ["Fitting guide", "Measuring guide"]);
+  assert.deepEqual(links.map(link => link.href), part.guides.map(guide => guide.url));
+  for (const link of links) {
+    assert.equal(link.target, "_blank");
+    assert.equal(link.rel, "noopener noreferrer");
+  }
+  render("ConversationTimeline", { origin: ORIGIN, messages: [{ ...message, parts: [{ ...part, guides: [{ kind: "fitting", url: "https://other-shop.myshopify.com/cdn/shop/files/fitting.pdf" }] }] }] });
+  assert.equal(container.querySelectorAll("a").length, 0);
+  assert.match(container.textContent, /guides are unavailable/);
+});
+
 test("inspection retains saved timeline order and safely renders text, voice, visits and widget references", (t) => {
   const { render, container } = setupView(t);
   render("ConversationTimeline", {

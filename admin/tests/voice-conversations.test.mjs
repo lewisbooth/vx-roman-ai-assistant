@@ -378,117 +378,216 @@ test("a delegated presentation persists only its selected widget beside actual p
   );
 });
 
-test("voice cards follow only their result captions and retain exact durable records", () => {
-  const voiceId = randomUUID();
-  const widgetId = randomUUID();
-  const widget = {
-    id: widgetId,
-    sequence: 1,
-    role: "context",
-    status: "complete",
-    createdAt: new Date(),
-    partsJson: JSON.stringify([
-      {
-        type: "products",
-        version: 1,
-        invocationId: randomUUID(),
-        productIds: ["gid://shopify/Product/123"],
-        voiceReply: { voiceId, afterSequence: 4 },
-      },
-    ]),
-  };
-  const fragment = (sequence, text, role = "assistant", extra = {}) => ({
-    id: `caption-${sequence}`,
-    voiceId,
-    sequence,
-    role,
-    text,
-    startMs: sequence * 300,
-    endMs: sequence * 300 + 100,
-    createdAt: new Date(),
-    ...extra,
-  });
-  const base = {
-    origin: "https://hd-dev-single.myshopify.com",
-    messages: [widget],
-    voiceTranscripts: [
-      fragment(0, "Find blinds", "user"),
-      fragment(2, "Let me"),
-      fragment(3, " check."),
-      fragment(4, "Here are"),
-      fragment(5, " the options."),
-    ],
-  };
-  const original = structuredClone(base);
-  let rows = conversation.conversationTimeline(base);
-  assert.deepEqual(
-    rows.map((row) => row.id),
-    ["caption-0", "caption-2", "caption-4", widgetId],
-  );
-  assert.equal(rows[1].parts[0].text, "Let me check.");
-  assert.equal(rows[2].parts[0].text, "Here are the options.");
-  assert.deepEqual(base, original);
-  for (const barrier of [
-    {
-      ...widget,
-      id: "next-delegation",
-      sequence: 6,
-      status: "pending",
-      partsJson: "[]",
-    },
-    {
-      ...widget,
-      id: "page",
-      sequence: 6,
-      partsJson: JSON.stringify([
-        {
-          type: "page_view",
+for (const widgetKinds of [["products"], ["guides"], ["products", "guides"]])
+  test(`voice ${widgetKinds.join(" and ")} follow only their result captions and retain exact durable records`, () => {
+    const voiceId = randomUUID();
+    const widgetId = randomUUID();
+    const widget = {
+      id: widgetId,
+      sequence: 1,
+      role: "context",
+      status: "complete",
+      createdAt: new Date(),
+      partsJson: JSON.stringify(
+        widgetKinds.map((type) => ({
+          type,
           version: 1,
-          title: "Blinds",
-          path: "/collections/all",
-          occurredAt: new Date().toISOString(),
-        },
-      ]),
-    },
+          invocationId: randomUUID(),
+          ...(type === "products"
+            ? { productIds: ["gid://shopify/Product/123"] }
+            : {
+                productPath: "/products/shade",
+                guides: [
+                  {
+                    kind: "measuring",
+                    url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=123",
+                  },
+                ],
+              }),
+          voiceReply: { voiceId, afterSequence: 4 },
+        })),
+      ),
+    };
+    const fragment = (sequence, text, role = "assistant", extra = {}) => ({
+      id: `caption-${sequence}`,
+      voiceId,
+      sequence,
+      role,
+      text,
+      startMs: sequence * 300,
+      endMs: sequence * 300 + 100,
+      createdAt: new Date(),
+      ...extra,
+    });
+    const base = {
+      origin: "https://hd-dev-single.myshopify.com",
+      messages: [widget],
+      voiceTranscripts: [
+        fragment(0, "Find blinds", "user"),
+        fragment(2, "Let me"),
+        fragment(3, " check."),
+        fragment(4, "Here are"),
+        fragment(5, " the options."),
+      ],
+    };
+    const original = structuredClone(base);
+    let rows = conversation.conversationTimeline(base);
+    assert.deepEqual(
+      rows.map((row) => row.id),
+      ["caption-0", "caption-2", "caption-4", widgetId],
+    );
+    assert.equal(rows[1].parts[0].text, "Let me check.");
+    assert.equal(rows[2].parts[0].text, "Here are the options.");
+    assert.deepEqual(base, original);
+    for (const barrier of [
+      {
+        ...widget,
+        id: "next-delegation",
+        sequence: 6,
+        status: "pending",
+        partsJson: "[]",
+      },
+      {
+        ...widget,
+        id: "page",
+        sequence: 6,
+        partsJson: JSON.stringify([
+          {
+            type: "page_view",
+            version: 1,
+            title: "Blinds",
+            path: "/collections/all",
+            occurredAt: new Date().toISOString(),
+          },
+        ]),
+      },
+      {
+        ...widget,
+        id: "typed",
+        sequence: 6,
+        role: "user",
+        partsJson: JSON.stringify([{ type: "text", text: "Something else" }]),
+      },
+    ]) {
+      rows = conversation.conversationTimeline({
+        ...base,
+        messages: [widget, barrier],
+        voiceTranscripts: [
+          ...base.voiceTranscripts,
+          fragment(7, "An unrelated follow-up"),
+        ],
+      });
+      assert.ok(
+        rows.findIndex((row) => row.id === widgetId) <
+          rows.findIndex((row) => row.id === barrier.id),
+      );
+      assert.ok(
+        rows.findIndex((row) => row.id === barrier.id) <
+          rows.findIndex((row) => row.id === "caption-7"),
+      );
+    }
+    for (const extra of [{ role: "user" }, { voiceId: randomUUID() }]) {
+      rows = conversation.conversationTimeline({
+        ...base,
+        voiceTranscripts: [
+          ...base.voiceTranscripts,
+          fragment(6, "New turn", "assistant", extra),
+          fragment(7, "Later reply"),
+        ],
+      });
+      assert.ok(
+        rows.findIndex((row) => row.id === widgetId) <
+          rows.findIndex((row) => row.id === "caption-6"),
+      );
+    }
+  });
+
+test("combined voice products and guides persist together after captions and survive cancelled work and new voice sessions", async () => {
+  const session = await startVoice();
+  await caption(session, "Show this blind and its guides.", 0);
+  const turn = await conversation.beginTurn(id, textInput(""), session.id);
+  const productIds = ["gid://shopify/Product/123"];
+  const productPath = "/products/shade";
+  const guides = [
     {
-      ...widget,
-      id: "typed",
-      sequence: 6,
-      role: "user",
-      partsJson: JSON.stringify([{ type: "text", text: "Something else" }]),
+      kind: "fitting",
+      url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=123",
     },
+  ];
+  for (const [providerCallId, name, args, result] of [
+    ["lookup", "lookup_catalog", { ids: productIds }, { productIds }],
+    [
+      "guides",
+      "get_product_guides",
+      { productPath },
+      { productIds: [], outcome: { status: "found", productPath, guides } },
+    ],
   ]) {
-    rows = conversation.conversationTimeline({
-      ...base,
-      messages: [widget, barrier],
-      voiceTranscripts: [
-        ...base.voiceTranscripts,
-        fragment(7, "An unrelated follow-up"),
-      ],
+    const tool = await conversation.createToolInvocation(id, turn.assistantId, {
+      providerCallId,
+      name,
+      arguments: args,
     });
-    assert.ok(
-      rows.findIndex((row) => row.id === widgetId) <
-        rows.findIndex((row) => row.id === barrier.id),
-    );
-    assert.ok(
-      rows.findIndex((row) => row.id === barrier.id) <
-        rows.findIndex((row) => row.id === "caption-7"),
-    );
+    const claim = {
+      clientId,
+      claimToken: randomBytes(32).toString("base64url"),
+    };
+    await conversation.claimToolInvocation(id, tool.id, claim);
+    await conversation.completeToolInvocation(id, tool.id, claim, result);
   }
-  for (const extra of [{ role: "user" }, { voiceId: randomUUID() }]) {
-    rows = conversation.conversationTimeline({
-      ...base,
-      voiceTranscripts: [
-        ...base.voiceTranscripts,
-        fragment(6, "New turn", "assistant", extra),
-        fragment(7, "Later reply"),
-      ],
-    });
-    assert.ok(
-      rows.findIndex((row) => row.id === widgetId) <
-        rows.findIndex((row) => row.id === "caption-6"),
-    );
-  }
+  await conversation.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "UNSPOKEN_BRIEFING",
+    voiceId: session.id,
+    presentation: { callId: "show-products", productIds },
+    guidePresentation: {
+      callId: "show-guides",
+      sourceCallId: "guides",
+      productPath,
+      kinds: ["fitting"],
+    },
+  });
+  const spoken = await caption(
+    session,
+    "Here is the blind and its fitting guide link.",
+    200,
+    "assistant",
+  );
+  const snapshot = await conversation.getSnapshot(id);
+  const widget = snapshot.messages.at(-1);
+  assert.equal(snapshot.messages.at(-2).id, spoken.id);
+  assert.equal(widget.id, turn.assistantId);
+  assert.deepEqual(
+    widget.parts.map((part) => part.type),
+    ["products", "guides"],
+  );
+  assert.deepEqual(widget.parts[1].guides, guides);
+  assert.deepEqual(widget.parts[0].voiceReply, widget.parts[1].voiceReply);
+  const history = await conversation.getModelHistory(id);
+  assert.match(history.at(-1).text, /"type":"guides"/);
+  assert.doesNotMatch(JSON.stringify(history), /UNSPOKEN_BRIEFING/);
+  const pending = await conversation.beginTurn(id, textInput(""), session.id);
+  await conversation.finishTurn(id, pending.assistantId, {
+    status: "failed",
+    text: "",
+    error: "Cancelled.",
+  });
+  await voice.closeVoiceSession(id, session.id, clientId);
+  const next = await startVoice();
+  await caption(next, "A different question.", 0);
+  const after = await conversation.getSnapshot(id);
+  assert.deepEqual(
+    after.messages.find((message) => message.id === widget.id),
+    widget,
+  );
+  assert.ok(
+    after.messages.findIndex((message) => message.id === widget.id) <
+      after.messages.findIndex((message) => message.id === pending.assistantId),
+  );
+  assert.ok(
+    after.messages.findIndex((message) => message.id === widget.id) <
+      after.messages.length - 1,
+  );
 });
 
 test("ending chat closes voice and delegated work atomically while retaining captions", async () => {

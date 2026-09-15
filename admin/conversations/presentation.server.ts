@@ -1,6 +1,16 @@
+import type { ProductGuideKind } from "../../shared/product-guides";
+
 export interface ProductPresentation {
   callId: string;
   productIds: string[];
+}
+
+/** The source call is supplied by the runner, never by model-authored URLs. */
+export interface GuidePresentation {
+  callId: string;
+  sourceCallId: string;
+  productPath: string;
+  kinds: ProductGuideKind[];
 }
 
 const productId = /^gid:\/\/shopify\/Product\/\d+$/;

@@ -1,6 +1,10 @@
 import { useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
-import type { ConversationMessage } from "../../shared/conversation";
+import type { ConversationMessage, GuidePart } from "../../shared/conversation";
+import {
+  parseGuidePart,
+  PRODUCT_GUIDE_LABELS,
+} from "../../shared/product-guides";
 import type {
   ConversationInspection,
   ConversationOverview,
@@ -197,6 +201,10 @@ export function ConversationTimeline({
                     </p>
                   </div>
                 );
+              if (part.type === "guides")
+                return (
+                  <InspectedGuides key={index} part={part} origin={origin} />
+                );
               if (part.type === "voice")
                 return (
                   <div key={index}>
@@ -244,6 +252,45 @@ export function ConversationTimeline({
         </li>
       ))}
     </ol>
+  );
+}
+
+function InspectedGuides({
+  part,
+  origin,
+}: {
+  part: GuidePart;
+  origin: string;
+}) {
+  let guides: GuidePart["guides"];
+  try {
+    guides = parseGuidePart(part, origin).guides;
+  } catch {
+    return (
+      <p className="text-sm text-gray-600">
+        These saved product guides are unavailable.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p className="text-sm font-semibold">Product guides</p>
+      <ul className="list-inside list-disc text-sm">
+        {guides.map((guide) => (
+          <li key={guide.kind}>
+            <a
+              className="underline"
+              href={guide.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {PRODUCT_GUIDE_LABELS[guide.kind]}
+            </a>{" "}
+            <span className="text-gray-600">(PDF, opens in a new tab)</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -3,13 +3,13 @@ import type { Prisma, MeasurementDraft as StoredDraft } from "@prisma/client";
 import {
   parseMeasurementCall,
   parseMeasurementDraft,
-  parseMeasurementProductPath,
   parseMeasurementToolResult,
   type MeasurementCall,
   type MeasurementDraft,
   type MeasurementInput,
   type MeasurementToolResult,
 } from "../../shared/measurements";
+import { parseProductPath } from "../../shared/product-path";
 import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
 
@@ -75,7 +75,7 @@ export async function getMeasurementDraft(
   conversationId: string,
   productPath: string,
 ): Promise<MeasurementDraft | null> {
-  parseMeasurementProductPath(productPath);
+  parseProductPath(productPath);
   return prisma.$transaction(async (transaction) => {
     await requireActive(transaction, conversationId);
     return readDraft(transaction, conversationId, productPath);

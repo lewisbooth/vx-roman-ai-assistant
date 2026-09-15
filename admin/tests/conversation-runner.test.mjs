@@ -962,6 +962,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "get_product",
         "lookup_catalog",
         "navigate",
+        "get_product_guides",
         "set_measurements",
         "get_measurements",
         "get_cart",
@@ -971,6 +972,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "clear_cart",
         "apply_measurements",
         "show_products",
+        "show_guides",
       ],
     );
   }
@@ -1036,7 +1038,7 @@ test("catalog call budget leaves only presentation after four lookups and reject
     assert.equal(env.calls.requests.length, 5);
     assert.deepEqual(
       env.calls.requests[4].input.tools.map((tool) => tool.name),
-      ["show_products"],
+      ["show_products", "show_guides"],
     );
     assert.equal(env.calls.requests[4].input.tool_choice, "auto");
   }
@@ -1108,6 +1110,194 @@ const catalogResult = (...ids) => ({
 });
 const showCall = (ids, callId = "show-1") =>
   catalogCall(callId, "show_products", { productIds: ids.map(productGid) });
+const guidePath = "/products/shade-123";
+const guideResult = (kinds = ["measuring", "fitting"]) => ({
+  status: kinds.length ? "found" : "unavailable",
+  productPath: guidePath,
+  guides: kinds.map((kind) => ({
+    kind,
+    url: `https://hd-dev-single.myshopify.com/cdn/shop/files/${kind}.pdf?v=123`,
+  })),
+});
+const guideLookup = (callId = "guides-lookup") =>
+  catalogCall(callId, "get_product_guides", { productPath: guidePath });
+const guideSelection = (
+  args = { productPath: guidePath, kinds: ["fitting", "measuring"] },
+  callId = "guides-show",
+) => catalogCall(callId, "show_guides", args);
+
+test("guide lookup alone creates no widget and an explicit selection has only current lookup provenance", async () => {
+  for (const selected of [false, true]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [guideLookup()] })),
+      ...(selected
+        ? [events(completed("", { output: [guideSelection()] }))]
+        : []),
+      events(
+        completed(
+          "These are the product's guide links; I have not read the PDFs.",
+        ),
+      ),
+    );
+    const dispatched = [];
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (...args) => {
+        dispatched.push(args);
+        return guideResult();
+      },
+    );
+    assert.deepEqual(plain(dispatched), [
+      ["guides-lookup", "get_product_guides", { productPath: guidePath }],
+    ]);
+    assert.equal(reply.presentation, undefined);
+    assert.deepEqual(
+      plain(reply.guidePresentation ?? null),
+      selected
+        ? {
+            callId: "guides-show",
+            sourceCallId: "guides-lookup",
+            productPath: guidePath,
+            kinds: ["fitting", "measuring"],
+          }
+        : null,
+    );
+    if (selected) {
+      const response = env.calls.requests[2].input.input.find(
+        (item) =>
+          item.call_id === "guides-show" &&
+          item.type === "function_call_output",
+      );
+      assert.deepEqual(JSON.parse(response.output), {
+        productPath: guidePath,
+        selectedKinds: ["fitting", "measuring"],
+      });
+      assert.equal(
+        env.calls.requests[2].input.tools.some(
+          (tool) => tool.name === "show_guides",
+        ),
+        false,
+      );
+    }
+  }
+});
+
+test("guide presentation rejects invented URLs, source IDs, duplicate kinds and unavailable or historical guides", async (t) => {
+  const valid = { productPath: guidePath, kinds: ["fitting"] };
+  const cases = [
+    {
+      name: "invented URL",
+      args: { ...valid, url: "https://attacker.example/guide.pdf" },
+    },
+    { name: "invented source", args: { ...valid, sourceCallId: "old-call" } },
+    {
+      name: "different product",
+      args: { ...valid, productPath: "/products/other" },
+    },
+    {
+      name: "duplicate kinds",
+      args: { ...valid, kinds: ["fitting", "fitting"] },
+    },
+    { name: "unavailable kind", kinds: ["measuring"], args: valid },
+    { name: "unavailable product", kinds: [], args: valid },
+    { name: "only historical guides", historyOnly: true, args: valid },
+    { name: "failed refresh", refresh: true, args: valid },
+  ];
+  for (const entry of cases)
+    await t.test(entry.name, async () => {
+      const env = setup();
+      env.streams.push(
+        ...(entry.historyOnly
+          ? []
+          : [events(completed("", { output: [guideLookup()] }))]),
+        ...(entry.refresh
+          ? [events(completed("", { output: [guideLookup("refresh")] }))]
+          : []),
+        events(completed("", { output: [guideSelection(entry.args)] })),
+        events(completed("I could not display those guides.")),
+      );
+      const reply = await env.api.generateReply(
+        [{ role: "user", text: JSON.stringify(guideResult()) }],
+        () => {},
+        new AbortController().signal,
+        async (callId) =>
+          callId === "refresh"
+            ? { error: "The page changed." }
+            : guideResult(entry.kinds),
+      );
+      assert.equal(reply.guidePresentation, undefined);
+      const output = env.calls.requests
+        .at(-1)
+        .input.input.find(
+          (item) =>
+            item.call_id === "guides-show" &&
+            item.type === "function_call_output",
+        );
+      assert.match(
+        JSON.parse(output.output).error,
+        /No guide cards were selected/,
+      );
+    });
+});
+
+test("one guide group per reply cannot be replaced by a second presentation", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(completed("", { output: [guideSelection()] })),
+    events(
+      completed("", { output: [guideSelection(undefined, "guides-again")] }),
+    ),
+  );
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => guideResult(),
+    ),
+    /guide presentation limit/,
+  );
+});
+
+test("text and voice runners carry guide selection to their durable finish without another browser action", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [guideLookup()] })),
+      events(completed("", { output: [guideSelection()] })),
+      events(
+        completed("The product's fitting and measuring links are available."),
+      ),
+    );
+    env.mock.executeTool = async () => guideResult();
+    if (mode === "voice") {
+      voiceHistory(env, [
+        { role: "user", text: "Show the guides for this blind." },
+      ]);
+      await env.api.runVoiceDelegation(
+        "voice",
+        VOICE_ID,
+        firstInput.requestId,
+        new AbortController().signal,
+      );
+    } else {
+      await env.api.startTurn("text", firstInput);
+      await flush();
+    }
+    assert.equal(env.calls.browserTools.length, 1);
+    assert.equal(env.calls.finishes.length, 1);
+    assert.deepEqual(plain(env.calls.finishes[0].result.guidePresentation), {
+      callId: "guides-show",
+      sourceCallId: "guides-lookup",
+      productPath: guidePath,
+      kinds: ["fitting", "measuring"],
+    });
+  }
+});
 
 test("explicit product presentation selects only the requested ordered subset without browser dispatch", async () => {
   const env = setup();
@@ -1329,9 +1519,9 @@ test("a second presentation attempt fails without replacing the first selection"
   assert.equal(env.calls.requests.length, 3);
 });
 
-test("four browser calls and one local presentation leave a final answer round without tools", async () => {
+test("four browser calls and both local presentations leave a final answer round without tools", async () => {
   const env = setup();
-  for (let index = 0; index < 3; index++)
+  for (let index = 0; index < 2; index++)
     env.streams.push(
       events(
         completed("", {
@@ -1349,7 +1539,9 @@ test("four browser calls and one local presentation leave a final answer round w
         ],
       }),
     ),
+    events(completed("", { output: [guideLookup()] })),
     events(completed("", { output: [showCall([123])] })),
+    events(completed("", { output: [guideSelection()] })),
     events(completed("I opened the product and selected this option.")),
   );
   const dispatched = [];
@@ -1361,21 +1553,28 @@ test("four browser calls and one local presentation leave a final answer round w
       dispatched.push(args);
       return args[1] === "navigate"
         ? { status: "navigated", path: "/products/shade-123" }
-        : catalogResult(123);
+        : args[1] === "get_product_guides"
+          ? guideResult()
+          : catalogResult(123);
     },
   );
   assert.equal(dispatched.length, 4);
-  assert.deepEqual(plain(dispatched[3]), [
+  assert.deepEqual(plain(dispatched[2]), [
     "navigate-1",
     "navigate",
     { path: "/products/shade-123" },
   ]);
   assert.deepEqual(
     env.calls.requests[4].input.tools.map((tool) => tool.name),
-    ["show_products"],
+    ["show_products", "show_guides"],
   );
-  assert.equal(env.calls.requests[5].input.tools, undefined);
+  assert.deepEqual(
+    env.calls.requests[5].input.tools.map((tool) => tool.name),
+    ["show_guides"],
+  );
+  assert.equal(env.calls.requests[6].input.tools, undefined);
   assert.equal(reply.presentation.productIds[0], productGid(123));
+  assert.equal(reply.guidePresentation.sourceCallId, "guides-lookup");
 });
 
 test("navigation success is passed to the model without creating product evidence", async () => {

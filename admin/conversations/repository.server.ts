@@ -43,6 +43,13 @@ import {
 import { isStorefrontPagePath } from "../../shared/journey";
 import { groupVoiceTranscript } from "../../shared/voice-transcript";
 import {
+  parseProductGuidesCall,
+  parseProductGuidesResult,
+  parseGuideSelection,
+  parseGuidePart,
+  type ProductGuidesResult,
+} from "../../shared/product-guides";
+import {
   expireVoiceSessions,
   expiredVoiceSessionWhere,
   recoverVoiceSessions,
@@ -52,6 +59,7 @@ import { ConversationError } from "./errors.server";
 import {
   parseProductSelection,
   type ProductPresentation,
+  type GuidePresentation,
 } from "./presentation.server";
 
 const processStartedAt = new Date();
@@ -96,6 +104,10 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
       Object.keys(part).length === 2
     )
       continue;
+    if (part.type === "guides") {
+      parseGuidePart(part, origin);
+      continue;
+    }
     if (
       part.type === "products" &&
       part.version === 1 &&
@@ -142,6 +154,8 @@ function storedBrowserCall(
 ): { name: BrowserToolName; arguments: Record<string, unknown> } {
   if (name === "navigate")
     return { name, arguments: parseNavigationCall(input) };
+  if (name === "get_product_guides")
+    return { name, arguments: parseProductGuidesCall(input) };
   if (name === "apply_measurements")
     return { name, arguments: { ...parseApplyMeasurementsCommand(input) } };
   return isCartTool(name)
@@ -200,6 +214,12 @@ function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
   return { id: tool.id, ...call, status: tool.status };
 }
 
+function voiceAssociation(part: ConversationPart) {
+  return part.type === "products" || part.type === "guides"
+    ? part.voiceReply
+    : undefined;
+}
+
 export function conversationTimeline(
   conversation: Pick<
     StoredConversation,
@@ -227,9 +247,10 @@ export function conversationTimeline(
     };
   });
   const voicePlacements = rows.flatMap((row) =>
-    row.message.parts.flatMap((part) =>
-      part.type === "products" && part.voiceReply ? [part.voiceReply] : [],
-    ),
+    row.message.parts.flatMap((part) => {
+      const reply = voiceAssociation(part);
+      return reply ? [reply] : [];
+    }),
   );
   const captionBoundaries = voicePlacements.flatMap((reply) => {
     const nextMessage = rows.find((row) => row.sequence >= reply.afterSequence);
@@ -254,9 +275,7 @@ export function conversationTimeline(
       .filter(
         (row) =>
           (row.message.parts.length === 0 && row.message.status !== "failed") ||
-          row.message.parts.some(
-            (part) => part.type === "products" && part.voiceReply,
-          ),
+          row.message.parts.some((part) => voiceAssociation(part)),
       )
       .map((row) => row.sequence),
     captionBoundaries,
@@ -288,8 +307,7 @@ export function conversationTimeline(
   // Never cross a customer turn, page visit, different voice or another result.
   const positions = new Map<string, number>();
   for (const row of rows) {
-    const product = row.message.parts.find((part) => part.type === "products");
-    const reply = product?.voiceReply;
+    const reply = row.message.parts.map(voiceAssociation).find(Boolean);
     if (!reply || row.message.role !== "context") continue;
     let position = reply.afterSequence - 0.5;
     for (const next of rows) {
@@ -611,6 +629,7 @@ export async function getBrowserToolContext(id: string, invocationId: string) {
       "get_product",
       "lookup_catalog",
       "apply_measurements",
+      "get_product_guides",
     ].includes(tool.name)
   )
     throw new ConversationError(400, "This invocation is not a browser tool.");
@@ -766,6 +785,7 @@ export async function finishTurn(
     serviceTier?: string;
     voiceId?: string;
     presentation?: ProductPresentation;
+    guidePresentation?: GuidePresentation;
   },
 ): Promise<void> {
   await prisma.$transaction(async (transaction) => {
@@ -858,6 +878,96 @@ export async function finishTurn(
             }
           : {}),
       });
+    }
+    if (result.status === "complete" && result.guidePresentation) {
+      const selected = result.guidePresentation;
+      let selection;
+      try {
+        selection = parseGuideSelection({
+          productPath: selected.productPath,
+          kinds: selected.kinds,
+        });
+      } catch {
+        throw new ConversationError(400, "Invalid guide selection.");
+      }
+      if (
+        typeof selected.callId !== "string" ||
+        !selected.callId ||
+        selected.callId.length > 200 ||
+        typeof selected.sourceCallId !== "string" ||
+        !selected.sourceCallId ||
+        selected.sourceCallId.length > 200
+      )
+        throw new ConversationError(400, "Invalid guide presentation source.");
+      const source = conversation.toolInvocations.find(
+        (tool) =>
+          tool.providerCallId === selected.sourceCallId &&
+          tool.assistantId === assistantId &&
+          tool.name === "get_product_guides" &&
+          tool.status === "complete" &&
+          !tool.error,
+      );
+      if (!source?.resultJson)
+        throw new ConversationError(
+          400,
+          "Guide cards require this reply's successful product-guide lookup.",
+        );
+      const found = parseProductGuidesResult(
+        JSON.parse(source.resultJson),
+        conversation.origin,
+      );
+      const sourcePath = parseProductGuidesCall(
+        JSON.parse(source.argumentsJson),
+      ).productPath;
+      if (
+        found.status !== "found" ||
+        sourcePath !== selection.productPath ||
+        found.productPath !== selection.productPath ||
+        selection.kinds.some(
+          (kind) => !found.guides.some((guide) => guide.kind === kind),
+        )
+      )
+        throw new ConversationError(
+          400,
+          "Select only guide kinds returned for this product in this reply.",
+        );
+      const presentation = await transaction.toolInvocation.create({
+        data: {
+          id: randomUUID(),
+          conversationId: id,
+          assistantId,
+          providerCallId: selected.callId,
+          name: "show_guides",
+          argumentsJson: JSON.stringify({
+            ...selection,
+            sourceCallId: selected.sourceCallId,
+          }),
+          status: "complete",
+          completedAt: new Date(),
+        },
+      });
+      content.push(
+        parseGuidePart(
+          {
+            type: "guides",
+            version: 1,
+            invocationId: presentation.id,
+            productPath: selection.productPath,
+            guides: selection.kinds.map((kind) =>
+              found.guides.find((guide) => guide.kind === kind)!,
+            ),
+            ...(message.role === "context" && result.voiceId
+              ? {
+                  voiceReply: {
+                    voiceId: result.voiceId,
+                    afterSequence: conversation.nextSequence,
+                  },
+                }
+              : {}),
+          },
+          conversation.origin,
+        ),
+      );
     }
     const finished = await transaction.conversationMessage.updateMany({
       where: { id: assistantId, conversationId: id, status: "pending" },
@@ -1292,7 +1402,7 @@ export async function completeToolInvocation(
   result: {
     productIds: string[];
     error?: string;
-    outcome?: StoredActionResult;
+    outcome?: StoredActionResult | ProductGuidesResult;
   },
 ): Promise<void> {
   validateClaim(claim);
@@ -1316,20 +1426,35 @@ export async function completeToolInvocation(
         401,
         "This storefront result belongs to another executor.",
       );
-    const hasActionResult =
-      isCartTool(tool.name) || tool.name === "apply_measurements";
-    const outcome = hasActionResult
+    const persistsOutcome =
+      isCartTool(tool.name) ||
+      tool.name === "apply_measurements" ||
+      tool.name === "get_product_guides";
+    const outcome = persistsOutcome
       ? result.outcome === undefined
         ? requiresConfirmation(tool.name) && error
           ? interruptedActionResult(tool, true)
           : undefined
-        : storedActionResult(tool, result.outcome)
+        : tool.name === "get_product_guides"
+          ? parseProductGuidesResult(result.outcome, conversation.origin)
+          : storedActionResult(tool, result.outcome)
       : undefined;
     if (
-      (result.outcome !== undefined && !hasActionResult) ||
-      (hasActionResult && (result.productIds.length || (!error && !outcome)))
+      tool.name === "get_product_guides" &&
+      outcome &&
+      "guides" in outcome &&
+      outcome.productPath !==
+        parseProductGuidesCall(JSON.parse(tool.argumentsJson)).productPath
     )
-      throw new ConversationError(400, "Invalid cart action completion.");
+      throw new ConversationError(
+        400,
+        "The guide links belong to another product.",
+      );
+    if (
+      (result.outcome !== undefined && !persistsOutcome) ||
+      (persistsOutcome && (result.productIds.length || (!error && !outcome)))
+    )
+      throw new ConversationError(400, "Invalid storefront completion.");
     const resultJson = outcome === undefined ? null : JSON.stringify(outcome);
     if (tool.status === "complete" || tool.status === "failed") {
       if (

@@ -15,6 +15,11 @@ import {
 } from "../../../shared/navigation-tool";
 import type { AssistantTools } from "../tools";
 import {
+  parseProductGuidesCall,
+  parseProductGuidesResult,
+  type ProductGuidesResult,
+} from "../../../shared/product-guides";
+import {
   parseCartCall,
   parseCartResult,
   requiresCartConfirmation,
@@ -39,7 +44,11 @@ import {
 } from "./tool-approval";
 
 export type BrowserToolResult =
-  CatalogResult | NavigationResult | CartToolResult | ApplyMeasurementsResult;
+  | CatalogResult
+  | NavigationResult
+  | CartToolResult
+  | ApplyMeasurementsResult
+  | ProductGuidesResult;
 export type PreparedToolApproval = ToolApprovalReview;
 
 const DISPLAY_CACHE_MS = 60_000;
@@ -255,10 +264,33 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<CartToolResult>;
   function execute(
+    name: "get_product_guides",
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<ProductGuidesResult>;
+  function execute(
     name: string,
     input: unknown,
     signal?: AbortSignal,
   ): Promise<BrowserToolResult> {
+    if (name === "get_product_guides") {
+      const call = parseProductGuidesCall(input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          const raw = await tools.execute(name, call, signal);
+          requireCurrentStore();
+          signal.throwIfAborted();
+          const result = parseProductGuidesResult(raw, storefrontOrigin);
+          if (result.productPath !== call.productPath)
+            throw new Error(
+              "The storefront returned guides for a different product.",
+            );
+          return result;
+        },
+        signal,
+      );
+    }
     if (name === "get_cart") {
       const call = parseCartCall(name, input);
       return enqueue(

@@ -13,7 +13,8 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
     contents: `export * from "./admin/measurements/service.server.ts";
-      export * from "./shared/measurements.ts";`,
+      export * from "./shared/measurements.ts";
+      export * from "./shared/product-path.ts";`,
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -164,7 +165,7 @@ test("canonical product scope rejects collection aliases, queries and encoded ro
     "/products/a\\b",
     "/products/a%252fb",
   ])
-    assert.throws(() => api.parseMeasurementProductPath(productPath));
+    assert.throws(() => api.parseProductPath(productPath));
   assert.throws(() =>
     api.parseMeasurementCall("get_measurements", {
       productPath: input.productPath,
