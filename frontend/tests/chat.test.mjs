@@ -637,9 +637,11 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   assert.match(ctx.container.textContent, /Your saved conversation/);
   assert.equal(ctx.input().value, "Unsent draft");
   finish();
+  // The external-store update can render Welcome before endChat's promise
+  // continuation resets the composer and releases its local pending state.
   await until(
-    () => ctx.container.querySelector(".roman-welcome"),
-    "End did not return to the empty screen",
+    () => ctx.container.querySelector(".roman-welcome") && !ctx.input().disabled,
+    "End did not return to a ready empty chat",
   );
   assert.equal(ctx.input().value, "");
   assert.equal(ctx.input().disabled, false);
