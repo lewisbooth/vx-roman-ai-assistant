@@ -117,7 +117,9 @@ function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
   return { id: tool.id, ...call, status: tool.status };
 }
 
-function timeline(conversation: StoredConversation): ConversationMessage[] {
+export function conversationTimeline(
+  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts">,
+): ConversationMessage[] {
   const rows = conversation.messages.map((message) => {
     if (
       !["user", "assistant", "context"].includes(message.role) ||
@@ -174,7 +176,7 @@ function timeline(conversation: StoredConversation): ConversationMessage[] {
 }
 
 function snapshot(conversation: StoredConversation): ConversationSnapshot {
-  const messages = timeline(conversation);
+  const messages = conversationTimeline(conversation);
   const voice =
     conversation.voiceSessions.find((session) =>
       ["starting", "active"].includes(session.status),
@@ -246,7 +248,7 @@ function requireActive(conversation: Conversation) {
 function modelHistory(
   conversation: StoredConversation,
 ): { role: "user" | "assistant"; text: string }[] {
-  return timeline(conversation).flatMap((message) => {
+  return conversationTimeline(conversation).flatMap((message) => {
     if (message.status === "pending") return [];
     const content = message.parts;
     const text = (message.status === "complete" ? content : [])
