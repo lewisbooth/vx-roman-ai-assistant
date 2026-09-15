@@ -1,0 +1,133 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { build } from "esbuild";
+import { JSDOM } from "jsdom";
+import { voiceMedia } from "./helpers/voice-media.mjs";
+
+const bundle = await build({
+  entryPoints: ["frontend/src/session/voice-connection.ts"],
+  bundle: true,
+  write: false,
+  format: "iife",
+  globalName: "Voice",
+  platform: "browser",
+});
+function setup(t, options) {
+  const dom = new JSDOM("<!doctype html>", {
+    url: "https://hd-dev-single.myshopify.com",
+    runScripts: "outside-only",
+  });
+  const { window } = dom;
+  const media = voiceMedia(window, options);
+  const errors = [];
+  window.eval(`${bundle.outputFiles[0].text}\nwindow.Voice = Voice;`);
+  const connection = window.Voice.createVoiceConnection((message) =>
+    errors.push(message),
+  );
+  t.after(() => {
+    connection.close();
+    window.close();
+  });
+  return { window, media, errors, connection };
+}
+
+test("voice requests audio only on prepare, and waits for started, peer and playback before becoming ready", async (t) => {
+  const { connection, media } = setup(t);
+  assert.equal(media.calls.microphone, 0);
+  assert.match(await connection.prepare(), /roman-offer/);
+  assert.deepEqual(JSON.parse(JSON.stringify(media.calls.constraints)), {
+    audio: true,
+  });
+  assert.equal(media.peers[0].channel.name, "oai-events");
+  let ready = false;
+  const connecting = connection.connect("v=0\r\no=answer").then(() => {
+    ready = true;
+  });
+  media.connect({ started: false });
+  await Promise.resolve();
+  assert.equal(ready, false);
+  media.event("session.started");
+  await connecting;
+  assert.equal(ready, true);
+  connection.setMuted(true);
+  assert.equal(media.tracks[0].enabled, false);
+  connection.setMuted(false);
+  assert.equal(media.tracks[0].enabled, true);
+  connection.close();
+  assert.ok(media.tracks.every((track) => track.stopped));
+  assert.equal(media.peers[0].closed, true);
+  assert.equal(media.peers[0].channel.closed, true);
+  assert.equal(media.calls.pause, 1);
+});
+
+test("stopping while permission is pending stops a late microphone without creating a peer", async (t) => {
+  let allow;
+  const { connection, media } = setup(t, {
+    getUserMedia: (stream) =>
+      new Promise((resolve) => {
+        allow = () => resolve(stream);
+      }),
+  });
+  const preparing = connection.prepare();
+  connection.close();
+  allow();
+  await assert.rejects(preparing, /stopped/);
+  assert.equal(media.peers.length, 0);
+  assert.equal(media.tracks[0].stopped, true);
+});
+
+test("browser data messages cannot execute tools or upload captions", async (t) => {
+  const { connection, media, errors } = setup(t);
+  await connection.prepare();
+  const connecting = connection.connect("answer");
+  media.event("function_call", {
+    name: "navigate",
+    arguments: '{"path":"/cart"}',
+  });
+  media.event("conversation.item.input_audio_transcription.completed", {
+    transcript: "untrusted",
+  });
+  media.peers[0].channel.onmessage({ data: "not json" });
+  media.connect();
+  await connecting;
+  assert.deepEqual(errors, []);
+});
+
+test("blocked audio playback closes microphone and reports an actionable error", async (t) => {
+  const { connection, media, errors } = setup(t, {
+    play: () => Promise.reject(new Error("not allowed")),
+  });
+  await connection.prepare();
+  const connecting = connection.connect("answer");
+  media.connect();
+  await assert.rejects(connecting, /blocked Roman's audio/);
+  assert.equal(media.tracks[0].stopped, true);
+  assert.equal(media.peers[0].closed, true);
+  assert.equal(errors.length, 1);
+});
+
+test("a peer disconnect stops microphone and playback rather than reconnecting", async (t) => {
+  const { connection, media, errors } = setup(t);
+  await connection.prepare();
+  const connecting = connection.connect("answer");
+  media.connect();
+  await connecting;
+  media.peers[0].connectionState = "disconnected";
+  media.peers[0].onconnectionstatechange();
+  assert.equal(media.tracks[0].stopped, true);
+  assert.equal(media.calls.pause, 1);
+  assert.equal(media.calls.microphone, 1);
+  assert.match(errors[0], /disconnected/);
+});
+
+test("removing the microphone ends voice without opening another device", async (t) => {
+  const { connection, media, errors } = setup(t);
+  await connection.prepare();
+  const connecting = connection.connect("answer");
+  media.connect();
+  await connecting;
+  media.tracks[0].onended();
+  assert.equal(media.peers[0].closed, true);
+  assert.equal(media.calls.microphone, 1);
+  assert.match(errors[0], /microphone disconnected/);
+});

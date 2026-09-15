@@ -3,12 +3,14 @@ import type {
   JourneyInput,
 } from "../../../shared/conversation";
 import type { CatalogResult } from "../../../shared/catalog";
+import type { VoiceClientState } from "../../../shared/voice";
 
 export interface ConversationClientState {
   conversation: ConversationSnapshot | null;
   pending: boolean;
   restoring: boolean;
   error: string | null;
+  voice: VoiceClientState;
 }
 
 export interface ConversationClient {
@@ -18,6 +20,9 @@ export interface ConversationClient {
   sendMessage(text: string): Promise<void>;
   recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;
   loadProducts(ids: string[]): Promise<CatalogResult>;
+  startVoice(): Promise<void>;
+  stopVoice(): Promise<void>;
+  setVoiceMuted(muted: boolean): void;
   end(): Promise<void>;
   clearError(): void;
   dispose(): void;

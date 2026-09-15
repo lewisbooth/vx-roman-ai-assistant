@@ -214,6 +214,38 @@
     background: linear-gradient(transparent, #f7f5ef 14px);
   }
 
+  .roman-voice-controls {
+    @apply flex shrink-0 flex-wrap items-center gap-[8px] px-[26px] pt-[10px] text-[12px] text-[#4e0e0e];
+  }
+
+  .roman-voice-controls button {
+    @apply min-h-[36px] cursor-pointer rounded-full border border-solid border-[#d1cbc0] bg-[#f7f5ef] px-[12px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
+    font-family: inherit;
+  }
+
+  .roman-voice-controls button:focus-visible {
+    outline: 2px solid #4e0e0e;
+    outline-offset: 3px;
+  }
+
+  .roman-voice-controls .roman-chat-error {
+    @apply w-full pb-0;
+  }
+
+  .roman-voice-status:empty {
+    display: none;
+  }
+
+  .roman-voice-dock {
+    @apply fixed bottom-[84px] left-[16px] z-[2147483647] max-w-[calc(100vw-32px)] rounded-[18px] border border-solid border-[#d1cbc0] bg-[#f7f5ef] p-[12px] font-serif;
+    pointer-events: auto;
+    box-shadow: 0 2px 12px #0002;
+  }
+
+  .roman-voice-label {
+    @apply mb-[4px] block text-[11px] text-[#797366];
+  }
+
   .roman-composer form {
     @apply flex items-end gap-[10px];
   }

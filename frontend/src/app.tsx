@@ -6,10 +6,12 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { createPortal } from "react-dom";
 import { createMemoryRouter, useRouteError } from "react-router";
 import { Composer } from "./chat/Composer";
 import { Timeline } from "./chat/Timeline";
 import { Welcome } from "./chat/Welcome";
+import { VoiceControls } from "./chat/VoiceControls";
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
@@ -21,6 +23,7 @@ type AssistantProps = {
   tools: AssistantTools;
   session: ConversationClient;
   showTools: boolean;
+  voiceDock?: HTMLElement;
   onReady: () => void;
   onError: (error: unknown) => void;
 };
@@ -32,6 +35,7 @@ function Assistant({
   session,
   showTools,
   onReady,
+  voiceDock,
 }: AssistantProps) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const viewport = useRef<HTMLDivElement>(null);
@@ -42,6 +46,16 @@ function Assistant({
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
   const [chatVersion, setChatVersion] = useState(0);
+  const voice = state.voice;
+  const localVoice =
+    voice.status === "starting" ||
+    voice.status === "active" ||
+    voice.status === "stopping" ||
+    (voice.status === "error" && voice.muted);
+  const waitingForVoice =
+    !localVoice &&
+    (state.conversation?.voice?.status === "starting" ||
+      state.conversation?.voice?.status === "active");
 
   async function endChat() {
     if (endingRef.current) return;
@@ -123,10 +137,29 @@ function Assistant({
         )}
         {showTools && <Development navigation={navigation} tools={tools} />}
       </div>
+      <VoiceControls
+        session={session}
+        voice={voice}
+        disabled={
+          ending ||
+          state.pending ||
+          state.restoring ||
+          !!state.conversation?.busy
+        }
+        waiting={waitingForVoice}
+      />
+      {voiceDock &&
+        localVoice &&
+        createPortal(
+          <VoiceControls session={session} voice={voice} dock />,
+          voiceDock,
+        )}
       <Composer
         key={chatVersion}
         busy={
           ending ||
+          localVoice ||
+          waitingForVoice ||
           state.pending ||
           state.restoring ||
           !!state.conversation?.busy

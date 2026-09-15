@@ -1,6 +1,6 @@
 # Roman AI Assistant
 
-A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. Development stores have persistent Luna text chat, live catalog recommendations, selected product cards, navigation on request and a browsing timeline. Voice, cart/measurement tool calls and home visualization follow in later phases.
+A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. Customer conversations combine Luna text chat, GPT-Live voice captions, selected product cards and a browsing timeline. Both modes can search the catalog and navigate on request. Model cart/measurement actions and home visualization follow in later phases.
 
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 
@@ -10,7 +10,7 @@ Two React Router apps with Tailwind CSS 4 share one npm installation and lockfil
 | [admin/](admin/README.md)                                             | Embedded admin console, authentication, webhooks and backend | Local Docker; same image on Azure later   |
 | [extensions/vx-roman-ai-assistant/](extensions/vx-roman-ai-assistant) | Liquid app embed and asset loader                            | Shopify                                   |
 
-Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation models persist customer chat. AI credentials and privileged calls belong on the admin/backend server.
+Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation and voice models persist customer chat and captions. AI credentials and privileged calls belong on the admin/backend server. OpenAI hosts the models; browser voice audio travels directly over WebRTC. Roman stores captions, not audio. Start voice explicitly after a full page load; in-place navigation and closing the sidebar retain an active connection.
 
 ## Setup and development
 

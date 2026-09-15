@@ -66,6 +66,8 @@ async function setup(t, options = {}) {
   const host = window.document.querySelector("roman-ai-assistant");
   const container = window.document.createElement("div");
   host.attachShadow({ mode: "open" }).append(container);
+  const voiceDock = window.document.createElement("div");
+  host.shadowRoot.append(voiceDock);
   const listeners = new Set();
   const calls = [];
   const endCalls = [];
@@ -76,6 +78,7 @@ async function setup(t, options = {}) {
     pending: false,
     restoring: false,
     error: null,
+    voice: { status: "idle", muted: false, error: null },
     ...options.state,
   };
   const update = (changes) => {
@@ -110,6 +113,15 @@ async function setup(t, options = {}) {
       );
     },
     dispose() {},
+    startVoice: async () => {
+      update({ voice: { status: "active", muted: false, error: null } });
+    },
+    stopVoice: async () => {
+      update({ voice: { status: "idle", muted: false, error: null } });
+    },
+    setVoiceMuted: (muted) => {
+      update({ voice: { ...state.voice, muted } });
+    },
   };
   const navigationState = {
     url: window.location.href,
@@ -130,6 +142,7 @@ async function setup(t, options = {}) {
     },
     tools: { execute: async () => ({}) },
     session,
+    voiceDock,
     showTools: options.showTools ?? false,
     onReady: () => {
       ready = true;
@@ -159,6 +172,7 @@ async function setup(t, options = {}) {
   return {
     window,
     container,
+    voiceDock,
     calls,
     update,
     input,
@@ -534,7 +548,9 @@ test("unrelated lookup matches cannot replace an unavailable selected product", 
   });
   await until(
     () =>
-      ctx.container.textContent.includes("These products are no longer available"),
+      ctx.container.textContent.includes(
+        "These products are no longer available",
+      ),
     "The unavailable selected product was replaced with an unrelated match",
   );
   assert.equal(ctx.container.querySelector(".roman-product-card"), null);
@@ -640,7 +656,8 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   // The external-store update can render Welcome before endChat's promise
   // continuation resets the composer and releases its local pending state.
   await until(
-    () => ctx.container.querySelector(".roman-welcome") && !ctx.input().disabled,
+    () =>
+      ctx.container.querySelector(".roman-welcome") && !ctx.input().disabled,
     "End did not return to a ready empty chat",
   );
   assert.equal(ctx.input().value, "");
@@ -731,4 +748,101 @@ test("a late card lookup cannot repopulate a cleared conversation", async (t) =>
   await delay(0);
   assert.equal(ctx.container.querySelector(".roman-product-card"), null);
   assert.deepEqual(ctx.errors, []);
+});
+
+test("voice captions render as labelled plain text alongside the existing transcript", async (t) => {
+  const caption = {
+    ...message("voice-message", "assistant", ""),
+    parts: [
+      {
+        type: "voice",
+        version: 1,
+        voiceId: "22222222-2222-4222-8222-222222222222",
+        text: "**Hello** <img src=x onerror=alert(1)>",
+        startMs: 0,
+        endMs: 500,
+      },
+    ],
+  };
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([
+        message("text-message", "user", "My kitchen"),
+        caption,
+      ]),
+    },
+  });
+  const rendered = ctx.container.querySelector(".roman-voice-caption");
+  assert.equal(
+    rendered.querySelector(".roman-voice-label").textContent,
+    "Voice",
+  );
+  assert.equal(rendered.querySelector("p").textContent, caption.parts[0].text);
+  assert.equal(rendered.querySelector("strong, img, script"), null);
+  assert.match(
+    ctx.container.querySelector(".roman-timeline").textContent,
+    /My kitchen/,
+  );
+});
+
+test("explicit voice controls mute, preserve chat, and expose a dock outside the panel", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([
+        message("user-message", "user", "My kitchen"),
+      ]),
+    },
+  });
+  const button = (label, parent = ctx.container) =>
+    [...parent.querySelectorAll("button")].find(
+      (item) => item.textContent === label,
+    );
+  assert.equal(ctx.input().disabled, false);
+  button("Start voice").click();
+  await until(
+    () => !!button("Mute microphone"),
+    "Voice controls did not become active",
+  );
+  assert.equal(ctx.input().disabled, true);
+  assert.ok(button("Stop voice", ctx.voiceDock));
+  assert.equal(ctx.container.contains(ctx.voiceDock), false);
+  button("Mute microphone", ctx.voiceDock).click();
+  await until(
+    () => !!button("Unmute microphone"),
+    "Mute did not synchronize with sidebar",
+  );
+  assert.equal(
+    button("Unmute microphone").getAttribute("aria-pressed"),
+    "true",
+  );
+  button("Stop voice", ctx.voiceDock).click();
+  await until(() => !!button("Start voice"), "Stop did not return to text");
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.voiceDock.childElementCount, 0);
+  assert.match(
+    ctx.container.querySelector(".roman-timeline").textContent,
+    /My kitchen/,
+  );
+});
+
+test("a restored server voice shows an explicit switch to text without activating the microphone", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      conversation: {
+        ...activeConversation([]),
+        voice: { id: "voice", clientId: "previous-owner", status: "active" },
+      },
+    },
+  });
+  assert.match(
+    ctx.container.querySelector(".roman-voice-status").textContent,
+    /Voice is active in another page/,
+  );
+  assert.ok(
+    [...ctx.container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Switch to text",
+    ),
+  );
+  assert.equal(ctx.input().disabled, true);
+  assert.equal(ctx.voiceDock.childElementCount, 0);
 });

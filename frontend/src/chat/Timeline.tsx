@@ -57,6 +57,13 @@ export function Timeline({
                     </StorefrontLink>
                   </p>
                 );
+              if (part.type === "voice")
+                return (
+                  <div key={index} className="roman-voice-caption">
+                    <span className="roman-voice-label">Voice</span>
+                    <p className="roman-message-text">{part.text}</p>
+                  </div>
+                );
               return (
                 <ProductCards
                   key={part.invocationId}

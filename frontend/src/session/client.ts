@@ -1,5 +1,6 @@
 import {
   MAX_MESSAGE_LENGTH,
+  MAX_CONVERSATION_MESSAGES,
   CONVERSATION_STORAGE_KEY,
   type ConversationBootstrap,
   type ConversationCredential,
@@ -15,9 +16,31 @@ import {
 } from "../../../shared/navigation-tool";
 import type { createStorefrontExecutor } from "./storefront-executor";
 import type { ConversationClient, ConversationClientState } from "./types";
+import { createVoiceConnection } from "./voice-connection";
+import type { VoiceClientState } from "../../../shared/voice";
 
 const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const idleVoice: VoiceClientState = {
+  status: "idle",
+  muted: false,
+  error: null,
+};
+
+function voiceSnapshot(value: unknown) {
+  return (
+    value == null ||
+    (record(value) &&
+      typeof value.id === "string" &&
+      UUID.test(value.id) &&
+      typeof value.clientId === "string" &&
+      UUID.test(value.clientId) &&
+      ["starting", "active", "closed", "failed"].includes(
+        String(value.status),
+      ) &&
+      (value.error === undefined || typeof value.error === "string"))
+  );
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -59,6 +82,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
     (value.status === "active" || value.status === "ended") &&
     Number.isSafeInteger(value.revision) &&
     Number(value.revision) >= 0 &&
+    voiceSnapshot(value.voice) &&
     Array.isArray(value.tools) &&
     value.tools.length <= 4 &&
     value.tools.every((tool) => {
@@ -78,7 +102,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
       }
     }) &&
     Array.isArray(value.messages) &&
-    value.messages.length <= 280 &&
+    value.messages.length <= MAX_CONVERSATION_MESSAGES &&
     value.messages.every(
       (message) =>
         record(message) &&
@@ -94,6 +118,18 @@ function snapshot(value: unknown): value is ConversationSnapshot {
           (part) =>
             record(part) &&
             ((part.type === "text" && typeof part.text === "string") ||
+              (part.type === "voice" &&
+                part.version === 1 &&
+                typeof part.voiceId === "string" &&
+                UUID.test(part.voiceId) &&
+                typeof part.text === "string" &&
+                part.text.length <= 60_000 &&
+                typeof part.startMs === "number" &&
+                Number.isFinite(part.startMs) &&
+                Number(part.startMs) >= 0 &&
+                typeof part.endMs === "number" &&
+                Number.isFinite(part.endMs) &&
+                Number(part.endMs) >= Number(part.startMs)) ||
               (part.type === "products" &&
                 part.version === 1 &&
                 typeof part.invocationId === "string" &&
@@ -133,6 +169,7 @@ export function createConversationClient(
     pending: false,
     restoring: false,
     error: null,
+    voice: idleVoice,
   };
   let access: ConversationCredential | null = null;
   let resumeAccess: ConversationCredential | null = null;
@@ -144,9 +181,16 @@ export function createConversationClient(
   let appliedSequence = 0;
   let epoch = 0;
   let ending = false;
+  let voiceEpoch = 0;
+  let voiceId: string | undefined;
+  let voiceConnection: ReturnType<typeof createVoiceConnection> | undefined;
+  let heartbeatTimer: number | undefined;
+  let voiceLimitTimer: number | undefined;
+  let voiceStop: Promise<void> | undefined;
   let journeyQueue: Promise<unknown> = Promise.resolve();
   let processingTool = false;
   let toolController: AbortController | undefined;
+  let activeToolId: string | undefined;
   const clientId = window.crypto.randomUUID();
   const toolAttempts = new Map<
     string,
@@ -293,13 +337,47 @@ export function createConversationClient(
       (result.revision === revision && sequence >= appliedSequence)
     ) {
       appliedSequence = Math.max(sequence, appliedSequence);
+      // A spoken correction can retire work before it completes in this page.
+      // Cancel the browser action as soon as its authoritative invocation ends.
+      if (
+        activeToolId &&
+        !result.tools.some((tool) => tool.id === activeToolId)
+      )
+        toolController?.abort();
       update({ conversation: result });
       if (result.status === "ended") reset();
-      else void executePendingTool();
+      else {
+        if (
+          voiceId &&
+          result.voice?.id === voiceId &&
+          (result.voice.status === "closed" ||
+            result.voice.status === "failed") &&
+          state.voice.status !== "stopping"
+        ) {
+          closeVoiceLocally();
+          voiceId = undefined;
+          update({
+            voice:
+              result.voice.status === "failed"
+                ? {
+                    status: "error",
+                    muted: false,
+                    error:
+                      result.voice.error ||
+                      "Voice ended. You can continue in text.",
+                  }
+                : idleVoice,
+          });
+        }
+        void executePendingTool();
+      }
     }
   }
 
   function reset() {
+    closeVoiceLocally();
+    voiceId = undefined;
+    voiceStop = undefined;
     toolController?.abort();
     epoch++;
     access = null;
@@ -313,6 +391,7 @@ export function createConversationClient(
       pending: false,
       restoring: false,
       error: null,
+      voice: idleVoice,
     });
   }
 
@@ -320,9 +399,17 @@ export function createConversationClient(
     if (
       disposed ||
       ending ||
+      state.voice.status === "stopping" ||
       processingTool ||
       !executor ||
       state.conversation?.status !== "active"
+    )
+      return;
+    const voice = state.conversation.voice;
+    if (
+      voice &&
+      (voice.status === "starting" || voice.status === "active") &&
+      (voice.clientId !== clientId || state.voice.status === "error")
     )
       return;
     const tool = state.conversation.tools.find(
@@ -333,6 +420,7 @@ export function createConversationClient(
     const startedEpoch = epoch;
     const controller = new AbortController();
     toolController = controller;
+    activeToolId = tool.id;
     try {
       await executeTool(tool, startedEpoch, controller.signal);
     } catch (error) {
@@ -345,7 +433,10 @@ export function createConversationClient(
         });
     } finally {
       processingTool = false;
-      if (toolController === controller) toolController = undefined;
+      if (toolController === controller) {
+        toolController = undefined;
+        activeToolId = undefined;
+      }
     }
   }
 
@@ -369,7 +460,8 @@ export function createConversationClient(
     if (!attempt.outcome) {
       const claimed = await rawApi(`/tools/${tool.id}/claim`, attempt.claim);
       if (!record(claimed) || claimed.claimed !== true) return;
-      if (disposed || ending || startedEpoch !== epoch) return;
+      if (disposed || ending || signal.aborted || startedEpoch !== epoch)
+        return;
       try {
         attempt.outcome = {
           result:
@@ -386,7 +478,7 @@ export function createConversationClient(
         };
       }
     }
-    if (disposed || ending || startedEpoch !== epoch) return;
+    if (disposed || ending || signal.aborted || startedEpoch !== epoch) return;
     await api(`/tools/${tool.id}/result`, {
       ...attempt.claim,
       ...attempt.outcome,
@@ -396,7 +488,13 @@ export function createConversationClient(
 
   function schedulePoll(delay = 500) {
     window.clearTimeout(pollTimer);
-    if (!disposed && state.conversation?.busy)
+    if (
+      !disposed &&
+      (state.conversation?.busy ||
+        state.conversation?.voice?.status === "starting" ||
+        state.conversation?.voice?.status === "active" ||
+        voiceId)
+    )
       pollTimer = window.setTimeout(() => {
         void poll();
       }, delay);
@@ -425,6 +523,239 @@ export function createConversationClient(
     } finally {
       polling = false;
     }
+  }
+
+  function closeVoiceLocally() {
+    voiceEpoch++;
+    voiceConnection?.close();
+    voiceConnection = undefined;
+    window.clearTimeout(heartbeatTimer);
+    window.clearTimeout(voiceLimitTimer);
+    toolController?.abort();
+  }
+
+  function bestEffortVoiceStop(id: string, credential = access) {
+    if (!credential) return;
+    // Page exit must stop microphone/playback synchronously. A keepalive stop
+    // releases the server lease when possible; the lease bounds lost requests.
+    void window
+      .fetch(
+        `${credential.apiBaseUrl}/${credential.conversationId}/voice/${id}/stop`,
+        {
+          method: "POST",
+          mode: "cors",
+          credentials: "omit",
+          cache: "no-store",
+          redirect: "error",
+          keepalive: true,
+          headers: {
+            Authorization: `Bearer ${credential.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ clientId }),
+        },
+      )
+      .catch(() => undefined);
+  }
+
+  async function stopVoice() {
+    if (disposed) return;
+    if (voiceStop) return voiceStop;
+    const previous = state.conversation?.voice;
+    const remote =
+      previous &&
+      (previous.status === "starting" || previous.status === "active")
+        ? previous
+        : undefined;
+    const id = voiceId ?? remote?.id;
+    const ownerClientId = voiceId ? clientId : remote?.clientId;
+    closeVoiceLocally();
+    const stoppedEpoch = epoch;
+    const stoppedVoiceEpoch = voiceEpoch;
+    const current = () =>
+      !disposed && stoppedEpoch === epoch && stoppedVoiceEpoch === voiceEpoch;
+    if (!id) {
+      update({ voice: idleVoice });
+      return;
+    }
+    update({
+      voice: { ...state.voice, status: "stopping", muted: true, error: null },
+    });
+    const stopping = (async () => {
+      try {
+        await api(`/voice/${id}/stop`, { clientId: ownerClientId });
+        if (!current()) return;
+        if (voiceId === id) voiceId = undefined;
+        const terminal = state.conversation?.voice;
+        update({
+          voice:
+            terminal?.id === id && terminal.status === "failed"
+              ? {
+                  status: "error",
+                  muted: false,
+                  error:
+                    terminal.error || "Voice ended. You can continue in text.",
+                }
+              : idleVoice,
+        });
+        pollFailures = 0;
+        schedulePoll();
+      } catch (error) {
+        if (!current()) return;
+        update({
+          voice: {
+            status: "error",
+            muted: true,
+            error:
+              "Microphone stopped. Roman could not confirm voice ended; retry Stop voice before sending text.",
+          },
+        });
+        schedulePoll();
+        throw error;
+      }
+    })();
+    voiceStop = stopping;
+    void stopping
+      .finally(() => {
+        if (voiceStop === stopping) voiceStop = undefined;
+      })
+      .catch(() => undefined);
+    return voiceStop;
+  }
+
+  function failVoice(message: string) {
+    const failureEpoch = epoch;
+    const stopping = stopVoice();
+    const failureVoiceEpoch = voiceEpoch;
+    void stopping
+      .then(() => {
+        if (
+          !disposed &&
+          epoch === failureEpoch &&
+          voiceEpoch === failureVoiceEpoch
+        )
+          update({ voice: { status: "error", muted: false, error: message } });
+      })
+      .catch(() => undefined);
+  }
+
+  function scheduleHeartbeat(id: string, startedVoiceEpoch: number) {
+    window.clearTimeout(heartbeatTimer);
+    if (disposed || voiceId !== id || startedVoiceEpoch !== voiceEpoch) return;
+    heartbeatTimer = window.setTimeout(() => {
+      void rawApi(`/voice/${id}/heartbeat`, { clientId })
+        .then((result) => {
+          if (!record(result) || result.ok !== true)
+            throw new Error("Voice heartbeat failed.");
+          scheduleHeartbeat(id, startedVoiceEpoch);
+        })
+        .catch(() => {
+          if (voiceId !== id || startedVoiceEpoch !== voiceEpoch || disposed)
+            return;
+          const message =
+            "Voice lost its connection. Your microphone has stopped; start voice again to reconnect.";
+          failVoice(message);
+        });
+    }, 20_000);
+  }
+
+  async function startVoice() {
+    if (
+      disposed ||
+      ending ||
+      state.pending ||
+      state.restoring ||
+      state.conversation?.busy ||
+      state.conversation?.voice?.status === "starting" ||
+      state.conversation?.voice?.status === "active" ||
+      voiceId ||
+      state.voice.status === "starting" ||
+      state.voice.status === "stopping"
+    )
+      throw new Error("Wait for Roman's current session to finish.");
+    if (!window.location.hostname.endsWith(".myshopify.com")) {
+      const error =
+        "Voice is available on the installed development storefronts.";
+      update({ voice: { status: "error", muted: false, error } });
+      throw new Error(error);
+    }
+    const startedVoiceEpoch = ++voiceEpoch;
+    const startedEpoch = epoch;
+    const current = () =>
+      !disposed &&
+      !ending &&
+      epoch === startedEpoch &&
+      voiceEpoch === startedVoiceEpoch;
+    update({
+      voice: { status: "starting", muted: false, error: null },
+      error: null,
+    });
+    const connection = createVoiceConnection((message) => {
+      if (!current()) return;
+      failVoice(message);
+    });
+    voiceConnection = connection;
+    try {
+      // Permission precedes bootstrap, so denying the microphone creates no chat.
+      const sdp = await connection.prepare();
+      if (!current()) return;
+      if (!access) await bootstrap(resumeAccess);
+      if (!current()) return;
+      await journeyQueue;
+      if (!current()) return;
+      const id = window.crypto.randomUUID();
+      voiceId = id;
+      const result = await rawApi("/voice", { requestId: id, clientId, sdp });
+      if (!current()) {
+        bestEffortVoiceStop(id);
+        return;
+      }
+      if (
+        !record(result) ||
+        result.voiceId !== id ||
+        typeof result.sdp !== "string" ||
+        !result.sdp ||
+        result.sdp.length > 65_536
+      )
+        throw new Error("Roman received an invalid voice connection response.");
+      scheduleHeartbeat(id, startedVoiceEpoch);
+      schedulePoll();
+      await connection.connect(result.sdp);
+      if (!current()) return;
+      update({ voice: { status: "active", muted: false, error: null } });
+      voiceLimitTimer = window.setTimeout(() => {
+        void stopVoice().catch(() => undefined);
+      }, 10 * 60_000);
+      void poll();
+    } catch (error) {
+      connection.close();
+      if (!current()) return;
+      const message =
+        error instanceof Error ? error.message : "Roman could not start voice.";
+      const stopping = stopVoice();
+      const stoppedVoiceEpoch = voiceEpoch;
+      try {
+        await stopping;
+      } catch {
+        return;
+      }
+      if (
+        disposed ||
+        epoch !== startedEpoch ||
+        voiceEpoch !== stoppedVoiceEpoch
+      )
+        return;
+      update({ voice: { status: "error", muted: false, error: message } });
+      throw new Error(message);
+    }
+  }
+
+  function onPageHide() {
+    const id = voiceId;
+    closeVoiceLocally();
+    if (id) bestEffortVoiceStop(id);
+    voiceId = undefined;
+    update({ voice: idleVoice });
   }
 
   function restore() {
@@ -474,6 +805,7 @@ export function createConversationClient(
     if (event.persisted) restore();
   }
   window.addEventListener("pageshow", onPageShow);
+  window.addEventListener("pagehide", onPageHide);
 
   return {
     getSnapshot: () => state,
@@ -492,6 +824,11 @@ export function createConversationClient(
         );
       if (
         ending ||
+        voiceId ||
+        state.voice.status === "starting" ||
+        state.voice.status === "stopping" ||
+        state.conversation?.voice?.status === "starting" ||
+        state.conversation?.voice?.status === "active" ||
         state.pending ||
         state.restoring ||
         state.conversation?.busy
@@ -574,9 +911,20 @@ export function createConversationClient(
         );
       return executor.execute("lookup_catalog", { ids });
     },
+    startVoice,
+    stopVoice,
+    setVoiceMuted(muted) {
+      if (state.voice.status !== "active") return;
+      voiceConnection?.setMuted(muted);
+      update({ voice: { ...state.voice, muted } });
+    },
     async end() {
       if (!access || disposed || ending) return;
       ending = true;
+      closeVoiceLocally();
+      const hadVoice = voiceId || state.voice.status === "starting";
+      if (hadVoice)
+        update({ voice: { status: "stopping", muted: true, error: null } });
       toolController?.abort();
       update({ pending: true, error: null });
       try {
@@ -584,6 +932,15 @@ export function createConversationClient(
         reset();
       } catch (error) {
         update({ error: "Roman could not end this chat. Please retry." });
+        if (hadVoice)
+          update({
+            voice: {
+              status: "error",
+              muted: true,
+              error:
+                "Microphone stopped. Switch to text to confirm voice has ended.",
+            },
+          });
         throw error;
       } finally {
         ending = false;
@@ -596,10 +953,12 @@ export function createConversationClient(
       if (access) void poll();
     },
     dispose() {
+      onPageHide();
       disposed = true;
       toolController?.abort();
       lifetime.abort();
       window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("pagehide", onPageHide);
       window.clearTimeout(pollTimer);
       listeners.clear();
     },

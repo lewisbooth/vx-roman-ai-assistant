@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { voiceMedia } from "./helpers/voice-media.mjs";
 
 const bundle = await build({
   entryPoints: ["frontend/src/session/client.ts"],
@@ -76,10 +77,16 @@ async function until(condition, message) {
 
 function setup(
   t,
-  { saved, url = "https://hd-dev-single.myshopify.com/", executor } = {},
+  {
+    saved,
+    url = "https://hd-dev-single.myshopify.com/",
+    executor,
+    mediaOptions,
+  } = {},
 ) {
   const dom = new JSDOM("<!doctype html>", { url, runScripts: "outside-only" });
   const { window } = dom;
+  const media = mediaOptions ? voiceMedia(window, mediaOptions) : undefined;
   // Use the browser-standard AbortSignal.any/timeout behavior available in Node;
   // JSDOM's subset need not implement these transport primitives itself.
   window.AbortController = globalThis.AbortController;
@@ -132,6 +139,7 @@ function setup(
   }
   return {
     client,
+    media,
     window,
     calls,
     timers,
@@ -728,4 +736,421 @@ test("a late poll after End cannot restore the old conversation or display a sta
   assert.equal(ctx.client.getSnapshot().conversation, null);
   assert.equal(ctx.client.getSnapshot().error, null);
   assert.equal(ctx.timers.size, 0);
+});
+
+async function activeVoice(ctx) {
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 1, "Voice did not bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Voice offer was not sent");
+  const request = ctx.calls[1];
+  assert.match(request.url, /\/voice$/);
+  assert.equal(request.init.headers.Authorization, `Bearer ${access.token}`);
+  assert.match(request.body.sdp, /roman-offer/);
+  const voice = {
+    id: request.body.requestId,
+    clientId: request.body.clientId,
+    status: "active",
+  };
+  ctx.respond(1, { voiceId: voice.id, sdp: "v=0\r\no=roman-answer" });
+  await until(
+    () => !!ctx.media.peers[0].remoteDescription,
+    "Voice answer was not applied",
+  );
+  ctx.media.connect();
+  await starting;
+  await until(
+    () => ctx.calls.length === 3,
+    "Active voice did not refresh the transcript",
+  );
+  ctx.respond(2, { ...empty, revision: 1, voice });
+  await delay(0);
+  return voice;
+}
+
+test("microphone denial creates no conversation or API request", async (t) => {
+  const ctx = setup(t, {
+    mediaOptions: { getUserMedia: () => Promise.reject(new Error("denied")) },
+  });
+  await assert.rejects(ctx.client.startVoice(), /Allow microphone/);
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(ctx.client.getSnapshot().voice.status, "error");
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+});
+
+test("voice starts explicitly, polls while idle, heartbeats, and drains before text is allowed", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  assert.equal(ctx.media.calls.microphone, 0);
+  const voice = await activeVoice(ctx);
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.ok([...ctx.timers.values()].some((timer) => timer.ms === 500));
+  const [heartbeatId, heartbeat] = [...ctx.timers].find(
+    ([, timer]) => timer.ms === 20_000,
+  );
+  ctx.timers.delete(heartbeatId);
+  heartbeat.callback();
+  assert.match(ctx.calls[3].url, new RegExp(`/voice/${voice.id}/heartbeat$`));
+  assert.equal(ctx.calls[3].body.clientId, voice.clientId);
+  ctx.respond(3, { ok: true });
+  await delay(0);
+  assert.ok([...ctx.timers.values()].some((timer) => timer.ms === 20_000));
+  await assert.rejects(
+    ctx.client.sendMessage("Hello in text"),
+    /current reply/,
+  );
+  ctx.client.setVoiceMuted(true);
+  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  const stopping = ctx.client.stopVoice();
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.equal(ctx.client.getSnapshot().voice.status, "stopping");
+  await assert.rejects(
+    ctx.client.sendMessage("Hello in text"),
+    /current reply/,
+  );
+  ctx.respond(4, {
+    ...empty,
+    revision: 2,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.timers.size, 0);
+  const sending = ctx.client.sendMessage("Hello in text");
+  await until(() => ctx.calls.length === 6, "Text did not resume after voice");
+  assert.match(ctx.calls[5].url, /\/messages$/);
+  ctx.respond(5, { ...pending, revision: 3 });
+  await sending;
+});
+
+test("voice restoration never reacquires a microphone and explicitly stops the previous lease", async (t) => {
+  const voice = {
+    id: "22222222-2222-4222-8222-222222222222",
+    clientId: "33333333-3333-4333-8333-333333333333",
+    status: "active",
+  };
+  const caption = {
+    id: "caption",
+    role: "user",
+    status: "complete",
+    createdAt: "2026-09-15T10:00:00Z",
+    parts: [
+      {
+        type: "voice",
+        version: 1,
+        voiceId: voice.id,
+        text: "My kitchen",
+        startMs: 0.25,
+        endMs: 1_500.75,
+      },
+    ],
+  };
+  const restored = { ...empty, voice, revision: 4, messages: [caption] };
+  const ctx = setup(t, { saved: access, mediaOptions: {} });
+  await resume(ctx, restored);
+  assert.equal(ctx.media.calls.microphone, 0);
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(
+    ctx.client.getSnapshot().conversation.messages[0].parts[0].text,
+    "My kitchen",
+  );
+  await assert.rejects(ctx.client.startVoice(), /current session/);
+  const stopping = ctx.client.stopVoice();
+  assert.equal(ctx.calls[2].body.clientId, voice.clientId);
+  assert.match(ctx.calls[2].url, new RegExp(`/voice/${voice.id}/stop$`));
+  ctx.respond(2, {
+    ...restored,
+    revision: 5,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  assert.equal(ctx.media.calls.microphone, 0);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("stopping a pending start releases late media and never sends the offer", async (t) => {
+  let allow;
+  const ctx = setup(t, {
+    mediaOptions: {
+      getUserMedia: (stream) =>
+        new Promise((resolve) => {
+          allow = () => resolve(stream);
+        }),
+    },
+  });
+  const starting = ctx.client.startVoice();
+  await ctx.client.stopVoice();
+  allow();
+  await starting;
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.media.tracks[0].stopped, true);
+});
+
+test("a lost start response is stopped with its known ID and is not retried", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 1, "Missing bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Missing start request");
+  const id = ctx.calls[1].body.requestId;
+  ctx.calls[1].reject(new Error("response lost"));
+  await until(
+    () => ctx.calls.length === 3,
+    "Lost start did not stop its lease",
+  );
+  assert.match(ctx.calls[2].url, new RegExp(`/voice/${id}/stop$`));
+  ctx.respond(2, {
+    ...empty,
+    revision: 2,
+    voice: { id, clientId: ctx.calls[1].body.clientId, status: "closed" },
+  });
+  await assert.rejects(starting, /could not connect/);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/voice")).length,
+    1,
+  );
+  assert.equal(ctx.media.tracks[0].stopped, true);
+});
+
+test("page exit immediately stops media and sends a keepalive stop without rejoining on pageshow", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  ctx.window.dispatchEvent(new ctx.window.PageTransitionEvent("pagehide"));
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.equal(ctx.media.peers[0].closed, true);
+  const stop = ctx.calls[3];
+  assert.equal(stop.init.keepalive, true);
+  assert.match(stop.url, new RegExp(`/voice/${voice.id}/stop$`));
+  ctx.window.dispatchEvent(
+    new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
+  );
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+});
+
+test("server voice failure tears down an active connection while retaining the transcript", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  const [id, poll] = [...ctx.timers].find(([, timer]) => timer.ms === 500);
+  ctx.timers.delete(id);
+  poll.callback();
+  ctx.respond(3, {
+    ...empty,
+    revision: 2,
+    voice: { ...voice, status: "failed", error: "Voice was interrupted." },
+  });
+  await until(
+    () => ctx.client.getSnapshot().voice.status === "error",
+    "Server failure was not observed",
+  );
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.equal(ctx.media.peers[0].closed, true);
+  assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("Stop voice cancels claimed navigation and ignores its late outcome", async (t) => {
+  let resolveNavigation;
+  let navigationSignal;
+  const ctx = setup(t, {
+    mediaOptions: {},
+    executor: {
+      execute: (_name, _arguments, signal) =>
+        new Promise((resolve) => {
+          resolveNavigation = resolve;
+          navigationSignal = signal;
+        }),
+    },
+  });
+  const voice = await activeVoice(ctx);
+  const [timerId, poll] = [...ctx.timers].find(([, timer]) => timer.ms === 500);
+  ctx.timers.delete(timerId);
+  poll.callback();
+  const tool = {
+    id: "44444444-4444-4444-8444-444444444444",
+    name: "navigate",
+    arguments: { path: "/cart" },
+    status: "pending",
+  };
+  ctx.respond(3, { ...empty, revision: 2, voice, tools: [tool] });
+  await until(() => ctx.calls.length === 5, "Voice tool was not claimed");
+  ctx.respond(4, { claimed: true });
+  await until(() => !!resolveNavigation, "Claimed navigation did not execute");
+  const stopping = ctx.client.stopVoice();
+  assert.equal(navigationSignal.aborted, true);
+  ctx.respond(5, {
+    ...empty,
+    revision: 3,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  resolveNavigation({ status: "navigated", path: "/cart" });
+  await delay(0);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/result")).length,
+    0,
+  );
+});
+
+test("an offer response arriving after cancellation cannot reopen its peer", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 1, "Missing bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Missing offer");
+  const voice = {
+    id: ctx.calls[1].body.requestId,
+    clientId: ctx.calls[1].body.clientId,
+    status: "closed",
+  };
+  const stopping = ctx.client.stopVoice();
+  ctx.respond(2, { ...empty, revision: 2, voice });
+  await stopping;
+  ctx.respond(1, { voiceId: voice.id, sdp: "late answer" });
+  await starting;
+  assert.equal(ctx.media.peers[0].closed, true);
+  assert.equal(ctx.media.peers[0].remoteDescription, undefined);
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.calls[3].init.keepalive, true);
+  assert.match(ctx.calls[3].url, new RegExp(`/voice/${voice.id}/stop$`));
+});
+
+test("Switch to text preserves a failed finalization warning while allowing typed replies", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  const stopping = ctx.client.stopVoice();
+  ctx.respond(3, {
+    ...empty,
+    revision: 2,
+    voice: {
+      ...voice,
+      status: "failed",
+      error: "Some final captions may be missing.",
+    },
+  });
+  await stopping;
+  const state = ctx.client.getSnapshot();
+  assert.equal(state.voice.status, "error");
+  assert.equal(state.voice.muted, false);
+  assert.match(state.voice.error, /final captions may be missing/);
+  const sending = ctx.client.sendMessage("Continue in text");
+  await until(
+    () => ctx.calls.length === 5,
+    "Failed finalization incorrectly blocked text",
+  );
+  ctx.respond(4, { ...pending, revision: 3 });
+  await sending;
+});
+
+test("a capacity-rejected start can cancel an unknown ID and return to text", async (t) => {
+  const old = {
+    id: "22222222-2222-4222-8222-222222222222",
+    clientId: "33333333-3333-4333-8333-333333333333",
+    status: "closed",
+  };
+  const conversation = { ...empty, revision: 10, voice: old };
+  const ctx = setup(t, { saved: access, mediaOptions: {} });
+  await resume(ctx, conversation);
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 3, "Voice start was not sent");
+  const attemptedId = ctx.calls[2].body.requestId;
+  ctx.respond(
+    2,
+    {
+      error: {
+        message:
+          "This chat has reached its voice session limit. Start a new chat.",
+      },
+    },
+    429,
+  );
+  await until(() => ctx.calls.length === 4, "Failed start was not cleaned up");
+  assert.match(ctx.calls[3].url, new RegExp(`/voice/${attemptedId}/stop$`));
+  // At capacity an unknown cancellation is a no-op: a future start is already impossible.
+  ctx.respond(3, conversation);
+  await assert.rejects(starting, /voice session limit/);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
+  assert.equal(ctx.timers.size, 0);
+  const sending = ctx.client.sendMessage("Continue in text");
+  await until(
+    () => ctx.calls.length === 5,
+    "Capacity rejection left text blocked",
+  );
+  ctx.respond(4, { ...pending, revision: 11 });
+  await sending;
+});
+
+test("a server correction aborts retired navigation before executing its replacement", async (t) => {
+  const executions = [];
+  let finishRetired;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: async (_name, arguments_, signal) => {
+        executions.push({ path: arguments_.path, signal });
+        if (arguments_.path === "/cart")
+          return new Promise((resolve) => {
+            finishRetired = resolve;
+          });
+        return { status: "navigated", path: arguments_.path };
+      },
+    },
+  });
+  await resume(ctx, needsNavigation);
+  await until(() => ctx.calls.length === 3, "First navigation was not claimed");
+  ctx.respond(2, { claimed: true });
+  await until(() => !!finishRetired, "First navigation did not start");
+  const replacementId = "55555555-5555-4555-8555-555555555555";
+  const replacement = {
+    ...needsNavigation,
+    revision: needsNavigation.revision + 1,
+    tools: [
+      {
+        id: replacementId,
+        name: "navigate",
+        arguments: { path: "/collections/all" },
+        status: "pending",
+      },
+    ],
+  };
+  ctx.client.clearError();
+  ctx.respond(3, replacement);
+  await until(
+    () => executions[0].signal.aborted,
+    "Retired navigation was not aborted by the accepted snapshot",
+  );
+  finishRetired({ status: "navigated", path: "/cart" });
+  await delay(0);
+  assert.equal(
+    ctx.calls.filter((call) =>
+      call.url.endsWith(`/tools/${invocationId}/result`),
+    ).length,
+    0,
+  );
+  assert.equal(executions.length, 1);
+  ctx.tick();
+  ctx.respond(4, replacement);
+  await until(
+    () => ctx.calls.length === 6,
+    "Replacement navigation was not claimed",
+  );
+  assert.match(ctx.calls[5].url, new RegExp(`/tools/${replacementId}/claim$`));
+  ctx.respond(5, { claimed: true });
+  await until(
+    () => ctx.calls.length === 7,
+    "Replacement navigation result was not sent",
+  );
+  assert.deepEqual(
+    executions.map((execution) => execution.path),
+    ["/cart", "/collections/all"],
+  );
+  assert.equal(executions[1].signal.aborted, false);
+  assert.match(ctx.calls[6].url, new RegExp(`/tools/${replacementId}/result$`));
+  ctx.respond(6, { ...complete, revision: replacement.revision + 1 });
+  await until(
+    () => !ctx.client.getSnapshot().conversation.busy,
+    "Replacement did not finish",
+  );
 });

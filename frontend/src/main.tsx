@@ -37,6 +37,18 @@ export function mountAssistant(
   let root: Root | undefined;
   let disposed = false;
   let readyTimer: number | undefined;
+  let sidebarOpen = false;
+  const voiceDock = document.createElement("div");
+  voiceDock.hidden = true;
+  host.shadowRoot?.append(voiceDock);
+  function syncVoiceDock() {
+    const status = session.getSnapshot().voice.status;
+    const active =
+      status === "starting" || status === "active" || status === "stopping";
+    voiceDock.hidden = sidebarOpen || !active;
+    navigation.setSidebarOpen(sidebarOpen || active);
+  }
+  const stopVoiceDock = session.subscribe(syncVoiceDock);
 
   function onReady() {
     if (disposed || readyTimer !== undefined) return;
@@ -56,6 +68,7 @@ export function mountAssistant(
       navigation,
       tools,
       session,
+      voiceDock,
       showTools:
         host.dataset.shop === "hd-dev-multi.myshopify.com" ||
         host.dataset.shop === "hd-dev-single.myshopify.com",
@@ -79,6 +92,8 @@ export function mountAssistant(
     executor.dispose();
     stopJourney();
     session.dispose();
+    stopVoiceDock();
+    voiceDock.remove();
     navigation.dispose();
     throw error;
   }
@@ -86,7 +101,10 @@ export function mountAssistant(
   return {
     ready,
     setOpen(open) {
-      if (!disposed) navigation.setSidebarOpen(open);
+      if (!disposed) {
+        sidebarOpen = open;
+        syncVoiceDock();
+      }
     },
     dispose() {
       if (disposed) return;
@@ -100,6 +118,8 @@ export function mountAssistant(
       executor.dispose();
       stopJourney();
       session.dispose();
+      stopVoiceDock();
+      voiceDock.remove();
       navigation.dispose();
     },
   };
