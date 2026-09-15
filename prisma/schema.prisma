@@ -40,10 +40,14 @@ model Conversation {
   credentialHash      String                @unique
   credentialExpiresAt DateTime
   turnCount           Int                   @default(0)
+  nextSequence        Int                   @default(0)
+  revision            Int                   @default(0)
+  status              String                @default("active")
   pendingRequestId    String?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   messages            ConversationMessage[]
+  toolInvocations     ToolInvocation[]
 
   @@index([shop, createdAt])
 }
@@ -56,13 +60,35 @@ model ConversationMessage {
   sequence       Int
   role           String
   status         String
-  text           String       @default("")
+  partsJson      String       @default("[]")
   error          String?
   model          String?
   serviceTier    String?
   createdAt      DateTime     @default(now())
   completedAt    DateTime?
+  toolInvocations ToolInvocation[]
 
   @@unique([conversationId, requestId, role])
   @@unique([conversationId, sequence])
+}
+
+model ToolInvocation {
+  id               String              @id
+  conversationId   String
+  conversation     Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  assistantId      String
+  assistant        ConversationMessage @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  providerCallId   String
+  name             String
+  argumentsJson    String
+  status           String              @default("pending")
+  claimClientId    String?
+  claimTokenHash   String?
+  productIdsJson   String?
+  error            String?
+  createdAt        DateTime            @default(now())
+  completedAt      DateTime?
+
+  @@unique([conversationId, providerCallId])
+  @@index([conversationId, status])
 }

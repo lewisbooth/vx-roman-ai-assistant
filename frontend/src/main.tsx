@@ -6,6 +6,8 @@ import { createStorefrontNavigation } from "./navigation/shared";
 import type { AssistantRuntime } from "./runtime";
 import { createAssistantTools } from "./tools";
 import { createConversationClient } from "./session/client";
+import { createCatalogExecutor } from "./session/catalog-executor";
+import { createJourneyObserver } from "./session/journey";
 import styles from "./styles.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
@@ -28,7 +30,9 @@ export function mountAssistant(
   });
   const navigation = createStorefrontNavigation(host);
   const tools = createAssistantTools(host, navigation);
-  const session = createConversationClient();
+  const catalog = createCatalogExecutor(tools);
+  const session = createConversationClient(catalog);
+  const stopJourney = createJourneyObserver(session, navigation);
   let router: ReturnType<typeof createAssistantRouter> | undefined;
   let root: Root | undefined;
   let disposed = false;
@@ -72,6 +76,8 @@ export function mountAssistant(
     root?.unmount();
     router?.dispose();
     tools.dispose();
+    catalog.dispose();
+    stopJourney();
     session.dispose();
     navigation.dispose();
     throw error;
@@ -91,6 +97,8 @@ export function mountAssistant(
       root?.unmount();
       router?.dispose();
       tools.dispose();
+      catalog.dispose();
+      stopJourney();
       session.dispose();
       navigation.dispose();
     },

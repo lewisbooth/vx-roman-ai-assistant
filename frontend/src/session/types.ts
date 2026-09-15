@@ -1,4 +1,8 @@
-import type { ConversationSnapshot } from "../../../shared/conversation";
+import type {
+  ConversationSnapshot,
+  JourneyInput,
+} from "../../../shared/conversation";
+import type { CatalogResult } from "../../../shared/catalog";
 
 export interface ConversationClientState {
   conversation: ConversationSnapshot | null;
@@ -12,6 +16,9 @@ export interface ConversationClient {
   subscribe(listener: () => void): () => void;
   /** Resolves when the server has accepted the message, before generation ends. */
   sendMessage(text: string): Promise<void>;
+  recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;
+  loadProducts(ids: string[]): Promise<CatalogResult>;
+  end(): Promise<void>;
   clearError(): void;
   dispose(): void;
 }

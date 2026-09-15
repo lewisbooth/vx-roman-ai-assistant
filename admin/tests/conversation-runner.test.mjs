@@ -22,10 +22,13 @@ const bundle = await build({
     {
       name: "runner-boundaries",
       setup(build) {
-        build.onResolve({ filter: /repository\.server$|^openai$/ }, (args) => ({
-          path: args.path,
-          namespace: "stub",
-        }));
+        build.onResolve(
+          { filter: /repository\.server$|browser-tools\.server$|^openai$/ },
+          (args) => ({
+            path: args.path,
+            namespace: "stub",
+          }),
+        );
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
           contents:
             args.path === "openai"
@@ -35,10 +38,13 @@ const bundle = await build({
                 this.responses={create:(...args)=>mock.createResponse(...args)};
               }
             }`
-              : `export const beginTurn=(...args)=>mock.begin(...args);
+              : args.path.endsWith("browser-tools.server")
+                ? `export const requestBrowserTool=(...args)=>mock.browserTool(...args);`
+                : `export const beginTurn=(...args)=>mock.begin(...args);
              export const failPending=(...args)=>mock.recover(...args);
              export const finishTurn=(...args)=>mock.finish(...args);
-             export const getSnapshot=(...args)=>mock.snapshot(...args);`,
+             export const getSnapshot=(...args)=>mock.snapshot(...args);
+             export const endConversation=(...args)=>mock.end(...args);`,
         }));
       },
     },
@@ -105,23 +111,31 @@ function setup() {
     finishes: [],
     recoveries: [],
     deadlines: [],
+    browserTools: [],
+    ends: [],
   };
   const ensure = (id) => {
-    if (!rows.has(id)) rows.set(id, { messages: [] });
+    if (!rows.has(id))
+      rows.set(id, { status: "active", revision: 0, messages: [], tools: [] });
     return rows.get(id);
   };
   const snapshot = (id) => {
     const row = ensure(id);
     return {
       id,
-      messages: row.messages.map(({ id, role, status, text, error }) => ({
-        id,
-        role,
-        status,
-        parts: [{ type: "text", text }],
-        createdAt: "2026-09-15T10:00:00Z",
-        ...(error ? { error } : {}),
-      })),
+      status: row.status ?? "active",
+      revision: row.revision ?? 0,
+      tools: row.tools ?? [],
+      messages: row.messages.map(
+        ({ id, role, status, text, error, extraParts }) => ({
+          id,
+          role,
+          status,
+          parts: [{ type: "text", text }, ...(extraParts ?? [])],
+          createdAt: "2026-09-15T10:00:00Z",
+          ...(error ? { error } : {}),
+        }),
+      ),
       busy: row.messages.some((message) => message.status === "pending"),
     };
   };
@@ -131,7 +145,7 @@ function setup() {
     beforeBegin: undefined,
     afterFinish: undefined,
     createResponse: async (input, options) => {
-      calls.requests.push({ input, options });
+      calls.requests.push({ input: plain(input), options });
       const stream = streams.shift();
       assert.ok(stream, "A test must supply each expected provider response");
       return stream;
@@ -140,6 +154,8 @@ function setup() {
       calls.begins.push({ id, input });
       await mock.beforeBegin?.(id, input);
       const row = ensure(id);
+      if (row.status === "ended")
+        throw new api.ConversationError(409, "This chat has ended.");
       const existing = row.messages.find(
         (message) =>
           message.role === "user" && message.requestId === input.requestId,
@@ -171,6 +187,7 @@ function setup() {
           requestId: input.requestId,
         },
       );
+      row.revision = (row.revision ?? 0) + 1;
       return {
         snapshot: snapshot(id),
         assistantId,
@@ -197,13 +214,37 @@ function setup() {
       await mock.afterFinish?.(id, assistantId, result);
     },
     snapshot: async (id) => snapshot(id),
+    browserTool: async (...args) => {
+      calls.browserTools.push(args);
+      return mock.executeTool(...args);
+    },
+    executeTool: async () => {
+      throw new Error("No browser tool result supplied.");
+    },
+    end: async (id) => {
+      calls.ends.push(id);
+      const row = ensure(id);
+      row.status = "ended";
+      row.revision = (row.revision ?? 0) + 1;
+      row.messages.forEach((message) => {
+        if (message.status === "pending")
+          Object.assign(message, {
+            status: "failed",
+            error: "Conversation ended.",
+          });
+      });
+      row.tools = [];
+      return snapshot(id);
+    },
   };
   const module = { exports: {} };
   runInNewContext(bundle.outputFiles[0].text, {
     module,
     exports: module.exports,
     mock,
+    AbortController,
     AbortSignal: {
+      any: (signals) => AbortSignal.any(signals),
       timeout: (milliseconds) => {
         calls.deadlines.push(milliseconds);
         return new AbortController().signal;
@@ -473,11 +514,11 @@ test("the actual model client sets fast/low/store=false, passes the signal and k
   assert.equal(
     input.tools,
     undefined,
-    "phase one does not connect storefront actions to the model",
+    "tools are exposed only when a browser executor is supplied",
   );
   assert.equal(options.signal, signal);
   assert.equal(input.instructions.includes("Private room preference"), false);
-  assert.match(input.instructions, /cannot see the current page/);
+  assert.match(input.instructions, /untrusted|not instructions/i);
   assert.match(input.instructions, /Never invent manufacturer tolerances/);
   assert.deepEqual(
     plain(input.input),
@@ -506,7 +547,6 @@ test("streaming and completed output show text/refusal content but never reasoni
               type: "reasoning",
               summary: [{ type: "summary_text", text: "private reasoning" }],
             },
-            { type: "function_call", arguments: "private tool data" },
             {
               type: "message",
               content: [
@@ -596,4 +636,259 @@ test("provider failure, incomplete output, empty output and premature stream end
       assert.equal(env.calls.requests.length, 1);
     });
   }
+});
+
+function events(...values) {
+  return (async function* () {
+    yield* values;
+  })();
+}
+
+function catalogCall(
+  callId,
+  name = "search_products",
+  args = { query: "no drill" },
+) {
+  return {
+    type: "function_call",
+    call_id: callId,
+    name,
+    arguments: typeof args === "string" ? args : JSON.stringify(args),
+  };
+}
+
+test("catalog loops preserve encrypted reasoning within the turn without exposing or reusing it", async () => {
+  const env = setup();
+  const reasoning = {
+    type: "reasoning",
+    id: "reasoning-1",
+    encrypted_content: "ENCRYPTED_PRIVATE_REASONING",
+    summary: [],
+  };
+  env.streams.push(
+    events(completed("", { output: [reasoning, catalogCall("call-1")] })),
+    events(
+      { type: "response.output_text.delta", delta: "Here is an option." },
+      completed("Here is an option."),
+    ),
+    events(completed("A fresh turn.")),
+  );
+  const executions = [];
+  const partials = [];
+  const execute = async (...args) => {
+    executions.push(args);
+    return {
+      products: [
+        {
+          id: "gid://shopify/Product/123",
+          title: "Catalog shade",
+          description: "",
+          url: "https://hd-dev-multi.myshopify.com/products/shade",
+        },
+      ],
+      messages: [],
+    };
+  };
+  const reply = await env.api.generateReply(
+    [{ role: "user", text: "Show no-drill shades" }],
+    (text) => partials.push(text),
+    new AbortController().signal,
+    execute,
+  );
+  assert.deepEqual(plain(executions), [
+    ["call-1", "search_products", { query: "no drill" }],
+  ]);
+  for (const { input } of env.calls.requests) {
+    assert.equal(input.service_tier, "fast");
+    assert.deepEqual(input.reasoning, { effort: "low" });
+    assert.deepEqual(input.include, ["reasoning.encrypted_content"]);
+    assert.equal(input.store, false);
+    assert.equal(input.parallel_tool_calls, false);
+    assert.deepEqual(
+      input.tools.map(({ name }) => name),
+      ["search_products", "get_product", "lookup_catalog"],
+    );
+  }
+  assert.ok(
+    env.calls.requests[1].input.input.some(
+      (item) => item.encrypted_content === reasoning.encrypted_content,
+    ),
+  );
+  const output = env.calls.requests[1].input.input.find(
+    (item) => item.type === "function_call_output",
+  );
+  assert.equal(output.call_id, "call-1");
+  assert.equal(JSON.parse(output.output).products[0].title, "Catalog shade");
+  assert.doesNotMatch(
+    JSON.stringify({ reply, partials }),
+    /ENCRYPTED|reasoning|function_call/,
+  );
+  await env.api.generateReply(
+    [{ role: "user", text: "A separate turn" }],
+    () => {},
+    new AbortController().signal,
+    execute,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(env.calls.requests[2].input.input),
+    /ENCRYPTED|Catalog shade|call-1/,
+  );
+});
+
+test("catalog call budget disables tools after four lookups and rejects an extra provider call", async () => {
+  for (const extraCall of [false, true]) {
+    const env = setup();
+    for (let index = 0; index < 4; index++)
+      env.streams.push(
+        events(completed("", { output: [catalogCall(`call-${index}`)] })),
+      );
+    env.streams.push(
+      events(
+        extraCall
+          ? completed("", { output: [catalogCall("call-extra")] })
+          : completed("These are the current options."),
+      ),
+    );
+    let executions = 0;
+    const generation = env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => {
+        executions++;
+        return { products: [], messages: [] };
+      },
+    );
+    if (extraCall) await assert.rejects(generation, /lookup limit/);
+    else
+      assert.equal((await generation).text, "These are the current options.");
+    assert.equal(executions, 4);
+    assert.equal(env.calls.requests.length, 5);
+    assert.equal(env.calls.requests[4].input.tool_choice, "none");
+  }
+});
+
+test("invalid or failed catalog calls return a safe error to the model without fabricated products", async () => {
+  for (const call of [
+    catalogCall("call-1", "add_to_cart", {}),
+    catalogCall("call-1", "search_products", "not JSON"),
+    catalogCall("call-1"),
+  ]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [call] })),
+      events(completed("I could not check that catalog.")),
+    );
+    let executions = 0;
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => {
+        executions++;
+        throw new Error("PRIVATE_BROWSER_ERROR");
+      },
+    );
+    const output = env.calls.requests[1].input.input.find(
+      (item) => item.type === "function_call_output",
+    );
+    assert.deepEqual(Object.keys(JSON.parse(output.output)), ["error"]);
+    assert.match(
+      JSON.parse(output.output).error,
+      /Do not claim product availability or invent/,
+    );
+    assert.doesNotMatch(output.output, /PRIVATE_BROWSER_ERROR/);
+    assert.equal(
+      executions,
+      call.name === "search_products" && call.arguments !== "not JSON" ? 1 : 0,
+    );
+    assert.equal(reply.text, "I could not check that catalog.");
+  }
+});
+
+test("cancellation between function calls prevents another browser dispatch or provider round", async () => {
+  const env = setup();
+  const controller = new AbortController();
+  env.streams.push(
+    events(
+      completed("", { output: [catalogCall("call-1"), catalogCall("call-2")] }),
+    ),
+  );
+  let executions = 0;
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => {},
+      controller.signal,
+      async () => {
+        executions++;
+        controller.abort(new Error("Conversation ended"));
+        return { products: [], messages: [] };
+      },
+    ),
+    /Conversation ended/,
+  );
+  assert.equal(executions, 1);
+  assert.equal(env.calls.requests.length, 1);
+});
+
+test("an aborted turn cannot accept a late provider completion", async () => {
+  const env = setup();
+  const controller = new AbortController();
+  env.streams.push(
+    (async function* () {
+      controller.abort(new Error("Conversation ended"));
+      yield completed("A late completed answer.");
+    })(),
+  );
+  await assert.rejects(
+    env.api.generateReply([], () => {}, controller.signal),
+    /Conversation ended/,
+  );
+  assert.equal(env.calls.requests.length, 1);
+});
+
+test("End aborts a pending browser lookup and cannot start another model round", async () => {
+  const env = setup();
+  env.streams.push(events(completed("", { output: [catalogCall("call-1")] })));
+  env.mock.executeTool = async (...args) => {
+    const signal = args.at(-1);
+    return new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  };
+  await env.api.startTurn("one", firstInput);
+  await flush();
+  assert.equal(env.calls.browserTools.length, 1);
+  const ended = await env.api.endTurn("one");
+  await flush();
+  assert.equal(ended.status, "ended");
+  assert.equal((await env.api.readConversation("one")).busy, false);
+  assert.equal(env.calls.browserTools[0].at(-1).aborted, true);
+  assert.equal(env.calls.requests.length, 1);
+  await assert.rejects(env.api.startTurn("one", secondInput), { status: 409 });
+});
+
+test("streaming text preserves an already-persisted product widget", async () => {
+  const env = setup();
+  const generation = pendingReply("Here are current options.");
+  env.streams.push(generation.stream);
+  await env.api.startTurn("one", firstInput);
+  const widget = {
+    type: "products",
+    version: 1,
+    invocationId: "test-invocation",
+    productIds: ["gid://shopify/Product/123"],
+  };
+  env.rows.get("one").messages[1].extraParts = [widget];
+  await flush();
+  const current = await env.api.readConversation("one");
+  assert.deepEqual(plain(current.messages[1].parts), [
+    { type: "text", text: "Here are current options." },
+    widget,
+  ]);
+  generation.complete();
+  await flush();
 });

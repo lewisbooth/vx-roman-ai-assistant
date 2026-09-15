@@ -1,12 +1,18 @@
 import {
   MAX_MESSAGE_LENGTH,
+  CONVERSATION_STORAGE_KEY,
   type ConversationBootstrap,
   type ConversationCredential,
   type ConversationSnapshot,
+  type BrowserToolInvocation,
+  type ToolClaim,
 } from "../../../shared/conversation";
+import { parseCatalogCall } from "../../../shared/catalog-tools";
+import type { CatalogResult } from "../../../shared/catalog";
+import type { createCatalogExecutor } from "./catalog-executor";
 import type { ConversationClient, ConversationClientState } from "./types";
 
-const STORAGE_KEY = "roman:conversation";
+const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -46,13 +52,35 @@ function snapshot(value: unknown): value is ConversationSnapshot {
     typeof value.id === "string" &&
     UUID.test(value.id) &&
     typeof value.busy === "boolean" &&
+    (value.status === "active" || value.status === "ended") &&
+    Number.isSafeInteger(value.revision) &&
+    Number(value.revision) >= 0 &&
+    Array.isArray(value.tools) &&
+    value.tools.length <= 4 &&
+    value.tools.every((tool) => {
+      if (
+        !record(tool) ||
+        typeof tool.id !== "string" ||
+        !UUID.test(tool.id) ||
+        (tool.status !== "pending" && tool.status !== "running")
+      )
+        return false;
+      try {
+        parseCatalogCall(String(tool.name), tool.arguments);
+        return true;
+      } catch {
+        return false;
+      }
+    }) &&
     Array.isArray(value.messages) &&
-    value.messages.length <= 80 &&
+    value.messages.length <= 280 &&
     value.messages.every(
       (message) =>
         record(message) &&
         typeof message.id === "string" &&
-        (message.role === "user" || message.role === "assistant") &&
+        (message.role === "user" ||
+          message.role === "assistant" ||
+          message.role === "context") &&
         ["pending", "complete", "failed"].includes(String(message.status)) &&
         typeof message.createdAt === "string" &&
         (message.error === undefined || typeof message.error === "string") &&
@@ -60,8 +88,24 @@ function snapshot(value: unknown): value is ConversationSnapshot {
         message.parts.every(
           (part) =>
             record(part) &&
-            part.type === "text" &&
-            typeof part.text === "string",
+            ((part.type === "text" && typeof part.text === "string") ||
+              (part.type === "products" &&
+                part.version === 1 &&
+                typeof part.invocationId === "string" &&
+                UUID.test(part.invocationId) &&
+                Array.isArray(part.productIds) &&
+                part.productIds.length <= 10 &&
+                part.productIds.every(
+                  (id) =>
+                    typeof id === "string" &&
+                    /^gid:\/\/shopify\/Product\/\d+$/.test(id),
+                )) ||
+              (part.type === "page_view" &&
+                part.version === 1 &&
+                typeof part.title === "string" &&
+                typeof part.path === "string" &&
+                /^\/(?!\/)[^?#]*$/.test(part.path) &&
+                typeof part.occurredAt === "string")),
         ),
     )
   );
@@ -76,7 +120,9 @@ class SessionRequestError extends Error {
   }
 }
 
-export function createConversationClient(): ConversationClient {
+export function createConversationClient(
+  catalog?: ReturnType<typeof createCatalogExecutor>,
+): ConversationClient {
   let state: ConversationClientState = {
     conversation: null,
     pending: false,
@@ -91,6 +137,19 @@ export function createConversationClient(): ConversationClient {
   let polling = false;
   let apiSequence = 0;
   let appliedSequence = 0;
+  let epoch = 0;
+  let ending = false;
+  let journeyQueue: Promise<unknown> = Promise.resolve();
+  let processingTool = false;
+  const clientId = window.crypto.randomUUID();
+  const toolAttempts = new Map<
+    string,
+    {
+      claim: ToolClaim;
+      attempts: number;
+      outcome?: { result: CatalogResult } | { error: string };
+    }
+  >();
   let uncertainSubmission: { requestId: string; text: string } | null = null;
   const listeners = new Set<() => void>();
   const lifetime = new AbortController();
@@ -148,6 +207,7 @@ export function createConversationClient(): ConversationClient {
   }
 
   async function bootstrap(resume: ConversationCredential | null) {
+    const requestedEpoch = epoch;
     const result = await request(
       new URL("/apps/roman/bootstrap", window.location.origin).href,
       {
@@ -162,6 +222,8 @@ export function createConversationClient(): ConversationClient {
         ),
       },
     );
+    if (requestedEpoch !== epoch || disposed)
+      throw new SessionRequestError("The conversation has changed.");
     if (
       !credential(result) ||
       !record(result) ||
@@ -184,30 +246,137 @@ export function createConversationClient(): ConversationClient {
     update({ conversation: boot.conversation });
   }
 
-  async function api(path = "", body?: unknown) {
-    if (!access) throw new SessionRequestError("Start a conversation first.");
-    const sequence = ++apiSequence;
+  async function rawApi(path = "", body?: unknown) {
+    const credential = access;
+    const requestedEpoch = epoch;
+    if (!credential)
+      throw new SessionRequestError("Start a conversation first.");
     const result = await request(
-      `${access.apiBaseUrl}/${access.conversationId}${path}`,
+      `${credential.apiBaseUrl}/${credential.conversationId}${path}`,
       {
         method: body === undefined ? "GET" : "POST",
         mode: "cors",
         credentials: "omit",
         headers: {
-          Authorization: `Bearer ${access.token}`,
+          Authorization: `Bearer ${credential.token}`,
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
     );
-    if (!snapshot(result) || result.id !== access.conversationId)
+    if (
+      requestedEpoch !== epoch ||
+      access?.conversationId !== credential.conversationId
+    )
+      throw new SessionRequestError("The conversation has changed.");
+    return result;
+  }
+
+  async function api(path = "", body?: unknown) {
+    if (!access) throw new SessionRequestError("Start a conversation first.");
+    const sequence = ++apiSequence;
+    const result = await rawApi(path, body);
+    if (!snapshot(result) || result.id !== access?.conversationId)
       throw new SessionRequestError(
         "Roman received an invalid conversation response.",
       );
-    if (sequence >= appliedSequence) {
-      appliedSequence = sequence;
+    const revision = state.conversation?.revision ?? -1;
+    if (
+      result.revision > revision ||
+      (result.revision === revision && sequence >= appliedSequence)
+    ) {
+      appliedSequence = Math.max(sequence, appliedSequence);
       update({ conversation: result });
+      if (result.status === "ended") reset();
+      else void executePendingTool();
     }
+  }
+
+  function reset() {
+    epoch++;
+    access = null;
+    resumeAccess = null;
+    uncertainSubmission = null;
+    toolAttempts.clear();
+    window.clearTimeout(pollTimer);
+    persist();
+    update({
+      conversation: null,
+      pending: false,
+      restoring: false,
+      error: null,
+    });
+  }
+
+  async function executePendingTool() {
+    if (
+      disposed ||
+      ending ||
+      processingTool ||
+      !catalog ||
+      state.conversation?.status !== "active"
+    )
+      return;
+    const tool = state.conversation.tools.find(
+      (item) => item.status === "pending" || toolAttempts.has(item.id),
+    );
+    if (!tool) return;
+    processingTool = true;
+    const startedEpoch = epoch;
+    try {
+      await executeTool(tool, startedEpoch);
+    } catch (error) {
+      if (!disposed && startedEpoch === epoch && !ending)
+        update({
+          error:
+            error instanceof Error
+              ? error.message
+              : "The storefront lookup could not finish.",
+        });
+    } finally {
+      processingTool = false;
+    }
+  }
+
+  async function executeTool(
+    tool: BrowserToolInvocation,
+    startedEpoch: number,
+  ) {
+    let attempt = toolAttempts.get(tool.id);
+    if (!attempt) {
+      const bytes = window.crypto.getRandomValues(new Uint8Array(32));
+      const claimToken = window
+        .btoa(String.fromCharCode(...bytes))
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replace(/=+$/, "");
+      attempt = { claim: { clientId, claimToken }, attempts: 0 };
+      toolAttempts.set(tool.id, attempt);
+    }
+    if (attempt.attempts++ >= 5) return;
+    if (!attempt.outcome) {
+      const claimed = await rawApi(`/tools/${tool.id}/claim`, attempt.claim);
+      if (!record(claimed) || claimed.claimed !== true) return;
+      if (disposed || ending || startedEpoch !== epoch) return;
+      try {
+        attempt.outcome = {
+          result: await catalog!.execute(tool.name, tool.arguments),
+        };
+      } catch (error) {
+        attempt.outcome = {
+          error: (error instanceof Error
+            ? error.message
+            : "The storefront lookup failed."
+          ).slice(0, 500),
+        };
+      }
+    }
+    if (disposed || ending || startedEpoch !== epoch) return;
+    await api(`/tools/${tool.id}/result`, {
+      ...attempt.claim,
+      ...attempt.outcome,
+    });
+    toolAttempts.delete(tool.id);
   }
 
   function schedulePoll(delay = 500) {
@@ -219,14 +388,16 @@ export function createConversationClient(): ConversationClient {
   }
 
   async function poll() {
-    if (disposed || polling || state.pending) return;
+    if (disposed || polling || state.pending || ending) return;
     polling = true;
+    const requestedEpoch = epoch;
     try {
       await api();
       pollFailures = 0;
       update({ error: null });
       schedulePoll();
     } catch (error) {
+      if (requestedEpoch !== epoch || disposed) return;
       update({
         error:
           error instanceof Error
@@ -241,13 +412,18 @@ export function createConversationClient(): ConversationClient {
     }
   }
 
-  let saved: unknown;
-  try {
-    saved = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) ?? "null");
-  } catch {
-    saved = null;
-  }
-  if (credential(saved) && Date.parse(saved.expiresAt) > Date.now()) {
+  function restore() {
+    let saved: unknown;
+    try {
+      saved = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) ?? "null");
+    } catch {
+      saved = access ?? resumeAccess;
+    }
+    if (!credential(saved) || Date.parse(saved.expiresAt) <= Date.now()) {
+      if (access || resumeAccess || state.restoring || saved != null) reset();
+      return;
+    }
+    const restoredEpoch = ++epoch;
     resumeAccess = saved;
     update({ restoring: true });
     // The signed proxy supplies the current backend origin, including tunnel changes.
@@ -257,6 +433,7 @@ export function createConversationClient(): ConversationClient {
         schedulePoll();
       })
       .catch((error: unknown) => {
+        if (restoredEpoch !== epoch || disposed) return;
         if (
           error instanceof SessionRequestError &&
           [401, 404, 410].includes(error.status)
@@ -273,9 +450,14 @@ export function createConversationClient(): ConversationClient {
         });
       })
       .finally(() => {
-        update({ restoring: false });
+        if (restoredEpoch === epoch) update({ restoring: false });
       });
   }
+  restore();
+  function onPageShow(event: PageTransitionEvent) {
+    if (event.persisted) restore();
+  }
+  window.addEventListener("pageshow", onPageShow);
 
   return {
     getSnapshot: () => state,
@@ -292,7 +474,12 @@ export function createConversationClient(): ConversationClient {
         throw new Error(
           `Enter a message of up to ${MAX_MESSAGE_LENGTH} characters.`,
         );
-      if (state.pending || state.restoring || state.conversation?.busy)
+      if (
+        ending ||
+        state.pending ||
+        state.restoring ||
+        state.conversation?.busy
+      )
         throw new Error("Wait for Roman's current reply.");
       if (!window.location.hostname.endsWith(".myshopify.com")) {
         const error =
@@ -303,6 +490,7 @@ export function createConversationClient(): ConversationClient {
       update({ pending: true, error: null });
       try {
         if (!access) await bootstrap(resumeAccess);
+        await journeyQueue;
         uncertainSubmission =
           uncertainSubmission?.text === text
             ? uncertainSubmission
@@ -331,6 +519,60 @@ export function createConversationClient(): ConversationClient {
         update({ pending: false });
       }
     },
+    recordPage(input) {
+      if (
+        disposed ||
+        ending ||
+        !access ||
+        state.restoring ||
+        state.conversation?.status !== "active"
+      )
+        return Promise.resolve();
+      const observedEpoch = epoch;
+      const observation = { ...input, requestId: window.crypto.randomUUID() };
+      const task = journeyQueue.then(async () => {
+        if (disposed || ending || epoch !== observedEpoch) return;
+        try {
+          await api("/journey", observation);
+        } catch (error) {
+          if (!disposed && epoch === observedEpoch)
+            update({
+              error:
+                "Roman could not save this page visit. Chat can continue; retry the connection to refresh.",
+            });
+          throw error;
+        }
+      });
+      journeyQueue = task.catch(() => undefined);
+      return task;
+    },
+    loadProducts(ids) {
+      if (
+        !catalog ||
+        disposed ||
+        ending ||
+        state.conversation?.status !== "active"
+      )
+        return Promise.reject(
+          new Error("Start a chat to load these products."),
+        );
+      return catalog.execute("lookup_catalog", { ids });
+    },
+    async end() {
+      if (!access || disposed || ending) return;
+      ending = true;
+      update({ pending: true, error: null });
+      try {
+        await api("/end", {});
+        reset();
+      } catch (error) {
+        update({ error: "Roman could not end this chat. Please retry." });
+        throw error;
+      } finally {
+        ending = false;
+        update({ pending: false });
+      }
+    },
     clearError() {
       pollFailures = 0;
       update({ error: null });
@@ -339,6 +581,7 @@ export function createConversationClient(): ConversationClient {
     dispose() {
       disposed = true;
       lifetime.abort();
+      window.removeEventListener("pageshow", onPageShow);
       window.clearTimeout(pollTimer);
       listeners.clear();
     },

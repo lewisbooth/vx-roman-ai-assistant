@@ -12,7 +12,7 @@ Prisma's `Session` model stores Shopify authentication. Separate `Conversation` 
 
 ## Text conversations
 
-Phase 1 connects `gpt-5.6-luna` through the Responses API with `service_tier: "fast"`, low reasoning and `store: false`. OpenAI currently reports Fast responses as `priority`; the actual returned tier is persisted. Set `OPENAI_API_KEY` in the private root `.env`. Docker must be recreated after environment changes. Roman's database is the conversation source of truth; provider conversation IDs are not used.
+Text chat connects `gpt-5.6-luna` through the Responses API with `service_tier: "fast"`, low reasoning and `store: false`. OpenAI currently reports Fast responses as `priority`; the actual returned tier is persisted. Set `OPENAI_API_KEY` in the private root `.env`. Docker must be recreated after environment changes. Roman's database is the conversation source of truth; provider conversation IDs are not used.
 
 | Module                                           | Owns                                                                       |
 | ------------------------------------------------ | -------------------------------------------------------------------------- |
@@ -20,13 +20,17 @@ Phase 1 connects `gpt-5.6-luna` through the Responses API with `service_tier: "f
 | `conversations/model.server.ts`                  | OpenAI request and streamed text extraction                                |
 | `conversations/runner.server.ts`                 | One active turn per conversation, bounded generation and partial snapshots |
 | `conversations/repository.server.ts`             | Durable ordering, idempotency, credential hashes and restart recovery      |
-| `conversations/auth.server.ts`, `http.server.ts` | Shopify signature, bearer/origin authorization and bounded HTTP inputs     |
+| `conversations/auth.server.ts`, `http.server.ts` | Shopify signature, bearer/origin authorization and bounded HTTP inputs (32 KiB normally, 128 KiB for projected tool results)     |
 
 The first message bootstraps through Shopify's signed `/apps/roman/bootstrap` proxy. It requires an installed offline session and approved `write_app_proxy` scope. Only `hd-dev-single` and `hd-dev-multi` are enabled in this phase. Subsequent `/api/conversations/:id` reads and `/messages` submissions require a random conversation bearer credential and the exact authorized storefront origin. Credentials expire after seven days; the frontend keeps them in tab-scoped storage. CORS does not replace bearer authorization, and localhost has no authentication bypass.
 
 Generation continues if the browser disconnects. Request UUIDs deduplicate submissions; a restart marks unfinished replies failed instead of replaying them. The browser polls partial snapshots while a reply is pending because Cloudflare Quick Tunnels do not support SSE. Limits are 4 concurrent replies, 90 seconds per reply, 4,000 input characters, 40 turns per conversation, 20 new conversations per shop per 10 minutes and 100 per day. These are development bounds, not a production abuse-control service.
 
-Voice, model-triggered shopping tools, journey events, inline widgets, uploads and the session dashboard are subsequent phases. Current text chat gives general advice and cannot inspect the live storefront or execute the developer drawer's actions.
+Luna can call `search_products`, `get_product` and `lookup_catalog`. `shared/catalog-tools.ts` defines their schemas and validation; `conversations/browser-tools.server.ts` waits for the authenticated storefront executor. The browser uses its existing Shopify login and MCP transport. Each durable `ToolInvocation` has one atomic browser claim; late or mismatched results are rejected, and reload/restart never silently replays an invocation. A lookup has a 45-second deadline; each model turn permits at most four lookups.
+
+Catalog results are transient. Durable product widgets store only IDs and resolve current details when rendered; merchant images load directly from their URLs. `ConversationMessage.partsJson` is the single typed transcript representation: text, product references and page views. Its migration preserves earlier messages. Server sequence/revision govern ordering; page timestamps are observations, not ordering authority. Public journey paths exclude URL query/hash and account/checkout routes. Each conversation permits 200 page views. End chat cancels its generation, rejects later writes and retains its server transcript.
+
+Voice, cart/measurement model tools, photo uploads/visualization and the session dashboard remain subsequent phases. Catalog matches do not establish fitting suitability, stock or a configured quote.
 
 The [frontend tool drawer](../frontend/README.md#developer-tools) currently executes public catalog calls and browser-owned cart/navigation actions directly. It needs no admin server. When voice is added, this backend will create [GPT-Live-1 sessions](https://developers.openai.com/api/reference/typescript/resources/live/methods/create) using a server-only OpenAI key; the browser will carry audio over WebRTC to OpenAI. A [server sideband connection](https://developers.openai.com/api/reference/resources/live/sideband-websocket) can handle session events and delegated work. OpenAI hosts the model; Docker hosts Roman's application, authorization and persistence, with no model weights or GPU required. Keep browser actions at their current owner and return their results to the server; put privileged tools and future model orchestration in server-only modules here. Add shared tool contracts only when both apps consume them.
 

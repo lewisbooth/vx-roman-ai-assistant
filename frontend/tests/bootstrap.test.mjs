@@ -291,6 +291,66 @@ test("opening persists before download completion so a new document restores the
   assert.equal(next.window.sessionStorage.getItem(openStorageKey), "1");
 });
 
+test("an existing conversation resumes behind a closed panel without focus or layout changes", async (t) => {
+  const ctx = setup(
+    t,
+    (window) => {
+      const input = window.document.createElement("input");
+      input.id = "store-search";
+      window.document.querySelector("main").append(input);
+      input.focus();
+    },
+    {
+      storage: {
+        [openStorageKey]: "0",
+        "roman:conversation": "stored credential wake hint",
+      },
+    },
+  );
+  assert.equal(hidden(ctx.panel()), true);
+  assert.equal(ctx.launcher().getAttribute("aria-expanded"), "false");
+  assert.equal(ctx.document.querySelector("style[data-roman-layout]"), null);
+  assert.equal(
+    ctx.document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    false,
+  );
+  assert.equal(ctx.document.activeElement.id, "store-search");
+  const mounts = installRuntime(ctx.window);
+  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+  await until(
+    () => mounts.length === 1 && hidden(ctx.progress()),
+    "hidden runtime did not become ready",
+  );
+  assert.equal(hidden(ctx.panel()), true);
+  assert.deepEqual(mounts[0].open, [false]);
+  assert.equal(ctx.document.activeElement.id, "store-search");
+  ctx.launcher().click();
+  assert.equal(hidden(ctx.panel()), false);
+  assert.equal(mounts.length, 1);
+  assert.equal(ctx.requests.length, 1);
+});
+
+test("BFCache wakes a previously untouched closed page only when a conversation now exists", async (t) => {
+  const ctx = setup(t);
+  const show = () =>
+    ctx.window.dispatchEvent(
+      new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
+    );
+  show();
+  assert.equal(loadingScript(ctx.document), null);
+  ctx.window.sessionStorage.setItem(
+    "roman:conversation",
+    "stored credential wake hint",
+  );
+  show();
+  assert.ok(loadingScript(ctx.document));
+  assert.equal(hidden(ctx.panel()), true);
+  assert.equal(ctx.launcher().getAttribute("aria-expanded"), "false");
+  assert.equal(ctx.host.shadowRoot.activeElement, null);
+  await delay(0);
+  assert.equal(ctx.requests.length, 1);
+});
+
 test("blocked session storage does not prevent opening or closing the sidebar", async (t) => {
   for (const failure of ["access denied", "writes denied"]) {
     await t.test(failure, async (t) => {

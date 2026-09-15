@@ -10,7 +10,12 @@ const bundle = await build({
       export * as bootstrap from "./admin/routes/api.storefront.bootstrap.ts";
       export * as conversation from "./admin/routes/api.conversations.$id.ts";
       export * as messages from "./admin/routes/api.conversations.$id.messages.ts";
+      export * as journey from "./admin/routes/api.conversations.$id.journey.ts";
+      export * as end from "./admin/routes/api.conversations.$id.end.ts";
+      export * as claim from "./admin/routes/api.conversations.$id.tools.$invocationId.claim.ts";
+      export * as result from "./admin/routes/api.conversations.$id.tools.$invocationId.result.ts";
       export { ConversationError } from "./admin/conversations/errors.server.ts";
+      export { parseCatalogResult } from "./shared/catalog.ts";
     `,
     resolveDir: process.cwd(),
   },
@@ -23,7 +28,7 @@ const bundle = await build({
       name: "http-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /(?:shopify|repository|runner)\.server$/ },
+          { filter: /(?:shopify|repository|runner|browser-tools)\.server$/ },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
@@ -33,8 +38,13 @@ const bundle = await build({
               ? `export const authorizeCredential=(...args)=>mock.authorize(...args);
               export const createConversation=(...args)=>mock.create(...args);
               export const getSnapshot=(...args)=>mock.snapshot(...args);
+              export const appendJourney=(...args)=>mock.journey(...args);
+              export const claimToolInvocation=(...args)=>mock.claim(...args);
               export const conversationApiBaseUrl=()=>mock.apiBaseUrl;`
-              : `export const startTurn=(...args)=>mock.start(...args);
+              : args.path.endsWith("browser-tools.server")
+                ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`
+                : `export const endTurn=(...args)=>mock.end(...args);
+              export const startTurn=(...args)=>mock.start(...args);
               export const readConversation=(...args)=>mock.read(...args);`,
         }));
       },
@@ -47,11 +57,30 @@ const REQUEST_ID = "68055cf5-a781-4c1d-a792-42861808b2c7";
 const TOKEN = "A".repeat(43);
 const SHOP = "hd-dev-single.myshopify.com";
 const ORIGIN = `https://${SHOP}`;
-const SNAPSHOT = { id: ID, messages: [], busy: false };
+const SNAPSHOT = {
+  id: ID,
+  status: "active",
+  revision: 0,
+  messages: [],
+  busy: false,
+  tools: [],
+};
+const INVOCATION_ID = "1b65d343-3010-4f5e-b026-daa94a2e1087";
+const CLAIM = { clientId: REQUEST_ID, claimToken: "C".repeat(43) };
 
 function setup() {
   const logs = [];
-  const calls = { proxy: 0, create: 0, authorize: 0, read: 0, start: [] };
+  const calls = {
+    proxy: 0,
+    create: 0,
+    authorize: 0,
+    read: 0,
+    start: [],
+    journey: [],
+    end: [],
+    claim: [],
+    result: [],
+  };
   let now = Date.now();
   let api;
   const mock = {
@@ -94,6 +123,21 @@ function setup() {
       };
     },
     snapshot: async () => SNAPSHOT,
+    journey: async (...args) => {
+      calls.journey.push(args);
+      return { ...SNAPSHOT, revision: 1 };
+    },
+    end: async (...args) => {
+      calls.end.push(args);
+      return { ...SNAPSHOT, status: "ended", revision: 1 };
+    },
+    claim: async (...args) => {
+      calls.claim.push(args);
+      return { claimed: true };
+    },
+    result: async (...args) => {
+      calls.result.push(args);
+    },
     read: async () => {
       calls.read++;
       return SNAPSHOT;
@@ -164,7 +208,11 @@ const bootstrapRequest = (options = {}) =>
     ...options,
   });
 const run = (route, request) =>
-  route.action({ request, params: { id: ID }, context: {} });
+  route.action({
+    request,
+    params: { id: ID, invocationId: INVOCATION_ID },
+    context: {},
+  });
 const json = (value) => JSON.stringify(value);
 
 test("signed bootstrap creates only for the authenticated offline development shop", async () => {
@@ -545,4 +593,237 @@ test("known errors retain safe status and CORS; unexpected failures expose no in
   assert.equal(JSON.stringify(env.logs).includes("private"), false);
   assert.equal(JSON.stringify(env.logs).includes(ID), false);
   assert.equal(JSON.stringify(env.logs).includes(TOKEN), false);
+});
+
+test("journey, end and tool endpoints each enforce their own bearer authorization and CORS", async () => {
+  const env = setup();
+  for (const route of ["journey", "end", "claim", "result"]) {
+    const suffix = ["claim", "result"].includes(route)
+      ? `tools/${INVOCATION_ID}/${route}`
+      : route;
+    const path = `/api/conversations/${ID}/${suffix}`;
+    for (const options of [
+      { origin: false },
+      { origin: "https://attacker.test" },
+      { authorization: false },
+      { authorization: `Bearer ${"B".repeat(43)}` },
+    ]) {
+      const response = await run(
+        env.api[route],
+        request(path, { method: "POST", body: "{}", ...options }),
+      );
+      assert.equal(response.status, 401);
+      assert.equal(env.calls[route].length, 0);
+    }
+    const preflight = await run(
+      env.api[route],
+      request(path, { method: "OPTIONS", authorization: false }),
+    );
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+    assert.equal(
+      preflight.headers.get("Access-Control-Allow-Credentials"),
+      null,
+    );
+    assert.equal((await run(env.api[route], request(path))).status, 405);
+  }
+});
+
+test("journey accepts only page metadata and end calls the aborting runner owner", async () => {
+  const env = setup();
+  const input = {
+    requestId: REQUEST_ID,
+    title: "  Blackout blinds  ",
+    path: "/collections/blackout-blinds",
+    occurredAt: new Date().toISOString(),
+  };
+  const journey = await run(
+    env.api.journey,
+    request(`/api/conversations/${ID}/journey`, {
+      method: "POST",
+      body: json(input),
+    }),
+  );
+  assert.equal(journey.status, 200);
+  assert.equal(env.calls.journey[0][0], ID);
+  assert.equal(env.calls.journey[0][1].title, "Blackout blinds");
+  for (const value of [
+    { ...input, shop: SHOP },
+    { ...input, requestId: "bad" },
+    { ...input, path: 4 },
+    { ...input, title: "" },
+    { ...input, occurredAt: "bad" },
+    { ...input, title: "a".repeat(201) },
+  ]) {
+    assert.equal(
+      (
+        await run(
+          env.api.journey,
+          request(`/api/conversations/${ID}/journey`, {
+            method: "POST",
+            body: json(value),
+          }),
+        )
+      ).status,
+      400,
+    );
+  }
+  assert.equal(env.calls.journey.length, 1);
+  const end = await run(
+    env.api.end,
+    request(`/api/conversations/${ID}/end`, { method: "POST", body: "{}" }),
+  );
+  assert.equal(end.status, 200);
+  assert.equal((await end.json()).status, "ended");
+  assert.equal(env.calls.end[0][0], ID);
+  assert.equal(
+    (
+      await run(
+        env.api.end,
+        request(`/api/conversations/${ID}/end`, {
+          method: "POST",
+          body: json({ conversationId: ID }),
+        }),
+      )
+    ).status,
+    400,
+  );
+  assert.equal(env.calls.end.length, 1);
+});
+
+test("catalog endpoints validate invocation and claim before forwarding an exclusive result or error", async () => {
+  const env = setup();
+  const path = `/api/conversations/${ID}/tools/${INVOCATION_ID}`;
+  const claim = await run(
+    env.api.claim,
+    request(`${path}/claim`, { method: "POST", body: json(CLAIM) }),
+  );
+  assert.equal(claim.status, 200);
+  assert.deepEqual(await claim.json(), { claimed: true });
+  assert.equal(env.calls.claim[0][0], ID);
+  assert.equal(env.calls.claim[0][1], INVOCATION_ID);
+  assert.equal(env.calls.claim[0][2].claimToken, CLAIM.claimToken);
+  const result = {
+    products: [{ id: "gid://shopify/Product/123" }],
+    messages: [],
+  };
+  const response = await run(
+    env.api.result,
+    request(`${path}/result`, {
+      method: "POST",
+      body: json({ ...CLAIM, result }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(env.calls.result[0][0], ID);
+  assert.equal(env.calls.result[0][1], INVOCATION_ID);
+  assert.equal(env.calls.result[0][3].products[0].id, result.products[0].id);
+  assert.equal(env.calls.read, 1);
+  assert.equal(env.calls.result[0][4], undefined);
+  const failure = await run(
+    env.api.result,
+    request(`${path}/result`, {
+      method: "POST",
+      body: json({ ...CLAIM, error: " Catalog unavailable " }),
+    }),
+  );
+  assert.equal(failure.status, 200);
+  assert.equal(env.calls.result[1][3], undefined);
+  assert.equal(env.calls.result[1][4], "Catalog unavailable");
+  for (const [route, value] of [
+    ["claim", { ...CLAIM, result }],
+    ["claim", { ...CLAIM, clientId: "bad" }],
+    ["claim", { ...CLAIM, claimToken: "bad" }],
+    ["result", { ...CLAIM, result, error: "bad" }],
+    ["result", CLAIM],
+    ["result", { ...CLAIM, error: "" }],
+    ["result", { ...CLAIM, error: "a".repeat(501) }],
+    ["result", { ...CLAIM, result, shop: SHOP }],
+  ]) {
+    assert.equal(
+      (
+        await run(
+          env.api[route],
+          request(`${path}/${route}`, { method: "POST", body: json(value) }),
+        )
+      ).status,
+      400,
+    );
+  }
+  const invalidId = await env.api.claim.action({
+    request: request(`${path}/claim`, { method: "POST", body: json(CLAIM) }),
+    params: { id: ID, invocationId: "not-a-uuid" },
+    context: {},
+  });
+  assert.equal(invalidId.status, 400);
+  assert.equal(env.calls.claim.length, 1);
+  assert.equal(env.calls.result.length, 2);
+});
+
+test("rejected tool results retain safe errors and do not read or expose the submitted result", async () => {
+  const env = setup();
+  env.mock.result = async () => {
+    throw new env.api.ConversationError(409, "This lookup has ended.");
+  };
+  const response = await run(
+    env.api.result,
+    request(`/api/conversations/${ID}/tools/${INVOCATION_ID}/result`, {
+      method: "POST",
+      body: json({ ...CLAIM, result: { private: "never echo this" } }),
+    }),
+  );
+  assert.equal(response.status, 409);
+  assert.equal(env.calls.read, 0);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+  assert.ok(!(await response.text()).includes("never echo"));
+  assert.equal(env.logs.length, 0);
+});
+
+test("catalog results allow bounded larger projections without raising the ordinary request limit", async () => {
+  const env = setup();
+  const result = {
+    products: Array.from({ length: 10 }, (_, index) => ({
+      id: `gid://shopify/Product/${index + 1}`,
+      title: `Blackout blind ${index + 1}`,
+      description: "窓".repeat(2000),
+      url: `${ORIGIN}/products/blind-${index + 1}`,
+    })),
+    messages: [],
+  };
+  const body = json({ ...CLAIM, result });
+  const bytes = new TextEncoder().encode(body).byteLength;
+  assert.ok(bytes > 32768 && bytes < 128 * 1024);
+  env.mock.result = async (...args) => {
+    const parsed = env.api.parseCatalogResult(args[3], ORIGIN);
+    assert.equal(parsed.products.length, 10);
+    env.calls.result.push(args);
+  };
+  const path = `/api/conversations/${ID}/tools/${INVOCATION_ID}/result`;
+  const accepted = await run(
+    env.api.result,
+    request(path, { method: "POST", body }),
+  );
+  assert.equal(accepted.status, 200);
+  assert.equal(env.calls.result.length, 1);
+  for (const options of [
+    { body: json({ ...CLAIM, result: "x".repeat(128 * 1024) }) },
+    { body: "{}", headers: { "Content-Length": String(128 * 1024 + 1) } },
+  ]) {
+    assert.equal(
+      (await run(env.api.result, request(path, { method: "POST", ...options })))
+        .status,
+      400,
+    );
+  }
+  assert.equal(env.calls.result.length, 1);
+  const ordinary = await run(
+    env.api.messages,
+    request(`/api/conversations/${ID}/messages`, {
+      method: "POST",
+      body: json({ requestId: REQUEST_ID, text: "hello" }),
+      headers: { "Content-Length": "32769" },
+    }),
+  );
+  assert.equal(ordinary.status, 400);
+  assert.equal(env.calls.start.length, 0);
 });

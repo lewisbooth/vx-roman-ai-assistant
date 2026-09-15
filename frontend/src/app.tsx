@@ -1,7 +1,9 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react";
 import { createMemoryRouter, useRouteError } from "react-router";
@@ -36,19 +38,57 @@ function Assistant({
   const following = useRef(true);
   const messages = state.conversation?.messages;
   const hasMessages = !!messages?.length;
+  const [ending, setEnding] = useState(false);
+  const endingRef = useRef(false);
+  const [endError, setEndError] = useState<string | null>(null);
+  const [chatVersion, setChatVersion] = useState(0);
+
+  async function endChat() {
+    if (endingRef.current) return;
+    endingRef.current = true;
+    setEnding(true);
+    setEndError(null);
+    try {
+      await session.end();
+      following.current = true;
+      if (viewport.current) viewport.current.scrollTop = 0;
+      setChatVersion((value) => value + 1);
+    } catch (error) {
+      setEndError(
+        error instanceof Error
+          ? error.message
+          : "Your chat could not be ended. Please retry.",
+      );
+    } finally {
+      endingRef.current = false;
+      setEnding(false);
+    }
+  }
 
   useEffect(() => onReady(), [onReady]);
 
-  useLayoutEffect(() => {
+  const followConversation = useCallback(() => {
     const scroll = viewport.current;
     if (hasMessages && following.current && scroll)
       scroll.scrollTop = scroll.scrollHeight;
-  }, [messages, hasMessages]);
+  }, [hasMessages]);
+
+  useLayoutEffect(followConversation, [messages, followConversation]);
 
   return (
     <div className="roman-content roman-chat">
-      {(hasMessages || state.restoring) && (
+      {(hasMessages || state.restoring || state.conversation) && (
         <header className="roman-chat-header">
+          {state.conversation?.status === "active" && (
+            <button
+              type="button"
+              className="roman-end-chat"
+              disabled={ending || state.pending || state.restoring}
+              onClick={() => void endChat()}
+            >
+              {ending ? "Ending…" : "End chat"}
+            </button>
+          )}
           <img
             src={logoUrl}
             alt="Roman by SelectBlinds"
@@ -72,16 +112,30 @@ function Assistant({
             Restoring your conversation…
           </p>
         ) : hasMessages ? (
-          <Timeline messages={messages!} />
+          <Timeline
+            messages={messages!}
+            session={session}
+            navigation={navigation}
+            onContentChange={followConversation}
+          />
         ) : (
           <Welcome logoUrl={logoUrl} />
         )}
         {showTools && <Development navigation={navigation} tools={tools} />}
       </div>
       <Composer
-        busy={state.pending || state.restoring || !!state.conversation?.busy}
-        error={state.error}
-        onClearError={session.clearError}
+        key={chatVersion}
+        busy={
+          ending ||
+          state.pending ||
+          state.restoring ||
+          !!state.conversation?.busy
+        }
+        error={state.error || endError}
+        onClearError={() => {
+          setEndError(null);
+          session.clearError();
+        }}
         onSend={(text) => {
           following.current = true;
           return session.sendMessage(text);

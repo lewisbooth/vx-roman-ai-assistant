@@ -1,6 +1,6 @@
 # Roman AI Assistant
 
-A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. Development stores now have persistent Luna text chat and the illustrated Roman home screen. Voice, model-triggered shopping actions, journey tracking and home visualization follow in later phases.
+A customer assistant foundation for SelectBlinds and Blinds 2go stores. A small bottom-left launcher opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and local measurement drafts. Development stores have persistent Luna text chat, live catalog recommendations, product cards and a browsing timeline. Voice, cart/measurement tool calls and home visualization follow in later phases.
 
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 

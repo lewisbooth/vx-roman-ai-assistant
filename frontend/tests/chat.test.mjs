@@ -68,6 +68,9 @@ async function setup(t, options = {}) {
   host.attachShadow({ mode: "open" }).append(container);
   const listeners = new Set();
   const calls = [];
+  const endCalls = [];
+  const productCalls = [];
+  const navigationCalls = [];
   let state = {
     conversation: null,
     pending: false,
@@ -92,6 +95,20 @@ async function setup(t, options = {}) {
       calls.push(text);
       await options.onSend?.(text, window);
     },
+    end: async () => {
+      endCalls.push("end");
+      await options.onEnd?.(window);
+      update({ conversation: null, error: null });
+    },
+    loadProducts: async (ids) => {
+      productCalls.push([...ids]);
+      return (
+        (await options.onLoadProducts?.(ids, window)) ?? {
+          products: [],
+          messages: [],
+        }
+      );
+    },
     dispose() {},
   };
   const navigationState = {
@@ -107,7 +124,9 @@ async function setup(t, options = {}) {
       destinations: [{ label: "Home", path: "/" }],
       getSnapshot: () => navigationState,
       subscribe: () => () => {},
-      navigate: async () => {},
+      navigate: async (path) => {
+        navigationCalls.push(path);
+      },
     },
     tools: { execute: async () => ({}) },
     session,
@@ -137,7 +156,18 @@ async function setup(t, options = {}) {
       "Composer did not accept typed text",
     );
   }
-  return { window, container, calls, update, input, type, errors };
+  return {
+    window,
+    container,
+    calls,
+    update,
+    input,
+    type,
+    errors,
+    endCalls,
+    productCalls,
+    navigationCalls,
+  };
 }
 
 test("welcome uses original asset paths, unavailable tiles and a collapsed development section", async (t) => {
@@ -358,4 +388,287 @@ test("new messages preserve a reader's scroll position and resume following at t
     () => viewport.scrollTop === 1500,
     "Following did not resume at the bottom",
   );
+});
+
+function activeConversation(messages) {
+  return {
+    id: "existing",
+    status: "active",
+    revision: 1,
+    tools: [],
+    busy: false,
+    messages,
+  };
+}
+
+function productsMessage() {
+  return {
+    ...message("products", "assistant", "Some options for your room"),
+    parts: [
+      { type: "text", text: "Some options for your room" },
+      {
+        type: "products",
+        version: 1,
+        invocationId: "catalog-one",
+        productIds: ["gid://shopify/Product/123"],
+      },
+    ],
+  };
+}
+
+const catalog = {
+  products: [
+    {
+      id: "gid://shopify/Product/123",
+      title: "Lottie Roman blind",
+      description: "Public product description",
+      url: "https://hd-dev-single.myshopify.com/products/lottie",
+      imageUrl: "https://cdn.shopify.com/lottie.jpg",
+      priceLabel: "From £30.00",
+    },
+  ],
+  messages: [],
+};
+
+test("product references load live cards once across snapshot refreshes and use storefront navigation", async (t) => {
+  let resolve;
+  const pending = new Promise((done) => {
+    resolve = done;
+  });
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([productsMessage()]) },
+    onLoadProducts: () => pending,
+  });
+  await until(
+    () => ctx.productCalls.length === 1,
+    "Product references were not hydrated",
+  );
+  assert.match(ctx.container.textContent, /Loading products/);
+  ctx.update({ conversation: activeConversation([productsMessage()]) });
+  await delay(0);
+  assert.equal(
+    ctx.productCalls.length,
+    1,
+    "Unchanged product IDs must not refetch on every poll",
+  );
+  resolve(catalog);
+  await until(
+    () => ctx.container.querySelector(".roman-product-card"),
+    "Product card did not render",
+  );
+  const card = ctx.container.querySelector(".roman-product-card");
+  assert.equal(card.href, catalog.products[0].url);
+  assert.equal(card.querySelector("img").src, catalog.products[0].imageUrl);
+  assert.equal(card.querySelector("img").getAttribute("loading"), "lazy");
+  assert.match(card.textContent, /Lottie Roman blind/);
+  assert.match(card.textContent, /From £30.00/);
+  assert.match(
+    ctx.container.textContent,
+    /Final price depends on options and measurements/,
+  );
+  const click = new ctx.window.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+  });
+  card.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, true);
+  assert.deepEqual(ctx.navigationCalls, [catalog.products[0].url]);
+  const modified = new ctx.window.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    ctrlKey: true,
+  });
+  card.dispatchEvent(modified);
+  assert.equal(modified.defaultPrevented, false);
+  assert.equal(ctx.navigationCalls.length, 1);
+});
+
+test("product errors have an explicit retry, and missing products remain honest", async (t) => {
+  let attempts = 0;
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([productsMessage()]) },
+    onLoadProducts: (_ids, window) => {
+      if (++attempts === 1)
+        throw new window.Error("Shopify is unavailable. Please retry.");
+      return {
+        products: [],
+        messages: [{ type: "info", text: "This item is no longer sold." }],
+      };
+    },
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-products-status button"),
+    "Product retry was not offered",
+  );
+  assert.match(ctx.container.textContent, /Shopify is unavailable/);
+  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  ctx.container.querySelector(".roman-products-status button").click();
+  await until(
+    () =>
+      ctx.container.textContent.includes(
+        "These products are no longer available",
+      ),
+    "Empty lookup did not display the unavailable state",
+  );
+  assert.match(ctx.container.textContent, /This item is no longer sold/);
+  assert.equal(attempts, 2);
+  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+});
+
+test("journey entries are quiet linked text and unsafe URLs never become active links", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([
+        {
+          ...message("page", "context", ""),
+          parts: [
+            {
+              type: "page_view",
+              version: 1,
+              title: "Lottie <img src=x>",
+              path: "/products/lottie",
+              occurredAt: "2026-09-15T10:00:00.000Z",
+            },
+          ],
+        },
+        {
+          ...message("unsafe", "context", ""),
+          parts: [
+            {
+              type: "page_view",
+              version: 1,
+              title: "Unsafe link",
+              path: "javascript:alert(1)",
+              occurredAt: "2026-09-15T10:00:01.000Z",
+            },
+          ],
+        },
+      ]),
+    },
+  });
+  const entries = ctx.container.querySelectorAll(".roman-page-view");
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].textContent, "Viewed Lottie <img src=x>");
+  assert.equal(entries[0].querySelector("img"), null);
+  assert.equal(entries[1].querySelector("a"), null);
+  entries[0].querySelector("a").click();
+  assert.deepEqual(ctx.navigationCalls, [
+    "https://hd-dev-single.myshopify.com/products/lottie",
+  ]);
+});
+
+test("ending a chat retains its transcript and draft until acknowledged, then starts clean", async (t) => {
+  let finish;
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([
+        message("reply", "assistant", "Your saved conversation"),
+      ]),
+    },
+    onEnd: () => pending,
+  });
+  await ctx.type("Unsent draft");
+  const end = ctx.container.querySelector(".roman-end-chat");
+  end.click();
+  end.click();
+  await until(() => ctx.input().disabled, "Ending did not lock the composer");
+  assert.deepEqual(ctx.endCalls, ["end"]);
+  assert.match(ctx.container.textContent, /Your saved conversation/);
+  assert.equal(ctx.input().value, "Unsent draft");
+  finish();
+  await until(
+    () => ctx.container.querySelector(".roman-welcome"),
+    "End did not return to the empty screen",
+  );
+  assert.equal(ctx.input().value, "");
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.container.querySelector(".roman-end-chat"), null);
+  await ctx.type("A new conversation");
+  ctx.container.querySelector('.roman-composer button[type="submit"]').click();
+  await until(
+    () => ctx.calls.length === 1,
+    "The empty screen could not start a new chat",
+  );
+  assert.deepEqual(ctx.calls, ["A new conversation"]);
+});
+
+test("an unsuccessful End keeps the conversation and draft available", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([
+        message("reply", "assistant", "Keep this conversation"),
+      ]),
+    },
+    onEnd: (window) => {
+      throw new window.Error("Could not end the chat. Please retry.");
+    },
+  });
+  await ctx.type("Keep this draft");
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(
+    () => ctx.container.querySelector('[role="alert"]'),
+    "End failure was hidden",
+  );
+  assert.match(ctx.container.textContent, /Could not end the chat/);
+  assert.match(ctx.container.textContent, /Keep this conversation/);
+  assert.equal(ctx.input().value, "Keep this draft");
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.container.querySelector(".roman-welcome"), null);
+});
+
+test("late product loading follows the transcript only while the reader stays at its end", async (t) => {
+  for (const following of [false, true]) {
+    await t.test(
+      following ? "following" : "reading earlier messages",
+      async (t) => {
+        let resolve;
+        const pending = new Promise((done) => {
+          resolve = done;
+        });
+        const ctx = await setup(t, {
+          state: { conversation: activeConversation([productsMessage()]) },
+          onLoadProducts: () => pending,
+        });
+        const viewport = ctx.container.querySelector(".roman-chat-scroll");
+        Object.defineProperties(viewport, {
+          scrollHeight: { value: 1300 },
+          clientHeight: { value: 200 },
+        });
+        if (!following) {
+          viewport.scrollTop = 100;
+          viewport.dispatchEvent(new ctx.window.Event("scroll"));
+        }
+        resolve(catalog);
+        await until(
+          () => ctx.container.querySelector(".roman-product-card"),
+          "Products did not arrive",
+        );
+        assert.equal(viewport.scrollTop, following ? 1300 : 100);
+      },
+    );
+  }
+});
+
+test("a late card lookup cannot repopulate a cleared conversation", async (t) => {
+  let resolve;
+  const pending = new Promise((done) => {
+    resolve = done;
+  });
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([productsMessage()]) },
+    onLoadProducts: () => pending,
+  });
+  await until(() => ctx.productCalls.length === 1, "Lookup did not start");
+  ctx.update({ conversation: null });
+  await until(
+    () => ctx.container.querySelector(".roman-welcome"),
+    "The conversation did not clear",
+  );
+  resolve(catalog);
+  await delay(0);
+  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  assert.deepEqual(ctx.errors, []);
 });

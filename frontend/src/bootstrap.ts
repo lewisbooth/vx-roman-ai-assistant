@@ -1,4 +1,5 @@
 import { APP_NAME, ASSISTANT_INITIAL } from "../../shared/brand";
+import { CONVERSATION_STORAGE_KEY } from "../../shared/conversation";
 import closeIcon from "./assets/close.svg?url";
 import styles from "./bootstrap.css?inline";
 import layoutCss from "./storefront.css?inline";
@@ -24,19 +25,18 @@ let loadingStartedAt: number | undefined;
 const visibilityKey = "roman:sidebar-open";
 let storageUnavailable = false;
 
-function savedOpen(open?: boolean): boolean {
-  if (storageUnavailable) return false;
+function savedState(value?: string, key = visibilityKey): string | null {
+  if (storageUnavailable) return null;
   try {
-    if (open === undefined)
-      return window.sessionStorage.getItem(visibilityKey) === "1";
-    window.sessionStorage.setItem(visibilityKey, open ? "1" : "0");
-    return open;
+    if (value === undefined) return window.sessionStorage.getItem(key);
+    window.sessionStorage.setItem(key, value);
+    return value;
   } catch {
     storageUnavailable = true;
     console.warn(
       "[Roman] Storage unavailable; sidebar state won't survive navigation.",
     );
-    return false;
+    return null;
   }
 }
 
@@ -114,10 +114,15 @@ class RomanAssistant extends HTMLElement {
   private state: "idle" | "loading" | "ready" | "error" = "idle";
   private generation = 0;
   private onPageShow = (event: PageTransitionEvent) => {
-    if (!event.persisted) return;
-    const open = savedOpen();
-    if (!storageUnavailable) this.setOpen(open, false);
+    if (event.persisted) this.restore();
   };
+
+  private restore() {
+    const open = savedState() === "1";
+    if (!storageUnavailable) this.setOpen(open, false);
+    if (this.state === "idle" && savedState(undefined, CONVERSATION_STORAGE_KEY))
+      void this.start();
+  }
 
   connectedCallback() {
     if (this.launcher) return;
@@ -138,26 +143,27 @@ class RomanAssistant extends HTMLElement {
     this.launcher = launcher;
     shadow.replaceChildren(style, launcher);
     window.addEventListener("pageshow", this.onPageShow);
-    if (savedOpen()) this.setOpen(true, false);
+    this.restore();
   }
 
   private createPanel() {
     const panel = document.createElement("section");
+    panel.hidden = !this.open;
     panel.id = `roman-panel-${crypto.randomUUID()}`;
     panel.dataset.romanPanel = "";
     panel.setAttribute("aria-label", this.dataset.label || APP_NAME);
     panel.className = "roman-panel";
     // Static markup only. Theme-provided URLs are assigned as DOM properties.
     panel.innerHTML = `
-      <img class="roman-texture" alt="" hidden>
-      <div data-roman-content class="roman-content-scroll" hidden></div>
-      <div data-roman-loading class="roman-loading">
-        <img class="roman-loading-logo" alt="Roman by SelectBlinds" width="178" height="75">
-        <div class="roman-progress-track" role="progressbar" aria-label="Loading Roman"><div class="roman-progress"></div></div>
-        <p class="roman-loading-error" role="alert" hidden></p>
-        <button data-roman-retry class="roman-retry" type="button" hidden>Retry</button>
-      </div>
-      <button class="roman-close" type="button" aria-label="Close assistant"><img alt="" width="20" height="20"></button>`;
+<img class="roman-texture" alt="" hidden>
+<div data-roman-content class="roman-content-scroll" hidden></div>
+<div data-roman-loading class="roman-loading">
+  <img class="roman-loading-logo" alt="Roman by SelectBlinds" width="178" height="75">
+  <div class="roman-progress-track" role="progressbar" aria-label="Loading Roman"><div class="roman-progress"></div></div>
+  <p class="roman-loading-error" role="alert" hidden></p>
+  <button data-roman-retry class="roman-retry" type="button" hidden>Retry</button>
+</div>
+<button class="roman-close" type="button" aria-label="Close assistant"><img alt="" width="20" height="20"></button>`;
     const texture = panel.querySelector<HTMLImageElement>(".roman-texture")!;
     if (this.dataset.textureUrl) {
       texture.src = this.dataset.textureUrl;
@@ -194,7 +200,7 @@ class RomanAssistant extends HTMLElement {
     if (!this.isConnected || this.open === open) return;
     focus ||= !open && !!this.panel?.contains(this.shadowRoot!.activeElement);
     this.open = open;
-    savedOpen(open);
+    savedState(open ? "1" : "0");
     if (open && !this.panel) this.createPanel();
     this.panel!.hidden = !open;
     this.launcher!.setAttribute("aria-expanded", String(open));
@@ -208,6 +214,7 @@ class RomanAssistant extends HTMLElement {
 
   private async start(retry = false) {
     if (this.state === "loading" || this.state === "ready") return;
+    if (!this.panel) this.createPanel();
     loadingStartedAt ??= performance.now();
     const generation = ++this.generation;
     this.state = "loading";

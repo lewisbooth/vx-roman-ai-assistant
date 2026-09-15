@@ -1,6 +1,8 @@
 ﻿import {
   MAX_MESSAGE_LENGTH,
   type SendMessageInput,
+  type JourneyInput,
+  type ToolClaim,
 } from "../../shared/conversation";
 import { allowedOrigin, UUID_PATTERN } from "./auth.server";
 import { ConversationError } from "./errors.server";
@@ -60,11 +62,9 @@ export async function handleJsonRequest(
     if (!known)
       console.error("[Roman] Conversation request failed.", {
         route:
-          method === "GET"
-            ? "conversation"
-            : new URL(request.url).pathname.endsWith("/messages")
-              ? "message"
-              : "bootstrap",
+          ["messages", "journey", "end", "claim", "result", "bootstrap"].find(
+            (route) => new URL(request.url).pathname.endsWith(`/${route}`),
+          ) ?? "conversation",
         category: error instanceof Error ? error.name : "UnknownError",
       });
     return Response.json(
@@ -83,6 +83,7 @@ export async function handleJsonRequest(
 
 export async function readJsonObject(
   request: Request,
+  maxBytes = MAX_BODY_BYTES,
 ): Promise<Record<string, unknown>> {
   if (
     request.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !==
@@ -90,10 +91,7 @@ export async function readJsonObject(
   )
     throw new ConversationError(400, "Send an application/json request body.");
   const length = request.headers.get("Content-Length");
-  if (
-    length !== null &&
-    (!/^\d+$/.test(length) || Number(length) > MAX_BODY_BYTES)
-  )
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes))
     throw new ConversationError(400, "The request body is too large.");
   if (!request.body)
     throw new ConversationError(400, "A JSON request body is required.");
@@ -108,7 +106,7 @@ export async function readJsonObject(
       chunk = await reader.read()
     ) {
       bytes += chunk.value.byteLength;
-      if (bytes > MAX_BODY_BYTES) {
+      if (bytes > maxBytes) {
         await reader.cancel().catch(() => undefined);
         throw new ConversationError(400, "The request body is too large.");
       }
@@ -168,4 +166,85 @@ export function messageInput(value: Record<string, unknown>): SendMessageInput {
       `Send a requestId UUID and 1â€“${MAX_MESSAGE_LENGTH} characters of text.`,
     );
   return { requestId: value.requestId, text: value.text.trim() };
+}
+
+export function journeyInput(value: Record<string, unknown>): JourneyInput {
+  if (
+    Object.keys(value).length !== 4 ||
+    typeof value.requestId !== "string" ||
+    !UUID_PATTERN.test(value.requestId) ||
+    typeof value.title !== "string" ||
+    !value.title.trim() ||
+    value.title.length > 200 ||
+    typeof value.path !== "string" ||
+    value.path.length > 2048 ||
+    typeof value.occurredAt !== "string" ||
+    value.occurredAt.length > 40 ||
+    !Number.isFinite(Date.parse(value.occurredAt))
+  )
+    throw new ConversationError(
+      400,
+      "Send a requestId UUID, page title, storefront path and occurredAt timestamp.",
+    );
+  return {
+    requestId: value.requestId,
+    title: value.title.trim(),
+    path: value.path,
+    occurredAt: value.occurredAt,
+  };
+}
+
+function parseClaim(value: Record<string, unknown>): ToolClaim {
+  if (
+    typeof value.clientId !== "string" ||
+    !UUID_PATTERN.test(value.clientId) ||
+    typeof value.claimToken !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(value.claimToken)
+  )
+    throw new ConversationError(400, "Send a valid catalog executor claim.");
+  return { clientId: value.clientId, claimToken: value.claimToken };
+}
+
+export function claimInput(value: Record<string, unknown>): ToolClaim {
+  if (Object.keys(value).length !== 2)
+    throw new ConversationError(400, "Send only clientId and claimToken.");
+  return parseClaim(value);
+}
+
+export function toolResultInput(value: Record<string, unknown>): {
+  claim: ToolClaim;
+  result?: unknown;
+  error?: string;
+} {
+  const claim = parseClaim(value);
+  const keys = Object.keys(value);
+  if (keys.length !== 3 || keys.includes("result") === keys.includes("error"))
+    throw new ConversationError(
+      400,
+      "Send a catalog result or an error with the executor claim.",
+    );
+  if (keys.includes("error")) {
+    if (
+      typeof value.error !== "string" ||
+      !value.error.trim() ||
+      value.error.length > 500
+    )
+      throw new ConversationError(
+        400,
+        "Send a catalog error of up to 500 characters.",
+      );
+    return { claim, error: value.error.trim() };
+  }
+  return { claim, result: value.result };
+}
+
+export function emptyInput(value: Record<string, unknown>): void {
+  if (Object.keys(value).length)
+    throw new ConversationError(400, "Send an empty JSON object.");
+}
+
+export function toolInvocationId(value: string | undefined): string {
+  if (!value || !UUID_PATTERN.test(value))
+    throw new ConversationError(400, "Send a valid catalog invocation ID.");
+  return value;
 }
