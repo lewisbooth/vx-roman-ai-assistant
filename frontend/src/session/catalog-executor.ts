@@ -26,7 +26,19 @@ export function createCatalogExecutor(tools: Pick<AssistantTools, "execute">) {
           if (disposed) throw new Error("Roman has been removed.");
           const raw = await tools.execute(call.name, call.arguments);
           if (disposed) throw new Error("Roman has been removed.");
-          return normalizeCatalogResult(raw, window.location.origin);
+          try {
+            return normalizeCatalogResult(raw, window.location.origin);
+          } catch (error) {
+            // Validation diagnostics contain controlled field paths, not catalog data.
+            console.warn("[Roman] Catalog response rejected.", {
+              tool: call.name,
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : "Invalid catalog data.",
+            });
+            throw error;
+          }
         })
         .finally(() => {
           queued--;

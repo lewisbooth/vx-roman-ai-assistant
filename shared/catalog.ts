@@ -25,19 +25,33 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function invalid(): never {
-  throw new Error("Shopify returned an invalid catalog response.");
+function invalid(path: string, expected: string): never {
+  // Paths and expectations come from this validator, never from response values.
+  throw new Error(
+    `Shopify returned an invalid catalog response: ${path} expected ${expected}.`,
+  );
 }
 
 function origin(value: string): string {
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    invalid(
+      "storefrontOrigin",
+      "an HTTPS origin without credentials or a path",
+    );
+  }
   if (
     url.protocol !== "https:" ||
     url.username ||
     url.password ||
     url.origin !== value
   )
-    invalid();
+    invalid(
+      "storefrontOrigin",
+      "an HTTPS origin without credentials or a path",
+    );
   return url.origin;
 }
 
@@ -159,18 +173,22 @@ function startingPrice(value: unknown): string | undefined {
 function normalizeProduct(
   value: unknown,
   storefrontOrigin: string,
+  path: string,
 ): CatalogProduct {
+  if (!object(value)) invalid(path, "a product object");
   if (
-    !object(value) ||
     typeof value.id !== "string" ||
     value.id.length > 100 ||
-    !productId.test(value.id) ||
-    typeof value.title !== "string"
+    !productId.test(value.id)
   )
-    invalid();
+    invalid(`${path}.id`, "a Shopify Product GID of at most 100 characters");
+  if (typeof value.title !== "string")
+    invalid(`${path}.title`, "non-empty text");
   const title = compact(value.title, 200);
+  if (!title) invalid(`${path}.title`, "non-empty text");
   const url = productUrl(value.url, storefrontOrigin);
-  if (!title || !url) invalid();
+  if (!url)
+    invalid(`${path}.url`, "a current-storefront /products/<handle> URL");
   const media = Array.isArray(value.media) ? value.media : [];
   const variantMedia = Array.isArray(value.variants)
     ? value.variants.flatMap((variant) =>
@@ -199,51 +217,73 @@ export function normalizeCatalogResult(
   storefrontOrigin: string,
 ): CatalogResult {
   const store = origin(storefrontOrigin);
-  if (!object(value)) invalid();
+  if (!object(value)) invalid("$", "a catalog result object");
+  const productArray = Array.isArray(value.products);
   const products = Array.isArray(value.products)
     ? value.products
     : object(value.product)
       ? [value.product]
       : undefined;
-  if (!products || products.length > 10) invalid();
+  if (!products) invalid("$", "a products array or a product object");
+  if (products.length > 10) invalid("products", "at most 10 products");
   const rawMessages = value.messages === undefined ? [] : value.messages;
-  if (!Array.isArray(rawMessages) || rawMessages.length > 10) invalid();
-  const messages: CatalogMessage[] = rawMessages.map((message: unknown) => {
-    if (
-      !object(message) ||
-      (message.type !== "info" && message.type !== "warning") ||
-      typeof message.content !== "string"
-    )
-      invalid();
-    const text = compact(message.content, 300);
-    if (!text) invalid();
-    return {
-      type: message.type,
-      ...(typeof message.code === "string" && codePattern.test(message.code)
-        ? { code: message.code }
-        : {}),
-      text,
-    };
-  });
+  if (!Array.isArray(rawMessages) || rawMessages.length > 10)
+    invalid("messages", "an array of at most 10 messages");
+  const messages: CatalogMessage[] = rawMessages.map(
+    (message: unknown, index) => {
+      const path = `messages[${index}]`;
+      if (!object(message)) invalid(path, "a message object");
+      if (message.type !== "info" && message.type !== "warning")
+        invalid(`${path}.type`, '"info" or "warning"');
+      if (typeof message.content !== "string")
+        invalid(`${path}.content`, "non-empty text");
+      const text = compact(message.content, 300);
+      if (!text) invalid(`${path}.content`, "non-empty text");
+      return {
+        type: message.type,
+        ...(typeof message.code === "string" && codePattern.test(message.code)
+          ? { code: message.code }
+          : {}),
+        text,
+      };
+    },
+  );
   const unique = new Map<string, CatalogProduct>();
-  for (const value of products) {
-    const product = normalizeProduct(value, store);
+  for (const [index, value] of products.entries()) {
+    const product = normalizeProduct(
+      value,
+      store,
+      productArray ? `products[${index}]` : "product",
+    );
     if (!unique.has(product.id)) unique.set(product.id, product);
   }
   return { products: [...unique.values()], messages };
 }
 
-function onlyKeys(value: Record<string, unknown>, keys: readonly string[]) {
-  if (Object.keys(value).some((key) => !keys.includes(key))) invalid();
+function onlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+  path: string,
+) {
+  if (Object.keys(value).some((key) => !keys.includes(key)))
+    invalid(path, `only these fields: ${keys.join(", ")}`);
 }
 
-function text(value: unknown, limit: number, allowEmpty = false): string {
+function text(
+  value: unknown,
+  path: string,
+  limit: number,
+  allowEmpty = false,
+): string {
   if (
     typeof value !== "string" ||
     value.length > limit ||
     (!allowEmpty && !value.trim())
   )
-    invalid();
+    invalid(
+      path,
+      `${allowEmpty ? "text" : "non-empty text"} of at most ${limit} characters`,
+    );
   return value;
 }
 
@@ -253,31 +293,31 @@ export function parseCatalogResult(
   storefrontOrigin: string,
 ): CatalogResult {
   const store = origin(storefrontOrigin);
-  if (!object(value)) invalid();
-  onlyKeys(value, ["products", "messages"]);
-  if (
-    !Array.isArray(value.products) ||
-    value.products.length > 10 ||
-    !Array.isArray(value.messages) ||
-    value.messages.length > 10
-  )
-    invalid();
+  if (!object(value)) invalid("$", "a catalog result object");
+  onlyKeys(value, ["products", "messages"], "$");
+  if (!Array.isArray(value.products) || value.products.length > 10)
+    invalid("products", "an array of at most 10 products");
+  if (!Array.isArray(value.messages) || value.messages.length > 10)
+    invalid("messages", "an array of at most 10 messages");
   const seen = new Set<string>();
-  const products = value.products.map((product): CatalogProduct => {
-    if (!object(product)) invalid();
-    onlyKeys(product, [
-      "id",
-      "title",
-      "description",
-      "url",
-      "imageUrl",
-      "priceLabel",
-    ]);
-    const id = text(product.id, 100);
-    if (!productId.test(id) || seen.has(id)) invalid();
+  const products = value.products.map((product, index): CatalogProduct => {
+    const path = `products[${index}]`;
+    if (!object(product)) invalid(path, "a product object");
+    onlyKeys(
+      product,
+      ["id", "title", "description", "url", "imageUrl", "priceLabel"],
+      path,
+    );
+    const id = text(product.id, `${path}.id`, 100);
+    if (!productId.test(id)) invalid(`${path}.id`, "a Shopify Product GID");
+    if (seen.has(id)) invalid(`${path}.id`, "a unique Shopify Product GID");
     seen.add(id);
     const url = productUrl(product.url, store);
-    if (!url || url !== product.url) invalid();
+    if (!url || url !== product.url)
+      invalid(
+        `${path}.url`,
+        "a canonical current-storefront /products/<handle> URL",
+      );
     const image =
       product.imageUrl === undefined
         ? undefined
@@ -286,30 +326,38 @@ export function parseCatalogResult(
       product.imageUrl !== undefined &&
       (!image || image !== product.imageUrl)
     )
-      invalid();
+      invalid(
+        `${path}.imageUrl`,
+        "a canonical HTTPS image URL on the storefront or cdn.shopify.com",
+      );
     return {
       id,
-      title: text(product.title, 200),
-      description: text(product.description, 2000, true),
+      title: text(product.title, `${path}.title`, 200),
+      description: text(product.description, `${path}.description`, 2000, true),
       url,
       ...(image ? { imageUrl: image } : {}),
       ...(product.priceLabel !== undefined
-        ? { priceLabel: text(product.priceLabel, 100) }
+        ? { priceLabel: text(product.priceLabel, `${path}.priceLabel`, 100) }
         : {}),
     };
   });
-  const messages = value.messages.map((message): CatalogMessage => {
-    if (!object(message)) invalid();
-    onlyKeys(message, ["type", "code", "text"]);
-    if (message.type !== "info" && message.type !== "warning") invalid();
+  const messages = value.messages.map((message, index): CatalogMessage => {
+    const path = `messages[${index}]`;
+    if (!object(message)) invalid(path, "a message object");
+    onlyKeys(message, ["type", "code", "text"], path);
+    if (message.type !== "info" && message.type !== "warning")
+      invalid(`${path}.type`, '"info" or "warning"');
     if (
       message.code !== undefined &&
       (typeof message.code !== "string" || !codePattern.test(message.code))
     )
-      invalid();
+      invalid(
+        `${path}.code`,
+        "1-80 letters, numbers, dots, underscores or hyphens",
+      );
     return {
       type: message.type,
-      text: text(message.text, 300),
+      text: text(message.text, `${path}.text`, 300),
       ...(typeof message.code === "string" ? { code: message.code } : {}),
     };
   });

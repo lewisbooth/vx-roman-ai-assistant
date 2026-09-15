@@ -31,12 +31,14 @@ function deferred() {
 }
 function setup(execute) {
   const module = { exports: {} };
+  const warnings = [];
   runInNewContext(bundle.outputFiles[0].text, {
     module,
     exports: module.exports,
     window: { location: { origin } },
     URL,
     Intl,
+    console: { warn: (...args) => warnings.push(args) },
   });
   const calls = [];
   const executor = module.exports.createCatalogExecutor({
@@ -45,8 +47,23 @@ function setup(execute) {
       return execute(...args);
     },
   });
-  return { executor, calls };
+  return { executor, calls, warnings };
 }
+
+test("rejected product data logs the failing field without dumping the catalog", async () => {
+  const { executor, warnings } = setup(async () => ({
+    products: [{ ...product, url: "https://private.example/products/shade" }],
+  }));
+  await assert.rejects(
+    executor.execute("search_products", { query: "shade" }),
+    /products\[0\]\.url expected/,
+  );
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][0], "[Roman] Catalog response rejected.");
+  assert.equal(warnings[0][1].tool, "search_products");
+  assert.match(warnings[0][1].reason, /products\[0\]\.url expected/);
+  assert.doesNotMatch(JSON.stringify(warnings), /private\.example|Live shade/);
+});
 
 test("model search and product-card lookups share serial execution and fresh projection", async () => {
   const gate = deferred();

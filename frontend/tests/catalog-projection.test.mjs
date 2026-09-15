@@ -243,6 +243,124 @@ test("malformed catalog envelopes fail and duplicate products do not create dupl
   );
 });
 
+test("catalog diagnostics distinguish rejected fields without including response data", () => {
+  const privateValue = "PRIVATE_CATALOG_VALUE";
+  const cases = [
+    [
+      {
+        products: [
+          { ...product, url: `https://${privateValue}.example/products/shade` },
+        ],
+      },
+      "products[0].url expected a current-storefront /products/<handle> URL",
+    ],
+    [
+      { products: [{ ...product, id: privateValue }] },
+      "products[0].id expected a Shopify Product GID of at most 100 characters",
+    ],
+    [
+      { [privateValue]: privateValue },
+      "$ expected a products array or a product object",
+    ],
+    [
+      {
+        products: [],
+        messages: [{ type: privateValue, content: privateValue }],
+      },
+      'messages[0].type expected "info" or "warning"',
+    ],
+    [
+      {
+        products: [],
+        messages: [{ type: "info", content: { [privateValue]: true } }],
+      },
+      "messages[0].content expected non-empty text",
+    ],
+  ];
+  const diagnostics = new Set();
+  for (const [raw, diagnostic] of cases) {
+    assert.throws(
+      () => normalizeCatalogResult(raw, origin),
+      (error) => {
+        assert.equal(
+          error.message,
+          `Shopify returned an invalid catalog response: ${diagnostic}.`,
+        );
+        assert.doesNotMatch(error.message, new RegExp(privateValue));
+        diagnostics.add(error.message);
+        return true;
+      },
+    );
+  }
+  assert.equal(diagnostics.size, cases.length);
+  assert.throws(
+    () =>
+      normalizeCatalogResult(
+        { product: { ...product, url: privateValue } },
+        origin,
+      ),
+    /invalid catalog response: product\.url expected/,
+  );
+});
+
+test("projected payload diagnostics never echo rejected keys, values or origin input", () => {
+  const valid = normalizeCatalogResult({ product }, origin);
+  const privateValue = "PRIVATE_BROWSER_VALUE";
+  for (const [raw, expectedPath] of [
+    [
+      { ...valid, [privateValue]: privateValue },
+      "$ expected only these fields",
+    ],
+    [
+      { ...valid, products: [{ ...valid.products[0], id: privateValue }] },
+      "products[0].id expected a Shopify Product GID",
+    ],
+    [
+      {
+        ...valid,
+        products: [
+          {
+            ...valid.products[0],
+            url: `https://${privateValue}.example/products/shade`,
+          },
+        ],
+      },
+      "products[0].url expected a canonical current-storefront",
+    ],
+    [
+      {
+        ...valid,
+        messages: [
+          { type: "info", text: "Notice", [privateValue]: privateValue },
+        ],
+      },
+      "messages[0] expected only these fields",
+    ],
+  ]) {
+    assert.throws(
+      () => parseCatalogResult(raw, origin),
+      (error) => {
+        assert.ok(error.message.includes(expectedPath));
+        assert.doesNotMatch(error.message, new RegExp(privateValue));
+        return true;
+      },
+    );
+  }
+  for (const parser of [normalizeCatalogResult, parseCatalogResult]) {
+    assert.throws(
+      () => parser(valid, privateValue),
+      (error) => {
+        assert.match(
+          error.message,
+          /invalid catalog response: storefrontOrigin expected/,
+        );
+        assert.doesNotMatch(error.message, new RegExp(privateValue));
+        return true;
+      },
+    );
+  }
+});
+
 test("the server parser rejects extra fields, unsafe URLs and oversized browser payloads", () => {
   const valid = normalizeCatalogResult({ product }, origin);
   for (const changed of [
