@@ -64,6 +64,7 @@ function setup() {
   const mock = {
     beforeCreate: undefined,
     beforeComplete: undefined,
+    beforeFail: undefined,
     create: async (...args) => {
       calls.create.push(args);
       await mock.beforeCreate?.(...args);
@@ -75,6 +76,7 @@ function setup() {
     },
     fail: async (...args) => {
       calls.fail.push(args);
+      await mock.beforeFail?.(...args);
     },
     context: async (...args) => {
       calls.context.push(args);
@@ -420,4 +422,96 @@ test("a browser cannot submit a navigation result for a catalog invocation", asy
     { status: 400 },
   );
   assert.equal(env.calls.complete.length, 0);
+});
+
+test("a waiter owns the conversation while durable creation is pending, including after cancellation", async () => {
+  const env = setup();
+  const gate = deferred();
+  const controller = new AbortController();
+  env.mock.beforeCreate = () => gate.promise;
+  const old = request(env, controller.signal);
+  const rejected = assert.rejects(old, /action did not finish/);
+  await flush();
+  await assert.rejects(request(env), /already running/);
+  controller.abort();
+  await assert.rejects(request(env), /already running/);
+  assert.equal(
+    env.calls.create.length,
+    1,
+    "No replacement invocation is created while an old DB operation can still return",
+  );
+  gate.resolve();
+  await rejected;
+  assert.equal(env.calls.fail[0][1], "invocation-1");
+  env.mock.beforeCreate = undefined;
+  const next = request(env);
+  await flush();
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-2",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await next), result);
+});
+
+test("cancelled durable cleanup keeps its slot until complete and late results cannot release its replacement", async () => {
+  const env = setup();
+  const cleanup = deferred();
+  env.mock.beforeFail = () => cleanup.promise;
+  const controller = new AbortController();
+  const old = request(env, controller.signal);
+  const rejected = assert.rejects(old, /action did not finish/);
+  await flush();
+  controller.abort();
+  await flush();
+  await assert.rejects(request(env), /already running/);
+  cleanup.resolve();
+  await rejected;
+  let resolved = false;
+  const next = request(env).then((value) => {
+    resolved = true;
+    return value;
+  });
+  await flush();
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  await flush();
+  assert.equal(
+    resolved,
+    false,
+    "A late result for the cancelled action cannot resolve the new waiter",
+  );
+  await assert.rejects(request(env), /already running/);
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-2",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await next), result);
+  assert.equal(env.calls.fail.length, 1);
+});
+
+test("a failed durable creation releases its reservation without failing an unrelated row", async () => {
+  const env = setup();
+  env.mock.beforeCreate = async () => {
+    throw new Error("Database create failed");
+  };
+  await assert.rejects(request(env), /Database create failed/);
+  assert.equal(env.calls.fail.length, 0);
+  env.mock.beforeCreate = undefined;
+  const next = request(env);
+  await flush();
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await next), result);
 });

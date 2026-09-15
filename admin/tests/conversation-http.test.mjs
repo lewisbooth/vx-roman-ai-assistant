@@ -28,22 +28,28 @@ const bundle = await build({
       name: "http-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /(?:shopify|repository|runner|browser-tools)\.server$/ },
+          {
+            filter:
+              /(?:shopify|repository|runner|browser-tools|service)\.server$/,
+          },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
           contents: args.path.endsWith("shopify.server")
             ? "export const authenticate={public:{appProxy:(request)=>mock.proxy(request)}};"
-            : args.path.endsWith("repository.server")
-              ? `export const authorizeCredential=(...args)=>mock.authorize(...args);
+            : args.path.endsWith("service.server")
+              ? `export const stopConversationVoice=(...args)=>mock.stopVoice(...args);
+                 export const noteVoicePageView=(...args)=>mock.voicePage(...args);`
+              : args.path.endsWith("repository.server")
+                ? `export const authorizeCredential=(...args)=>mock.authorize(...args);
               export const createConversation=(...args)=>mock.create(...args);
               export const getSnapshot=(...args)=>mock.snapshot(...args);
               export const appendJourney=(...args)=>mock.journey(...args);
               export const claimToolInvocation=(...args)=>mock.claim(...args);
               export const conversationApiBaseUrl=()=>mock.apiBaseUrl;`
-              : args.path.endsWith("browser-tools.server")
-                ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`
-                : `export const endTurn=(...args)=>mock.end(...args);
+                : args.path.endsWith("browser-tools.server")
+                  ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`
+                  : `export const endTurn=(...args)=>mock.end(...args);
               export const startTurn=(...args)=>mock.start(...args);
               export const readConversation=(...args)=>mock.read(...args);`,
         }));
@@ -80,11 +86,19 @@ function setup() {
     end: [],
     claim: [],
     result: [],
+    voiceStops: [],
+    voicePages: [],
   };
   let now = Date.now();
   let api;
   const mock = {
     apiBaseUrl: "https://roman.example/api/conversations",
+    stopVoice: async (...args) => {
+      calls.voiceStops.push(args);
+    },
+    voicePage: (...args) => {
+      calls.voicePages.push(args);
+    },
     proxy: async () => {
       calls.proxy++;
       return {

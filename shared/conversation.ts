@@ -1,5 +1,7 @@
 export type MessageStatus = "pending" | "complete" | "failed";
 
+import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
+
 export interface TextPart {
   type: "text";
   text: string;
@@ -20,7 +22,8 @@ export interface PageViewPart {
   occurredAt: string;
 }
 
-export type ConversationPart = TextPart | ProductListPart | PageViewPart;
+export type ConversationPart =
+  TextPart | ProductListPart | PageViewPart | VoiceCaptionPart;
 
 export type CatalogToolName =
   "search_products" | "get_product" | "lookup_catalog";
@@ -62,6 +65,7 @@ export interface ConversationSnapshot {
   messages: ConversationMessage[];
   busy: boolean;
   tools: BrowserToolInvocation[];
+  voice?: VoiceSessionSnapshot | null;
 }
 
 export interface ConversationCredential {
@@ -81,4 +85,5 @@ export interface SendMessageInput {
 }
 
 export const MAX_MESSAGE_LENGTH = 4000;
+export const MAX_CONVERSATION_MESSAGES = 1600;
 export const CONVERSATION_STORAGE_KEY = "roman:conversation";

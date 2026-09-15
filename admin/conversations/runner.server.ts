@@ -4,7 +4,7 @@ import type {
 } from "../../shared/conversation";
 import { ConversationError } from "./errors.server";
 import { requestBrowserTool } from "./browser-tools.server";
-import { generateReply, TEXT_MODEL } from "./model.server";
+import { generateReply, TEXT_MODEL, type ModelReply } from "./model.server";
 import {
   beginTurn,
   failPending,
@@ -19,6 +19,7 @@ interface ActiveTurn {
   text: string;
   ready: Promise<void>;
   controller: AbortController;
+  voiceId?: string;
 }
 
 // One process owns generation in the single-VM deployment. A durable pending row
@@ -34,7 +35,7 @@ export async function readConversation(
   if (!active.has(id)) await failPending(id);
   const snapshot = await getSnapshot(id);
   const turn = active.get(id);
-  if (turn?.assistantId) {
+  if (turn?.assistantId && !turn.voiceId) {
     snapshot.messages = snapshot.messages.map((message) =>
       message.id === turn.assistantId && message.status === "pending"
         ? {
@@ -111,7 +112,7 @@ async function completeTurn(
   assistantId: string,
   history: Parameters<typeof generateReply>[0],
   turn: ActiveTurn,
-) {
+): Promise<ModelReply | undefined> {
   try {
     const signal = AbortSignal.any([
       turn.controller.signal,
@@ -125,8 +126,11 @@ async function completeTurn(
       signal,
       (callId, name, input) =>
         requestBrowserTool(id, assistantId, callId, name, input, signal),
+      turn.voiceId ? "voice" : "text",
     );
+    signal.throwIfAborted();
     await finishTurn(id, assistantId, { ...reply, status: "complete" });
+    return reply;
   } catch (error) {
     if (turn.controller.signal.aborted) return;
     // Provider messages can include request data. Keep diagnostics categorical.
@@ -148,8 +152,76 @@ async function completeTurn(
       });
     }
   } finally {
-    active.delete(id);
+    if (active.get(id) === turn) active.delete(id);
   }
+}
+
+/** Uses the same bounded runner and browser executor without duplicating spoken text. */
+export async function runVoiceDelegation(
+  id: string,
+  voiceId: string,
+  requestId: string,
+  signal: AbortSignal,
+): Promise<ModelReply | undefined> {
+  signal.throwIfAborted();
+  if (ending.has(id) || active.has(id))
+    throw new ConversationError(
+      409,
+      "Roman is already working on this conversation.",
+    );
+  if (active.size >= MAX_CONCURRENT_TURNS)
+    throw new ConversationError(
+      429,
+      "Roman is helping other customers. Please try again shortly.",
+    );
+  let initialized!: () => void;
+  const turn: ActiveTurn = {
+    requestId,
+    assistantId: null,
+    text: "",
+    voiceId,
+    ready: new Promise<void>((resolve) => {
+      initialized = resolve;
+    }),
+    controller: new AbortController(),
+  };
+  const abort = () => turn.controller.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  active.set(id, turn);
+  try {
+    const started = await beginTurn(id, { requestId, text: "" }, voiceId);
+    turn.assistantId = started.assistantId;
+    initialized();
+    if (!started.assistantId) return;
+    if (signal.aborted) {
+      await finishTurn(id, started.assistantId, {
+        text: "",
+        status: "failed",
+        error: "Voice work was interrupted.",
+      });
+      return;
+    }
+    return await completeTurn(id, started.assistantId, started.history, turn);
+  } finally {
+    initialized();
+    signal.removeEventListener("abort", abort);
+    if (active.get(id) === turn) active.delete(id);
+  }
+}
+
+export async function cancelVoiceDelegation(id: string, voiceId: string) {
+  const turn = active.get(id);
+  if (!turn || turn.voiceId !== voiceId) return;
+  turn.controller.abort();
+  await turn.ready;
+  if (turn.assistantId)
+    await finishTurn(id, turn.assistantId, {
+      text: "",
+      status: "failed",
+      error:
+        "Voice work was interrupted. Check the page before repeating an action.",
+    });
+  if (active.get(id) === turn) active.delete(id);
 }
 
 export async function endTurn(id: string): Promise<ConversationSnapshot> {

@@ -8,6 +8,8 @@ import type {
   Conversation,
   ConversationMessage as StoredMessage,
   ToolInvocation as StoredTool,
+  VoiceSession,
+  VoiceTranscript,
   Prisma,
 } from "@prisma/client";
 import type {
@@ -25,6 +27,8 @@ import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import { parseCatalogCall } from "../../shared/catalog-tools";
 import { parseNavigationCall } from "../../shared/navigation-tool";
 import { isStorefrontPagePath } from "../../shared/journey";
+import { groupVoiceTranscript } from "../../shared/voice-transcript";
+import { expireVoiceSessions, getVoiceState } from "../voice/repository.server";
 import prisma from "../db.server";
 import { ConversationError } from "./errors.server";
 import {
@@ -45,6 +49,8 @@ const uuidPattern =
 type StoredConversation = Conversation & {
   messages: StoredMessage[];
   toolInvocations: StoredTool[];
+  voiceSessions: VoiceSession[];
+  voiceTranscripts: VoiceTranscript[];
 };
 
 function validProductIds(value: unknown): value is string[] {
@@ -111,8 +117,8 @@ function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
   return { id: tool.id, ...call, status: tool.status };
 }
 
-function snapshot(conversation: StoredConversation): ConversationSnapshot {
-  const messages = conversation.messages.map((message): ConversationMessage => {
+function timeline(conversation: StoredConversation): ConversationMessage[] {
+  const rows = conversation.messages.map((message) => {
     if (
       !["user", "assistant", "context"].includes(message.role) ||
       !["pending", "complete", "failed"].includes(message.status)
@@ -120,31 +126,97 @@ function snapshot(conversation: StoredConversation): ConversationSnapshot {
       throw new Error("Invalid stored conversation message.");
     }
     return {
-      id: message.id,
-      role: message.role as ConversationMessage["role"],
-      status: message.status as ConversationMessage["status"],
-      parts: parts(message, conversation.origin),
-      createdAt: message.createdAt.toISOString(),
-      ...(message.error ? { error: message.error } : {}),
+      sequence: message.sequence,
+      message: {
+        id: message.id,
+        role: message.role as ConversationMessage["role"],
+        status: message.status as ConversationMessage["status"],
+        parts: parts(message, conversation.origin),
+        createdAt: message.createdAt.toISOString(),
+        ...(message.error ? { error: message.error } : {}),
+      } as ConversationMessage,
     };
   });
+  const captions = groupVoiceTranscript(
+    conversation.voiceTranscripts.map((fragment) => {
+      if (fragment.role !== "user" && fragment.role !== "assistant")
+        throw new Error("Invalid stored voice caption role.");
+      return {
+        ...fragment,
+        role: fragment.role,
+        createdAt: fragment.createdAt.toISOString(),
+      };
+    }),
+  );
+  for (const caption of captions)
+    rows.push({
+      sequence: caption.sequence,
+      message: {
+        id: caption.id,
+        role: caption.role,
+        status: "complete",
+        createdAt: caption.createdAt,
+        parts: [
+          {
+            type: "voice",
+            version: 1,
+            voiceId: caption.voiceId,
+            text: caption.text,
+            startMs: caption.startMs,
+            endMs: caption.endMs,
+          },
+        ],
+      },
+    });
+  return rows
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((row) => row.message);
+}
+
+function snapshot(conversation: StoredConversation): ConversationSnapshot {
+  const messages = timeline(conversation);
+  const voice =
+    conversation.voiceSessions.find((session) =>
+      ["starting", "active"].includes(session.status),
+    ) ?? conversation.voiceSessions[0];
+  if (
+    voice &&
+    !["starting", "active", "closed", "failed"].includes(voice.status)
+  )
+    throw new Error("Invalid stored voice status.");
   if (conversation.status !== "active" && conversation.status !== "ended")
     throw new Error("Invalid stored conversation status.");
   return {
     id: conversation.id,
     status: conversation.status,
     revision: conversation.revision,
-    messages,
+    messages: messages.filter(
+      (message) => message.parts.length > 0 || message.status === "failed",
+    ),
     busy: messages.some((message) => message.status === "pending"),
     tools: conversation.toolInvocations
       .filter((tool) => tool.status === "pending" || tool.status === "running")
       .map(toolSnapshot),
+    ...(voice
+      ? {
+          voice: {
+            id: voice.id,
+            clientId: voice.clientId,
+            status: voice.status as "starting" | "active" | "closed" | "failed",
+            ...(voice.error ? { error: voice.error } : {}),
+          },
+        }
+      : {}),
   };
 }
 
 const withMessages = {
   messages: { orderBy: { sequence: "asc" as const } },
   toolInvocations: { orderBy: { createdAt: "asc" as const } },
+  voiceSessions: {
+    orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
+  },
+  voiceTranscripts: { orderBy: { sequence: "asc" as const } },
 };
 
 async function loadConversation(
@@ -174,14 +246,16 @@ function requireActive(conversation: Conversation) {
 function modelHistory(
   conversation: StoredConversation,
 ): { role: "user" | "assistant"; text: string }[] {
-  return conversation.messages.flatMap((message) => {
+  return timeline(conversation).flatMap((message) => {
     if (message.status === "pending") return [];
-    const content = parts(message, conversation.origin);
+    const content = message.parts;
     const text = (message.status === "complete" ? content : [])
-      .filter((part) => part.type === "text")
+      .filter((part) => part.type === "text" || part.type === "voice")
       .map((part) => part.text)
       .join("\n");
-    const observations = content.filter((part) => part.type !== "text");
+    const observations = content.filter(
+      (part) => part.type !== "text" && part.type !== "voice",
+    );
     return [
       ...(text
         ? [
@@ -314,7 +388,12 @@ export async function authorizeCredential(id: string, token: string) {
 }
 
 export async function getSnapshot(id: string): Promise<ConversationSnapshot> {
+  await getVoiceState(id);
   return snapshot(await loadConversation(prisma, id));
+}
+
+export async function getModelHistory(id: string) {
+  return modelHistory(await loadConversation(prisma, id));
 }
 
 export async function getBrowserToolContext(id: string, invocationId: string) {
@@ -339,6 +418,7 @@ export async function getBrowserToolContext(id: string, invocationId: string) {
 export async function beginTurn(
   id: string,
   input: SendMessageInput,
+  voiceId?: string,
 ): Promise<{
   snapshot: ConversationSnapshot;
   assistantId: string | null;
@@ -347,7 +427,8 @@ export async function beginTurn(
 }> {
   if (
     !uuidPattern.test(input.requestId) ||
-    !input.text.trim() ||
+    (!voiceId && !input.text.trim()) ||
+    (voiceId !== undefined && !uuidPattern.test(voiceId)) ||
     input.text.length > MAX_MESSAGE_LENGTH
   ) {
     throw new ConversationError(
@@ -356,16 +437,19 @@ export async function beginTurn(
     );
   }
   return prisma.$transaction(async (transaction) => {
+    await expireVoiceSessions(transaction, id);
     const conversation = await loadConversation(transaction, id);
     requireActive(conversation);
     const existing = conversation.messages.find(
       (message) =>
-        message.requestId === input.requestId && message.role === "user",
+        message.requestId === input.requestId &&
+        message.role === (voiceId ? "context" : "user"),
     );
     if (existing) {
       if (
+        !voiceId &&
         existing.partsJson !==
-        JSON.stringify([{ type: "text", text: input.text }])
+          JSON.stringify([{ type: "text", text: input.text }])
       )
         throw new ConversationError(
           400,
@@ -387,6 +471,16 @@ export async function beginTurn(
         "Roman is still replying. Wait for that reply before sending another message.",
       );
     }
+    const voice = conversation.voiceSessions.find((session) =>
+      ["starting", "active"].includes(session.status),
+    );
+    if (voiceId ? voice?.id !== voiceId : !!voice)
+      throw new ConversationError(
+        409,
+        voiceId
+          ? "This voice session has ended."
+          : "Switch to text before sending a typed message.",
+      );
     if (conversation.turnCount >= maxTurns) {
       throw new ConversationError(
         429,
@@ -403,7 +497,7 @@ export async function beginTurn(
       data: {
         pendingRequestId: input.requestId,
         turnCount: { increment: 1 },
-        nextSequence: { increment: 2 },
+        nextSequence: { increment: voiceId ? 1 : 2 },
         revision: { increment: 1 },
       },
     });
@@ -416,25 +510,31 @@ export async function beginTurn(
     const now = new Date();
     await transaction.conversationMessage.createMany({
       data: [
-        {
-          id: randomUUID(),
-          conversationId: id,
-          requestId: input.requestId,
-          sequence: conversation.nextSequence,
-          role: "user",
-          status: "complete",
-          partsJson: JSON.stringify([{ type: "text", text: input.text }]),
-          createdAt: now,
-          completedAt: now,
-        },
+        ...(voiceId
+          ? []
+          : [
+              {
+                id: randomUUID(),
+                conversationId: id,
+                requestId: input.requestId,
+                sequence: conversation.nextSequence,
+                role: "user",
+                status: "complete",
+                partsJson: JSON.stringify([{ type: "text", text: input.text }]),
+                createdAt: now,
+                completedAt: now,
+              },
+            ]),
         {
           id: assistantId,
           conversationId: id,
           requestId: input.requestId,
-          sequence: conversation.nextSequence + 1,
-          role: "assistant",
+          sequence: conversation.nextSequence + (voiceId ? 0 : 1),
+          role: voiceId ? "context" : "assistant",
           status: "pending",
-          partsJson: JSON.stringify([{ type: "text", text: "" }]),
+          partsJson: JSON.stringify(
+            voiceId ? [] : [{ type: "text", text: "" }],
+          ),
           createdAt: now,
         },
       ],
@@ -471,12 +571,13 @@ export async function finishTurn(
       where: {
         id: assistantId,
         conversationId: id,
-        role: "assistant",
+        role: { in: ["assistant", "context"] },
         status: "pending",
       },
     });
     if (!message) return;
-    const content: ConversationPart[] = [{ type: "text", text: result.text }];
+    const content: ConversationPart[] =
+      message.role === "context" ? [] : [{ type: "text", text: result.text }];
     if (result.status === "complete" && result.presentation) {
       let productIds: string[];
       try {
@@ -575,7 +676,7 @@ export async function failPending(id: string): Promise<void> {
     const abandoned = await transaction.conversationMessage.findMany({
       where: {
         conversationId: id,
-        role: "assistant",
+        role: { in: ["assistant", "context"] },
         status: "pending",
         createdAt: { lt: processStartedAt },
       },
@@ -585,7 +686,7 @@ export async function failPending(id: string): Promise<void> {
     await transaction.conversationMessage.updateMany({
       where: {
         conversationId: id,
-        role: "assistant",
+        role: { in: ["assistant", "context"] },
         status: "pending",
         createdAt: { lt: processStartedAt },
       },
@@ -666,8 +767,13 @@ export async function appendJourney(
       return snapshot(conversation);
     }
     if (
-      conversation.messages.filter((message) => message.role === "context")
-        .length >= maxJourneyRows
+      conversation.messages.filter(
+        (message) =>
+          message.role === "context" &&
+          parts(message, conversation.origin).some(
+            (part) => part.type === "page_view",
+          ),
+      ).length >= maxJourneyRows
     )
       throw new ConversationError(
         429,
@@ -729,6 +835,10 @@ export async function endConversation(
         completedAt: new Date(),
       },
     });
+    await transaction.voiceSession.updateMany({
+      where: { conversationId: id, status: { in: ["starting", "active"] } },
+      data: { status: "closed", closedAt: new Date() },
+    });
     return snapshot(await loadConversation(transaction, id));
   });
 }
@@ -741,7 +851,7 @@ function pendingAssistant(
   const assistant = conversation.messages.find(
     (message) =>
       message.id === assistantId &&
-      message.role === "assistant" &&
+      ["assistant", "context"].includes(message.role) &&
       message.status === "pending" &&
       message.requestId === conversation.pendingRequestId,
   );

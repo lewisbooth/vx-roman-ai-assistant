@@ -14,6 +14,7 @@ const errorCodes: Record<number, string> = {
   404: "not_found",
   409: "busy",
   429: "limit",
+  503: "unavailable",
 };
 
 function headersFor(request: Request) {
@@ -62,8 +63,18 @@ export async function handleJsonRequest(
     if (!known)
       console.error("[Roman] Conversation request failed.", {
         route:
-          ["messages", "journey", "end", "claim", "result", "bootstrap"].find(
-            (route) => new URL(request.url).pathname.endsWith(`/${route}`),
+          [
+            "messages",
+            "journey",
+            "end",
+            "claim",
+            "result",
+            "bootstrap",
+            "voice",
+            "heartbeat",
+            "stop",
+          ].find((route) =>
+            new URL(request.url).pathname.endsWith(`/${route}`),
           ) ?? "conversation",
         category: error instanceof Error ? error.name : "UnknownError",
       });

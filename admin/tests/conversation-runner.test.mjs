@@ -1331,3 +1331,286 @@ test("streaming text preserves an already-persisted product widget", async () =>
   generation.complete();
   await flush();
 });
+
+const VOICE_ID = "b3d1a5c9-814c-458f-a2a6-33c91b5f1d05";
+
+function voiceHistory(env, history) {
+  const textBegin = env.mock.begin;
+  env.mock.begin = async (id, input, voiceId) => {
+    if (!voiceId) return textBegin(id, input);
+    env.calls.begins.push({ id, input, voiceId });
+    await env.mock.beforeBegin?.(id, input, voiceId);
+    let row = env.rows.get(id);
+    if (!row) {
+      row = { status: "active", revision: 0, messages: [], tools: [] };
+      env.rows.set(id, row);
+    }
+    if (row.messages.some((message) => message.status === "pending"))
+      throw new env.api.ConversationError(409, "Wait for the current reply.");
+    const assistantId = `${id}-voice-${row.messages.length}`;
+    row.messages.push({
+      id: assistantId,
+      role: "context",
+      status: "pending",
+      text: "",
+      requestId: input.requestId,
+    });
+    return { snapshot: env.snapshot(id), assistantId, history: plain(history) };
+  };
+}
+
+test("voice delegation forwards canonical caption history to Luna without a fabricated customer message", async () => {
+  const env = setup();
+  const history = [
+    { role: "user", text: "I need blinds for my kitchen." },
+    { role: "assistant", text: "Would you prefer blackout?" },
+    { role: "user", text: "Yes, show a blackout roller carousel." },
+  ];
+  voiceHistory(env, history);
+  env.streams.push(events(completed("These are verified blackout rollers.")));
+  const reply = await env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  assert.equal(reply.text, "These are verified blackout rollers.");
+  assert.deepEqual(plain(env.calls.begins), [
+    {
+      id: "voice",
+      input: { requestId: firstInput.requestId, text: "" },
+      voiceId: VOICE_ID,
+    },
+  ]);
+  assert.deepEqual(
+    env.calls.requests[0].input.input,
+    history.map(({ role, text }) => ({ role, content: text })),
+  );
+  assert.match(
+    env.calls.requests[0].input.instructions,
+    /latest spoken request/,
+  );
+  assert.match(
+    env.calls.requests[0].input.instructions,
+    /not a second chat message/,
+  );
+  assert.equal(env.calls.requests[0].input.model, "gpt-5.6-luna");
+  assert.equal(env.calls.requests[0].input.service_tier, "fast");
+  assert.equal(env.calls.requests[0].input.store, false);
+  assert.equal(env.rows.get("voice").messages.length, 1);
+  assert.equal(env.rows.get("voice").messages[0].role, "context");
+  assert.equal(env.calls.finishes[0].result.status, "complete");
+});
+
+test("voice partial briefings never overlay transcript snapshots", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Show me blackout blinds." }]);
+  const generation = pendingReply("PRIVATE_UNSPOKEN_BRIEFING");
+  env.streams.push(generation.stream);
+  const pending = env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  await flush();
+  const snapshot = await env.api.readConversation("voice");
+  assert.equal(snapshot.busy, true);
+  assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE_UNSPOKEN_BRIEFING/);
+  assert.equal(env.calls.recoveries.length, 0);
+  generation.complete("Confirmed product facts for Roman to communicate.");
+  await pending;
+});
+
+test("voice and text share one global concurrency budget", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Find blackout blinds." }]);
+  const generations = Array.from({ length: 4 }, () => pendingReply());
+  generations.forEach((generation) => env.streams.push(generation.stream));
+  await env.api.startTurn("text", firstInput);
+  const delegates = Array.from({ length: 3 }, (_, index) =>
+    env.api.runVoiceDelegation(
+      `voice-${index}`,
+      VOICE_ID,
+      firstInput.requestId,
+      new AbortController().signal,
+    ),
+  );
+  await flush();
+  await assert.rejects(
+    env.api.runVoiceDelegation(
+      "extra-voice",
+      VOICE_ID,
+      firstInput.requestId,
+      new AbortController().signal,
+    ),
+    { status: 429 },
+  );
+  await assert.rejects(env.api.startTurn("extra-text", firstInput), {
+    status: 429,
+  });
+  assert.equal(env.calls.requests.length, 4);
+  generations.forEach((generation) => generation.complete());
+  await Promise.all(delegates);
+  await flush();
+});
+
+test("voice delegation uses the existing browser executor and local carousel presentation", async () => {
+  const env = setup();
+  voiceHistory(env, [
+    { role: "user", text: "Show blackout rollers in a carousel." },
+  ]);
+  env.streams.push(
+    events(completed("", { output: [catalogCall("voice-search")] })),
+    events(completed("", { output: [showCall([456, 123], "voice-show")] })),
+    events(
+      completed("Two blackout rollers are displayed in the chat carousel."),
+    ),
+  );
+  env.mock.executeTool = async () => catalogResult(123, 456, 789);
+  const reply = await env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  assert.deepEqual(plain(reply.presentation), {
+    callId: "voice-show",
+    productIds: [productGid(456), productGid(123)],
+  });
+  assert.equal(env.calls.browserTools.length, 1);
+  assert.deepEqual(plain(env.calls.browserTools[0].slice(0, 5)), [
+    "voice",
+    "voice-voice-0",
+    "voice-search",
+    "search_products",
+    { query: "no drill" },
+  ]);
+  assert.equal(env.calls.browserTools[0].at(-1).aborted, false);
+  assert.deepEqual(
+    plain(env.calls.finishes[0].result.presentation),
+    plain(reply.presentation),
+  );
+});
+
+test("stopping voice aborts a waiting navigation and never retries the action", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Open the selected product." }]);
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          catalogCall("voice-navigate", "navigate", {
+            path: "/products/shade-123",
+          }),
+        ],
+      }),
+    ),
+  );
+  env.mock.executeTool = async (...args) =>
+    new Promise((_resolve, reject) => {
+      const signal = args.at(-1);
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  const pending = env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  await flush();
+  const signal = env.calls.browserTools[0].at(-1);
+  await env.api.cancelVoiceDelegation("voice", VOICE_ID);
+  assert.equal(signal.aborted, true);
+  assert.equal(await pending, undefined);
+  assert.equal(env.calls.browserTools.length, 1);
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(env.calls.finishes.at(-1).result.status, "failed");
+  assert.equal((await env.api.readConversation("voice")).busy, false);
+  assert.equal(env.logs.length, 0);
+});
+
+test("cancel during voice initialization finishes the reserved work without calling Luna", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Open a product." }]);
+  const begin = deferred();
+  env.mock.beforeBegin = () => begin.promise;
+  const controller = new AbortController();
+  const pending = env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    controller.signal,
+  );
+  await flush();
+  controller.abort();
+  const cancelled = env.api.cancelVoiceDelegation("voice", VOICE_ID);
+  begin.resolve();
+  await Promise.all([pending, cancelled]);
+  assert.equal(env.calls.requests.length, 0);
+  assert.equal(env.calls.browserTools.length, 0);
+  assert.equal((await env.api.readConversation("voice")).busy, false);
+});
+
+test("stale cancelled voice completion cannot remove or overwrite a newer text owner", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Find me a roller." }]);
+  const voice = pendingReply("Old private briefing.");
+  const text = pendingReply("New text answer in progress.");
+  env.streams.push(voice.stream, text.stream);
+  const old = env.api.runVoiceDelegation(
+    "one",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  await flush();
+  await env.api.cancelVoiceDelegation("one", VOICE_ID);
+  await env.api.startTurn("one", secondInput);
+  await flush();
+  voice.complete("A late obsolete answer.");
+  assert.equal(await old, undefined);
+  const snapshot = await env.api.readConversation("one");
+  assert.equal(snapshot.busy, true);
+  assert.equal(
+    snapshot.messages.at(-1).parts[0].text,
+    "New text answer in progress.",
+  );
+  assert.doesNotMatch(JSON.stringify(snapshot), /late obsolete/);
+  await assert.rejects(
+    env.api.startTurn("one", { requestId: "third", text: "Do not overlap." }),
+    { status: 409 },
+  );
+  await env.api.cancelVoiceDelegation("one", VOICE_ID);
+  assert.equal(
+    env.calls.requests[1].options.signal.aborted,
+    false,
+    "Cancelling an old voice ID cannot abort a text turn",
+  );
+  text.complete();
+  await flush();
+});
+
+test("a different voice ID cannot cancel the active delegated work", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Find me a blind." }]);
+  const generation = pendingReply();
+  env.streams.push(generation.stream);
+  const pending = env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  await flush();
+  await env.api.cancelVoiceDelegation(
+    "voice",
+    "47f730c4-40c7-4b82-93d1-1966c8babfb9",
+  );
+  assert.equal(env.calls.requests[0].options.signal.aborted, false);
+  assert.equal(env.calls.finishes.length, 0);
+  generation.complete();
+  await pending;
+});

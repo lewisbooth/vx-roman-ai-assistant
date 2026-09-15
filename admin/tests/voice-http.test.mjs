@@ -1,0 +1,406 @@
+import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
+import process from "node:process";
+import { test } from "node:test";
+import { runInNewContext } from "node:vm";
+import { build } from "esbuild";
+
+const bundle = await build({
+  stdin: {
+    contents: `
+      export * as start from "./admin/routes/api.conversations.$id.voice.ts";
+      export * as heartbeat from "./admin/routes/api.conversations.$id.voice.$voiceId.heartbeat.ts";
+      export * as stop from "./admin/routes/api.conversations.$id.voice.$voiceId.stop.ts";
+      export { ConversationError } from "./admin/conversations/errors.server.ts";
+    `,
+    resolveDir: process.cwd(),
+  },
+  bundle: true,
+  write: false,
+  platform: "node",
+  format: "cjs",
+  plugins: [
+    {
+      name: "voice-http-boundaries",
+      setup(build) {
+        build.onResolve(
+          { filter: /(?:shopify|repository|runner|service)\.server$/ },
+          (args) => ({ path: args.path, namespace: "stub" }),
+        );
+        build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
+          contents: args.path.endsWith("shopify.server")
+            ? "export const authenticate={};"
+            : args.path.endsWith("repository.server")
+              ? "export const authorizeCredential=(...args)=>mock.authorize(...args);"
+              : args.path.endsWith("runner.server")
+                ? "export const readConversation=(...args)=>mock.read(...args);"
+                : `export const startVoice=(...args)=>mock.start(...args);
+                 export const heartbeatVoice=(...args)=>mock.heartbeat(...args);
+                 export const stopVoice=(...args)=>mock.stop(...args);`,
+        }));
+      },
+    },
+  ],
+});
+
+const ID = "8e251a70-d0d7-456b-bc61-cfa7678bfc13";
+const VOICE_ID = "1b65d343-3010-4f5e-b026-daa94a2e1087";
+const REQUEST_ID = "68055cf5-a781-4c1d-a792-42861808b2c7";
+const CLIENT_ID = "8c06c56e-5d17-47ec-b1ae-8d1d82088908";
+const TOKEN = "A".repeat(43);
+const ORIGIN = "https://hd-dev-single.myshopify.com";
+const START = {
+  requestId: REQUEST_ID,
+  clientId: CLIENT_ID,
+  sdp: "v=0\r\nsynthetic-offer\r\n",
+};
+const SNAPSHOT = {
+  id: ID,
+  status: "active",
+  revision: 5,
+  messages: [],
+  tools: [],
+  busy: false,
+};
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+function setup() {
+  const calls = {
+    authorize: [],
+    start: [],
+    heartbeat: [],
+    stop: [],
+    read: [],
+    order: [],
+  };
+  const logs = [];
+  let api;
+  const mock = {
+    authorize: async (id, token) => {
+      calls.authorize.push({ id, token });
+      if (id !== ID || token !== TOKEN)
+        throw new api.ConversationError(
+          401,
+          "Conversation authorization failed.",
+        );
+      return { id: ID, shop: "hd-dev-single.myshopify.com", origin: ORIGIN };
+    },
+    start: async (...args) => {
+      calls.start.push(plain(args));
+      return { voiceId: VOICE_ID, sdp: "synthetic-answer" };
+    },
+    heartbeat: async (...args) => {
+      calls.heartbeat.push(plain(args));
+    },
+    stop: async (...args) => {
+      calls.stop.push(plain(args));
+      calls.order.push("stop");
+    },
+    read: async (...args) => {
+      calls.read.push(plain(args));
+      calls.order.push("read");
+      return SNAPSHOT;
+    },
+  };
+  const module = { exports: {} };
+  runInNewContext(bundle.outputFiles[0].text, {
+    module,
+    exports: module.exports,
+    mock,
+    Request,
+    Response,
+    Headers,
+    URL,
+    TextDecoder,
+    Uint8Array,
+    Buffer,
+    console: { error: (...args) => logs.push(plain(args)) },
+  });
+  api = module.exports;
+  return { api, mock, calls, logs };
+}
+
+function request(route, options = {}) {
+  const {
+    method = "POST",
+    body = route === "start" ? START : { clientId: CLIENT_ID },
+    origin = ORIGIN,
+    authorization = `Bearer ${TOKEN}`,
+    headers: extra = {},
+  } = options;
+  const suffix = route === "start" ? "" : `/${VOICE_ID}/${route}`;
+  const headers = new Headers(extra);
+  if (origin !== false) headers.set("Origin", origin);
+  if (authorization !== false) headers.set("Authorization", authorization);
+  const bodyText = typeof body === "string" ? body : JSON.stringify(body);
+  if (method !== "GET" && method !== "HEAD" && !headers.has("Content-Type"))
+    headers.set("Content-Type", "application/json");
+  return new Request(
+    `https://roman.example/api/conversations/${ID}/voice${suffix}`,
+    {
+      method,
+      headers,
+      ...(method !== "GET" && method !== "HEAD" ? { body: bodyText } : {}),
+    },
+  );
+}
+
+const run = (env, route, req = request(route), params = {}) =>
+  env.api[route].action({
+    request: req,
+    params: { id: ID, voiceId: VOICE_ID, ...params },
+    context: {},
+  });
+
+test("voice start authorizes the conversation and passes only the validated offer", async () => {
+  const env = setup();
+  const response = await run(env, "start");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    voiceId: VOICE_ID,
+    sdp: "synthetic-answer",
+  });
+  assert.deepEqual(env.calls.authorize, [{ id: ID, token: TOKEN }]);
+  assert.deepEqual(env.calls.start, [[ID, START]]);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.equal(response.headers.get("Set-Cookie"), null);
+});
+
+test("heartbeat and stop authenticate independently and retain conversation/client scope", async () => {
+  for (const route of ["heartbeat", "stop"]) {
+    const env = setup();
+    const response = await run(env, route);
+    assert.equal(response.status, 200);
+    assert.equal(env.calls.authorize.length, 1);
+    assert.deepEqual(env.calls[route], [[ID, VOICE_ID, CLIENT_ID]]);
+    assert.deepEqual(
+      await response.json(),
+      route === "heartbeat" ? { ok: true } : SNAPSHOT,
+    );
+    assert.deepEqual(env.calls.order, route === "stop" ? ["stop", "read"] : []);
+  }
+});
+
+test("every voice endpoint rejects absent or incorrect bearer/origin authorization before work", async (t) => {
+  for (const route of ["start", "heartbeat", "stop"]) {
+    for (const invalid of [
+      { authorization: false },
+      { authorization: `Bearer ${"B".repeat(43)}` },
+      { origin: false },
+      { origin: "https://untrusted.example" },
+      { origin: "https://hd-dev-multi.myshopify.com" },
+    ]) {
+      await t.test(`${route}: ${JSON.stringify(invalid)}`, async () => {
+        const env = setup();
+        const response = await run(env, route, request(route, invalid));
+        assert.equal(response.status, 401);
+        assert.equal(
+          env.calls.start.length +
+            env.calls.heartbeat.length +
+            env.calls.stop.length +
+            env.calls.read.length,
+          0,
+        );
+      });
+    }
+  }
+});
+
+test("each voice endpoint rejects an invalid conversation ID and only permits POST", async () => {
+  for (const route of ["start", "heartbeat", "stop"]) {
+    const env = setup();
+    assert.equal(
+      (await run(env, route, request(route), { id: "not-a-uuid" })).status,
+      401,
+    );
+    const response = await env.api[route].loader({
+      request: request(route, { method: "GET" }),
+      params: { id: ID, voiceId: VOICE_ID },
+    });
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("Allow"), "POST, OPTIONS");
+    assert.equal(
+      env.calls.start.length +
+        env.calls.heartbeat.length +
+        env.calls.stop.length,
+      0,
+    );
+  }
+});
+
+test("voice preflight remains restricted to allowed storefronts without issuing a session", async () => {
+  for (const route of ["start", "heartbeat", "stop"]) {
+    const env = setup();
+    assert.equal(
+      (
+        await run(
+          env,
+          route,
+          request(route, { method: "OPTIONS", authorization: false }),
+        )
+      ).status,
+      204,
+    );
+    const denied = await run(
+      env,
+      route,
+      request(route, {
+        method: "OPTIONS",
+        origin: "https://untrusted.example",
+        authorization: false,
+      }),
+    );
+    assert.equal(denied.status, 401);
+    assert.equal(denied.headers.get("Access-Control-Allow-Origin"), null);
+    assert.equal(env.calls.authorize.length, 0);
+    assert.equal(
+      env.calls.start.length +
+        env.calls.heartbeat.length +
+        env.calls.stop.length,
+      0,
+    );
+  }
+});
+
+test("start accepts exactly requestId, clientId and a nonempty bounded SDP offer", async (t) => {
+  const invalid = [
+    {},
+    { ...START, requestId: "invalid" },
+    { ...START, clientId: "invalid" },
+    { clientId: CLIENT_ID, sdp: START.sdp },
+    { requestId: REQUEST_ID, sdp: START.sdp },
+    { ...START, sdp: "" },
+    { ...START, sdp: "  " },
+    { ...START, sdp: null },
+    { ...START, providerId: "live_forged" },
+    { ...START, transcript: "forged caption" },
+    { ...START, sdp: "x".repeat(48 * 1024 + 1) },
+    { ...START, sdp: "中".repeat(16 * 1024 + 1) },
+  ];
+  for (let index = 0; index < invalid.length; index++) {
+    await t.test(`invalid offer ${index}`, async () => {
+      const env = setup();
+      const response = await run(
+        env,
+        "start",
+        request("start", { body: invalid[index] }),
+      );
+      assert.equal(response.status, 400);
+      assert.equal(env.calls.start.length, 0);
+      assert.equal(env.logs.length, 0);
+      assert.doesNotMatch(await response.text(), /forged caption|live_forged/);
+    });
+  }
+  const env = setup();
+  const input = { ...START, sdp: "x".repeat(48 * 1024) };
+  assert.equal(
+    (await run(env, "start", request("start", { body: input }))).status,
+    200,
+  );
+  assert.deepEqual(env.calls.start, [[ID, input]]);
+});
+
+test("start enforces 64 KiB on streamed body and declared Content-Length", async () => {
+  for (const headers of [
+    { "Content-Length": String(64 * 1024 + 1) },
+    { "Content-Length": "invalid" },
+  ]) {
+    const env = setup();
+    assert.equal(
+      (await run(env, "start", request("start", { headers }))).status,
+      400,
+    );
+    assert.equal(env.calls.start.length, 0);
+  }
+  const env = setup();
+  const response = await run(
+    env,
+    "start",
+    request("start", { body: JSON.stringify(START) + " ".repeat(64 * 1024) }),
+  );
+  assert.equal(response.status, 400);
+  assert.equal(env.calls.start.length, 0);
+});
+
+test("voice requests require valid JSON objects and an application/json content type", async () => {
+  for (const route of ["start", "heartbeat", "stop"]) {
+    for (const body of ["{bad", "[]", "null"]) {
+      const env = setup();
+      assert.equal(
+        (await run(env, route, request(route, { body }))).status,
+        400,
+      );
+      assert.equal(env.calls[route].length, 0);
+    }
+    const env = setup();
+    assert.equal(
+      (
+        await run(
+          env,
+          route,
+          request(route, { headers: { "Content-Type": "text/plain" } }),
+        )
+      ).status,
+      400,
+    );
+    assert.equal(env.calls[route].length, 0);
+  }
+});
+
+test("heartbeat and stop require a voice UUID and exactly the client UUID", async () => {
+  for (const route of ["heartbeat", "stop"]) {
+    for (const voiceId of [undefined, "not-a-uuid", "live_provider_id"]) {
+      const env = setup();
+      assert.equal(
+        (await run(env, route, request(route), { voiceId })).status,
+        400,
+      );
+      assert.equal(env.calls[route].length, 0);
+    }
+    for (const body of [
+      {},
+      { clientId: "invalid" },
+      { clientId: CLIENT_ID, sdp: "injected" },
+      { clientId: CLIENT_ID, transcript: "injected" },
+    ]) {
+      const env = setup();
+      assert.equal(
+        (await run(env, route, request(route, { body }))).status,
+        400,
+      );
+      assert.equal(env.calls[route].length, 0);
+    }
+  }
+});
+
+test("ownership conflicts retain their status and stop cannot read after rejection", async () => {
+  for (const route of ["start", "heartbeat", "stop"]) {
+    const env = setup();
+    env.mock[route] = async () => {
+      throw new env.api.ConversationError(
+        409,
+        "Voice belongs to another browser.",
+      );
+    };
+    const response = await run(env, route);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, "busy");
+    assert.equal(env.calls.read.length, 0);
+    assert.equal(env.logs.length, 0);
+  }
+});
+
+test("unexpected provider failures do not expose connection data or customer text", async () => {
+  const env = setup();
+  env.mock.start = async () => {
+    throw new Error("private-key SDP and customer caption");
+  };
+  const response = await run(env, "start");
+  assert.equal(response.status, 500);
+  const text = await response.text();
+  assert.doesNotMatch(text, /private-key|SDP|caption/);
+  assert.doesNotMatch(JSON.stringify(env.logs), /private-key|SDP|caption/);
+  assert.equal(env.logs.length, 1);
+});

@@ -6,11 +6,13 @@ import {
   readJsonObject,
 } from "../conversations/http.server";
 import { endTurn } from "../conversations/runner.server";
+import { stopConversationVoice } from "../voice/service.server";
 
 function handle({ request, params }: LoaderFunctionArgs) {
   return handleJsonRequest(request, "POST", async () => {
     const conversation = await authenticateConversation(request, params.id);
     emptyInput(await readJsonObject(request));
+    await stopConversationVoice(conversation.id);
     return endTurn(conversation.id);
   });
 }

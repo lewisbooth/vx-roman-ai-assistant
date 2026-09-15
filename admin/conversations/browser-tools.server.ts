@@ -15,10 +15,11 @@ import {
 
 export type BrowserToolOutcome =
   CatalogResult | NavigationResult | { error: string };
-const waiting = new Map<
-  string,
-  { invocationId: string; resolve: (result: BrowserToolOutcome) => void }
->();
+interface BrowserWaiter {
+  invocationId?: string;
+  resolve?: (result: BrowserToolOutcome) => void;
+}
+const waiting = new Map<string, BrowserWaiter>();
 
 export async function requestBrowserTool(
   conversationId: string,
@@ -35,39 +36,45 @@ export async function requestBrowserTool(
   signal.throwIfAborted();
   if (waiting.has(conversationId))
     throw new Error("A storefront action is already running.");
-  const invocation = await createToolInvocation(conversationId, assistantId, {
-    providerCallId,
-    ...call,
-  });
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(45_000)]);
+  // Reserve before the database await. A cancelled turn can still be settling
+  // its invocation while the runner accepts a replacement turn.
+  const waiter: BrowserWaiter = {};
+  waiting.set(conversationId, waiter);
+  let deadline: AbortSignal | undefined;
+  let onAbort: (() => void) | undefined;
   try {
+    const invocation = await createToolInvocation(conversationId, assistantId, {
+      providerCallId,
+      ...call,
+    });
+    waiter.invocationId = invocation.id;
+    const actionDeadline = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(45_000),
+    ]);
+    deadline = actionDeadline;
     return await new Promise<BrowserToolOutcome>((resolve, reject) => {
-      const onAbort = () =>
+      onAbort = () =>
         reject(
           new Error(
             "The storefront action did not finish. A full page load may have interrupted confirmation; check the current page before retrying.",
           ),
         );
-      const finish = (result: BrowserToolOutcome) => {
-        deadline.removeEventListener("abort", onAbort);
-        resolve(result);
-      };
-      waiting.set(conversationId, {
-        invocationId: invocation.id,
-        resolve: finish,
-      });
-      deadline.addEventListener("abort", onAbort, { once: true });
-      if (deadline.aborted) onAbort();
+      waiter.resolve = resolve;
+      actionDeadline.addEventListener("abort", onAbort, { once: true });
+      if (actionDeadline.aborted) onAbort();
     });
   } catch (error) {
-    await failToolInvocation(
-      conversationId,
-      invocation.id,
-      "The storefront action was interrupted or timed out.",
-    );
+    if (waiter.invocationId)
+      await failToolInvocation(
+        conversationId,
+        waiter.invocationId,
+        "The storefront action was interrupted or timed out.",
+      );
     throw error;
   } finally {
-    waiting.delete(conversationId);
+    if (deadline && onAbort) deadline.removeEventListener("abort", onAbort);
+    if (waiting.get(conversationId) === waiter) waiting.delete(conversationId);
   }
 }
 
@@ -120,5 +127,5 @@ export async function submitBrowserToolResult(
         },
   );
   const pending = waiting.get(conversationId);
-  if (pending?.invocationId === invocationId) pending.resolve(outcome);
+  if (pending?.invocationId === invocationId) pending.resolve?.(outcome);
 }

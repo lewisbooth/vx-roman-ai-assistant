@@ -48,6 +48,8 @@ model Conversation {
   updatedAt           DateTime              @updatedAt
   messages            ConversationMessage[]
   toolInvocations     ToolInvocation[]
+  voiceSessions       VoiceSession[]
+  voiceTranscripts    VoiceTranscript[]
 
   @@index([shop, createdAt])
 }
@@ -91,4 +93,39 @@ model ToolInvocation {
 
   @@unique([conversationId, providerCallId])
   @@index([conversationId, status])
+}
+
+model VoiceSession {
+  id             String            @id
+  conversationId String
+  conversation   Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  clientId       String
+  providerId     String?
+  status         String            @default("starting")
+  leaseExpiresAt DateTime
+  createdAt      DateTime          @default(now())
+  closedAt       DateTime?
+  error          String?
+  transcripts    VoiceTranscript[]
+
+  // The migration additionally enforces one starting/active session per conversation.
+  @@index([conversationId, status])
+}
+
+model VoiceTranscript {
+  id              String       @id
+  voiceId         String
+  voice           VoiceSession @relation(fields: [voiceId], references: [id], onDelete: Cascade)
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  providerEventId String
+  sequence        Int
+  role            String
+  text            String
+  startMs         Float
+  endMs           Float
+  createdAt       DateTime     @default(now())
+
+  @@unique([voiceId, providerEventId])
+  @@unique([conversationId, sequence])
 }

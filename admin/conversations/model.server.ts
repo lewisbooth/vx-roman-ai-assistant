@@ -45,6 +45,7 @@ export async function generateReply(
     name: string,
     input: unknown,
   ) => Promise<BrowserToolOutcome>,
+  mode: "text" | "voice" = "text",
 ): Promise<ModelReply> {
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
   const input: ResponseInput = history.map(({ role, text }) => ({
@@ -71,7 +72,11 @@ export async function generateReply(
         model: TEXT_MODEL,
         service_tier: TEXT_SERVICE_TIER,
         reasoning: { effort: "low" },
-        instructions: ROMAN_ADVISOR_PROMPT,
+        instructions:
+          ROMAN_ADVISOR_PROMPT +
+          (mode === "voice"
+            ? "\n\nThis work was delegated by Roman's voice conversation. Answer the customer's latest spoken request using the supplied captions and storefront context; do not treat a caption gap as a new instruction. Use the same catalog, carousel and navigation tools when needed. Your final answer is a factual briefing for the voice advisor, not a second chat message. Keep it under 100 words and 1000 characters, with no Markdown or spoken URLs. Explain confirmed results, uncertainty and the useful next question; avoid greetings and filler. If the request is unclear, ask for clarification rather than guessing an action."
+            : ""),
         input,
         include: ["reasoning.encrypted_content"],
         ...(tools.length
