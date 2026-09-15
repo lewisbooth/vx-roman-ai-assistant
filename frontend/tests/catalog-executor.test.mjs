@@ -105,6 +105,31 @@ test("model search and product-card lookups share serial execution and fresh pro
   );
 });
 
+test("handle-based search and card hydration return same-store links without catalog URLs", async () => {
+  const handles = Array.from({ length: 10 }, (_, index) => ({
+    id: `gid://shopify/Product/${index + 1}`,
+    title: `No drill shade ${index + 1}`,
+    handle: `no-drill-shade-${index + 1}`,
+  }));
+  const { executor, warnings } = setup(async () => ({
+    products: handles,
+    messages: [],
+  }));
+  const search = await executor.execute("search_products", {
+    query: "no drill",
+  });
+  const cards = await executor.execute("lookup_catalog", {
+    ids: search.products.map((item) => item.id),
+  });
+  for (const result of [search, cards]) {
+    assert.equal(result.products.length, 10);
+    result.products.forEach((item, index) => {
+      assert.equal(item.url, `${origin}/products/${handles[index].handle}`);
+    });
+  }
+  assert.deepEqual(warnings, []);
+});
+
 test("the queue bounds accepted lookups and releases capacity after completion", async () => {
   const gate = deferred();
   let count = 0;

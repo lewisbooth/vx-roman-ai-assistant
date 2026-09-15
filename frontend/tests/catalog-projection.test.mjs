@@ -70,6 +70,87 @@ test("UCP search, lookup and product responses share one minimal projection", ()
   }
 });
 
+test("a catalog handle supplies the same-store PDP when the optional URL is absent", () => {
+  // Keep only the observed handle shape; all other fields are synthetic.
+  const handle = "click2go-smooth-white-no-drill-shutter-blind";
+  const item = { id, title: "Synthetic no-drill product", handle };
+  const storefront = "https://hd-dev-single.myshopify.com";
+  const expected = {
+    products: [
+      {
+        id,
+        title: item.title,
+        description: "",
+        url: `${storefront}/products/${handle}`,
+      },
+    ],
+    messages: [],
+  };
+  for (const raw of [
+    { products: [item] },
+    { product: item },
+    { products: [item], messages: [] },
+  ]) {
+    const result = normalizeCatalogResult(raw, storefront);
+    assert.deepEqual(result, expected);
+    assert.deepEqual(parseCatalogResult(result, storefront), expected);
+  }
+});
+
+test("a valid handle keeps product links on the current store despite a canonical external URL", () => {
+  for (const storefront of [origin, "https://hd-dev-single.myshopify.com"]) {
+    const result = normalizeCatalogResult(
+      {
+        product: {
+          ...product,
+          handle: "cordless-shade",
+          url: "https://canonical-store.example/products/cordless-shade",
+        },
+      },
+      storefront,
+    );
+    assert.equal(
+      result.products[0].url,
+      `${storefront}/products/cordless-shade`,
+    );
+    assert.deepEqual(parseCatalogResult(result, storefront), result);
+    assert.doesNotMatch(JSON.stringify(result), /canonical-store\.example/);
+  }
+});
+
+test("a malformed supplied handle fails explicitly even when a usable URL exists", () => {
+  for (const handle of [
+    "",
+    " ",
+    null,
+    123,
+    {},
+    "..",
+    "../cart",
+    "shade/other",
+    "shade\\other",
+    "%2e%2e%2fcart",
+    "shade?customer=PRIVATE_VALUE",
+    "shade#PRIVATE_VALUE",
+    "https://user:PRIVATE_VALUE@attacker.example/products/shade",
+    "<script>PRIVATE_VALUE</script>",
+    "shade\nPRIVATE_VALUE",
+  ]) {
+    assert.throws(
+      () =>
+        normalizeCatalogResult({ products: [{ ...product, handle }] }, origin),
+      (error) => {
+        assert.match(
+          error.message,
+          /invalid catalog response: products\[0\]\.handle expected/,
+        );
+        assert.doesNotMatch(error.message, /PRIVATE_VALUE|attacker\.example/);
+        return true;
+      },
+    );
+  }
+});
+
 test("missing products remain an empty result with the safe UCP not_found notice", () => {
   assert.deepEqual(
     normalizeCatalogResult(

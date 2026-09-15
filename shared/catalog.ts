@@ -186,7 +186,19 @@ function normalizeProduct(
     invalid(`${path}.title`, "non-empty text");
   const title = compact(value.title, 200);
   if (!title) invalid(`${path}.title`, "non-empty text");
-  const url = productUrl(value.url, storefrontOrigin);
+  // Storefront MCP is scoped to this shop. Its Shopify handle is the routing
+  // source; the optional catalog URL can refer to a different canonical domain.
+  let url: string | undefined;
+  if (value.handle !== undefined) {
+    if (
+      typeof value.handle !== "string" ||
+      !/^[a-z0-9-]{1,255}$/i.test(value.handle)
+    )
+      invalid(`${path}.handle`, "1-255 letters, numbers or hyphens");
+    url = `${storefrontOrigin}/products/${value.handle}`;
+  } else {
+    url = productUrl(value.url, storefrontOrigin);
+  }
   if (!url)
     invalid(`${path}.url`, "a current-storefront /products/<handle> URL");
   const media = Array.isArray(value.media) ? value.media : [];
