@@ -68,6 +68,72 @@
     margin-top: 12px;
   }
 
+  .roman-rich-text {
+    @apply min-w-0 whitespace-normal [overflow-wrap:anywhere];
+  }
+
+  .roman-rich-text :is(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6) {
+    margin: 0;
+  }
+
+  .roman-rich-text > * + * {
+    margin-top: 12px;
+  }
+
+  .roman-rich-text :is(ul, ol) {
+    padding-left: 22px;
+  }
+
+  .roman-rich-text ul {
+    list-style-type: disc;
+  }
+
+  .roman-rich-text ol {
+    list-style-type: decimal;
+  }
+
+  .roman-rich-text li + li,
+  .roman-rich-text li > :is(p, ul, ol) + * {
+    margin-top: 6px;
+  }
+
+  .roman-rich-text li > :is(ul, ol) {
+    margin-top: 6px;
+  }
+
+  .roman-rich-text :is(h1, h2, h3, h4, h5, h6) {
+    @apply text-[17px] leading-[1.4] font-bold;
+  }
+
+  .roman-rich-text a {
+    @apply text-[#4e0e0e] underline underline-offset-2;
+  }
+
+  .roman-rich-text a:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 3px;
+  }
+
+  .roman-rich-text blockquote {
+    @apply border-0 border-l-2 border-solid border-[#d1cbc0] pl-[12px] text-[#545046];
+  }
+
+  .roman-rich-text code {
+    @apply rounded-[3px] bg-[#e3e0d8] px-[3px] font-mono text-[13px];
+  }
+
+  .roman-rich-text pre {
+    @apply overflow-x-auto rounded-[6px] bg-[#e3e0d8] p-[10px] whitespace-pre;
+  }
+
+  .roman-rich-text pre code {
+    padding: 0;
+  }
+
+  .roman-rich-text hr {
+    @apply border-0 border-t border-solid border-[#d1cbc0];
+  }
+
   .roman-page-view {
     @apply m-0 text-[12px] leading-[1.5] text-[#797366];
   }

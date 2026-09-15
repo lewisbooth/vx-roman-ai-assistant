@@ -14,6 +14,8 @@ Prisma's `Session` model stores Shopify authentication. Separate `Conversation` 
 
 Text chat connects `gpt-5.6-luna` through the Responses API with `service_tier: "fast"`, low reasoning and `store: false`. OpenAI currently reports Fast responses as `priority`; the actual returned tier is persisted. Set `OPENAI_API_KEY` in the private root `.env`. Docker must be recreated after environment changes. Roman's database is the conversation source of truth; provider conversation IDs are not used.
 
+Roman's prompt requests concise Markdown and product-name links copied from catalog results. The frontend renders that Markdown safely; the database retains the original text. Prompt changes require rebuilding the backend container.
+
 | Module                                           | Owns                                                                       |
 | ------------------------------------------------ | -------------------------------------------------------------------------- |
 | `conversations/prompt.server.ts`                 | Roman's shop-at-home advisor character and current capability boundaries   |

@@ -2,6 +2,7 @@ import type { ConversationMessage } from "../../../shared/conversation";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { ProductCards } from "./ProductCards";
+import { RichText } from "./RichText";
 import { StorefrontLink } from "./StorefrontLink";
 
 export function Timeline({
@@ -36,7 +37,13 @@ export function Timeline({
           <div className="roman-message-parts">
             {message.parts.map((part, index) => {
               if (part.type === "text")
-                return (
+                return message.role === "assistant" ? (
+                  <RichText
+                    key={index}
+                    text={part.text}
+                    navigation={navigation}
+                  />
+                ) : (
                   <p key={index} className="roman-message-text">
                     {part.text}
                   </p>

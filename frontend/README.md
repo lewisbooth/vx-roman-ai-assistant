@@ -51,6 +51,8 @@ Removing the embed disposes its React root, router, navigation listeners, pendin
 
 Chat creates no server conversation until the first message. Pending text refreshes through bounded JSON polling; a lost submission response is reconciled without starting another generation. The same request ID is retained for retry. Typed parts render text, horizontally scrollable product cards and linked page observations; no model HTML is injected. Product cards retain only IDs and fetch current catalog details when mounted. User scroll-up is preserved while Roman replies.
 
+`src/chat/RichText.tsx` renders assistant Markdown through `react-markdown`: paragraphs, emphasis, lists, headings, quotes, code and links. Customer text stays literal. Raw HTML and Markdown images are disabled; links use the existing same-store navigator. The parser is part of the lazy bundle, so the initial launcher stays small. Product recommendations link names to the exact URLs returned by catalog tools.
+
 The standalone preview displays the interface only. Verify real chat on an installed development store after approving `write_app_proxy` in Shopify admin. Luna can search and look up products through the same storefront tools used by the drawer. Catalog execution is serialized, claimed once and bounded; lost result acknowledgements retry the saved outcome without repeating the lookup. Model cart/measurement actions and voice are not connected yet.
 
 ## Developer tools
