@@ -662,7 +662,7 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   assert.match(input.instructions, /use this complete welcome exactly/);
   assert.match(
     input.instructions,
-    /Product and sample requests need no extra confirmation or on-screen approval panel/,
+    /full-product addition needs one conversational configuration review/,
   );
   assert.match(
     input.instructions,
@@ -699,13 +699,13 @@ test("voice backend requests retain tool policy without text greetings or presen
   );
   assert.match(
     instructions,
-    /Product and sample requests need no extra confirmation or on-screen approval panel/,
+    /full-product addition needs one conversational configuration review/,
   );
   assert.match(
     instructions,
     /remove_from_cart, set_cart_quantity or clear_cart[^\n]+these three actions still require/,
   );
-  assert.match(instructions, /successful same-product apply-then-add sequence/);
+  assert.match(instructions, /one cart or form mutation is allowed per reply/);
   assert.doesNotMatch(instructions, /Every cart mutation requires/);
   assert.match(instructions, /save those exact values with set_measurements/);
   assert.match(instructions, /Return only a concise factual briefing/);
@@ -1053,103 +1053,212 @@ test("an addition without UI approval still consumes the one-mutation allowance 
   }
 });
 
-test("only a confirmed same-PDP measurement application can precede one full-product add", async (t) => {
-  for (const [label, apply, addPath, expected, unlocks, resultPath] of [
-    [
-      "applied same PDP",
-      "applied",
-      "/products/shade",
-      ["apply_measurements", "add_to_cart"],
-      true,
-    ],
-    [
-      "uncertain",
-      "uncertain",
-      "/products/shade",
-      ["apply_measurements"],
-      false,
-    ],
-    [
-      "unsupported",
-      "unsupported",
-      "/products/shade",
-      ["apply_measurements"],
-      false,
-    ],
-    ["failed", "throws", "/products/shade", ["apply_measurements"], false],
-    [
-      "mismatched result",
-      "applied",
-      "/products/shade",
-      ["apply_measurements"],
-      false,
-      "/products/other",
-    ],
-    [
-      "different PDP",
-      "applied",
-      "/products/other",
-      ["apply_measurements"],
-      true,
-    ],
-  ])
-    await t.test(label, async () => {
-      const env = setup();
-      env.streams.push(
-        events(
-          completed("", {
-            output: [
-              catalogCall("apply", "apply_measurements", {
-                productPath: "/products/shade",
-              }),
-            ],
-          }),
-        ),
-        events(
-          completed("", {
-            output: [
-              catalogCall("add", "add_to_cart", { productPath: addPath }),
-            ],
-          }),
-        ),
-        events(completed("Done.")),
-      );
-      const executions = [];
-      await env.api.generateReply(
-        [],
-        () => {},
-        new AbortController().signal,
-        async (id, name, args) => {
-          executions.push(name);
-          if (apply === "throws") throw new Error("Application failed.");
-          return name === "apply_measurements"
-            ? {
-                status: apply,
-                productPath: resultPath ?? "/products/shade",
-                draftUpdatedAt: "2026-09-16T10:00:00.000Z",
-                message: "Result.",
-              }
-            : { status: "added", message: "Added." };
+test("measurement application never unlocks a cart add in the same text or voice reply", async (t) => {
+  for (const mode of ["text", "voice"])
+    for (const [label, apply, addPath, resultPath] of [
+      ["applied same PDP", "applied", "/products/shade", "/products/shade"],
+      ["uncertain", "uncertain", "/products/shade", "/products/shade"],
+      ["unsupported", "unsupported", "/products/shade", "/products/shade"],
+      ["failed", "throws", "/products/shade", "/products/shade"],
+      ["mismatched result", "applied", "/products/shade", "/products/other"],
+      ["different PDP", "applied", "/products/other", "/products/shade"],
+    ])
+      await t.test(`${mode}: ${label}`, async () => {
+        const env = setup();
+        env.streams.push(
+          events(
+            completed("", {
+              output: [
+                catalogCall("apply", "apply_measurements", {
+                  productPath: "/products/shade",
+                }),
+              ],
+            }),
+          ),
+          events(
+            completed("", {
+              output: [
+                catalogCall("add", "add_to_cart", { productPath: addPath }),
+              ],
+            }),
+          ),
+          events(completed("Done.")),
+        );
+        const executions = [];
+        await env.api.generateReply(
+          [],
+          () => {},
+          new AbortController().signal,
+          async (id, name, args) => {
+            executions.push(name);
+            if (apply === "throws") throw new Error("Application failed.");
+            return name === "apply_measurements"
+              ? {
+                  status: apply,
+                  productPath: resultPath ?? "/products/shade",
+                  draftUpdatedAt: "2026-09-16T10:00:00.000Z",
+                  message: "Result.",
+                }
+              : { status: "added", message: "Added." };
+          },
+          mode,
+        );
+        assert.deepEqual(executions, ["apply_measurements"]);
+        const tools = env.calls.requests[1].input.tools.map(
+          (tool) => tool.name,
+        );
+        assert.equal(
+          tools.includes("add_to_cart"),
+          false,
+          "a measurement application never exposes a cart mutation in this reply",
+        );
+        {
+          const denied = env.calls.requests[2].input.input.find(
+            (item) =>
+              item.type === "function_call_output" && item.call_id === "add",
+          );
+          assert.match(
+            JSON.parse(denied.output).error,
+            /not confirmed.*not claim.*repeat/i,
+          );
+        }
+      });
+});
+
+test("an applied measurement can read configuration and ask a final-review question", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(
+        completed("", {
+          output: [
+            catalogCall("apply", "apply_measurements", {
+              productPath: "/products/shade",
+            }),
+          ],
+        }),
+      ),
+      events(
+        completed("", {
+          output: [
+            catalogCall("configuration", "get_product_configuration", {
+              productPath: "/products/shade",
+            }),
+          ],
+        }),
+      ),
+      events(
+        completed("", {
+          output: [
+            questionCall({
+              question: "Ready to add it?",
+              answers: ["Add product to cart", "Keep configuring"],
+            }),
+          ],
+        }),
+      ),
+      events(completed("Review ready.")),
+    );
+    const executions = [];
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (id, name) => {
+        executions.push(name);
+        return name === "apply_measurements"
+          ? {
+              status: "applied",
+              productPath: "/products/shade",
+              draftUpdatedAt: "2026-09-16T10:00:00.000Z",
+              message: "Applied.",
+            }
+          : {
+              status: "unavailable",
+              productPath: "/products/shade",
+              configurationId: null,
+              controls: [],
+              measurements: null,
+              message: "No supported choices.",
+            };
+      },
+      mode,
+    );
+    assert.deepEqual(executions, [
+      "apply_measurements",
+      "get_product_configuration",
+    ]);
+    assert.equal(reply.questionPresentation.question, "Ready to add it?");
+    assert.ok(
+      !env.calls.requests[1].input.tools.some(
+        (tool) => tool.name === "add_to_cart",
+      ),
+    );
+  }
+});
+
+test("an accepted final review refreshes configuration before adding in the next text or voice reply", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(
+        completed("", {
+          output: [
+            catalogCall("fresh-configuration", "get_product_configuration", {
+              productPath: "/products/shade",
+            }),
+          ],
+        }),
+      ),
+      events(
+        completed("", {
+          output: [
+            catalogCall("add", "add_to_cart", {
+              productPath: "/products/shade",
+            }),
+          ],
+        }),
+      ),
+      events(completed("Added.")),
+    );
+    const executions = [];
+    await env.api.generateReply(
+      [
+        {
+          role: "assistant",
+          text: "500 mm wide x 500 mm drop. Ready to add it?",
         },
-      );
-      assert.deepEqual(executions, expected);
-      const tools = env.calls.requests[1].input.tools.map((tool) => tool.name);
-      assert.equal(
-        tools.includes("add_to_cart"),
-        unlocks,
-        "only an applied measurement result exposes the possible continuation",
-      );
-      if (expected.length === 1) {
-        const denied = env.calls.requests[2].input.input.find(
-          (item) =>
-            item.type === "function_call_output" && item.call_id === "add",
-        );
-        assert.match(
-          JSON.parse(denied.output).error,
-          /not confirmed.*not claim.*repeat/i,
-        );
-      }
-    });
+        { role: "user", text: "Add product to cart" },
+      ],
+      () => {},
+      new AbortController().signal,
+      async (id, name) => {
+        executions.push(name);
+        return name === "get_product_configuration"
+          ? {
+              status: "available",
+              productPath: "/products/shade",
+              configurationId: "1c2a3b4d-5e6f-4789-8abc-9def01234567",
+              controls: [],
+              measurements: {
+                unit: "mm",
+                width: 500,
+                height: 500,
+                availableUnits: ["mm"],
+              },
+              message: "Current configuration.",
+            }
+          : { status: "added", message: "Added." };
+      },
+      mode,
+    );
+    assert.deepEqual(executions, ["get_product_configuration", "add_to_cart"]);
+    assert.ok(
+      env.calls.requests[1].input.tools.some(
+        (tool) => tool.name === "add_to_cart",
+      ),
+    );
+  }
 });
 
 test("text and voice measurement tools execute on the server while cart reads use the browser", async () => {

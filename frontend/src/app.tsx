@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -45,7 +46,13 @@ function Assistant({
   const viewport = useRef<HTMLDivElement>(null);
   const conversationView = useRef<HTMLDivElement>(null);
   const following = useRef(true);
-  const messages = state.conversation?.messages;
+  const messages = useMemo(
+    () =>
+      state.optimisticMessage
+        ? [...(state.conversation?.messages ?? []), state.optimisticMessage]
+        : state.conversation?.messages,
+    [state.conversation?.messages, state.optimisticMessage],
+  );
   const hasMessages = !!messages?.length;
   const [ending, setEnding] = useState(false);
   const endingRef = useRef(false);

@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { cwd } from "node:process";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 
 const bundle = await build({
-  entryPoints: ["frontend/src/tools/product-sample.ts"],
+  stdin: {
+    contents:
+      "export * from './frontend/src/tools/product-sample'; export { createProductConfigurationTools } from './frontend/src/tools/product-configuration'; export { createStorefrontExecutor } from './frontend/src/session/storefront-executor';",
+    resolveDir: cwd(),
+  },
   bundle: true,
   write: false,
   format: "iife",
@@ -126,6 +131,18 @@ function setup(t, { initialized = true, url = "/products/test" } = {}) {
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanSample = RomanSample;`,
   );
+  const configuration = window.RomanSample.createProductConfigurationTools();
+  const executor = window.RomanSample.createStorefrontExecutor({
+    execute: async () => ({
+      status: "navigated",
+      url: window.location.href,
+      pending: false,
+    }),
+  });
+  t.after(() => {
+    configuration.dispose();
+    executor.dispose();
+  });
   return {
     window,
     document,
@@ -137,6 +154,14 @@ function setup(t, { initialized = true, url = "/products/test" } = {}) {
       window.RomanSample.addProductSample(path, controller.signal),
     inspect: (path = "/products/test") =>
       window.RomanSample.inspectSampleProduct(path),
+    available: (path = "/products/test") =>
+      window.RomanSample.isSampleAvailable(path),
+    readConfiguration: () =>
+      configuration.getProductConfiguration(
+        "/products/test",
+        controller.signal,
+      ),
+    navigate: () => executor.execute("navigate", { path: "/products/test" }),
     counts: () => ({ clicks, fullSubmissions, unrelatedClicks }),
     update: (detail, target = component) =>
       target.dispatchEvent(
@@ -159,7 +184,13 @@ function setup(t, { initialized = true, url = "/products/test" } = {}) {
 
 test("sample add clicks only the theme's exact sample control and confirms its variant", async (t) => {
   const env = setup(t, { url: "/products/test?variant=123" });
+  assert.equal(env.available(), true);
   const action = env.run();
+  assert.equal(
+    env.available(),
+    false,
+    "an in-flight sample cannot be offered again",
+  );
   assert.deepEqual(env.counts(), {
     clicks: 1,
     fullSubmissions: 0,
@@ -255,6 +286,7 @@ test("already present samples do not click or wait for an event, including the t
   env.component.shadowRoot.innerHTML =
     '<slot></slot><slot name="remove-sample-btn"></slot>';
   assert.equal(env.button.assignedSlot, null);
+  assert.equal(env.available(), false);
   const result = await env.run();
   assert.equal(result.status, "already_in_cart");
   assert.equal("addedSample" in result, false);
@@ -275,6 +307,7 @@ test("uninitialized or differently owned sample controls never receive a click",
         env.component.addToCartButton = env.document.querySelector(
           "cart-add-sample button",
         );
+      assert.equal(env.available(), false);
       await assert.rejects(env.run(), /initializing/);
       assert.equal(env.counts().clicks, 0);
       env.assertClean();
@@ -315,6 +348,12 @@ test("sample controls must match the verified page, main variant and component s
       }
       if (mode === "missing title")
         env.document.querySelector("h1").textContent = " ";
+      assert.equal(
+        env.available(
+          mode === "wrong page" ? "/products/other" : "/products/test",
+        ),
+        false,
+      );
       await assert.rejects(
         env.run(mode === "wrong page" ? "/products/other" : "/products/test"),
         /product|cart item/i,
@@ -339,6 +378,7 @@ test("missing or ambiguous sample controls fail without falling back to full-pro
       if (mode === "missing button") env.button.remove();
       if (mode === "multiple buttons")
         env.button.after(env.button.cloneNode(true));
+      assert.equal(env.available(), false);
       await assert.rejects(env.run(), /sample|ambiguous/i);
       assert.deepEqual(env.counts(), {
         clicks: 0,
@@ -384,6 +424,7 @@ test("unrendered, hidden, disabled, busy and wrongly slotted controls cannot add
       if (mode === "loading cart") env.component.shopifyCartLoading = true;
       if (mode === "adding full product") env.form.classList.add("adding");
       if (mode === "adding sample") env.form.classList.add("adding-sample");
+      assert.equal(env.available(), false);
       assert.equal((await env.run()).status, "needs_configuration");
       assert.equal(env.counts().clicks, 0);
       env.assertClean();
@@ -402,10 +443,61 @@ test("unknown and malformed cart baselines cannot authorize a sample click", asy
   ]) {
     const env = setup(t);
     env.component.cart = cart;
+    assert.equal(env.available(), false);
     await assert.rejects(env.run(), /cart data is still loading/);
     assert.equal(env.counts().clicks, 0);
     env.assertClean();
   }
+});
+
+test("sample availability is read-only and survives an unsupported product configuration form", (t) => {
+  const env = setup(t);
+  assert.equal(env.available(), true);
+  const configuration = env.readConfiguration();
+  assert.equal(
+    configuration.status,
+    "unavailable",
+    "the sample component is independent of the pricing form",
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(configuration.actions)), {
+    sampleAvailable: true,
+  });
+  env.window.customElements.define(
+    "dynamic-pricing",
+    class extends env.window.HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML = "<slot></slot>";
+      }
+    },
+  );
+  const supported = env.readConfiguration();
+  assert.equal(supported.status, "available");
+  assert.equal(supported.actions.sampleAvailable, true);
+  assert.deepEqual(env.counts(), {
+    clicks: 0,
+    fullSubmissions: 0,
+    unrelatedClicks: 0,
+  });
+  env.assertClean();
+});
+
+test("navigation and configuration share current sample readiness rather than structural control presence", async (t) => {
+  const env = setup(t);
+  assert.equal((await env.navigate()).actions.sampleAvailable, true);
+  env.button.disabled = true;
+  assert.equal((await env.navigate()).actions.sampleAvailable, false);
+  assert.equal(env.readConfiguration().actions.sampleAvailable, false);
+  env.button.disabled = false;
+  env.component.cart = { items: [{ id: 456, variant_id: 456, quantity: 1 }] };
+  assert.equal((await env.navigate()).actions.sampleAvailable, false);
+  assert.equal(env.readConfiguration().actions.sampleAvailable, false);
+  assert.deepEqual(env.counts(), {
+    clicks: 0,
+    fullSubmissions: 0,
+    unrelatedClicks: 0,
+  });
+  env.assertClean();
 });
 
 test("theme failures expose a safe error and release every owned observer", async (t) => {

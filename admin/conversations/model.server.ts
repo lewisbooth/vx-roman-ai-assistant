@@ -153,9 +153,7 @@ export async function generateReply(
     content: text,
   }));
   let browserCalls = 0;
-  let cartMutationAttempted = false;
-  let formMutationAttempted = false;
-  let successfulAppliedProductPath: string | undefined;
+  let storefrontMutationAttempted = false;
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
   let guidePresentationAttempted = false;
@@ -180,18 +178,14 @@ export async function generateReply(
                 ...measurementToolDefinitions,
                 ...cartToolDefinitions.filter(
                   (tool) =>
-                    !isCartMutation(tool.name) ||
-                    (!cartMutationAttempted &&
-                      (!formMutationAttempted ||
-                        (tool.name === "add_to_cart" &&
-                          successfulAppliedProductPath !== undefined))),
+                    !isCartMutation(tool.name) || !storefrontMutationAttempted,
                 ),
                 ...productConfigurationToolDefinitions.filter(
                   (tool) =>
                     tool.name !== "configure_product" ||
-                    (!cartMutationAttempted && !formMutationAttempted),
+                    !storefrontMutationAttempted,
                 ),
-                ...(!cartMutationAttempted && !formMutationAttempted
+                ...(!storefrontMutationAttempted
                   ? [applyMeasurementsToolDefinition]
                   : []),
               ]
@@ -451,26 +445,16 @@ export async function generateReply(
                         call.name === "set_measurements"
                       ? parseMeasurementCall(call.name, argumentsValue)
                       : parseCatalogCall(call.name, argumentsValue);
-        if (isCartMutation(parsed.name)) {
-          if (
-            cartMutationAttempted ||
-            (formMutationAttempted &&
-              (parsed.name !== "add_to_cart" ||
-                successfulAppliedProductPath !==
-                  (parsed.arguments as { productPath: string }).productPath))
-          )
+        if (
+          isCartMutation(parsed.name) ||
+          parsed.name === "apply_measurements" ||
+          parsed.name === "configure_product"
+        ) {
+          if (storefrontMutationAttempted)
             throw new Error(
-              "Only one cart mutation is allowed per reply, after a confirmed same-product measurement application.",
+              "Only one cart or form mutation is allowed per reply.",
             );
-          cartMutationAttempted = true;
-        } else if (parsed.name === "apply_measurements") {
-          if (cartMutationAttempted || formMutationAttempted)
-            throw new Error("Only one form mutation is allowed per reply.");
-          formMutationAttempted = true;
-        } else if (parsed.name === "configure_product") {
-          if (cartMutationAttempted || formMutationAttempted)
-            throw new Error("Only one form mutation is allowed per reply.");
-          formMutationAttempted = true;
+          storefrontMutationAttempted = true;
         }
         if (parsed.name === "get_product_guides")
           availableGuides.delete(
@@ -491,14 +475,6 @@ export async function generateReply(
             sourceCallId: call.call_id,
             kinds: outcome.guides.map((guide) => guide.kind),
           });
-        if (
-          parsed.name === "apply_measurements" &&
-          "status" in outcome &&
-          outcome.status === "applied" &&
-          outcome.productPath ===
-            (parsed.arguments as { productPath: string }).productPath
-        )
-          successfulAppliedProductPath = outcome.productPath;
       } catch {
         signal.throwIfAborted();
         outcome = {

@@ -26,6 +26,8 @@ export interface ProductConfiguration {
   configurationId: string | null;
   controls: ProductConfigurationControl[];
   measurements: ProductMeasurements | null;
+  // Optional only for durable results recorded before action discovery existed.
+  actions?: { sampleAvailable: boolean };
   message: string;
 }
 export interface ConfigureProductResult {
@@ -190,7 +192,16 @@ export function parseProductConfigurationResult(
     "controls",
     "measurements",
     "message",
+    ...(value.actions !== undefined ? ["actions"] : []),
   ]);
+  let actions: ProductConfiguration["actions"];
+  if (value.actions !== undefined) {
+    const input = object(value.actions);
+    exact(input, ["sampleAvailable"]);
+    if (typeof input.sampleAvailable !== "boolean")
+      throw new Error("Invalid product configuration actions.");
+    actions = { sampleAvailable: input.sampleAvailable };
+  }
   if (
     !["available", "unavailable"].includes(value.status as string) ||
     !Array.isArray(value.controls) ||
@@ -282,6 +293,7 @@ export function parseProductConfigurationResult(
       value.status === "available" ? id(value.configurationId, uuid) : null,
     controls,
     measurements,
+    ...(actions ? { actions } : {}),
     message,
   };
 }

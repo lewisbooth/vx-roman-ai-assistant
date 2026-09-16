@@ -100,7 +100,7 @@ test("text leaves a displayed question to its widget while voice says it once", 
     /Do not reword it, repeat it, add a second question or turn it into a written customer reply/,
   );
   const live = romanVoicePrompt("marin");
-  assert.match(live, /Terra uses ask_question/);
+  assert.match(live, /Delegate a choice-based clarification so its quick answers can appear/);
   assert.match(live, /carousels, on-screen answer choices or navigation/);
   assert.match(
     live,

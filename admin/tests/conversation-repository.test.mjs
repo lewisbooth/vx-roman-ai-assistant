@@ -939,6 +939,9 @@ test("turns persist ordered public messages and deduplicate the exact request", 
   };
   const started = await repository.beginTurn(id, input);
   assert.equal(started.snapshot.busy, true);
+  assert.equal(started.snapshot.messages[0].requestId, input.requestId);
+  assert.notEqual(started.snapshot.messages[0].id, input.requestId);
+  assert.equal(started.snapshot.messages[1].requestId, undefined);
   assert.deepEqual(started.history, [{ role: "user", text: input.text }]);
   assert.deepEqual(
     started.snapshot.messages.map(({ role, status }) => [role, status]),
@@ -967,6 +970,7 @@ test("turns persist ordered public messages and deduplicate the exact request", 
   });
   const persisted = await loadRepository().getSnapshot(id);
   assert.equal(persisted.busy, false);
+  assert.equal(persisted.messages[0].requestId, input.requestId);
   assert.equal(persisted.messages[1].id, started.assistantId);
   assert.equal(
     persisted.messages[1].parts[0].text,

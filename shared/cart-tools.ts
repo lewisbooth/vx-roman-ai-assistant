@@ -69,7 +69,7 @@ const definitions = [
   ],
   [
     "add_to_cart",
-    "Add the configured product currently open on its verified productPath when the shopper asks. No additional on-screen approval is required. The theme owns measurements, options and validation. Do not infer configuration from a draft, catalog price or page visit. This does not purchase or check out.",
+    "Add the configured product currently open on its verified productPath after the shopper accepts Roman's single final review of its actual dimensions and selected options. A dimension-entry confirmation alone is not this final review. No additional on-screen approval is required. The theme owns measurements, options and validation. Do not infer configuration from a draft, catalog price or page visit. This does not purchase or check out.",
     { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
   ],
   [

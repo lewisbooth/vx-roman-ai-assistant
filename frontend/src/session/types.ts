@@ -1,4 +1,5 @@
 import type {
+  ConversationMessage,
   ConversationSnapshot,
   JourneyInput,
 } from "../../../shared/conversation";
@@ -9,6 +10,8 @@ import type { PendingToolApproval } from "./tool-approval";
 
 export interface ConversationClientState {
   conversation: ConversationSnapshot | null;
+  /** Unacknowledged local text only; never an authoritative or persisted session. */
+  optimisticMessage?: ConversationMessage | null;
   pending: boolean;
   restoring: boolean;
   error: string | null;

@@ -363,6 +363,9 @@ export function conversationTimeline(
       endSequence: message.sequence,
       message: {
         id: message.id,
+        ...(message.role === "user" && uuidPattern.test(message.requestId)
+          ? { requestId: message.requestId }
+          : {}),
         role: message.role as ConversationMessage["role"],
         status: message.status as ConversationMessage["status"],
         parts: parts(message, conversation.origin),

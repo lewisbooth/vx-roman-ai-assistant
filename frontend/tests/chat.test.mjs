@@ -508,6 +508,127 @@ test("welcome uses original asset paths, actionable tiles and one hidden develop
   assert.equal(container.querySelector('nav[aria-label="Browse store"]'), null);
 });
 
+test("typed and tile sends show their local row before a session exists without replacing the composer", async (t) => {
+  for (const source of ["typed", "tile"])
+    await t.test(source, async (t) => {
+      let accept;
+      const accepted = new Promise((resolve) => {
+        accept = resolve;
+      });
+      const requestId = "22222222-2222-4222-8222-222222222222";
+      const ctx = await setup(t, {
+        onSend(text) {
+          ctx.update({
+            pending: true,
+            optimisticMessage: {
+              ...message(requestId, "user", text, "pending"),
+              requestId,
+            },
+          });
+          return accepted;
+        },
+      });
+      await ctx.type("Keep my room description");
+      const input = ctx.input();
+      if (source === "tile")
+        ctx.container.querySelector(".roman-welcome-tile").click();
+      else
+        ctx.container
+          .querySelector(".roman-composer form")
+          .dispatchEvent(
+            new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+          );
+      await until(
+        () => !ctx.container.querySelector(".roman-welcome"),
+        "Home stayed visible while the first send was pending",
+      );
+      assert.equal(
+        ctx.container.querySelectorAll(".roman-message-user").length,
+        1,
+      );
+      assert.equal(
+        ctx.container.querySelector(".roman-message-user .roman-message-text")
+          .textContent,
+        ctx.calls[0],
+      );
+      assert.equal(ctx.container.querySelector(".roman-end-chat"), null);
+      assert.match(
+        ctx.container.querySelector(".roman-reply-activity").textContent,
+        /thinking/,
+      );
+      assert.equal(ctx.input(), input);
+      assert.equal(input.value, "Keep my room description");
+      assert.equal(input.disabled, true);
+      ctx.update({
+        pending: false,
+        optimisticMessage: null,
+        conversation: {
+          id: "chat",
+          status: "active",
+          busy: false,
+          tools: [],
+          messages: [
+            { ...message("server-row", "user", ctx.calls[0]), requestId },
+          ],
+        },
+      });
+      accept();
+      await until(() => !input.disabled, "The confirmed send did not settle");
+      assert.equal(
+        ctx.container.querySelectorAll(".roman-message-user").length,
+        1,
+      );
+      assert.equal(ctx.input(), input);
+      assert.equal(
+        input.value,
+        source === "tile" ? "Keep my room description" : "",
+      );
+    });
+});
+
+test("an unconfirmed first message returns to retryable home without losing its typed draft", async (t) => {
+  let reject;
+  const submitted = new Promise((_, fail) => {
+    reject = fail;
+  });
+  const ctx = await setup(t, {
+    onSend(text) {
+      ctx.update({
+        pending: true,
+        optimisticMessage: message("local", "user", text, "pending"),
+      });
+      return submitted;
+    },
+  });
+  await ctx.type("My measurements");
+  ctx.container
+    .querySelector(".roman-composer form")
+    .dispatchEvent(
+      new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+    );
+  await until(
+    () => !!ctx.container.querySelector(".roman-timeline"),
+    "Local message did not appear",
+  );
+  ctx.update({
+    pending: false,
+    optimisticMessage: null,
+    error: "Connection lost. Please retry.",
+  });
+  reject(new ctx.window.Error("Connection lost. Please retry."));
+  await until(
+    () =>
+      !!ctx.container.querySelector(".roman-welcome") && !ctx.input().disabled,
+    "Failed send did not return to home",
+  );
+  assert.equal(ctx.input().value, "My measurements");
+  assert.equal(ctx.container.querySelector(".roman-message-user"), null);
+  assert.match(
+    ctx.container.querySelector('[role="alert"]').textContent,
+    /Connection lost/,
+  );
+});
+
 test("each welcome tile starts a normal text conversation without clearing the composer's draft", async (t) => {
   const starters = [
     "Help me measure my windows for blinds.",
@@ -2296,8 +2417,14 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
       voice: { status: "active", muted: true, error: null },
     },
     onVoiceAnswer: async (_questionId, answer) => {
+      ctx.update({
+        pending: true,
+        optimisticMessage: message("local-reply", "user", answer, "pending"),
+      });
       await accepted;
       ctx.update({
+        pending: false,
+        optimisticMessage: null,
         conversation: activeConversation([
           row,
           message("reply", "user", answer),
@@ -2322,6 +2449,12 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
   ]);
   assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.stopVoiceCalls, []);
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Locally selected voice answer kept waiting for the server",
+  );
+  assert.equal(ctx.container.querySelector(".roman-message-user .roman-message-text").textContent, "Full blackout");
+  assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
   accept();
   await until(
     () => !ctx.container.querySelector(".roman-question"),

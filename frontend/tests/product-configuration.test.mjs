@@ -91,6 +91,9 @@ test("discovery projects native feature choices only, with truthful hidden and d
   const ctx = setup(t),
     result = ctx.read();
   assert.equal(result.status, "available");
+  assert.deepEqual(JSON.parse(JSON.stringify(result.actions)), {
+    sampleAvailable: false,
+  });
   assert.deepEqual(
     Array.from(result.controls, (control) => control.label),
     ["Fitting", "Lining", "Trim: Trim", "Hidden", "Locked"],
@@ -297,4 +300,36 @@ test("initial price and invalid-configuration states allow an enabled corrective
         "applied",
       );
     });
+});
+
+test("recorded configuration actions are strict while older durable results retain unknown availability", (t) => {
+  const ctx = setup(t),
+    current = ctx.read();
+  assert.equal(
+    ctx.parseProductConfigurationResult("get_product_configuration", current)
+      .actions.sampleAvailable,
+    false,
+  );
+  const historical = { ...current };
+  delete historical.actions;
+  assert.equal(
+    "actions" in
+      ctx.parseProductConfigurationResult(
+        "get_product_configuration",
+        historical,
+      ),
+    false,
+  );
+  for (const actions of [
+    null,
+    {},
+    { sampleAvailable: "true" },
+    { sampleAvailable: true, productReady: true },
+  ])
+    assert.throws(() =>
+      ctx.parseProductConfigurationResult("get_product_configuration", {
+        ...current,
+        actions,
+      }),
+    );
 });

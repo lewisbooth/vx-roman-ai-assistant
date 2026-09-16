@@ -5,11 +5,16 @@ import {
   type ConversationBootstrap,
   type ConversationCredential,
   type ConversationSnapshot,
+  type ConversationMessage,
   type ConversationReadVersion,
   type BrowserToolInvocation,
   type ToolClaim,
 } from "../../../shared/conversation";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
+import {
+  isProductConfigurationTool,
+  parseProductConfigurationCall,
+} from "../../../shared/product-configuration";
 import {
   parseGuidePart,
   parseProductGuidesCall,
@@ -35,6 +40,7 @@ import {
   latestQuestion,
   parseQuestionAnswerReference,
   parseQuestionPart,
+  type QuestionAnswerReference,
 } from "../../../shared/questions";
 import type {
   createStorefrontExecutor,
@@ -209,6 +215,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
       )
         return false;
       try {
+        const name = String(tool.name);
         if (tool.name === "navigate") parseNavigationCall(tool.arguments);
         else if (isCartTool(String(tool.name)))
           parseCartCall(String(tool.name), tool.arguments);
@@ -216,6 +223,8 @@ function snapshot(value: unknown): value is ConversationSnapshot {
           parseApplyMeasurementsCommand(tool.arguments);
         else if (tool.name === "get_product_guides")
           parseProductGuidesCall(tool.arguments);
+        else if (isProductConfigurationTool(name))
+          parseProductConfigurationCall(name, tool.arguments);
         else parseCatalogCall(String(tool.name), tool.arguments);
         return true;
       } catch {
@@ -233,6 +242,10 @@ function snapshot(value: unknown): value is ConversationSnapshot {
           message.role === "context") &&
         ["pending", "complete", "failed"].includes(String(message.status)) &&
         typeof message.createdAt === "string" &&
+        (message.requestId === undefined ||
+          (message.role === "user" &&
+            typeof message.requestId === "string" &&
+            UUID.test(message.requestId))) &&
         (message.error === undefined || typeof message.error === "string") &&
         Array.isArray(message.parts) &&
         message.parts.every(
@@ -295,11 +308,29 @@ class SessionRequestError extends Error {
   }
 }
 
+function pendingUserMessage(
+  requestId: string,
+  text: string,
+  questionAnswer?: QuestionAnswerReference,
+): ConversationMessage {
+  return {
+    id: requestId,
+    requestId,
+    role: "user",
+    status: "pending",
+    parts: [
+      { type: "text", text, ...(questionAnswer ? { questionAnswer } : {}) },
+    ],
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export function createConversationClient(
   executor?: ReturnType<typeof createStorefrontExecutor>,
 ): ConversationClient {
   let state: ConversationClientState = {
     conversation: null,
+    optimisticMessage: null,
     pending: false,
     restoring: false,
     error: null,
@@ -356,6 +387,16 @@ export function createConversationClient(
   const lifetime = new AbortController();
 
   function update(change: Partial<ConversationClientState>) {
+    if (
+      state.optimisticMessage &&
+      change.conversation?.messages.some(
+        (message) =>
+          message.role === "user" &&
+          (message.requestId === state.optimisticMessage?.id ||
+            message.id === state.optimisticMessage?.id),
+      )
+    )
+      change = { ...change, optimisticMessage: null };
     if (
       disposed ||
       Object.entries(change).every(
@@ -571,6 +612,11 @@ export function createConversationClient(
       throw new SessionRequestError(
         "Roman received an invalid conversation response.",
       );
+    // Older backend snapshots may omit requestId; a valid POST acknowledgement
+    // still confirms this exact submission without comparing customer text.
+    const acknowledged =
+      path === "/messages" && record(body) &&
+      body.requestId === state.optimisticMessage?.requestId;
     const revision = state.conversation?.revision ?? -1;
     const currentStream =
       readVersion?.revision === revision ? readVersion.streamRevision : 0;
@@ -589,7 +635,10 @@ export function createConversationClient(
         !result.tools.some((tool) => tool.id === activeToolId)
       )
         toolController?.abort();
-      update({ conversation: result });
+      update({
+        conversation: result,
+        ...(acknowledged ? { optimisticMessage: null } : {}),
+      });
       if (result.status === "ended") reset();
       else {
         if (
@@ -617,6 +666,7 @@ export function createConversationClient(
         void executePendingTool();
       }
     } else {
+      if (acknowledged) update({ optimisticMessage: null });
       // Same-version snapshots can arrive from idempotent mutation responses.
       // They must not replace streamed text or retrigger transcript rendering.
       void executePendingTool();
@@ -641,6 +691,7 @@ export function createConversationClient(
     persist();
     update({
       conversation: null,
+      optimisticMessage: null,
       pending: false,
       restoring: false,
       error: null,
@@ -1057,7 +1108,6 @@ export function createConversationClient(
       epoch === startedEpoch &&
       voiceEpoch === startedVoiceEpoch &&
       voiceId === id;
-    update({ pending: true, error: null });
     const submission =
       uncertainVoiceAnswer?.voiceId === id &&
       uncertainVoiceAnswer.questionId === questionId &&
@@ -1070,6 +1120,14 @@ export function createConversationClient(
             answer,
           };
     uncertainVoiceAnswer = submission;
+    update({
+      pending: true,
+      error: null,
+      optimisticMessage: pendingUserMessage(submission.requestId, answer, {
+        questionId,
+        voiceId: id,
+      }),
+    });
     try {
       await api(`/voice/${id}/answers`, {
         clientId,
@@ -1119,7 +1177,11 @@ export function createConversationClient(
       }
       throw new Error(message);
     } finally {
-      if (epoch === startedEpoch && !ending) update({ pending: false });
+      if (epoch === startedEpoch)
+        update({
+          ...(!ending ? { pending: false } : {}),
+          optimisticMessage: null,
+        });
     }
   }
 
@@ -1357,15 +1419,25 @@ export function createConversationClient(
         update({ error });
         throw new Error(error);
       }
-      update({ pending: true, error: null });
+      const startedEpoch = epoch;
+      const submission =
+        uncertainSubmission?.text === text
+          ? uncertainSubmission
+          : { requestId: window.crypto.randomUUID(), text };
+      uncertainSubmission = submission;
+      update({
+        pending: true,
+        error: null,
+        optimisticMessage: pendingUserMessage(submission.requestId, text),
+      });
       try {
         if (!access) await bootstrap(resumeAccess);
         await journeyQueue;
-        uncertainSubmission =
-          uncertainSubmission?.text === text
-            ? uncertainSubmission
-            : { requestId: window.crypto.randomUUID(), text };
-        await api("/messages", uncertainSubmission);
+        if (disposed || ending || epoch !== startedEpoch)
+          throw new Error("The conversation has changed.");
+        await api("/messages", submission);
+        if (disposed || epoch !== startedEpoch)
+          throw new Error("The conversation has changed.");
         uncertainSubmission = null;
         pollFailures = 0;
         schedulePoll();
@@ -1374,19 +1446,31 @@ export function createConversationClient(
           error instanceof Error
             ? error.message
             : "Roman could not send your message.";
-        update({ error: message });
+        if (epoch === startedEpoch) update({ error: message });
         // A lost POST response may still have started a turn. Reconcile without replaying it.
-        if (access && !disposed) {
+        if (access && !disposed && epoch === startedEpoch) {
           try {
             await api();
             schedulePoll();
+            if (
+              state.conversation?.messages.some(
+                (row) =>
+                  row.role === "user" &&
+                  row.requestId === submission.requestId,
+              )
+            ) {
+              uncertainSubmission = null;
+              update({ error: null });
+              return;
+            }
           } catch {
             /* Preserve the original actionable error. */
           }
         }
         throw new Error(message);
       } finally {
-        update({ pending: false });
+        if (epoch === startedEpoch)
+          update({ pending: false, optimisticMessage: null });
       }
     },
     recordPage(input) {

@@ -12,6 +12,25 @@ type SampleElement = HTMLElement & {
 };
 const pendingSamples = new WeakSet<Element>();
 
+function sampleControlReady(
+  component: SampleElement,
+  button: HTMLButtonElement,
+) {
+  return (
+    button.slot === "add-sample-btn" &&
+    button.assignedSlot?.name === "add-sample-btn" &&
+    component.isConnected &&
+    button.getClientRects().length > 0 &&
+    getComputedStyle(button).visibility !== "hidden" &&
+    !component.shopifyCartLoading &&
+    !button.matches(':disabled, [aria-disabled="true"], [aria-busy="true"]') &&
+    !button.closest('[hidden], [inert], [aria-hidden="true"], .hidden') &&
+    !document.querySelector(
+      "[data-dynamic-pricing-form].adding, [data-dynamic-pricing-form].adding-sample",
+    )
+  );
+}
+
 export function inspectSampleProduct(productPath: string) {
   const path = parseCartCall("add_sample_to_cart", { productPath }).arguments
     .productPath as string;
@@ -69,6 +88,20 @@ export function inspectSampleProduct(productPath: string) {
   };
 }
 
+/** False means no currently verified add offer, not that this product has no samples. */
+export function isSampleAvailable(productPath: string): boolean {
+  try {
+    const { component, button, variantId } = inspectSampleProduct(productPath);
+    return (
+      !pendingSamples.has(component) &&
+      cartVariantQuantity(component.cart, variantId) === 0 &&
+      sampleControlReady(component, button)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Click the theme's separate sample control; never substitute the full blind. */
 export async function addProductSample(
   productPath: string,
@@ -90,19 +123,7 @@ export async function addProductSample(
       message:
         "This product's sample is already in your cart. No duplicate was added.",
     };
-  if (
-    button.slot !== "add-sample-btn" ||
-    button.assignedSlot?.name !== "add-sample-btn" ||
-    !component.isConnected ||
-    !button.getClientRects().length ||
-    getComputedStyle(button).visibility === "hidden" ||
-    component.shopifyCartLoading ||
-    button.matches(':disabled, [aria-disabled="true"], [aria-busy="true"]') ||
-    button.closest('[hidden], [inert], [aria-hidden="true"], .hidden') ||
-    document.querySelector(
-      "[data-dynamic-pricing-form].adding, [data-dynamic-pricing-form].adding-sample",
-    )
-  )
+  if (!sampleControlReady(component, button))
     return {
       status: "needs_configuration",
       message:

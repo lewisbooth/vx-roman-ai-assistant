@@ -15,7 +15,7 @@ import {
   type NavigationResult,
 } from "../../../shared/navigation-tool";
 import type { AssistantTools } from "../tools";
-import { inspectSampleProduct } from "../tools/product-sample";
+import { isSampleAvailable } from "../tools/product-sample";
 import {
   parseProductGuidesCall,
   parseProductGuidesResult,
@@ -454,12 +454,7 @@ export function createStorefrontExecutor(
             path,
           )
         )
-          try {
-            inspectSampleProduct(path.split("?", 1)[0]);
-            sampleAvailable = true;
-          } catch {
-            // Missing or uninitialized sample controls are not an offered action.
-          }
+          sampleAvailable = isSampleAvailable(path.split("?", 1)[0]);
         return {
           status: "navigated" as const,
           path,

@@ -171,6 +171,14 @@ test("session creation is lazy and first send uses the signed proxy then the aut
   assert.equal(ctx.calls.length, 0);
   assert.equal(ctx.client.getSnapshot().conversation, null);
   const sending = ctx.client.sendMessage(" Hello ");
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(ctx.client.getSnapshot().pending, true);
+  assert.equal(optimistic.role, "user");
+  assert.equal(optimistic.status, "pending");
+  assert.equal(optimistic.parts[0].text, "Hello");
+  assert.equal(optimistic.id, optimistic.requestId);
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
   assert.equal(ctx.calls.length, 1);
   assert.equal(
     ctx.calls[0].url,
@@ -197,9 +205,12 @@ test("session creation is lazy and first send uses the signed proxy then the aut
   );
   assert.equal(ctx.calls[1].body.text, "Hello");
   assert.match(ctx.calls[1].body.requestId, /^[0-9a-f-]{36}$/);
+  assert.equal(ctx.calls[1].body.requestId, optimistic.requestId);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, optimistic);
   ctx.respond(1, pending);
   await sending;
   assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(ctx.client.getSnapshot().conversation.busy, true);
   assert.equal(ctx.timers.size, 1);
   assert.equal(
@@ -389,15 +400,192 @@ test("a lost POST reconciles without replay and an explicit identical retry keep
   assert.equal(ctx.calls[2].init.method, "GET");
   ctx.respond(2, empty);
   await failed;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(
     ctx.calls.filter((call) => call.url.endsWith("/messages")).length,
     1,
   );
   const retry = ctx.client.sendMessage("Hello");
+  assert.equal(ctx.client.getSnapshot().optimisticMessage.id, requestId);
   await until(() => ctx.calls.length === 4, "Explicit retry was not sent");
   assert.equal(ctx.calls[3].body.requestId, requestId);
   ctx.respond(3, pending);
   await retry;
+});
+
+test("bootstrap failure removes unconfirmed local text and retry retains the original submission identity", async (t) => {
+  const ctx = setup(t);
+  const sending = ctx.client.sendMessage("Hello");
+  const requestId = ctx.client.getSnapshot().optimisticMessage.requestId;
+  const rejected = assert.rejects(sending, /could not connect/);
+  ctx.calls[0].reject(new TypeError("Offline"));
+  await rejected;
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+  const retry = ctx.client.sendMessage("Hello");
+  assert.equal(ctx.client.getSnapshot().optimisticMessage.id, requestId);
+  ctx.respond(1, { ...access, conversation: empty });
+  await until(
+    () => ctx.calls.length === 3,
+    "Retry did not reach the message endpoint",
+  );
+  assert.equal(ctx.calls[2].body.requestId, requestId);
+  ctx.respond(2, pending);
+  await retry;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+});
+
+test("a lost response reconciles the exact accepted request without duplicate publication or replay", async (t) => {
+  const ctx = setup(t);
+  const published = [];
+  ctx.client.subscribe(() => published.push(ctx.client.getSnapshot()));
+  const sending = ctx.client.sendMessage("Hello");
+  const requestId = ctx.client.getSnapshot().optimisticMessage.requestId;
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Message POST did not start");
+  ctx.calls[1].reject(new TypeError("Lost response"));
+  await until(() => ctx.calls.length === 3, "Message was not reconciled");
+  const accepted = {
+    ...pending,
+    messages: [{ ...pending.messages[0], requestId }, pending.messages[1]],
+  };
+  ctx.respond(2, accepted);
+  await sending;
+  const state = ctx.client.getSnapshot();
+  assert.equal(state.optimisticMessage, null);
+  assert.equal(state.error, null);
+  assert.equal(state.conversation.messages[0].requestId, requestId);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/messages")).length,
+    1,
+  );
+  assert.ok(
+    published.every(
+      (snapshot) =>
+        !snapshot.optimisticMessage ||
+        !snapshot.conversation?.messages.some(
+          (row) => row.requestId === requestId,
+        ),
+    ),
+  );
+});
+
+test("identical older customer text is not evidence that a lost submission was accepted", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, complete);
+  const sending = ctx.client.sendMessage("Hello");
+  const rejected = assert.rejects(sending, /could not connect/);
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.equal(optimistic.parts[0].text, complete.messages[0].parts[0].text);
+  await until(() => ctx.calls.length === 3, "Second message was not sent");
+  ctx.calls[2].reject(new TypeError("Lost response"));
+  await until(
+    () => ctx.calls.length === 4,
+    "Second message was not reconciled",
+  );
+  ctx.respond(3, complete);
+  await rejected;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 2);
+});
+
+test("ending clears optimistic text and rejects a late submission response", async (t) => {
+  const ctx = setup(t);
+  const sending = ctx.client.sendMessage("Hello");
+  const rejected = assert.rejects(sending, /conversation has changed/);
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Message POST did not start");
+  assert.ok(ctx.client.getSnapshot().optimisticMessage);
+  const ending = ctx.client.end();
+  ctx.respond(2, { ...empty, status: "ended", revision: 1 });
+  await ending;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  ctx.respond(1, pending);
+  await rejected;
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.calls.length, 3);
+});
+
+test("customer request identities are optional UUIDs and cannot label assistant rows", async (t) => {
+  for (const invalid of [
+    { role: "user", requestId: "not-an-id" },
+    { role: "assistant", requestId: "22222222-2222-4222-8222-222222222222" },
+  ]) {
+    const ctx = setup(t, { saved: access });
+    await resume(ctx);
+    const before = ctx.client.getSnapshot().conversation;
+    ctx.client.clearError();
+    ctx.respond(2, {
+      ...complete,
+      revision: 3,
+      messages: [{ ...complete.messages[0], ...invalid }],
+    });
+    await until(
+      () => !!ctx.client.getSnapshot().error,
+      "Invalid request identity was accepted",
+    );
+    assert.equal(ctx.client.getSnapshot().conversation, before);
+    assert.match(
+      ctx.client.getSnapshot().error,
+      /invalid conversation response/,
+    );
+  }
+});
+
+test("configuration read and write commands pass the session boundary but malformed choices do not", async (t) => {
+  const commands = [
+    {
+      name: "get_product_configuration",
+      arguments: { productPath: "/products/shade" },
+    },
+    {
+      name: "configure_product",
+      arguments: {
+        productPath: "/products/shade",
+        configurationId: "22222222-2222-4222-8222-222222222222",
+        controlId: "c0",
+        optionId: "o1",
+      },
+    },
+  ];
+  for (const command of commands) {
+    const ctx = setup(t, { saved: access });
+    const tools = [
+      {
+        ...command,
+        id: "33333333-3333-4333-8333-333333333333",
+        status: "pending",
+      },
+    ];
+    await resume(ctx, { ...pending, tools });
+    assert.equal(ctx.client.getSnapshot().error, null);
+    assert.equal(
+      ctx.client.getSnapshot().conversation.tools[0].name,
+      command.name,
+    );
+    const before = ctx.client.getSnapshot().conversation;
+    ctx.client.clearError();
+    ctx.respond(2, {
+      ...pending,
+      revision: 2,
+      tools: [
+        { ...tools[0], arguments: { ...command.arguments, unexpected: true } },
+      ],
+    });
+    await until(
+      () => !!ctx.client.getSnapshot().error,
+      "Malformed configuration was accepted",
+    );
+    assert.equal(ctx.client.getSnapshot().conversation, before);
+    assert.match(
+      ctx.client.getSnapshot().error,
+      /invalid conversation response/,
+    );
+  }
 });
 
 test("disposal aborts the request and does not publish late bootstrap data", async (t) => {
@@ -462,6 +650,7 @@ test("local preview and invalid input fail before session creation", async (t) =
     /installed development storefronts/,
   );
   assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   const store = setup(t);
   for (const text of [" ", "x".repeat(4001)])
     await assert.rejects(
@@ -469,6 +658,7 @@ test("local preview and invalid input fail before session creation", async (t) =
       /up to 4000 characters/,
     );
   assert.equal(store.calls.length, 0);
+  assert.equal(store.client.getSnapshot().optimisticMessage, null);
 });
 
 test("the installed custom storefront can bootstrap text and an explicit voice connection", async (t) => {
@@ -2041,6 +2231,11 @@ test("suggested voice answers preserve media and mute, persist once and reject d
   const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
   assert.equal(ctx.calls.length, 4);
   const call = ctx.calls[3];
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.equal(optimistic.id, call.body.requestId);
+  assert.equal(optimistic.parts[0].text, "Full blackout");
+  assert.equal(optimistic.parts[0].questionAnswer.questionId, voiceQuestionId);
+  assert.equal(optimistic.parts[0].questionAnswer.voiceId, voice.id);
   assert.equal(
     call.url,
     access.apiBaseUrl +
@@ -2062,6 +2257,7 @@ test("suggested voice answers preserve media and mute, persist once and reject d
   ctx.respond(3, acceptedVoiceAnswer(call.body, voice));
   await sending;
   assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
   assert.equal(ctx.client.getSnapshot().voice.muted, true);
   assert.equal(ctx.media.tracks[0].stopped, false);
@@ -2089,6 +2285,7 @@ test("lost voice answer responses reconcile without replay and explicit retry re
   assert.equal(ctx.calls[4].init.method, "GET");
   ctx.respond(4, { ...voiceQuestion, revision: 1, voice });
   await rejected;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(ctx.calls.length, 5);
   assert.equal(ctx.media.tracks[0].stopped, false);
   const retry = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");

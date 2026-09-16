@@ -112,6 +112,8 @@ export interface JourneyInput {
 
 export interface ConversationMessage {
   id: string;
+  /** Customer submission identity, when available, for local-send reconciliation. */
+  requestId?: string;
   role: "user" | "assistant" | "context";
   status: MessageStatus;
   parts: ConversationPart[];

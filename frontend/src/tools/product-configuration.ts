@@ -7,6 +7,7 @@ import {
   type ProductConfigurationControl,
 } from "../../../shared/product-configuration";
 import { readProductMeasurements } from "./measurements";
+import { isSampleAvailable } from "./product-sample";
 import {
   controlVisible,
   currentProductForm,
@@ -222,6 +223,7 @@ export function createProductConfigurationTools() {
       parseProductConfigurationCall("get_product_configuration", {
         productPath,
       });
+      const actions = { sampleAvailable: isSampleAvailable(productPath) };
       snapshot = null;
       try {
         const current = inspect(productPath),
@@ -233,6 +235,7 @@ export function createProductConfigurationTools() {
           configurationId: id,
           controls: current.controls,
           measurements: current.measurements,
+          actions,
           message:
             "These are supported native product choices. Unavailable choices need the theme's required steps. Measurements use the confirmed measurement tool; purchases and insurance are separate.",
         });
@@ -244,6 +247,7 @@ export function createProductConfigurationTools() {
           configurationId: null,
           controls: [],
           measurements: null,
+          actions,
           message: unavailable,
         };
       }
