@@ -46,10 +46,11 @@
   }
   .roman-header-button {
     gap: 6px;
-    padding: 0 12px;
-    color: var(--color-button-tertiary-gray-fg);
+    padding: 0 12px 0 16px;
+    color: #4e0e0e;
     background: #fff;
-    font: 14px/1 sans-serif;
+    font-size: 16px;
+    line-height: 1;
     border: 1px solid var(--color-button-secondary-border);
     border-radius: var(--button-radius);
   }
