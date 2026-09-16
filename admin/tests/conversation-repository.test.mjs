@@ -427,7 +427,7 @@ test("timeout, End and restart preserve claimed cart uncertainty and unclaimed c
     }
 });
 
-test("measurement application approval binds exact order draft and result fingerprint", async () => {
+test("measurement application uses an ordinary claim bound to the exact order draft and result fingerprint", async () => {
   const draft = {
     productPath: "/products/shade",
     width: 300,
@@ -446,9 +446,11 @@ test("measurement application approval binds exact order draft and result finger
     data: { conversationId: id, ...values, updatedAt: new Date(updatedAt) },
   });
   const claim = executor();
-  await assert.rejects(repository.claimToolInvocation(id, tool.id, claim), {
-    status: 400,
-  });
+  for (const confirmed of [true, false])
+    await assert.rejects(
+      repository.claimToolInvocation(id, tool.id, { ...claim, confirmed }),
+      { status: 400 },
+    );
   await database.measurementDraft.update({
     where: {
       conversationId_productPath: {
@@ -458,10 +460,9 @@ test("measurement application approval binds exact order draft and result finger
     },
     data: { width: 350 },
   });
-  await assert.rejects(
-    repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: true }),
-    { status: 409 },
-  );
+  await assert.rejects(repository.claimToolInvocation(id, tool.id, claim), {
+    status: 409,
+  });
   await database.measurementDraft.update({
     where: {
       conversationId_productPath: {
@@ -471,9 +472,19 @@ test("measurement application approval binds exact order draft and result finger
     },
     data: { width: 300 },
   });
-  await repository.claimToolInvocation(id, tool.id, {
-    ...claim,
-    confirmed: true,
+  assert.deepEqual(await repository.claimToolInvocation(id, tool.id, claim), {
+    claimed: true,
+  });
+  assert.equal(
+    (
+      await database.toolInvocation.findUniqueOrThrow({
+        where: { id: tool.id },
+      })
+    ).confirmedAt,
+    null,
+  );
+  assert.deepEqual(await repository.claimToolInvocation(id, tool.id, claim), {
+    claimed: true,
   });
   const outcome = {
     status: "applied",
@@ -490,15 +501,11 @@ test("measurement application approval binds exact order draft and result finger
     },
     data: { updatedAt: new Date(Date.parse(updatedAt) + 1) },
   });
-  await assert.rejects(
-    repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: true }),
-    { status: 409 },
-  );
+  await assert.rejects(repository.claimToolInvocation(id, tool.id, claim), {
+    status: 409,
+  });
   assert.deepEqual(
-    await repository.claimToolInvocation(id, tool.id, {
-      ...executor(),
-      confirmed: true,
-    }),
+    await repository.claimToolInvocation(id, tool.id, executor()),
     { claimed: false },
   );
   await assert.rejects(
@@ -529,6 +536,90 @@ test("measurement application approval binds exact order draft and result finger
     ),
     outcome,
   );
+});
+
+test("interrupted measurement applications retain claim uncertainty without cart confirmation and never replay", async () => {
+  for (const cleanup of ["timeout", "end", "restart", "browser-error"]) {
+    for (const claimed of [false, true]) {
+      if (cleanup === "browser-error" && !claimed) continue;
+      const draft = {
+        productPath: "/products/shade",
+        width: 300,
+        height: 300,
+        unit: "mm",
+        kind: "order",
+        mount: "recess",
+        updatedAt: new Date().toISOString(),
+      };
+      const { id, turn, tool } = await cartInvocation("apply_measurements", {
+        productPath: draft.productPath,
+        draft,
+      });
+      const { updatedAt, ...values } = draft;
+      await database.measurementDraft.create({
+        data: { conversationId: id, ...values, updatedAt: new Date(updatedAt) },
+      });
+      const claim = executor();
+      if (claimed) await repository.claimToolInvocation(id, tool.id, claim);
+      if (cleanup === "timeout")
+        await repository.failToolInvocation(id, tool.id, "Timed out.");
+      if (cleanup === "end") await repository.endConversation(id);
+      if (cleanup === "restart") {
+        await database.conversationMessage.updateMany({
+          where: { conversationId: id },
+          data: { createdAt: new Date(0) },
+        });
+        await repository.failPending(id);
+      }
+      if (cleanup === "browser-error")
+        await repository.completeToolInvocation(id, tool.id, claim, {
+          productIds: [],
+          error: "The page disappeared before the result was returned.",
+        });
+      const stored = await database.toolInvocation.findUniqueOrThrow({
+        where: { id: tool.id },
+      });
+      const outcome = JSON.parse(stored.resultJson);
+      assert.equal(stored.confirmedAt, null);
+      assert.equal(stored.status, "failed");
+      assert.equal(
+        outcome.status,
+        claimed ? "uncertain" : "cancelled",
+        `${cleanup}/${claimed}`,
+      );
+      assert.equal(outcome.productPath, draft.productPath);
+      assert.equal(outcome.draftUpdatedAt, draft.updatedAt);
+      if (!claimed) assert.match(outcome.message, /did not start/);
+      if (cleanup !== "end")
+        assert.deepEqual(
+          await repository.claimToolInvocation(id, tool.id, claim),
+          {
+            claimed: false,
+          },
+        );
+      await assert.rejects(
+        repository.createToolInvocation(id, turn.assistantId, {
+          providerCallId: stored.providerCallId,
+          name: stored.name,
+          arguments: JSON.parse(stored.argumentsJson),
+        }),
+        { status: 409 },
+      );
+      if (claimed)
+        await assert.rejects(
+          repository.completeToolInvocation(id, tool.id, claim, {
+            productIds: [],
+            outcome: {
+              status: "applied",
+              productPath: draft.productPath,
+              draftUpdatedAt: updatedAt,
+              message: "A late result must not overwrite uncertainty.",
+            },
+          }),
+          { status: 409 },
+        );
+    }
+  }
 });
 
 test("credentials are hashed, scoped to their conversation, and expire", async () => {

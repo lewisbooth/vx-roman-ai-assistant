@@ -44,7 +44,7 @@ import {
   type GuidePresentation,
 } from "./presentation.server";
 
-export const TEXT_MODEL = "gpt-5.6-luna";
+export const TEXT_MODEL = "gpt-5.6-terra";
 export const TEXT_SERVICE_TIER = "fast";
 type ModelToolOutcome = BrowserToolOutcome | MeasurementToolResult;
 
@@ -190,7 +190,7 @@ export async function generateReply(
         {
           model: TEXT_MODEL,
           service_tier: TEXT_SERVICE_TIER,
-          reasoning: { effort: "low" },
+          reasoning: { effort: "medium" },
           instructions:
             mode === "voice"
               ? ROMAN_VOICE_BRIEFING_PROMPT

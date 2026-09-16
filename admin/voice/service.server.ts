@@ -469,7 +469,7 @@ export function noteVoicePageView(conversationId: string, input: JourneyInput) {
     return;
   owner.lastPage = input.path;
   const observation = JSON.stringify({ title: input.title, path: input.path });
-  // The durable full observation remains available to Luna. Live receives a
+  // The durable full observation remains available to Terra. Live receives a
   // short quiet hint, never a fabricated customer utterance or automatic reply.
   void owner.provider
     .appendThinking(

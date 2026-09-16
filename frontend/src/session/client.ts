@@ -602,7 +602,7 @@ export function createConversationClient(
           // can be reconciled later, but that cannot revive permission to act.
           attempt.abandoned = true;
           attempt.approval = undefined;
-          attempt.confirmed ??= false;
+          if (requiresCartConfirmation(tool.name)) attempt.confirmed ??= false;
         }
       }
       processingTool = false;
@@ -642,8 +642,7 @@ export function createConversationClient(
       attempt = { claim: { clientId, claimToken }, attempts: 0 };
       toolAttempts.set(tool.id, attempt);
     }
-    const needsApproval =
-      requiresCartConfirmation(tool.name) || tool.name === "apply_measurements";
+    const needsApproval = requiresCartConfirmation(tool.name);
     if (needsApproval && attempt.confirmed === undefined) {
       let unavailable: string | undefined;
       try {
@@ -711,22 +710,32 @@ export function createConversationClient(
         attempt.outcome = {
           result: needsApproval
             ? await executor!.executeApproved(tool, attempt.approval!, signal)
-            : tool.name === "navigate"
-              ? await executor!.execute("navigate", tool.arguments, signal)
-              : tool.name === "get_product_guides"
-                ? await executor!.execute(
-                    "get_product_guides",
-                    tool.arguments,
-                    signal,
-                  )
-                : tool.name === "get_cart"
-                  ? await executor!.execute("get_cart", tool.arguments, signal)
-                  : await executor!.execute(
-                      tool.name as
-                        "search_products" | "get_product" | "lookup_catalog",
+            : tool.name === "apply_measurements"
+              ? await executor!.execute(
+                  "apply_measurements",
+                  tool.arguments,
+                  signal,
+                )
+              : tool.name === "navigate"
+                ? await executor!.execute("navigate", tool.arguments, signal)
+                : tool.name === "get_product_guides"
+                  ? await executor!.execute(
+                      "get_product_guides",
                       tool.arguments,
                       signal,
-                    ),
+                    )
+                  : tool.name === "get_cart"
+                    ? await executor!.execute(
+                        "get_cart",
+                        tool.arguments,
+                        signal,
+                      )
+                    : await executor!.execute(
+                        tool.name as
+                          "search_products" | "get_product" | "lookup_catalog",
+                        tool.arguments,
+                        signal,
+                      ),
         };
       } catch (error) {
         attempt.outcome = {

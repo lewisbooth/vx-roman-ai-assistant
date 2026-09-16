@@ -436,7 +436,7 @@ test("a cancelled connection never opens even when native readiness arrives duri
   assert.equal(state.rows.get(state.input.requestId).status, "closed");
 });
 
-test("opening failures close voice categorically without fabricating a greeting or invoking Luna", async () => {
+test("opening failures close voice categorically without fabricating a greeting or invoking Terra", async () => {
   const state = setup();
   state.mock.onOpening = async () => {
     throw new Error("private opening payload");

@@ -144,7 +144,7 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
 
 type StoredActionResult = CartToolResult | ApplyMeasurementsResult;
 
-function requiresConfirmation(name: string) {
+function isStorefrontMutation(name: string) {
   return requiresCartConfirmation(name) || name === "apply_measurements";
 }
 
@@ -202,7 +202,7 @@ function interruptedActionResult(
       draftUpdatedAt: command.draft.updatedAt,
       message: claimed
         ? "The product fields may have changed, but application was not confirmed. Check the form before requesting another change."
-        : "The shopper did not confirm applying these dimensions; Roman did not fill the product form.",
+        : "This application did not start; Roman did not fill the product form.",
     };
   }
 }
@@ -1304,14 +1304,16 @@ export async function claimToolInvocation(
     const conversation = await loadConversation(transaction, id);
     requireActive(conversation);
     const tool = invocation(conversation, invocationId);
-    const mutation = requiresConfirmation(tool.name);
+    const requiresConfirmation = requiresCartConfirmation(tool.name);
     if (
-      (mutation && typeof claim.confirmed !== "boolean") ||
-      (!mutation && claim.confirmed !== undefined)
+      (requiresConfirmation && typeof claim.confirmed !== "boolean") ||
+      (!requiresConfirmation && claim.confirmed !== undefined)
     )
       throw new ConversationError(
         400,
-        "This cart change requires the shopper's explicit review and confirmation.",
+        requiresConfirmation
+          ? "This cart change requires the shopper's explicit review and confirmation."
+          : "Only cart changes accept a shopper confirmation field.",
       );
     if (tool.status !== "pending" && tool.status !== "running")
       return {
@@ -1319,7 +1321,7 @@ export async function claimToolInvocation(
         ...(claim.confirmed === false &&
         ownsClaim(tool, claim) &&
         tool.resultJson &&
-        mutation
+        requiresConfirmation
           ? { outcome: storedActionResult(tool, JSON.parse(tool.resultJson)) }
           : {}),
       };
@@ -1383,7 +1385,7 @@ export async function claimToolInvocation(
         status: "running",
         claimClientId: claim.clientId,
         claimTokenHash: tokenHash(claim.claimToken),
-        ...(mutation ? { confirmedAt: new Date() } : {}),
+        ...(requiresConfirmation ? { confirmedAt: new Date() } : {}),
       },
     });
     if (!claimed.count) return { claimed: false };
@@ -1432,7 +1434,7 @@ export async function completeToolInvocation(
       tool.name === "get_product_guides";
     const outcome = persistsOutcome
       ? result.outcome === undefined
-        ? requiresConfirmation(tool.name) && error
+        ? isStorefrontMutation(tool.name) && error
           ? interruptedActionResult(tool, true)
           : undefined
         : tool.name === "get_product_guides"
@@ -1473,7 +1475,7 @@ export async function completeToolInvocation(
         409,
         "Claim this storefront action before completing it.",
       );
-    if (requiresConfirmation(tool.name) && !tool.confirmedAt)
+    if (requiresCartConfirmation(tool.name) && !tool.confirmedAt)
       throw new ConversationError(
         409,
         "This cart action was not confirmed by the shopper.",
@@ -1546,7 +1548,7 @@ async function failToolInvocations(
     where: { ...where, status: { in: ["pending", "running"] } },
   });
   for (const tool of pending) {
-    const outcome = interruptedActionResult(tool, !!tool.confirmedAt);
+    const outcome = interruptedActionResult(tool, tool.status === "running");
     await transaction.toolInvocation.update({
       where: { id: tool.id },
       data: {

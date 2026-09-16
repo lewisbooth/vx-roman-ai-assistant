@@ -641,9 +641,9 @@ test("the actual model client sets fast/low/store=false, passes the signal and k
   const reply = await env.api.generateReply(history, () => {}, signal);
   assert.equal(reply.text, "A completed reply.");
   const { input, options } = env.calls.requests[0];
-  assert.equal(input.model, "gpt-5.6-luna");
+  assert.equal(input.model, "gpt-5.6-terra");
   assert.equal(input.service_tier, "fast");
-  assert.deepEqual(plain(input.reasoning), { effort: "low" });
+  assert.deepEqual(plain(input.reasoning), { effort: "medium" });
   assert.equal(input.store, false);
   assert.equal(input.stream, true);
   assert.equal(input.max_output_tokens, 1600);
@@ -951,7 +951,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   ]);
   for (const { input } of env.calls.requests) {
     assert.equal(input.service_tier, "fast");
-    assert.deepEqual(input.reasoning, { effort: "low" });
+    assert.deepEqual(input.reasoning, { effort: "medium" });
     assert.deepEqual(input.include, ["reasoning.encrypted_content"]);
     assert.equal(input.store, false);
     assert.equal(input.parallel_tool_calls, false);
@@ -1816,7 +1816,7 @@ function voiceHistory(env, history) {
   };
 }
 
-test("voice delegation forwards canonical caption history to Luna without a fabricated customer message", async () => {
+test("voice delegation forwards canonical caption history to Terra without a fabricated customer message", async () => {
   const env = setup();
   const history = [
     { role: "user", text: "I need blinds for my kitchen." },
@@ -1851,7 +1851,7 @@ test("voice delegation forwards canonical caption history to Luna without a fabr
     env.calls.requests[0].input.instructions,
     /not a second chat message/,
   );
-  assert.equal(env.calls.requests[0].input.model, "gpt-5.6-luna");
+  assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");
   assert.equal(env.calls.requests[0].input.store, false);
   assert.equal(env.rows.get("voice").messages.length, 1);
@@ -1989,7 +1989,7 @@ test("stopping voice aborts a waiting navigation and never retries the action", 
   assert.equal(env.logs.length, 0);
 });
 
-test("cancel during voice initialization finishes the reserved work without calling Luna", async () => {
+test("cancel during voice initialization finishes the reserved work without calling Terra", async () => {
   const env = setup();
   voiceHistory(env, [{ role: "user", text: "Open a product." }]);
   const begin = deferred();
@@ -2070,4 +2070,177 @@ test("a different voice ID cannot cancel the active delegated work", async () =>
   assert.equal(env.calls.finishes.length, 0);
   generation.complete();
   await pending;
+});
+
+test("confirmed order dimensions can be saved then applied in one text or voice reply", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    for (const outcome of [
+      "applied",
+      "cancelled",
+      "uncertain",
+      "apply_error",
+      "save_error",
+    ]) {
+      await t.test(`${mode}: ${outcome}`, async () => {
+        const env = setup();
+        const save = deferred();
+        const apply = deferred();
+        const measurementCalls = [];
+        const input = {
+          productPath: "/products/shade",
+          width: 300,
+          height: 300,
+          unit: "mm",
+          kind: "order",
+          mount: "recess",
+        };
+        const draft = { ...input, updatedAt: "2026-09-16T10:00:00.000Z" };
+        const appliedResult = {
+          status: outcome,
+          productPath: input.productPath,
+          draftUpdatedAt: draft.updatedAt,
+          message:
+            outcome === "applied"
+              ? "The confirmed dimensions were filled."
+              : "The form change was not confirmed.",
+        };
+        let saved = false;
+        env.mock.measurementTool = async (...args) => {
+          measurementCalls.push(args);
+          await save.promise;
+          if (outcome === "save_error") throw new Error("PRIVATE_SAVE_FAILURE");
+          saved = true;
+          return { status: "saved", draft };
+        };
+        env.mock.executeTool = async () => {
+          assert.equal(saved, true, "Application follows the completed save");
+          await apply.promise;
+          if (outcome === "apply_error")
+            throw new Error("PRIVATE_APPLY_FAILURE");
+          return appliedResult;
+        };
+        const finalText =
+          outcome === "applied"
+            ? "The confirmed width and drop are filled in the product form."
+            : "I could not confirm that the product form was filled.";
+        env.streams.push(
+          events(
+            completed("", {
+              output: [catalogCall("save-order", "set_measurements", input)],
+            }),
+          ),
+          ...(outcome === "save_error"
+            ? []
+            : [
+                events(
+                  completed("", {
+                    output: [
+                      catalogCall("apply-order", "apply_measurements", {
+                        productPath: input.productPath,
+                      }),
+                    ],
+                  }),
+                ),
+              ]),
+          events(completed(finalText)),
+        );
+        const text =
+          "Configure this blind with confirmed order dimensions 300 mm wide by 300 mm drop, recess fitting.";
+        let pending;
+        if (mode === "voice") {
+          voiceHistory(env, [{ role: "user", text }]);
+          pending = env.api.runVoiceDelegation(
+            "measurements",
+            VOICE_ID,
+            firstInput.requestId,
+            new AbortController().signal,
+          );
+        } else {
+          await env.api.startTurn("measurements", { ...firstInput, text });
+        }
+        await flush();
+        assert.equal(measurementCalls.length, 1);
+        assert.deepEqual(plain(measurementCalls[0].slice(2)), [
+          "save-order",
+          "set_measurements",
+          input,
+        ]);
+        assert.equal(env.calls.browserTools.length, 0);
+        assert.equal(env.calls.requests.length, 1);
+        assert.equal(env.calls.finishes.length, 0);
+        save.resolve();
+        await flush();
+        const savedOutput = env.calls.requests[1].input.input.find(
+          (item) =>
+            item.type === "function_call_output" &&
+            item.call_id === "save-order",
+        );
+        if (outcome === "save_error") {
+          assert.match(
+            JSON.parse(savedOutput.output).error,
+            /could not be read or saved/,
+          );
+          assert.equal(env.calls.browserTools.length, 0);
+        } else {
+          assert.deepEqual(JSON.parse(savedOutput.output), {
+            status: "saved",
+            draft,
+          });
+          assert.ok(
+            env.calls.requests[1].input.tools.some(
+              (tool) => tool.name === "apply_measurements",
+            ),
+            "Saving a draft does not consume the browser mutation allowance",
+          );
+          assert.equal(env.calls.browserTools.length, 1);
+          assert.deepEqual(plain(env.calls.browserTools[0].slice(2, 5)), [
+            "apply-order",
+            "apply_measurements",
+            { productPath: input.productPath },
+          ]);
+          assert.equal(
+            env.calls.browserTools[0][1],
+            measurementCalls[0][1],
+            "Save and apply belong to the same reply",
+          );
+          assert.equal(env.calls.requests.length, 2);
+          assert.equal(env.calls.finishes.length, 0);
+          assert.equal(
+            (await env.api.readConversation("measurements")).busy,
+            true,
+            "Pending form application cannot become a completed answer",
+          );
+          apply.resolve();
+          await flush();
+          const appliedOutput = env.calls.requests[2].input.input.find(
+            (item) =>
+              item.type === "function_call_output" &&
+              item.call_id === "apply-order",
+          );
+          if (outcome === "apply_error")
+            assert.match(
+              JSON.parse(appliedOutput.output).error,
+              /not confirmed.*not claim.*repeat/i,
+            );
+          else
+            assert.deepEqual(JSON.parse(appliedOutput.output), appliedResult);
+        }
+        await pending;
+        await flush();
+        assert.equal(env.calls.finishes.length, 1);
+        assert.equal(env.calls.finishes[0].result.status, "complete");
+        assert.equal(env.calls.finishes[0].result.text, finalText);
+        assert.ok(
+          env.calls.browserTools.every(
+            (args) => args[3] === "apply_measurements",
+          ),
+          "Configuring dimensions never adds to or changes the cart",
+        );
+        assert.doesNotMatch(
+          JSON.stringify(env.calls.requests),
+          /PRIVATE_SAVE_FAILURE|PRIVATE_APPLY_FAILURE/,
+        );
+      });
+    }
+  }
 });

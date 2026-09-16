@@ -137,7 +137,7 @@ export async function requestBrowserTool(
   }
 }
 
-/** A shopper decision belongs to the invocation, not to model-supplied args. */
+/** Cart confirmation belongs to the invocation, not to model-supplied args. */
 export async function claimBrowserTool(
   conversationId: string,
   invocationId: string,

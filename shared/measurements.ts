@@ -51,7 +51,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "set_measurements",
     description:
-      "Save dimensions explicitly supplied by the customer for one verified product path. Width and height (drop) retain their exact units. Use kind window for measured window dimensions, order only for explicitly confirmed order dimensions. Ask when the meaning, units or mounting are unclear; unknown mount is allowed. Never convert, round, deduct allowances or infer a fit. Saving does not fill or submit the product form.",
+      "Save dimensions explicitly supplied by the customer for one verified product path. Width and height (drop) retain their exact units. Use kind window for unconfirmed notes and order for exact values the customer has confirmed for the chosen product inputs. Confirm width, drop and units together once; do not re-confirm an acknowledged pair or require a mounting answer. Preserve supplied mount, otherwise use unknown. For a configure/fill request, follow a successful save with apply_measurements; save-only requests stop here. Never convert, round, deduct allowances or infer a fit. Saving does not fill or submit the product form.",
     strict: true,
     parameters: {
       type: "object",
@@ -86,7 +86,7 @@ export const applyMeasurementsToolDefinition = {
   type: "function",
   name: "apply_measurements",
   description:
-    "Ask the customer to confirm filling the current product form with saved order dimensions. Only an order-kind draft can be applied. This does not convert units, select mounting, validate fitting suitability, submit the form or add to cart. Window measurements must never be applied as order dimensions.",
+    "Fill the current product width and drop inputs after the customer has confirmed the pair and units in the conversation and chosen this product. Only an order-kind draft containing those confirmed input values can be applied. Use after set_measurements for configure/fill requests; there is no additional on-screen approval. This does not convert units, select mounting, validate fitting suitability, submit the form or add to cart. Window measurements must never be applied as order dimensions.",
   strict: true,
   parameters: {
     type: "object",

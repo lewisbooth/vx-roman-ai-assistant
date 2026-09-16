@@ -97,6 +97,64 @@ test("long-context prices apply to the whole request only above the input thresh
   }
 });
 
+test("Terra uses dated Standard and Fast rates without changing Luna history", () => {
+  const terra = usage({
+    model: "gpt-5.6-terra",
+    createdAt: "2026-09-16T00:00:00.000Z",
+  });
+  const fastResult = estimateModelUsage(terra);
+  // 500 ordinary input, 400 cache reads, 100 cache writes, 200 output.
+  close(fastResult.usd, 0.00746);
+  assert.equal(fastResult.rateId, "terra-fast-2026-09-16");
+  assert.equal(fastResult.reason, null);
+  assert.deepEqual(
+    estimateModelUsage({ ...terra, serviceTier: "fast" }),
+    fastResult,
+  );
+  const standardResult = estimateModelUsage({
+    ...terra,
+    serviceTier: "default",
+  });
+  close(standardResult.usd, 0.00373);
+  assert.equal(standardResult.rateId, "terra-standard-2026-09-16");
+  assert.equal(
+    estimateModelUsage({ ...terra, createdAt: "2026-09-15T23:59:59.999Z" })
+      .reason,
+    "missing_rate",
+  );
+  assert.equal(
+    estimateModelUsage({ ...terra, serviceTier: "auto" }).reason,
+    "missing_rate",
+  );
+  assert.equal(
+    estimateModelUsage({ ...terra, cacheWriteInputTokens: null }).reason,
+    "missing_usage",
+  );
+  const laterLuna = estimateModelUsage(usage({ createdAt: terra.createdAt }));
+  close(laterLuna.usd, 0.000746);
+  assert.equal(laterLuna.rateId, "luna-fast-2026-09-15");
+});
+
+test("Terra long-context rates cover all token categories above 272K input", () => {
+  const terra = usage({
+    model: "gpt-5.6-terra",
+    createdAt: "2026-09-16T00:00:00.000Z",
+    inputTokens: 272000,
+  });
+  // Cached reads and cache writes remain separate from ordinary input in both bands.
+  close(estimateModelUsage({ ...terra, serviceTier: "default" }).usd, 0.54573);
+  close(estimateModelUsage(terra).usd, 1.09146);
+  close(
+    estimateModelUsage({
+      ...terra,
+      serviceTier: "default",
+      inputTokens: 272001,
+    }).usd,
+    1.090264,
+  );
+  close(estimateModelUsage({ ...terra, inputTokens: 272001 }).usd, 2.180528);
+});
+
 test("UTC effective periods use each call start with inclusive start and exclusive end", () => {
   const boundary = "2026-10-01T12:00:00.000Z";
   const old = { ...fast, effectiveTo: boundary };

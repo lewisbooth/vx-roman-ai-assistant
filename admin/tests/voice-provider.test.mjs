@@ -236,7 +236,7 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
     output: { voice: "marin" },
   });
   assert.match(request.session.instructions, /Interruption policy:/);
-  assert.match(request.session.instructions, /Luna/);
+  assert.match(request.session.instructions, /Terra/);
   assert.equal(options.signal.aborted, false);
   assert.deepEqual(plain(app.mock.clientOptions[0]), {
     maxRetries: 0,

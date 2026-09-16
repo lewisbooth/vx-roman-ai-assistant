@@ -47,7 +47,7 @@ function numericInput(group: Element, selector: string, value: number) {
   return input;
 }
 
-export function inspectMeasurementApplication(draft: MeasurementDraft) {
+function inspectMeasurementApplication(draft: MeasurementDraft) {
   if (
     draft.kind !== "order" ||
     !["mm", "cm"].includes(draft.unit) ||
@@ -91,26 +91,7 @@ export function inspectMeasurementApplication(draft: MeasurementDraft) {
   const width = numericInput(groups[0], "[data-width-input]", draft.width);
   const height = numericInput(groups[0], "[data-drop-input]", draft.height);
   if (width.form !== form || height.form !== form) throw new Error(unavailable);
-  const fingerprint = JSON.stringify([
-    draft,
-    window.location.pathname,
-    units[0].value,
-    ...[width, height].map((input) => [
-      input.value,
-      input.min,
-      input.max,
-      input.step,
-    ]),
-    ...[
-      ...form.querySelectorAll<HTMLInputElement>('input[type="radio"]:checked'),
-    ].map((input) => [input.name, input.value]),
-  ]);
   return {
-    details: [
-      `Width ${draft.width} ${draft.unit}; drop ${draft.height} ${draft.unit}.`,
-      "These are your intended order dimensions. Only width and drop will change; check the product's fitting choice and recalculated price before adding it to your cart.",
-    ],
-    fingerprint,
     form,
     component,
     width,
@@ -118,27 +99,13 @@ export function inspectMeasurementApplication(draft: MeasurementDraft) {
   };
 }
 
-export type MeasurementApplicationContext = ReturnType<
-  typeof inspectMeasurementApplication
->;
-
 export function applyMeasurements(
   draft: MeasurementDraft,
-  expected: MeasurementApplicationContext,
   signal: AbortSignal,
 ) {
   signal.throwIfAborted();
   const current = inspectMeasurementApplication(draft);
-  if (
-    current.fingerprint !== expected.fingerprint ||
-    current.form !== expected.form ||
-    current.component !== expected.component ||
-    current.width !== expected.width ||
-    current.height !== expected.height
-  )
-    throw new Error(
-      "The product or measurements changed after review. Review the new values before applying them.",
-    );
+  signal.throwIfAborted();
   // Assign both values before either event, so the theme reads one coherent pair.
   current.width.value = String(draft.width);
   current.height.value = String(draft.height);

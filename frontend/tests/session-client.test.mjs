@@ -578,6 +578,15 @@ const needsNavigation = {
   ],
 };
 const navigationResult = { status: "navigated", path: "/cart" };
+const orderDraft = {
+  productPath: "/products/shade", width: 300, height: 400, unit: "mm",
+  kind: "order", mount: "unknown", updatedAt: "2026-09-15T10:00:00.000Z",
+};
+const needsMeasurementApplication = {
+  ...needsTool,
+  tools: [{ ...needsTool.tools[0], name: "apply_measurements", arguments: { productPath: orderDraft.productPath, draft: orderDraft } }],
+};
+const measurementApplicationResult = { status: "applied", productPath: orderDraft.productPath, draftUpdatedAt: orderDraft.updatedAt, message: "Filled width and drop. Nothing was added to the cart." };
 
 async function resume(ctx, value = complete) {
   ctx.respond(0, { ...access, conversation: value });
@@ -973,60 +982,63 @@ test("failed End cannot revive an approved action whose claim was in flight", as
   ctx.respond(6, { ...complete, revision: 3 });
 });
 
-test("measurement application reviews the server's frozen order draft and claims only after approval", async (t) => {
-  const draft = {
-    productPath: "/products/shade",
-    width: 300,
-    height: 400,
-    unit: "mm",
-    kind: "order",
-    mount: "unknown",
-    updatedAt: "2026-09-15T10:00:00.000Z",
-  };
-  const snapshot = {
-    ...needsTool,
-    tools: [
-      {
-        ...needsTool.tools[0],
-        name: "apply_measurements",
-        arguments: { productPath: draft.productPath, draft },
-      },
-    ],
-  };
+test("failed End cannot revive a measurement action whose ordinary claim was in flight", async t => {
+  const ctx = setup(t, { saved: access, executor: {
+    execute: () => assert.fail("An abandoned measurement must never execute"),
+    prepareApproval: () => assert.fail("Measurements must not open another approval panel"),
+  } });
+  await resume(ctx, needsMeasurementApplication);
+  await until(() => ctx.calls.length === 3, "Measurement claim did not start");
+  const originalClaim = ctx.calls[2].body;
+  assert.equal("confirmed" in originalClaim, false);
+  const ending = ctx.client.end();
+  const rejected = assert.rejects(ending);
+  ctx.respond(3, { error: { message: "Temporary failure" } }, 500);
+  await rejected;
+  ctx.respond(2, { claimed: true });
+  await delay(10);
+  ctx.client.clearError();
+  await until(() => ctx.calls.length === 5, "Reconciliation read did not start");
+  ctx.respond(4, { ...needsMeasurementApplication, revision: 2, tools: [{ ...needsMeasurementApplication.tools[0], status: "running" }] });
+  await until(() => ctx.calls.length === 6, "Ownership was not reconciled");
+  assert.deepEqual(ctx.calls[5].body, originalClaim);
+  ctx.respond(5, { claimed: true });
+  await until(() => ctx.calls.length === 7, "Interrupted outcome was not reported");
+  assert.match(ctx.calls[6].body.error, /interrupted/);
+  assert.equal("result" in ctx.calls[6].body, false);
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  ctx.respond(6, { ...complete, revision: 3 });
+});
+
+test("measurement application claims the frozen order draft without a second on-screen approval", async (t) => {
+  let executions = 0;
   const ctx = setup(t, {
     saved: access,
     executor: {
-      prepareApproval: async (command) => {
+      prepareApproval: () => assert.fail("Measurements must not open another approval panel"),
+      executeApproved: () => assert.fail("Measurements do not use cart approvals"),
+      execute: async (name, args) => {
+        assert.equal(name, "apply_measurements");
         assert.deepEqual(
-          JSON.parse(JSON.stringify(command.arguments.draft)),
-          draft,
+          JSON.parse(JSON.stringify(args.draft)),
+          orderDraft,
         );
-        return {
-          title: "Fill these order dimensions?",
-          details: ["Width 300 mm; drop 400 mm."],
-        };
+        executions++;
+        return measurementApplicationResult;
       },
-      executeApproved: async (command) => ({
-        status: "applied",
-        productPath: command.arguments.productPath,
-        draftUpdatedAt: command.arguments.draft.updatedAt,
-        message: "Filled width and drop. Nothing was added to the cart.",
-      }),
     },
   });
-  await resume(ctx, snapshot);
-  await until(
-    () => !!ctx.client.getSnapshot().approval,
-    "Measurement review did not appear",
-  );
-  assert.equal(ctx.calls.length, 2);
-  ctx.client.resolveToolApproval(invocationId, true);
+  await resume(ctx, needsMeasurementApplication);
   await until(() => ctx.calls.length === 3, "Measurement claim did not start");
-  assert.equal(ctx.calls[2].body.confirmed, true);
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  assert.equal(executions, 0);
+  assert.equal("confirmed" in ctx.calls[2].body, false);
   assert.equal("draft" in ctx.calls[2].body, false);
   ctx.respond(2, { claimed: true });
   await until(() => ctx.calls.length === 4, "Measurement result did not start");
-  assert.equal(ctx.calls[3].body.result.draftUpdatedAt, draft.updatedAt);
+  assert.equal(ctx.calls[3].body.result.draftUpdatedAt, orderDraft.updatedAt);
+  assert.equal(executions, 1);
+  assert.equal("confirmed" in ctx.calls[3].body, false);
   ctx.respond(3, complete);
 });
 
@@ -1034,6 +1046,7 @@ test("a lost tool-result response retries the same result without reexecuting or
   for (const [snapshot, result] of [
     [needsTool, catalogResult],
     [needsNavigation, navigationResult],
+    [needsMeasurementApplication, measurementApplicationResult],
   ]) {
     await t.test(snapshot.tools[0].name, async (t) => {
       let executions = 0;
@@ -1091,31 +1104,28 @@ test("a lost tool-result response retries the same result without reexecuting or
   }
 });
 
-test("a refreshed client never claims or repeats navigation already running in the previous page", async (t) => {
-  const ctx = setup(t, {
-    saved: access,
-    executor: {
-      execute: () =>
-        assert.fail("Previously claimed navigation must not replay"),
-    },
-  });
-  const running = {
-    ...needsNavigation,
-    tools: [{ ...needsNavigation.tools[0], status: "running" }],
-  };
-  await resume(ctx, running);
-  assert.equal(ctx.calls.length, 2);
-  ctx.tick();
-  await until(
-    () => ctx.calls.length === 3,
-    "Pending conversation was not polled",
-  );
-  ctx.respond(2, running);
-  await delay(0);
-  assert.equal(
-    ctx.calls.filter((call) => /\/(claim|result)$/.test(call.url)).length,
-    0,
-  );
+test("a refreshed client never claims or repeats navigation or measurement application already running in the previous page", async (t) => {
+  for (const snapshot of [needsNavigation, needsMeasurementApplication])
+    await t.test(snapshot.tools[0].name, async t => {
+      const ctx = setup(t, {
+        saved: access,
+        executor: {
+          execute: () => assert.fail("Previously claimed action must not replay"),
+        },
+      });
+      const running = {
+        ...snapshot,
+        tools: [{ ...snapshot.tools[0], status: "running" }],
+      };
+      await resume(ctx, running);
+      assert.equal(ctx.calls.length, 2);
+      ctx.tick();
+      await until(() => ctx.calls.length === 3, "Pending conversation was not polled");
+      ctx.respond(2, running);
+      await delay(0);
+      assert.equal(ctx.calls.filter((call) => /\/(claim|result)$/.test(call.url)).length, 0);
+      assert.equal(ctx.client.getSnapshot().approval, null);
+    });
 });
 
 test("the first observed page is durably queued before the first customer message", async (t) => {

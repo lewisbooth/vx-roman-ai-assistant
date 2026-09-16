@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { cwd } from "node:process";
+import { setImmediate } from "node:timers/promises";
 
 const bundle = await build({
-  entryPoints: ["frontend/src/tools/measurements.ts"],
+  stdin: {
+    contents:
+      "export { applyMeasurements } from './frontend/src/tools/measurements'; export { createStorefrontExecutor } from './frontend/src/session/storefront-executor';",
+    resolveDir: cwd(),
+  },
   bundle: true,
   write: false,
   format: "iife",
@@ -56,12 +62,10 @@ function setup(t) {
   return { window, form, events, ...window.Measurement };
 }
 
-test("approved order dimensions update the exact active pair and notify the theme without touching inactive units or purchasing", (t) => {
+test("confirmed order dimensions update the exact active pair and notify the theme without touching inactive units or purchasing", (t) => {
   const ctx = setup(t);
-  const review = ctx.inspectMeasurementApplication(draft);
   const result = ctx.applyMeasurements(
     draft,
-    review,
     new ctx.window.AbortController().signal,
   );
   assert.equal(result.status, "applied");
@@ -91,43 +95,39 @@ test("window drafts, unit mismatch, inches, wrong products and invalid increment
       const ctx = setup(t);
       const before = ctx.form.innerHTML;
       assert.throws(() =>
-        ctx.inspectMeasurementApplication({ ...draft, ...change }),
+        ctx.applyMeasurements(
+          { ...draft, ...change },
+          new ctx.window.AbortController().signal,
+        ),
       );
       assert.equal(ctx.form.innerHTML, before);
       assert.deepEqual(ctx.events, []);
     });
 });
 
-test("approval is invalidated by edited fields, remounted controls, unit changes or aborted work", async (t) => {
-  for (const change of ["edit", "replace", "unit", "abort"])
+test("unit changes or aborted work never alter the current fields", async (t) => {
+  for (const change of ["unit", "abort"])
     await t.test(change, (t) => {
       const ctx = setup(t),
-        review = ctx.inspectMeasurementApplication(draft),
         controller = new ctx.window.AbortController();
-      if (change === "edit") review.width.value = "500";
-      if (change === "replace")
-        review.width.replaceWith(review.width.cloneNode());
       if (change === "unit") ctx.form.querySelector("select").value = "cm";
       if (change === "abort") controller.abort();
-      assert.throws(() =>
-        ctx.applyMeasurements(draft, review, controller.signal),
-      );
+      assert.throws(() => ctx.applyMeasurements(draft, controller.signal));
       assert.deepEqual(ctx.events, []);
     });
 });
 
 test("a theme correction is reported as uncertain instead of claiming exact application", (t) => {
   const ctx = setup(t),
-    review = ctx.inspectMeasurementApplication(draft);
-  review.width.addEventListener("change", () => {
-    review.width.value = "301";
+    width = ctx.form.querySelector(
+      "[data-active-input-measurement] [data-width-input]",
+    );
+  width.addEventListener("change", () => {
+    width.value = "301";
   });
   assert.equal(
-    ctx.applyMeasurements(
-      draft,
-      review,
-      new ctx.window.AbortController().signal,
-    ).status,
+    ctx.applyMeasurements(draft, new ctx.window.AbortController().signal)
+      .status,
     "uncertain",
   );
 });
@@ -136,22 +136,95 @@ test("a theme-hidden active unit group cannot be applied", (t) => {
   const ctx = setup(t);
   ctx.form.querySelector("[data-active-input-measurement]").style.display =
     "none";
-  assert.throws(() => ctx.inspectMeasurementApplication(draft));
+  assert.throws(() =>
+    ctx.applyMeasurements(draft, new ctx.window.AbortController().signal),
+  );
   assert.deepEqual(ctx.events, []);
 });
 
 test("theme replacement of the active fields reports uncertainty instead of confirming detached inputs", (t) => {
   const ctx = setup(t);
-  const review = ctx.inspectMeasurementApplication(draft);
-  review.width.addEventListener(
+  const width = ctx.form.querySelector(
+    "[data-active-input-measurement] [data-width-input]",
+  );
+  width.addEventListener(
     "input",
-    () => review.width.replaceWith(review.width.cloneNode(true)),
+    () => width.replaceWith(width.cloneNode(true)),
     { once: true },
   );
   const result = ctx.applyMeasurements(
     draft,
-    review,
     new ctx.window.AbortController().signal,
   );
   assert.equal(result.status, "uncertain");
+});
+
+test("ordinary measurement execution fills current controls after its queue wait without preparing an approval", async (t) => {
+  const ctx = setup(t);
+  let release;
+  const executor = ctx.createStorefrontExecutor({
+    execute: async (name) => {
+      assert.equal(name, "search_products");
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  t.after(() => executor.dispose());
+  const search = executor.execute("search_products", { query: "blind" });
+  const applying = executor.execute("apply_measurements", {
+    productPath: draft.productPath,
+    draft,
+  });
+  await setImmediate();
+  assert.deepEqual(ctx.events, []);
+  const previous = ctx.form.querySelector(
+    "[data-active-input-measurement] [data-width-input]",
+  );
+  const current = previous.cloneNode(true);
+  previous.replaceWith(current);
+  current.value = "500";
+  release({ products: [] });
+  await search;
+  assert.equal((await applying).status, "applied");
+  assert.equal(current.value, "300");
+  assert.equal(previous.value, "200");
+  assert.deepEqual(ctx.events, [
+    ["300", "400"],
+    ["300", "400"],
+    ["300", "400"],
+    ["300", "400"],
+  ]);
+});
+
+test("queued measurement application validates the current page and cancellation before writing", async (t) => {
+  for (const change of ["page", "unit", "abort"])
+    await t.test(change, async (t) => {
+      const ctx = setup(t);
+      let release;
+      const executor = ctx.createStorefrontExecutor({
+        execute: () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      });
+      t.after(() => executor.dispose());
+      const controller = new ctx.window.AbortController();
+      const search = executor.execute("search_products", { query: "blind" });
+      const applying = executor.execute(
+        "apply_measurements",
+        { productPath: draft.productPath, draft },
+        controller.signal,
+      );
+      const rejected = assert.rejects(applying);
+      await setImmediate();
+      if (change === "page")
+        ctx.window.history.pushState({}, "", "/products/other");
+      if (change === "unit") ctx.form.querySelector("select").value = "cm";
+      if (change === "abort") controller.abort();
+      release({ products: [] });
+      await search;
+      await rejected;
+      assert.deepEqual(ctx.events, []);
+    });
 });
