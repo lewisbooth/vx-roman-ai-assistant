@@ -631,6 +631,114 @@ test("restored guide widgets validate their store origin and reject unsafe later
   assert.equal(ctx.client.getSnapshot().conversation, restored);
 });
 
+const questionPart = {
+  type: "question",
+  version: 1,
+  invocationId,
+  question: "What matters most for your room?",
+  answers: ["Blackout", "Daytime privacy", "A softer look"],
+};
+const recommendations = {
+  ...complete,
+  messages: [
+    complete.messages[0],
+    {
+      ...complete.messages[1],
+      parts: [
+        { type: "text", text: "Here are a few no-drill options." },
+        { type: "products", version: 1, invocationId, productIds: ["gid://shopify/Product/123"] },
+        questionPart,
+      ],
+    },
+  ],
+};
+
+test("a streamed reply completes with a carousel and question through the real response validator", async (t) => {
+  const streaming = {
+    ...pending,
+    messages: [pending.messages[0], {
+      ...pending.messages[1],
+      parts: [{ type: "text", text: "Here are a few" }],
+    }],
+  };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, streaming);
+  ctx.tick();
+  await until(() => ctx.calls.length === 3, "Reply completion was not polled");
+  ctx.respond(2, recommendations);
+  await until(
+    () => !ctx.client.getSnapshot().conversation.busy || !!ctx.client.getSnapshot().error,
+    "Reply did not settle",
+  );
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+    recommendations.messages,
+  );
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("saved questions, including voice associations and answered history, survive bootstrap and reload", async (t) => {
+  const saved = {
+    ...recommendations,
+    messages: [
+      recommendations.messages[1],
+      { ...complete.messages[0], parts: [{ type: "text", text: "Blackout" }] },
+      {
+        ...complete.messages[1],
+        id: "voice-question",
+        parts: [{
+          ...questionPart,
+          voiceReply: { voiceId: "22222222-2222-4222-8222-222222222222", afterSequence: 3 },
+        }],
+      },
+    ],
+  };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, saved);
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+    saved.messages,
+  );
+});
+
+for (const [name, invalid] of Object.entries({
+  "too many answers": { answers: ["One", "Two", "Three", "Four", "Five"] },
+  "duplicate answers": { answers: ["Blackout", "blackout"] },
+  "HTML question": { question: "<script>alert(1)</script>" },
+  "unknown version": { version: 2 },
+  "unexpected fields": { extra: true },
+  "invalid voice association": { voiceReply: { voiceId: "not-a-uuid", afterSequence: -1 } },
+})) {
+  test(`invalid question response (${name}) preserves the last valid snapshot and can recover`, async (t) => {
+    const ctx = setup(t, { saved: access });
+    await resume(ctx);
+    const previous = ctx.client.getSnapshot().conversation;
+    ctx.client.clearError();
+    ctx.respond(2, {
+      ...recommendations,
+      revision: 3,
+      messages: [{ ...complete.messages[1], parts: [{ ...questionPart, ...invalid }] }],
+    });
+    await until(() => !!ctx.client.getSnapshot().error, "Invalid question was accepted");
+    assert.match(ctx.client.getSnapshot().error, /invalid conversation response/);
+    assert.equal(ctx.client.getSnapshot().conversation, previous);
+    ctx.client.clearError();
+    await until(() => ctx.calls.length === 4, "Retry did not fetch the conversation");
+    ctx.respond(3, { ...recommendations, revision: 3 });
+    await until(
+      () => ctx.client.getSnapshot().conversation.revision === 3 || !!ctx.client.getSnapshot().error,
+      "Corrected conversation did not settle",
+    );
+    assert.equal(ctx.client.getSnapshot().error, null);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+      recommendations.messages,
+    );
+  });
+}
+
 test("only a tab granted the tool claim executes the catalog command", async (t) => {
   const executions = [];
   const first = setup(t, {

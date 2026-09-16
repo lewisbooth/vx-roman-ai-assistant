@@ -27,6 +27,7 @@ import {
   parseMeasurementToolResult,
 } from "../../../shared/measurements";
 import { parseNavigationCall } from "../../../shared/navigation-tool";
+import { parseQuestionPart } from "../../../shared/questions";
 import type {
   createStorefrontExecutor,
   BrowserToolResult,
@@ -73,6 +74,15 @@ function record(value: unknown): value is Record<string, unknown> {
 function validGuidePart(value: unknown) {
   try {
     parseGuidePart(value, window.location.origin);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validQuestionPart(value: unknown) {
+  try {
+    parseQuestionPart(value);
     return true;
   } catch {
     return false;
@@ -176,6 +186,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
             record(part) &&
             ((part.type === "text" && typeof part.text === "string") ||
               (part.type === "guides" && validGuidePart(part)) ||
+              (part.type === "question" && validQuestionPart(part)) ||
               (part.type === "cart_added" && validCartAddedPart(part)) ||
               (part.type === "voice" &&
                 part.version === 1 &&
