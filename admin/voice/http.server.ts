@@ -5,6 +5,7 @@ import {
 } from "../../shared/voice";
 import { UUID_PATTERN } from "../conversations/auth.server";
 import { ConversationError } from "../conversations/errors.server";
+import type { VoiceAnswerInput } from "../../shared/questions";
 
 export const VOICE_START_BODY_BYTES = 64 * 1024;
 const MAX_SDP_BYTES = 48 * 1024;
@@ -62,4 +63,28 @@ export function voiceSessionId(value: string | undefined): string {
     throw new ConversationError(400, "Send a valid voice session ID.");
   }
   return value;
+}
+
+export function voiceAnswerInput(
+  value: Record<string, unknown>,
+): Omit<VoiceAnswerInput, "voiceId"> {
+  if (
+    Object.keys(value).length !== 4 ||
+    !["clientId", "requestId", "questionId"].every(
+      (key) => typeof value[key] === "string" && UUID_PATTERN.test(value[key]),
+    ) ||
+    typeof value.answer !== "string" ||
+    !value.answer.trim() ||
+    value.answer.length > 80
+  )
+    throw new ConversationError(
+      400,
+      "Send clientId, requestId and questionId UUIDs with an offered answer.",
+    );
+  return {
+    clientId: value.clientId as string,
+    requestId: value.requestId as string,
+    questionId: value.questionId as string,
+    answer: value.answer,
+  };
 }

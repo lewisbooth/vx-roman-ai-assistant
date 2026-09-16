@@ -22,6 +22,8 @@ export interface ConversationClient {
   subscribe(listener: () => void): () => void;
   /** Resolves when the server has accepted the message, before generation ends. */
   sendMessage(text: string): Promise<void>;
+  /** Sends a saved suggested answer to this tab's live connection. */
+  sendVoiceAnswer(questionId: string, answer: string): Promise<void>;
   recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;
   executeMeasurements(
     name: "set_measurements" | "get_measurements",

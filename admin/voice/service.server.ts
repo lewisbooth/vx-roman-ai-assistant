@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { JourneyInput } from "../../shared/conversation";
+import type { VoiceAnswerInput } from "../../shared/questions";
 import {
   DEFAULT_LIVE_VOICE,
   type LiveVoice,
@@ -8,7 +9,11 @@ import {
 } from "../../shared/voice";
 import { ConversationError } from "../conversations/errors.server";
 import { recordVoiceUsage } from "../usage/repository.server";
-import { getModelHistory } from "../conversations/repository.server";
+import {
+  getModelHistory,
+  findVoiceQuestionAnswer,
+  appendVoiceQuestionAnswer,
+} from "../conversations/repository.server";
 import {
   cancelVoiceDelegation,
   runVoiceDelegation,
@@ -56,6 +61,10 @@ interface VoiceOwner {
   latestUserSequence?: number;
   delegationController?: AbortController;
   lastPage?: string;
+  answer?: {
+    input: Omit<VoiceAnswerInput, "voiceId">;
+    promise: Promise<void>;
+  };
 }
 
 // Ephemeral connections belong to this one server process; captions and leases
@@ -150,7 +159,8 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
         signal,
       );
       if (signal.aborted) return;
-      const briefing = reply?.text.trim() || reply?.questionPresentation?.question;
+      const briefing =
+        reply?.text.trim() || reply?.questionPresentation?.question;
       await owner.provider!.appendCommentary(
         delegationId,
         briefing
@@ -460,6 +470,95 @@ export async function stopConversationVoice(conversationId: string) {
   const session = await getVoiceState(conversationId);
   if (session && ["starting", "active"].includes(session.status))
     await cancelVoiceSession(conversationId, session.id, session.clientId);
+}
+
+/** A selected widget answer is real customer text, never a fabricated caption. */
+export async function answerVoiceQuestion(
+  conversationId: string,
+  voiceId: string,
+  input: Omit<VoiceAnswerInput, "voiceId">,
+): Promise<void> {
+  // Read-only receipts can reconcile a lost response even after voice stopped.
+  // Persisting the user row is the one-use delivery boundary: never replay it.
+  if (await findVoiceQuestionAnswer(conversationId, voiceId, input)) return;
+  const owner = owners.get(conversationId);
+  if (
+    !owner ||
+    owner.voiceId !== voiceId ||
+    owner.clientId !== input.clientId ||
+    owner.stopping ||
+    !owner.activated ||
+    !owner.started ||
+    !owner.browserReady ||
+    !owner.provider
+  )
+    throw new ConversationError(409, disconnected);
+  if (owner.answer) {
+    const previous = owner.answer.input;
+    if (previous.requestId === input.requestId) {
+      if (
+        previous.questionId !== input.questionId ||
+        previous.answer !== input.answer
+      )
+        throw new ConversationError(
+          400,
+          "This answer request ID already has different data.",
+        );
+      return owner.answer.promise;
+    }
+    throw new ConversationError(
+      409,
+      "Your previous answer is still being sent.",
+    );
+  }
+
+  const accepted = owner.events.then(async () => {
+    if (owner.stopping || owners.get(conversationId) !== owner)
+      throw new ConversationError(409, disconnected);
+    const receipt = await appendVoiceQuestionAnswer(
+      conversationId,
+      voiceId,
+      input,
+    );
+    if (
+      receipt.created &&
+      receipt.sequence > (owner.latestUserSequence ?? -1)
+    ) {
+      // A later Live delegation must see this click as new customer intent,
+      // while repeated/draining caption IDs cannot replace its newer sequence.
+      owner.latestUserCaption = `answer:${receipt.messageId}`;
+      owner.latestUserSequence = receipt.sequence;
+    }
+    return receipt;
+  });
+  // Serialize durable user writes with sideband captions, without holding the
+  // event queue while waiting for provider acknowledgments or delegation.
+  owner.events = accepted.then(
+    () => undefined,
+    () => undefined,
+  );
+  const promise = (async () => {
+    const receipt = await accepted;
+    if (!receipt.created) return;
+    try {
+      if (owner.stopping || owners.get(conversationId) !== owner)
+        throw new ConversationError(409, disconnected);
+      await owner.provider!.appendAnswer(receipt.question, receipt.answer);
+    } catch {
+      const message =
+        "Your answer was saved, but Roman could not confirm it reached voice. Start voice again to continue.";
+      if (!owner.stopping) fail(owner, message, "answer_context_failed");
+      await closeOwner(owner).catch(() => undefined);
+      throw new ConversationError(503, message);
+    }
+  })();
+  const attempt = { input, promise };
+  owner.answer = attempt;
+  try {
+    await promise;
+  } finally {
+    if (owner.answer === attempt) owner.answer = undefined;
+  }
 }
 
 /** Called only after the authenticated journey input has been validated and saved. */

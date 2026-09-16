@@ -76,7 +76,7 @@ export function Question({
       </div>
       <p className="roman-question-hint">
         {voice
-          ? "Reply aloud, or choose an answer to switch to text."
+          ? "Reply aloud or choose an answer. Voice stays connected."
           : "Or reply in your own words."}
       </p>
       {error && (

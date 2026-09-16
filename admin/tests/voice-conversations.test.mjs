@@ -13,7 +13,8 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
     contents: `export * as conversation from './admin/conversations/repository.server';
-    export * as voice from './admin/voice/repository.server';`,
+    export * as voice from './admin/voice/repository.server';
+    export { latestQuestion } from './shared/questions';`,
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -744,4 +745,362 @@ test("restart recovery fails hidden delegation ownership and voice without dupli
   assert.deepEqual(await restarted.conversation.getModelHistory(id), [
     { role: "user", text: "Find a blind" },
   ]);
+});
+
+async function questionDuringVoice() {
+  const session = await startVoice();
+  await voice.activateVoiceSession(
+    id,
+    session.id,
+    clientId,
+    "live-question-fixture",
+  );
+  const turn = await conversation.beginTurn(id, textInput(""), session.id);
+  // The triggering caption can arrive after the reserved delegation row. The
+  // completed widget must still follow it in the canonical timeline.
+  await caption(session, "Help me choose", 0);
+  await conversation.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "Which room?",
+    voiceId: session.id,
+    questionPresentation: {
+      callId: "question-fixture",
+      question: "Which room?",
+      answers: ["Bedroom", "Kitchen"],
+    },
+  });
+  const question = load().latestQuestion(
+    (await conversation.getSnapshot(id)).messages,
+  );
+  assert.ok(question);
+  const input = {
+    clientId,
+    requestId: randomUUID(),
+    questionId: question.invocationId,
+    answer: "Bedroom",
+  };
+  return { session, input, question };
+}
+
+test("a selected voice answer saves customer text, retires its question and leaves voice connected without a Terra turn", async () => {
+  const { session, input } = await questionDuringVoice();
+  await journey();
+  const before = await database.conversation.findUniqueOrThrow({
+    where: { id },
+  });
+  const messagesBefore = await database.conversationMessage.count();
+  const captionsBefore = await database.voiceTranscript.count();
+  assert.equal(
+    await conversation.findVoiceQuestionAnswer(id, session.id, input),
+    null,
+  );
+  const saved = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  assert.deepEqual(saved, {
+    created: true,
+    messageId: input.requestId,
+    sequence: before.nextSequence,
+    question: "Which room?",
+    answer: "Bedroom",
+  });
+  const snapshot = await conversation.getSnapshot(id);
+  assert.equal(snapshot.busy, false);
+  assert.equal(snapshot.voice.id, session.id);
+  assert.equal(snapshot.voice.status, "active");
+  assert.equal(load().latestQuestion(snapshot.messages), undefined);
+  assert.deepEqual(snapshot.messages.at(-1).parts, [
+    {
+      type: "text",
+      text: "Bedroom",
+      questionAnswer: { questionId: input.questionId, voiceId: session.id },
+    },
+  ]);
+  assert.equal(snapshot.messages.at(-1).id, input.requestId);
+  assert.deepEqual((await conversation.getModelHistory(id)).at(-1), {
+    role: "user",
+    text: "Bedroom",
+  });
+  const after = await database.conversation.findUniqueOrThrow({
+    where: { id },
+  });
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.nextSequence, before.nextSequence + 1);
+  assert.equal(after.turnCount, before.turnCount);
+  assert.equal(after.pendingRequestId, null);
+  assert.equal(await database.conversationMessage.count(), messagesBefore + 1);
+  assert.equal(await database.voiceTranscript.count(), captionsBefore);
+});
+
+test("concurrent retries persist one answer receipt and a second choice cannot answer the same question", async () => {
+  const { session, input } = await questionDuringVoice();
+  const receipts = await Promise.all([
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+  ]);
+  assert.deepEqual(receipts.map((receipt) => receipt.created).sort(), [
+    false,
+    true,
+  ]);
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    1,
+  );
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      requestId: randomUUID(),
+      answer: "Kitchen",
+    }),
+    { status: 409 },
+  );
+  assert.deepEqual(
+    await conversation.findVoiceQuestionAnswer(id, session.id, input),
+    {
+      ...receipts[0],
+      created: false,
+    },
+  );
+});
+
+test("selected-answer receipts survive stop, End and process restart without reopening voice", async () => {
+  const { session, input } = await questionDuringVoice();
+  const original = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  await voice.closeVoiceSession(id, session.id, clientId);
+  await conversation.endConversation(id);
+  clock++;
+  const restarted = load().conversation;
+  const before = await restarted.getSnapshot(id);
+  assert.deepEqual(
+    await restarted.findVoiceQuestionAnswer(id, session.id, input),
+    { ...original, created: false },
+  );
+  assert.deepEqual(
+    await restarted.appendVoiceQuestionAnswer(id, session.id, input),
+    { ...original, created: false },
+  );
+  assert.deepEqual(await restarted.getSnapshot(id), before);
+  assert.equal(before.status, "ended");
+  assert.equal(before.voice.status, "closed");
+});
+
+test("selected-answer retries reject altered content, question, voice owner and request namespace collisions", async () => {
+  const { session, input } = await questionDuringVoice();
+  await conversation.appendVoiceQuestionAnswer(id, session.id, input);
+  for (const changed of [{ answer: "Kitchen" }, { questionId: randomUUID() }]) {
+    await assert.rejects(
+      conversation.findVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 400 },
+    );
+    await assert.rejects(
+      conversation.appendVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 400 },
+    );
+  }
+  await assert.rejects(
+    conversation.findVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      clientId: randomUUID(),
+    }),
+    { status: 404 },
+  );
+  await assert.rejects(
+    conversation.findVoiceQuestionAnswer(id, randomUUID(), input),
+    { status: 404 },
+  );
+  const ordinary = await database.conversationMessage.findFirstOrThrow({
+    where: { role: "context" },
+  });
+  await assert.rejects(
+    conversation.findVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      requestId: ordinary.requestId,
+    }),
+    { status: 400 },
+  );
+  const { conversationId: otherId } = await conversation.createConversation(
+    "hd-dev-single.myshopify.com",
+    "https://hd-dev-single.myshopify.com",
+  );
+  const otherSession = (
+    await voice.reserveVoiceSession(otherId, {
+      voiceId: randomUUID(),
+      clientId,
+    })
+  ).session;
+  await assert.rejects(
+    conversation.findVoiceQuestionAnswer(otherId, otherSession.id, input),
+    { status: 400 },
+  );
+});
+
+test("only an exact offered answer to the current question can become durable customer text", async () => {
+  const { session, input } = await questionDuringVoice();
+  for (const changed of [
+    { answer: "Buy everything" },
+    { answer: " Bedroom " },
+    { questionId: randomUUID() },
+  ])
+    await assert.rejects(
+      conversation.appendVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 409 },
+    );
+  for (const changed of [
+    { answer: "" },
+    { answer: "x".repeat(81) },
+    { requestId: "invalid" },
+    { clientId: [clientId] },
+    { extra: true },
+  ])
+    await assert.rejects(
+      conversation.appendVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 400 },
+    );
+  await caption(session, "Actually, another room", 500);
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { status: 409 },
+  );
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    0,
+  );
+});
+
+for (const invalidState of [
+  "starting",
+  "closed",
+  "expired",
+  "duration",
+  "restarted",
+  "ended",
+  "busy",
+  "superseded",
+]) {
+  test(`a fresh selected answer rejects ${invalidState} state without persisting an answer`, async () => {
+    const { session, input } = await questionDuringVoice();
+    if (invalidState === "starting" || invalidState === "closed")
+      await database.voiceSession.update({
+        where: { id: session.id },
+        data: { status: invalidState },
+      });
+    if (invalidState === "expired") clock += voice.VOICE_LEASE_MS;
+    if (invalidState === "duration") {
+      clock += voice.MAX_VOICE_DURATION_MS;
+      await database.voiceSession.update({
+        where: { id: session.id },
+        data: { leaseExpiresAt: new Date(clock + 1000) },
+      });
+    }
+    let repository = conversation;
+    if (invalidState === "restarted") {
+      clock++;
+      repository = load().conversation;
+    }
+    if (invalidState === "ended") await conversation.endConversation(id);
+    if (invalidState === "busy" || invalidState === "superseded") {
+      const turn = await conversation.beginTurn(id, textInput(""), session.id);
+      if (invalidState === "superseded")
+        await conversation.finishTurn(id, turn.assistantId, {
+          text: "Another question",
+          status: "complete",
+          voiceId: session.id,
+          questionPresentation: {
+            callId: "new-question",
+            question: "Which colour?",
+            answers: ["White", "Grey"],
+          },
+        });
+    }
+    await assert.rejects(
+      repository.appendVoiceQuestionAnswer(id, session.id, input),
+      { status: 409 },
+    );
+    assert.equal(
+      await database.conversationMessage.count({ where: { role: "user" } }),
+      0,
+    );
+  });
+}
+
+test("selected answers have an independent bounded write allowance and preserve exact retry receipts at the limit", async () => {
+  const { session, input, question } = await questionDuringVoice();
+  const first = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  const rows = Array.from({ length: 39 }, (_, index) => {
+    const requestId = randomUUID();
+    return {
+      id: requestId,
+      conversationId: id,
+      requestId,
+      sequence: 100 + index,
+      role: "user",
+      status: "complete",
+      partsJson: JSON.stringify([
+        {
+          type: "text",
+          text: "Bedroom",
+          questionAnswer: {
+            questionId: question.invocationId,
+            voiceId: session.id,
+          },
+        },
+      ]),
+    };
+  });
+  await database.conversationMessage.createMany({ data: rows });
+  const nextQuestion = { ...question, invocationId: randomUUID() };
+  delete nextQuestion.voiceReply;
+  await database.conversationMessage.create({
+    data: {
+      id: randomUUID(),
+      conversationId: id,
+      requestId: randomUUID(),
+      sequence: 139,
+      role: "assistant",
+      status: "complete",
+      partsJson: JSON.stringify([nextQuestion]),
+    },
+  });
+  await database.conversation.update({
+    where: { id },
+    data: { nextSequence: 140 },
+  });
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      requestId: randomUUID(),
+      questionId: nextQuestion.invocationId,
+    }),
+    { status: 429 },
+  );
+  assert.deepEqual(
+    await conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { ...first, created: false },
+  );
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    40,
+  );
 });

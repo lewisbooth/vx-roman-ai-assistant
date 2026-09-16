@@ -74,6 +74,7 @@ async function setup(t, options = {}) {
   const endCalls = [];
   const startVoiceCalls = [];
   const stopVoiceCalls = [];
+  const voiceAnswers = [];
   const muteCalls = [];
   const productCalls = [];
   const navigationCalls = [];
@@ -102,6 +103,10 @@ async function setup(t, options = {}) {
     sendMessage: async (text) => {
       calls.push(text);
       await options.onSend?.(text, window);
+    },
+    sendVoiceAnswer: async (questionId, answer) => {
+      voiceAnswers.push({ questionId, answer });
+      await options.onVoiceAnswer?.(questionId, answer, window);
     },
     end: async () => {
       endCalls.push("end");
@@ -197,6 +202,7 @@ async function setup(t, options = {}) {
     endCalls,
     startVoiceCalls,
     stopVoiceCalls,
+    voiceAnswers,
     muteCalls,
     productCalls,
     navigationCalls,
@@ -1666,108 +1672,75 @@ test("a failed easy answer stays retryable without automatically resending", asy
   assert.deepEqual(ctx.calls, ["Full blackout", "Full blackout"]);
 });
 
-test("a voice answer button waits for voice shutdown before submitting text", async (t) => {
+test("a voice answer keeps the live bar and mic state, submits once, and retires accepted choices", async (t) => {
   const row = questionMessage();
-  let stop;
-  let stopCalls = 0;
-  const stopped = new Promise((resolve) => {
-    stop = resolve;
-  });
+  let accept;
+  const accepted = new Promise(resolve => { accept = resolve; });
   let ctx;
   ctx = await setup(t, {
     state: {
       conversation: activeConversation([row]),
-      voice: { status: "active", muted: false, error: null },
+      voice: { status: "active", muted: true, error: null },
     },
-    onStopVoice: () => {
-      stopCalls++;
-      return stopped;
+    onVoiceAnswer: async (_questionId, answer) => {
+      await accepted;
+      ctx.update({ conversation: activeConversation([row, message("reply", "user", answer)]) });
     },
-    onSend: (text) =>
-      ctx.update({
-        conversation: activeConversation([row, message("reply", "user", text)]),
-      }),
   });
-  assert.match(
-    ctx.container.querySelector(".roman-question-hint").textContent,
-    /switch to text/,
-  );
+  assert.match(ctx.container.querySelector(".roman-question-hint").textContent, /Voice stays connected/);
+  const bar = ctx.container.querySelector(".roman-voice-composer");
   const button = ctx.container.querySelector(".roman-question button");
   button.click();
   button.click();
-  await until(() => stopCalls === 1, "Answer did not stop voice");
+  await until(() => ctx.voiceAnswers.length === 1, "Answer was not submitted to voice");
+  assert.deepEqual(ctx.voiceAnswers, [{ questionId: row.parts[0].invocationId, answer: "Full blackout" }]);
   assert.deepEqual(ctx.calls, []);
-  stop();
-  await until(
-    () => ctx.calls.length === 1,
-    "Stopped voice did not submit the answer",
-  );
-  assert.deepEqual(ctx.calls, ["Full blackout"]);
-  assert.equal(stopCalls, 1);
+  assert.deepEqual(ctx.stopVoiceCalls, []);
+  accept();
+  await until(() => !ctx.container.querySelector(".roman-question"), "Accepted answer retained choices");
+  assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
+  assert.ok(ctx.container.querySelector('[aria-label="Unmute microphone"]'));
+  assert.deepEqual(ctx.muteCalls, []);
+  assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 
-test("voice shutdown rechecks that the question is current and does not submit a stale answer", async (t) => {
+test("failed voice answer stays retryable without stopping voice or generating text", async (t) => {
   const row = questionMessage();
-  let stop;
-  let stopCalls = 0;
-  const stopped = new Promise((resolve) => {
-    stop = resolve;
-  });
-  const ctx = await setup(t, {
-    state: {
-      conversation: activeConversation([row]),
-      voice: { status: "active", muted: false, error: null },
-    },
-    onStopVoice: () => {
-      stopCalls++;
-      return stopped;
+  let attempts = 0;
+  let ctx;
+  ctx = await setup(t, {
+    state: { conversation: activeConversation([row]), voice: { status: "active", muted: false, error: null } },
+    onVoiceAnswer: (_questionId, answer, window) => {
+      if (++attempts === 1) throw new window.Error("Connection lost. Please retry.");
+      ctx.update({ conversation: activeConversation([row, message("reply", "user", answer)]) });
     },
   });
   ctx.container.querySelector(".roman-question button").click();
-  await until(() => stopCalls === 1, "Answer did not stop voice");
-  const replacement = questionMessage(
-    "question-two",
-    "Which room is this for?",
-  );
-  ctx.update({ conversation: activeConversation([row, replacement]) });
-  stop();
-  await until(
-    () =>
-      ctx.container.querySelector(".roman-question button")?.disabled === false,
-    "Voice stop did not release the new question",
-  );
+  await until(() => ctx.container.querySelector('.roman-question [role="alert"]'), "Voice answer failure not shown");
+  assert.equal(ctx.container.querySelector(".roman-question button").disabled, false);
   assert.deepEqual(ctx.calls, []);
-  assert.match(
-    ctx.container.querySelector(".roman-question").textContent,
-    /Which room is this for/,
-  );
+  assert.deepEqual(ctx.stopVoiceCalls, []);
+  assert.equal(ctx.voiceAnswers.length, 1);
+  ctx.container.querySelector(".roman-question button").click();
+  await until(() => !ctx.container.querySelector(".roman-question"), "Retried answer not accepted");
+  assert.equal(ctx.voiceAnswers.length, 2);
+  assert.deepEqual(ctx.calls, []);
+  assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 
-test("failed voice shutdown preserves easy answers and never submits competing text", async (t) => {
+test("a question waiting for voice in another page cannot end that connection or send text", async (t) => {
   const row = questionMessage();
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([row]),
-      voice: { status: "active", muted: false, error: null },
-    },
-    onStopVoice: (window) => {
-      throw new window.Error("Voice is still ending. Retry.");
+      conversation: { ...activeConversation([row]), voice: { id: "remote", clientId: "previous", status: "active" } },
     },
   });
-  ctx.container.querySelector(".roman-question button").click();
-  await until(
-    () => ctx.container.querySelector('.roman-question [role="alert"]'),
-    "Failed voice shutdown was not reported",
-  );
+  const button = ctx.container.querySelector(".roman-question button");
+  assert.equal(button.disabled, true);
+  button.click();
+  assert.deepEqual(ctx.voiceAnswers, []);
   assert.deepEqual(ctx.calls, []);
-  assert.equal(
-    ctx.container.querySelector(".roman-question button").disabled,
-    false,
-  );
-  assert.match(
-    ctx.container.querySelector('.roman-question [role="alert"]').textContent,
-    /Voice is still ending/,
-  );
+  assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 
 test("reply activity covers submission and the real empty text part, survives chunks, and clears on completion", async (t) => {

@@ -19,8 +19,7 @@ import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
 import { ToolDrawer } from "./tools/ToolDrawer";
 import { VoiceChoice } from "./tools/VoiceChoice";
-import { latestQuestion } from "./chat/questions";
-import type { QuestionPart } from "../../shared/questions";
+import { latestQuestion, type QuestionPart } from "../../shared/questions";
 
 type AssistantProps = {
   logoUrl: string;
@@ -74,7 +73,6 @@ function Assistant({
 
   async function answerQuestion(part: QuestionPart, answer: string) {
     const current = session.getSnapshot();
-    const conversationId = current.conversation?.id;
     if (
       answeringRef.current ||
       endingRef.current ||
@@ -83,29 +81,28 @@ function Assistant({
       current.conversation?.busy
     )
       throw new Error("Wait for Roman's current reply.");
-    function assertCurrentQuestion() {
-      const snapshot = session.getSnapshot();
-      if (
-        snapshot.conversation?.id !== conversationId ||
-        snapshot.conversation?.status !== "active" ||
-        latestQuestion(snapshot.conversation.messages)?.invocationId !==
-          part.invocationId ||
-        !part.answers.includes(answer)
-      )
-        throw new Error(
-          "This question is no longer waiting for an answer. Continue with the latest message.",
-        );
-    }
-    assertCurrentQuestion();
+    if (
+      current.conversation?.status !== "active" ||
+      latestQuestion(current.conversation.messages)?.invocationId !==
+        part.invocationId ||
+      !part.answers.includes(answer)
+    )
+      throw new Error(
+        "This question is no longer waiting for an answer. Continue with the latest message.",
+      );
     answeringRef.current = true;
     setAnswering(true);
     try {
-      if (localVoice || waitingForVoice) {
-        await session.stopVoice();
-        assertCurrentQuestion();
-      }
       following.current = true;
-      await session.sendMessage(answer);
+      if (current.voice.status === "active") {
+        await session.sendVoiceAnswer(part.invocationId, answer);
+      } else if (localVoice || waitingForVoice) {
+        throw new Error(
+          "Wait until voice is connected here before choosing an answer.",
+        );
+      } else {
+        await session.sendMessage(answer);
+      }
     } finally {
       answeringRef.current = false;
       setAnswering(false);
@@ -142,7 +139,7 @@ function Assistant({
     const view = conversationView.current;
     if (!view || view.hidden || !view.getClientRects().length) return;
     const active = (view.getRootNode() as ShadowRoot).activeElement;
-    // Preserve focus in a question or other widget while its action stops voice.
+    // Keep an already focused conversation widget focused when modes change.
     if (
       active &&
       view.contains(active) &&
@@ -225,6 +222,8 @@ function Assistant({
                 answering ||
                 state.pending ||
                 !!state.conversation?.busy ||
+                waitingForVoice ||
+                (voice.status === "error" && voice.muted) ||
                 voice.status === "starting" ||
                 voice.status === "stopping"
               }

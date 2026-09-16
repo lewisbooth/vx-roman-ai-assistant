@@ -12,6 +12,7 @@ const bundle = await build({
       export * as ready from "./admin/routes/api.conversations.$id.voice.$voiceId.ready.ts";
       export * as heartbeat from "./admin/routes/api.conversations.$id.voice.$voiceId.heartbeat.ts";
       export * as stop from "./admin/routes/api.conversations.$id.voice.$voiceId.stop.ts";
+      export * as answers from "./admin/routes/api.conversations.$id.voice.$voiceId.answers.ts";
       export { ConversationError } from "./admin/conversations/errors.server.ts";
     `,
     resolveDir: process.cwd(),
@@ -38,7 +39,8 @@ const bundle = await build({
                 : `export const startVoice=(...args)=>mock.start(...args);
                  export const readyVoice=(...args)=>mock.ready(...args);
                  export const heartbeatVoice=(...args)=>mock.heartbeat(...args);
-                 export const stopVoice=(...args)=>mock.stop(...args);`,
+                 export const stopVoice=(...args)=>mock.stop(...args);
+                 export const answerVoiceQuestion=(...args)=>mock.answers(...args);`,
         }));
       },
     },
@@ -55,6 +57,12 @@ const START = {
   requestId: REQUEST_ID,
   clientId: CLIENT_ID,
   sdp: "v=0\r\nsynthetic-offer\r\n",
+};
+const ANSWER = {
+  clientId: CLIENT_ID,
+  requestId: REQUEST_ID,
+  questionId: "a6b2cb3f-6e6c-4607-a2ef-382d94d928e3",
+  answer: "Kitchen",
 };
 const SNAPSHOT = {
   id: ID,
@@ -73,6 +81,7 @@ function setup() {
     ready: [],
     heartbeat: [],
     stop: [],
+    answers: [],
     read: [],
     order: [],
   };
@@ -102,6 +111,10 @@ function setup() {
       calls.stop.push(plain(args));
       calls.order.push("stop");
     },
+    answers: async (...args) => {
+      calls.answers.push(plain(args));
+      calls.order.push("answers");
+    },
     read: async (...args) => {
       calls.read.push(plain(args));
       calls.order.push("read");
@@ -129,7 +142,11 @@ function setup() {
 function request(route, options = {}) {
   const {
     method = "POST",
-    body = route === "start" ? START : { clientId: CLIENT_ID },
+    body = route === "start"
+      ? START
+      : route === "answers"
+        ? ANSWER
+        : { clientId: CLIENT_ID },
     origin = ORIGIN,
     authorization = `Bearer ${TOKEN}`,
     headers: extra = {},
@@ -190,7 +207,7 @@ test("heartbeat and stop authenticate independently and retain conversation/clie
 });
 
 test("every voice endpoint rejects absent or incorrect bearer/origin authorization before work", async (t) => {
-  for (const route of ["start", "ready", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop", "answers"]) {
     for (const invalid of [
       { authorization: false },
       { authorization: `Bearer ${"B".repeat(43)}` },
@@ -206,6 +223,7 @@ test("every voice endpoint rejects absent or incorrect bearer/origin authorizati
           env.calls.start.length +
             env.calls.ready.length +
             env.calls.heartbeat.length +
+            env.calls.answers.length +
             env.calls.stop.length +
             env.calls.read.length,
           0,
@@ -216,7 +234,7 @@ test("every voice endpoint rejects absent or incorrect bearer/origin authorizati
 });
 
 test("each voice endpoint rejects an invalid conversation ID and only permits POST", async () => {
-  for (const route of ["start", "ready", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop", "answers"]) {
     const env = setup();
     assert.equal(
       (await run(env, route, request(route), { id: "not-a-uuid" })).status,
@@ -239,7 +257,7 @@ test("each voice endpoint rejects an invalid conversation ID and only permits PO
 });
 
 test("voice preflight remains restricted to allowed storefronts without issuing a session", async () => {
-  for (const route of ["start", "ready", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop", "answers"]) {
     const env = setup();
     assert.equal(
       (
@@ -378,7 +396,7 @@ test("start enforces 64 KiB on streamed body and declared Content-Length", async
 });
 
 test("voice requests require valid JSON objects and an application/json content type", async () => {
-  for (const route of ["start", "ready", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop", "answers"]) {
     for (const body of ["{bad", "[]", "null"]) {
       const env = setup();
       assert.equal(
@@ -429,7 +447,7 @@ test("heartbeat and stop require a voice UUID and exactly the client UUID", asyn
 });
 
 test("ownership conflicts retain their status and stop cannot read after rejection", async () => {
-  for (const route of ["start", "ready", "heartbeat", "stop"]) {
+  for (const route of ["start", "ready", "heartbeat", "stop", "answers"]) {
     const env = setup();
     env.mock[route] = () => {
       throw new env.api.ConversationError(
@@ -456,4 +474,55 @@ test("unexpected provider failures do not expose connection data or customer tex
   assert.doesNotMatch(text, /private-key|SDP|caption/);
   assert.doesNotMatch(JSON.stringify(env.logs), /private-key|SDP|caption/);
   assert.equal(env.logs.length, 1);
+});
+
+test("voice answer authorizes independently, sends only a validated selection and returns its durable snapshot", async () => {
+  const env = setup();
+  const response = await run(env, "answers");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), SNAPSHOT);
+  assert.deepEqual(env.calls.answers, [[ID, VOICE_ID, ANSWER]]);
+  assert.deepEqual(env.calls.order, ["answers", "read"]);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+});
+
+test("voice answers reject forged fields, invalid IDs and non-offered input shapes before service work", async () => {
+  for (const body of [
+    {},
+    { ...ANSWER, questionId: "invalid" },
+    { ...ANSWER, clientId: "invalid" },
+    { ...ANSWER, requestId: "invalid" },
+    { ...ANSWER, answer: " " },
+    { ...ANSWER, answer: "x".repeat(81) },
+    { ...ANSWER, answer: 4 },
+    { ...ANSWER, transcript: "forged voice caption" },
+    { ...ANSWER, providerId: "live_forged" },
+  ]) {
+    const env = setup();
+    const response = await run(env, "answers", request("answers", { body }));
+    assert.equal(response.status, 400);
+    assert.equal(env.calls.answers.length, 0);
+    assert.equal(env.calls.read.length, 0);
+  }
+  const env = setup();
+  assert.equal(
+    (await run(env, "answers", request("answers"), { voiceId: "invalid" }))
+      .status,
+    400,
+  );
+});
+
+test("accepted but unconfirmed voice answers report a safe actionable failure without issuing a second read or send", async () => {
+  const env = setup();
+  env.mock.answers = () => {
+    throw new env.api.ConversationError(
+      503,
+      "Your answer was saved, but Roman could not confirm it reached voice.",
+    );
+  };
+  const response = await run(env, "answers");
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error.message, /answer was saved/);
+  assert.equal(env.calls.read.length, 0);
 });

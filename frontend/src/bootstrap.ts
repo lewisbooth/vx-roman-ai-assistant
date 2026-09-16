@@ -148,7 +148,12 @@ class RomanAssistant extends HTMLElement {
     launcher.addEventListener("click", toggle);
     this.#launcher = launcher;
     shadow.replaceChildren(style, launcher);
-    this.#headerLauncher = attachHeaderLauncher(launcher, styles, toggle);
+    this.#headerLauncher = attachHeaderLauncher(
+      launcher,
+      styles,
+      toggle,
+      this.dataset.logoUrl || "",
+    );
     window.addEventListener("pageshow", this.#onPageShow);
     this.#restore();
   }

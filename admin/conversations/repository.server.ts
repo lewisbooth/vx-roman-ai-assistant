@@ -26,8 +26,11 @@ import type {
 } from "../../shared/conversation";
 import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import {
+  latestQuestion,
+  parseQuestionAnswerReference,
   parseQuestionPart,
   parseQuestionSelection,
+  type VoiceAnswerInput,
 } from "../../shared/questions";
 import { parseCatalogCall } from "../../shared/catalog-tools";
 import {
@@ -61,6 +64,7 @@ import {
   type ProductGuidesResult,
 } from "../../shared/product-guides";
 import {
+  MAX_VOICE_DURATION_MS,
   expireVoiceSessions,
   expiredVoiceSessionWhere,
   recoverVoiceSessions,
@@ -79,6 +83,7 @@ const credentialLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 const creationWindowMs = 24 * 60 * 60 * 1000;
 const maxDailyConversationsPerShop = 100;
 const maxTurns = 40;
+const maxVoiceQuestionAnswers = 40;
 const maxJourneyRows = 200;
 const productIdPattern = /^gid:\/\/shopify\/Product\/\d+$/;
 const uuidPattern =
@@ -110,12 +115,17 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
   for (const part of value) {
     if (!part || typeof part !== "object" || Array.isArray(part))
       throw new Error("Invalid stored conversation part.");
-    if (
-      part.type === "text" &&
-      typeof part.text === "string" &&
-      Object.keys(part).length === 2
-    )
-      continue;
+    if (part.type === "text" && typeof part.text === "string") {
+      if (Object.keys(part).length === 2) continue;
+      if (
+        message.role === "user" &&
+        Object.keys(part).length === 3 &&
+        part.questionAnswer !== undefined
+      ) {
+        parseQuestionAnswerReference(part.questionAnswer);
+        continue;
+      }
+    }
     if (part.type === "guides") {
       parseGuidePart(part, origin);
       continue;
@@ -679,6 +689,221 @@ export async function getReadRevision(id: string, recoverPending: boolean) {
 
 export async function getModelHistory(id: string) {
   return modelHistory(await loadConversation(prisma, id));
+}
+
+type VoiceQuestionAnswerInput = Omit<VoiceAnswerInput, "voiceId">;
+
+export interface VoiceQuestionAnswerReceipt {
+  created: boolean;
+  messageId: string;
+  sequence: number;
+  question: string;
+  answer: string;
+}
+
+function validateVoiceQuestionAnswer(
+  id: string,
+  voiceId: string,
+  input: VoiceQuestionAnswerInput,
+) {
+  if (
+    typeof id !== "string" ||
+    !uuidPattern.test(id) ||
+    typeof voiceId !== "string" ||
+    !uuidPattern.test(voiceId) ||
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).length !== 4 ||
+    typeof input.clientId !== "string" ||
+    !uuidPattern.test(input.clientId) ||
+    typeof input.requestId !== "string" ||
+    !uuidPattern.test(input.requestId) ||
+    typeof input.questionId !== "string" ||
+    !uuidPattern.test(input.questionId) ||
+    typeof input.answer !== "string" ||
+    !input.answer.trim() ||
+    input.answer.length > 80
+  )
+    throw new ConversationError(
+      400,
+      "Choose a valid answer to Roman's question.",
+    );
+}
+
+async function voiceQuestionAnswerReceipt(
+  transaction: Prisma.TransactionClient,
+  conversation: StoredConversation,
+  voiceId: string,
+  input: VoiceQuestionAnswerInput,
+): Promise<VoiceQuestionAnswerReceipt | null> {
+  if (
+    !conversation.voiceSessions.some(
+      (session) =>
+        session.id === voiceId && session.clientId === input.clientId,
+    )
+  )
+    throw new ConversationError(404, "This voice session could not be found.");
+  const existing = await transaction.conversationMessage.findUnique({
+    where: { id: input.requestId },
+  });
+  const sameRequest = conversation.messages.find(
+    (message) => message.requestId === input.requestId,
+  );
+  if (!existing && !sameRequest) return null;
+  const saved =
+    existing?.conversationId === conversation.id &&
+    existing.role === "user" &&
+    existing.status === "complete" &&
+    existing.requestId === input.requestId
+      ? parts(existing, conversation.origin)
+      : [];
+  const part = saved[0];
+  if (
+    !existing ||
+    saved.length !== 1 ||
+    part?.type !== "text" ||
+    part.text !== input.answer ||
+    part.questionAnswer?.questionId !== input.questionId ||
+    part.questionAnswer.voiceId !== voiceId
+  )
+    throw new ConversationError(
+      400,
+      "This request ID was already used for a different answer.",
+    );
+  const question = conversation.messages
+    .flatMap((message) => parts(message, conversation.origin))
+    .find(
+      (part) =>
+        part.type === "question" && part.invocationId === input.questionId,
+    );
+  if (question?.type !== "question" || !question.answers.includes(input.answer))
+    throw new Error("The saved answer has no matching question.");
+  return {
+    created: false,
+    messageId: existing.id,
+    sequence: existing.sequence,
+    question: question.question,
+    answer: part.text,
+  };
+}
+
+/** Durable receipts remain readable after voice stops; they never authorize another cue. */
+export async function findVoiceQuestionAnswer(
+  id: string,
+  voiceId: string,
+  input: VoiceQuestionAnswerInput,
+): Promise<VoiceQuestionAnswerReceipt | null> {
+  validateVoiceQuestionAnswer(id, voiceId, input);
+  return voiceQuestionAnswerReceipt(
+    prisma,
+    await loadConversation(prisma, id),
+    voiceId,
+    input,
+  );
+}
+
+/** Persist a clicked choice as customer text without creating a Terra reply or caption. */
+export async function appendVoiceQuestionAnswer(
+  id: string,
+  voiceId: string,
+  input: VoiceQuestionAnswerInput,
+): Promise<VoiceQuestionAnswerReceipt> {
+  validateVoiceQuestionAnswer(id, voiceId, input);
+  return prisma.$transaction(async (transaction) => {
+    const conversation = await loadConversation(transaction, id);
+    const receipt = await voiceQuestionAnswerReceipt(
+      transaction,
+      conversation,
+      voiceId,
+      input,
+    );
+    if (receipt) return receipt;
+    requireActive(conversation);
+    const session = conversation.voiceSessions.find(
+      (session) => session.id === voiceId,
+    )!;
+    const now = new Date();
+    if (
+      session.status !== "active" ||
+      session.leaseExpiresAt <= now ||
+      session.createdAt < processStartedAt ||
+      session.createdAt.getTime() + MAX_VOICE_DURATION_MS <= now.getTime()
+    )
+      throw new ConversationError(
+        409,
+        "Voice has ended. Start voice again before choosing an answer.",
+      );
+    if (
+      conversation.pendingRequestId ||
+      conversation.messages.some((message) => message.status === "pending")
+    )
+      throw new ConversationError(
+        409,
+        "Wait for Roman's current reply before choosing an answer.",
+      );
+    const question = latestQuestion(conversationTimeline(conversation));
+    if (
+      question?.invocationId !== input.questionId ||
+      !question.answers.includes(input.answer)
+    )
+      throw new ConversationError(
+        409,
+        "This question is no longer waiting for that answer.",
+      );
+    const answerCount = conversation.messages.filter(
+      (message) =>
+        message.role === "user" &&
+        parts(message, conversation.origin).some(
+          (part) => part.type === "text" && part.questionAnswer,
+        ),
+    ).length;
+    if (answerCount >= maxVoiceQuestionAnswers)
+      throw new ConversationError(
+        429,
+        "This chat has reached its 40 selected-answer limit. Start a new chat to continue.",
+      );
+    const selected = await transaction.conversation.updateMany({
+      where: {
+        id,
+        status: "active",
+        pendingRequestId: null,
+        nextSequence: conversation.nextSequence,
+      },
+      data: { nextSequence: { increment: 1 }, revision: { increment: 1 } },
+    });
+    if (!selected.count)
+      throw new ConversationError(
+        409,
+        "This question changed while your answer was being saved. Refresh the chat.",
+      );
+    await transaction.conversationMessage.create({
+      data: {
+        id: input.requestId,
+        conversationId: id,
+        requestId: input.requestId,
+        sequence: conversation.nextSequence,
+        role: "user",
+        status: "complete",
+        partsJson: JSON.stringify([
+          {
+            type: "text",
+            text: input.answer,
+            questionAnswer: { questionId: input.questionId, voiceId },
+          },
+        ]),
+        createdAt: now,
+        completedAt: now,
+      },
+    });
+    return {
+      created: true,
+      messageId: input.requestId,
+      sequence: conversation.nextSequence,
+      question: question.question,
+      answer: input.answer,
+    };
+  });
 }
 
 export async function getBrowserToolContext(id: string, invocationId: string) {

@@ -30,7 +30,11 @@ import {
   parseNavigationCall,
   parseNavigationPart,
 } from "../../../shared/navigation-tool";
-import { parseQuestionPart } from "../../../shared/questions";
+import {
+  latestQuestion,
+  parseQuestionAnswerReference,
+  parseQuestionPart,
+} from "../../../shared/questions";
 import type {
   createStorefrontExecutor,
   BrowserToolResult,
@@ -86,6 +90,15 @@ function validGuidePart(value: unknown) {
 function validQuestionPart(value: unknown) {
   try {
     parseQuestionPart(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validQuestionAnswer(value: unknown) {
+  try {
+    parseQuestionAnswerReference(value);
     return true;
   } catch {
     return false;
@@ -196,7 +209,11 @@ function snapshot(value: unknown): value is ConversationSnapshot {
         message.parts.every(
           (part) =>
             record(part) &&
-            ((part.type === "text" && typeof part.text === "string") ||
+            ((part.type === "text" &&
+              typeof part.text === "string" &&
+              (part.questionAnswer === undefined ||
+                (message.role === "user" &&
+                  validQuestionAnswer(part.questionAnswer)))) ||
               (part.type === "guides" && validGuidePart(part)) ||
               (part.type === "question" && validQuestionPart(part)) ||
               (part.type === "navigation" && validNavigationPart(part)) ||
@@ -294,6 +311,12 @@ export function createConversationClient(
     }
   >();
   let uncertainSubmission: { requestId: string; text: string } | null = null;
+  let uncertainVoiceAnswer: {
+    requestId: string;
+    voiceId: string;
+    questionId: string;
+    answer: string;
+  } | null = null;
   let uncertainMeasurement: { requestId: string; key: string } | null = null;
   const listeners = new Set<() => void>();
   const lifetime = new AbortController();
@@ -576,6 +599,7 @@ export function createConversationClient(
     readVersion = undefined;
     resumeAccess = null;
     uncertainSubmission = null;
+    uncertainVoiceAnswer = null;
     uncertainMeasurement = null;
     toolAttempts.clear();
     pollAfterCurrent = false;
@@ -956,6 +980,102 @@ export function createConversationClient(
     return voiceStop;
   }
 
+  async function sendVoiceAnswer(questionId: string, answer: string) {
+    if (disposed) throw new Error("Roman has been removed.");
+    const id = voiceId;
+    const startedEpoch = epoch;
+    const startedVoiceEpoch = voiceEpoch;
+    if (
+      !id ||
+      !access ||
+      state.voice.status !== "active" ||
+      ending ||
+      state.pending ||
+      state.restoring ||
+      state.conversation?.busy ||
+      state.conversation?.status !== "active"
+    )
+      throw new Error(
+        "Wait until voice is connected here and Roman has finished replying.",
+      );
+    const question = latestQuestion(state.conversation.messages);
+    if (
+      question?.invocationId !== questionId ||
+      !question.answers.includes(answer)
+    )
+      throw new Error("This question is no longer waiting for that answer.");
+    const current = () =>
+      !disposed &&
+      !ending &&
+      epoch === startedEpoch &&
+      voiceEpoch === startedVoiceEpoch &&
+      voiceId === id;
+    update({ pending: true, error: null });
+    const submission =
+      uncertainVoiceAnswer?.voiceId === id &&
+      uncertainVoiceAnswer.questionId === questionId &&
+      uncertainVoiceAnswer.answer === answer
+        ? uncertainVoiceAnswer
+        : {
+            requestId: window.crypto.randomUUID(),
+            voiceId: id,
+            questionId,
+            answer,
+          };
+    uncertainVoiceAnswer = submission;
+    try {
+      await api(`/voice/${id}/answers`, {
+        clientId,
+        requestId: submission.requestId,
+        questionId,
+        answer,
+      });
+      if (!current()) return;
+      uncertainVoiceAnswer = null;
+      pollFailures = 0;
+      schedulePoll();
+    } catch (error) {
+      if (!current()) throw error;
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Roman could not receive your answer. Please try again.";
+      update({ error: message });
+      // Reconcile accepted answers after a lost response; never replay a live cue.
+      try {
+        await api();
+        if (current()) {
+          schedulePoll();
+          if (
+            error instanceof SessionRequestError &&
+            error.status === 0 &&
+            state.conversation?.messages.some(
+              (message) =>
+                message.id === submission.requestId &&
+                message.role === "user" &&
+                message.parts.some(
+                  (part) =>
+                    part.type === "text" &&
+                    part.text === answer &&
+                    part.questionAnswer?.questionId === questionId &&
+                    part.questionAnswer.voiceId === id,
+                ),
+            )
+          ) {
+            uncertainVoiceAnswer = null;
+            update({ error: null });
+            return;
+          }
+        }
+      } catch {
+        /* Retain the original submission error and retry identity. */
+      }
+      throw new Error(message);
+    } finally {
+      if (epoch === startedEpoch && !ending) update({ pending: false });
+    }
+  }
+
   function failVoice(message: string) {
     const failureEpoch = epoch;
     const stopping = stopVoice();
@@ -1157,6 +1277,7 @@ export function createConversationClient(
   window.addEventListener("pagehide", onPageHide);
 
   return {
+    sendVoiceAnswer,
     getSnapshot: () => state,
     subscribe(listener) {
       listeners.add(listener);

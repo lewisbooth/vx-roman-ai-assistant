@@ -3,6 +3,7 @@ export function attachHeaderLauncher(
   fallback: HTMLButtonElement,
   css: string,
   onClick: () => void,
+  logoUrl: string,
 ) {
   const host = document.createElement("span");
   host.dataset.romanHeaderLauncher = "";
@@ -10,45 +11,37 @@ export function attachHeaderLauncher(
   const style = document.createElement("style");
   style.textContent = css;
   const button = fallback.cloneNode(true) as HTMLButtonElement;
-  button.classList.add("roman-header-button");
+  button.className = "roman-header-button";
+  button.innerHTML = 'Ask <img alt="Roman">';
+  (button.lastChild as HTMLImageElement).src = logoUrl;
   button.addEventListener("click", onClick);
   shadow.append(style, button);
-  let frame = 0;
-
   const sync = () => {
-    const account = [
-      ...document.querySelectorAll<HTMLElement>(
-        'main-header .header__utilities > [data-testid="menu-account-link"]',
-      ),
-    ].find(
-      (element) =>
-        element.getClientRects().length &&
-        getComputedStyle(element).visibility !== "hidden",
+    const account = document.querySelector<HTMLElement>(
+      'main-header .header__utilities > [data-testid="menu-account-link"]',
     );
-    if (account) {
-      if (account.nextElementSibling !== host) account.after(host);
+    const visible =
+      !!account &&
+      !!account.getClientRects().length &&
+      getComputedStyle(account).visibility !== "hidden";
+    if (visible) {
+      if (account!.previousElementSibling !== host) account!.before(host);
+      button.style.height = `${account!.offsetHeight}px`;
     } else host.remove();
-    fallback.hidden = !!account;
+    fallback.hidden = visible;
     button.setAttribute(
       "aria-expanded",
       fallback.getAttribute("aria-expanded")!,
     );
   };
-  const schedule = () => {
-    if (!frame)
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        sync();
-      });
-  };
-  const observer = new MutationObserver(schedule);
+  const observer = new MutationObserver(sync);
   observer.observe(document.body, {
     childList: true,
     subtree: true,
     attributes: true,
     attributeFilter: ["class", "style", "hidden"],
   });
-  window.addEventListener("resize", schedule);
+  window.addEventListener("resize", sync);
   sync();
   return {
     sync,
@@ -57,8 +50,7 @@ export function attachHeaderLauncher(
     },
     dispose() {
       observer.disconnect();
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", schedule);
+      window.removeEventListener("resize", sync);
       button.removeEventListener("click", onClick);
       host.remove();
       fallback.hidden = false;

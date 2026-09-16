@@ -38,9 +38,18 @@
     display: inline-flex;
   }
   .roman-header-button {
-    @apply relative size-[32px] text-[22px] [box-shadow:none] lg:size-[48px] lg:text-[26px];
-    inset: auto;
-    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+    padding: 0 8px;
+    color: #18181b;
+    background: #fff;
+    font: 13px sans-serif;
+    border: 0;
+  }
+  .roman-header-button img {
+    width: 47px;
   }
   .roman-panel {
     @apply fixed top-0 right-0 z-[2147483647] h-dvh w-[400px] max-w-full overflow-hidden bg-roman-ivory font-roman text-roman-burgundy [box-shadow:-8px_0_24px_#00000040];

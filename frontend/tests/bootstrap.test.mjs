@@ -742,9 +742,13 @@ test("a visible theme header receives an accessible launcher that controls the e
   );
   const host = headerLauncher(ctx.document);
   const button = headerButton(ctx.document);
-  assert.equal(account.nextElementSibling, host);
+  assert.equal(account.previousElementSibling, host);
   assert.equal(button.getAttribute("aria-label"), "Roman AI Assistant");
   assert.equal(button.getAttribute("aria-expanded"), "false");
+  assert.equal(button.firstChild.textContent.trim(), "Ask");
+  const logo = button.querySelector('img[alt="Roman"]');
+  assert.equal(logo.alt, "Roman");
+  assert.match(logo.src, /roman-logo\.svg$/);
   assert.equal(ctx.launcher().hidden, true);
   button.click();
   assert.equal(hidden(ctx.panel()), false);
@@ -774,7 +778,7 @@ test("header replacement preserves the open runtime and moves close focus to the
   await until(
     () => {
       const launcher = headerLauncher(ctx.document);
-      return !!launcher && replacement.account.nextElementSibling === launcher;
+      return !!launcher && replacement.account.previousElementSibling === launcher;
     },
     "header launcher was not moved to the replacement header",
   );

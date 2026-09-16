@@ -793,6 +793,22 @@ for (const [name, invalid] of Object.entries({
   });
 }
 
+for (const [name, role, questionAnswer] of [
+  ["assistant provenance", "assistant", {questionId:"33333333-3333-4333-8333-333333333333",voiceId:"22222222-2222-4222-8222-222222222222"}],
+  ["invalid reference", "user", {questionId:"invalid",voiceId:"22222222-2222-4222-8222-222222222222"}],
+  ["unexpected reference data", "user", {questionId:"33333333-3333-4333-8333-333333333333",voiceId:"22222222-2222-4222-8222-222222222222",extra:true}],
+]) {
+  test("selected answer rejects " + name + " without replacing valid history", async t => {
+    const ctx=setup(t,{saved:access});await resume(ctx);
+    const before=ctx.client.getSnapshot().conversation;
+    ctx.client.clearError();
+    ctx.respond(2,{...complete,revision:3,messages:[{...complete.messages[0],role,parts:[{type:"text",text:"Full blackout",questionAnswer}]}]});
+    await until(()=>!!ctx.client.getSnapshot().error,"Invalid selected answer accepted");
+    assert.match(ctx.client.getSnapshot().error,/invalid conversation response/);
+    assert.equal(ctx.client.getSnapshot().conversation,before);
+  });
+}
+
 test("only a tab granted the tool claim executes the catalog command", async (t) => {
   const executions = [];
   const first = setup(t, {
@@ -1557,10 +1573,10 @@ test("a late poll after End cannot restore the old conversation or display a sta
   assert.equal(ctx.timers.size, 0);
 });
 
-async function activeVoice(ctx) {
+async function activeVoice(ctx, conversation = empty) {
   const starting = ctx.client.startVoice();
   await until(() => ctx.calls.length === 1, "Voice did not bootstrap");
-  ctx.respond(0, { ...access, conversation: empty });
+  ctx.respond(0, { ...access, conversation });
   await until(() => ctx.calls.length === 2, "Voice offer was not sent");
   const request = ctx.calls[1];
   assert.match(request.url, /\/voice$/);
@@ -1590,10 +1606,100 @@ async function activeVoice(ctx) {
     () => ctx.calls.length === 3,
     "Active voice did not refresh the transcript",
   );
-  ctx.respond(2, { ...empty, revision: 1, voice });
+  ctx.respond(2, { ...conversation, revision: conversation.revision + 1, voice });
   await delay(0);
   return voice;
 }
+
+const voiceQuestionId = "33333333-3333-4333-8333-333333333333";
+const voiceQuestion = {
+  ...empty,
+  messages: [{ id: "question", role: "assistant", status: "complete", createdAt: "2026-09-16T10:00:00Z",
+    parts: [{ type: "question", version: 1, invocationId: voiceQuestionId, question: "What matters most?", answers: ["Full blackout", "Daylight"] }] }],
+};
+function acceptedVoiceAnswer(request, voice) {
+  return { ...voiceQuestion, revision: 2, voice,
+    messages: [...voiceQuestion.messages, { id: request.requestId, role: "user", status: "complete", createdAt: "2026-09-16T10:00:01Z",
+      parts: [{ type: "text", text: request.answer, questionAnswer: { questionId: request.questionId, voiceId: voice.id } }] }] };
+}
+
+test("suggested voice answers preserve media and mute, persist once and reject duplicate/stale choices", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx, voiceQuestion);
+  ctx.client.setVoiceMuted(true);
+  const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
+  assert.equal(ctx.calls.length, 4);
+  const call = ctx.calls[3];
+  assert.equal(call.url, access.apiBaseUrl + "/" + conversationId + "/voice/" + voice.id + "/answers");
+  assert.equal(call.init.headers.Authorization, "Bearer " + access.token);
+  assert.equal(call.body.clientId, voice.clientId);
+  assert.equal(call.body.questionId, voiceQuestionId);
+  assert.equal(call.body.answer, "Full blackout");
+  assert.match(call.body.requestId, /^[0-9a-f-]{36}$/);
+  await assert.rejects(ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"), /finished replying/);
+  ctx.respond(3, acceptedVoiceAnswer(call.body, voice));
+  await sending;
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.media.peers[0].closed, undefined);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.at(-1).parts[0].text, "Full blackout");
+  await assert.rejects(ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"), /no longer waiting/);
+  assert.equal(ctx.calls.length, 4);
+});
+
+test("lost voice answer responses reconcile without replay and explicit retry retains request identity", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx, voiceQuestion);
+  const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
+  const rejected = assert.rejects(sending, /could not connect/);
+  ctx.calls[3].reject(new Error("offline"));
+  await until(() => ctx.calls.length === 5, "Lost answer did not reconcile");
+  assert.equal(ctx.calls[4].init.method, "GET");
+  ctx.respond(4, { ...voiceQuestion, revision: 1, voice });
+  await rejected;
+  assert.equal(ctx.calls.length, 5);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  const retry = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
+  assert.deepEqual(ctx.calls[5].body, ctx.calls[3].body);
+  ctx.respond(5, acceptedVoiceAnswer(ctx.calls[5].body, voice));
+  await retry;
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.calls.filter(call => call.url.endsWith("/messages") || call.url.endsWith("/stop")).length, 0);
+});
+
+test("a lost response with a durable answer reconciles successfully without sending it again", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx, voiceQuestion);
+  const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
+  ctx.calls[3].reject(new Error("response lost"));
+  await until(() => ctx.calls.length === 5, "Accepted answer did not reconcile");
+  ctx.respond(4, acceptedVoiceAnswer(ctx.calls[3].body, voice));
+  await sending;
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.calls.filter(call => call.url.endsWith("/answers")).length, 1);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+});
+
+test("unoffered and remote voice answers are rejected without contacting the backend", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx, voiceQuestion);
+  await assert.rejects(ctx.client.sendVoiceAnswer(voiceQuestionId, "Unlisted"), /no longer waiting/);
+  await assert.rejects(ctx.client.sendVoiceAnswer("44444444-4444-4444-8444-444444444444", "Full blackout"), /no longer waiting/);
+  assert.equal(ctx.calls.length, 3);
+  const remote = setup(t, { saved: access });
+  const conversation = { ...voiceQuestion, voice };
+  remote.respond(0, { ...access, conversation });
+  await until(() => remote.calls.length === 2, "Remote restore missing");
+  remote.respond(1, conversation);
+  await until(() => !remote.client.getSnapshot().restoring, "Remote restore did not finish");
+  await assert.rejects(remote.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"), /connected here/);
+  assert.equal(remote.calls.length, 2);
+});
 
 test("microphone denial creates no conversation or API request", async (t) => {
   const ctx = setup(t, {

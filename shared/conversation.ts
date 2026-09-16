@@ -3,12 +3,14 @@ export type MessageStatus = "pending" | "complete" | "failed";
 import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
 import type { CartAddedProduct, CartToolName } from "./cart-tools";
 import type { ProductGuide } from "./product-guides";
-import type { QuestionPart } from "./questions";
+import type { QuestionPart, QuestionAnswerReference } from "./questions";
 import type { NavigationPart } from "./navigation-tool";
 
 export interface TextPart {
   type: "text";
   text: string;
+  /** A real customer selection during voice, never an audio transcript. */
+  questionAnswer?: QuestionAnswerReference;
 }
 
 export interface ProductListPart {

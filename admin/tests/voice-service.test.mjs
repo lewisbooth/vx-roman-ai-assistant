@@ -39,7 +39,9 @@ const bundle = await build({
             contents = `export const cancelVoiceDelegation = (...args) => mock.cancelDelegation(...args);
         export const runVoiceDelegation = (...args) => mock.delegate(...args);`;
           else if (args.path.includes("conversations"))
-            contents = `export const getModelHistory = (...args) => mock.history(...args);`;
+            contents = `export const getModelHistory = (...args) => mock.history(...args);
+            export const findVoiceQuestionAnswer = (...args) => mock.findAnswer(...args);
+            export const appendVoiceQuestionAnswer = (...args) => mock.saveAnswer(...args);`;
           else if (args.path.includes("usage"))
             contents = `export const recordVoiceUsage = (...args) => mock.usage(...args);`;
           else
@@ -75,6 +77,7 @@ function setup() {
   const logs = [];
   const order = [];
   const timers = new Set();
+  const answerReceipts = new Map();
   const calls = {
     reserve: [],
     activate: [],
@@ -85,6 +88,7 @@ function setup() {
     cancelDelegation: [],
     heartbeat: [],
     usage: [],
+    answer: [],
   };
   let api;
   const mock = {
@@ -119,6 +123,36 @@ function setup() {
       return { session, created: true };
     },
     history: async () => [{ role: "user", text: "My earlier typed message" }],
+    findAnswer: async (conversationId, voiceId, input) => {
+      const previous = answerReceipts.get(input.requestId);
+      if (!previous) return null;
+      if (
+        previous.voiceId !== voiceId ||
+        previous.conversationId !== conversationId ||
+        JSON.stringify(previous.input) !== JSON.stringify(input)
+      )
+        throw new api.ConversationError(400, "Answer conflict");
+      return previous.receipt;
+    },
+    saveAnswer: async (conversationId, voiceId, input) => {
+      await mock.beforeAnswerSave?.();
+      const receipt = {
+        created: true,
+        messageId: input.requestId,
+        sequence: 100,
+        question: "Which room?",
+        answer: input.answer,
+      };
+      answerReceipts.set(input.requestId, {
+        conversationId,
+        voiceId,
+        input,
+        receipt,
+      });
+      calls.answer.push([conversationId, voiceId, input]);
+      order.push("answer-saved");
+      return receipt;
+    },
     createProvider: async (options) => {
       const record = {
         options,
@@ -127,6 +161,7 @@ function setup() {
         openingCount: 0,
         commentaries: [],
         thoughts: [],
+        answers: [],
       };
       const provider = {
         providerId: "live_test",
@@ -143,6 +178,11 @@ function setup() {
         },
         appendCommentary: async (...args) => record.commentaries.push(args),
         appendThinking: async (...args) => record.thoughts.push(args),
+        appendAnswer: async (...args) => {
+          record.answers.push(args);
+          order.push("answer-sent");
+          await mock.onAnswer?.(...args);
+        },
       };
       record.provider = provider;
       providers.push(record);
@@ -973,4 +1013,170 @@ test("page observations are quiet context only and stop after voice disconnects"
   state.api.noteVoicePageView(state.conversationId, { ...page, path: "/cart" });
   await flush();
   assert.equal(state.providers[0].thoughts.length, 1);
+});
+
+async function answerableVoice(state) {
+  await state.start();
+  state.emit({ type: "started", eventId: "started" });
+  state.ready();
+  return {
+    clientId: state.input.clientId,
+    requestId: randomUUID(),
+    questionId: randomUUID(),
+    answer: "Kitchen",
+  };
+}
+
+test("clicked voice answers persist before context delivery without a text turn or voice restart", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.deepEqual(state.providers[0].answers, [["Which room?", "Kitchen"]]);
+  assert.ok(
+    state.order.indexOf("answer-saved") < state.order.indexOf("answer-sent"),
+  );
+  assert.equal(state.calls.delegate.length, 0);
+  assert.equal(state.providers[0].closed, false);
+  assert.equal(state.providers.length, 1);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.providers[0].answers.length, 1);
+  assert.equal(state.calls.answer.length, 1);
+  state.emit({
+    type: "delegation",
+    eventId: "delegated-answer",
+    delegationId: "answer-delegation",
+    offsetMs: 1,
+  });
+  await flush();
+  assert.equal(
+    state.calls.delegate.length,
+    1,
+    "Live may delegate the new clicked customer intent",
+  );
+  await state.stop();
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(
+    state.providers[0].answers.length,
+    1,
+    "a durable receipt after stop cannot replay provider context",
+  );
+});
+
+test("concurrent same-ID answers have one delivery and another answer cannot overtake an in-flight acceptance", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const save = deferred();
+  state.mock.beforeAnswerSave = () => save.promise;
+  const first = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  const repeat = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  await assert.rejects(
+    state.api.answerVoiceQuestion(state.conversationId, state.input.requestId, {
+      ...input,
+      requestId: randomUUID(),
+    }),
+    { status: 409 },
+  );
+  await assert.rejects(
+    state.api.answerVoiceQuestion(state.conversationId, state.input.requestId, {
+      ...input,
+      answer: "Bedroom",
+    }),
+    { status: 400 },
+  );
+  save.resolve();
+  await Promise.all([first, repeat]);
+  assert.equal(state.calls.answer.length, 1);
+  assert.equal(state.providers[0].answers.length, 1);
+  await state.stop();
+});
+
+test("unconfirmed voice context reports the saved answer and can never be retried as another delivery", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  state.mock.onAnswer = async () => {
+    throw new Error("private provider context");
+  };
+  await assert.rejects(
+    state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    ),
+    { status: 503, message: /answer was saved/ },
+  );
+  assert.equal(state.calls.answer.length, 1);
+  assert.equal(state.providers[0].closed, true);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.providers[0].answers.length, 1);
+  assert.doesNotMatch(
+    JSON.stringify(state.logs),
+    /private provider context|Kitchen/,
+  );
+});
+
+test("stop while an answer is being persisted prevents late provider delivery", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const save = deferred();
+  state.mock.beforeAnswerSave = () => save.promise;
+  const answer = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  const rejected = assert.rejects(answer, { status: 503 });
+  await flush();
+  const stopping = state.stop();
+  save.resolve();
+  await Promise.all([stopping, rejected]);
+  assert.equal(state.calls.answer.length, 1);
+  assert.equal(state.providers[0].answers.length, 0);
+});
+
+test("answers reject missing readiness and wrong connection/client ownership before persistence", async () => {
+  const state = setup();
+  await state.start();
+  const input = {
+    clientId: state.input.clientId,
+    requestId: randomUUID(),
+    questionId: randomUUID(),
+    answer: "Kitchen",
+  };
+  for (const [voiceId, body] of [
+    [state.input.requestId, input],
+    [randomUUID(), input],
+    [state.input.requestId, { ...input, clientId: randomUUID() }],
+  ])
+    await assert.rejects(
+      state.api.answerVoiceQuestion(state.conversationId, voiceId, body),
+      { status: 409 },
+    );
+  assert.equal(state.calls.answer.length, 0);
+  assert.equal(state.providers[0].answers.length, 0);
+  await state.stop();
 });
