@@ -679,6 +679,62 @@ test("only a tab granted the tool claim executes the catalog command", async (t)
   );
 });
 
+const addedResult = {
+  status: "added",
+  message: "Added to your cart.",
+  quantityAdded: 1,
+  addedProduct: {
+    productPath: "/products/shade",
+    title: "Kitchen blind",
+    measurements: { width: 900, height: 1200, unit: "mm" },
+  },
+};
+const needsCartAdd = {
+  ...needsTool,
+  tools: [{
+    ...needsTool.tools[0],
+    name: "add_to_cart",
+    arguments: { productPath: addedResult.addedProduct.productPath },
+  }],
+};
+
+test("cart additions execute once after their claim without opening an approval panel", async (t) => {
+  let executions = 0;
+  const ctx = setup(t, { saved: access, executor: {
+    prepareApproval: () => assert.fail("Adding must not open an approval panel"),
+    executeApproved: () => assert.fail("Adding uses the direct execution path"),
+    execute: async (name, args) => {
+      assert.equal(name, "add_to_cart");
+      assert.deepEqual(JSON.parse(JSON.stringify(args)), needsCartAdd.tools[0].arguments);
+      executions++;
+      return addedResult;
+    },
+  } });
+  await resume(ctx, needsCartAdd);
+  await until(() => ctx.calls.length === 3, "Add was not claimed");
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  assert.equal("confirmed" in ctx.calls[2].body, false);
+  assert.equal(executions, 0);
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Add result was not submitted");
+  assert.equal(executions, 1);
+  assert.deepEqual(ctx.calls[3].body.result, addedResult);
+  ctx.respond(3, complete);
+});
+
+test("saved cart additions survive restoration and malformed later event data is rejected", async (t) => {
+  const part = { type: "cart_added", version: 1, invocationId, product: addedResult.addedProduct };
+  const saved = { ...complete, messages: [{ ...complete.messages[1], role: "context", parts: [part] }] };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, saved);
+  const restored = ctx.client.getSnapshot().conversation;
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.messages[0].parts[0])), part);
+  ctx.client.clearError();
+  ctx.respond(2, { ...saved, revision: 3, messages: [{ ...saved.messages[0], parts: [{ ...part, product: { ...part.product, measurements: { width: -1, height: 1200, unit: "mm" } } }] }] });
+  await until(() => !!ctx.client.getSnapshot().error, "Invalid cart dimensions were accepted");
+  assert.equal(ctx.client.getSnapshot().conversation, restored);
+});
+
 const needsCartApproval = {
   ...needsTool,
   tools: [
@@ -982,6 +1038,32 @@ test("failed End cannot revive an approved action whose claim was in flight", as
   ctx.respond(6, { ...complete, revision: 3 });
 });
 
+test("failed End cannot revive an add-to-cart action whose ordinary claim was in flight", async t => {
+  const ctx = setup(t, { saved: access, executor: {
+    execute: () => assert.fail("An abandoned cart add must never execute"),
+    prepareApproval: () => assert.fail("Cart adds must not open an approval panel"),
+  } });
+  await resume(ctx, needsCartAdd);
+  await until(() => ctx.calls.length === 3, "Add claim did not start");
+  const originalClaim = ctx.calls[2].body;
+  const ending = ctx.client.end();
+  const rejected = assert.rejects(ending);
+  ctx.respond(3, { error: { message: "Temporary failure" } }, 500);
+  await rejected;
+  ctx.respond(2, { claimed: true });
+  await delay(10);
+  ctx.client.clearError();
+  await until(() => ctx.calls.length === 5, "Reconciliation read did not start");
+  ctx.respond(4, { ...needsCartAdd, revision: 2, tools: [{ ...needsCartAdd.tools[0], status: "running" }] });
+  await until(() => ctx.calls.length === 6, "Ownership was not reconciled");
+  assert.deepEqual(ctx.calls[5].body, originalClaim);
+  ctx.respond(5, { claimed: true });
+  await until(() => ctx.calls.length === 7, "Interrupted outcome was not reported");
+  assert.match(ctx.calls[6].body.error, /interrupted/);
+  assert.equal("result" in ctx.calls[6].body, false);
+  ctx.respond(6, { ...complete, revision: 3 });
+});
+
 test("failed End cannot revive a measurement action whose ordinary claim was in flight", async t => {
   const ctx = setup(t, { saved: access, executor: {
     execute: () => assert.fail("An abandoned measurement must never execute"),
@@ -1047,6 +1129,7 @@ test("a lost tool-result response retries the same result without reexecuting or
     [needsTool, catalogResult],
     [needsNavigation, navigationResult],
     [needsMeasurementApplication, measurementApplicationResult],
+    [needsCartAdd, addedResult],
   ]) {
     await t.test(snapshot.tools[0].name, async (t) => {
       let executions = 0;

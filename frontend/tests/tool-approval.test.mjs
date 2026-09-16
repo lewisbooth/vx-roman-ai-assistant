@@ -139,53 +139,53 @@ test("missing cart lines and empty carts are unavailable to approve", async (t) 
   );
 });
 
-test("add approval binds the current product, live form identity and configured values", async (t) => {
+test("add executes the current product directly without another approval", async (t) => {
   const ctx = setup(
     t,
-    async () => assert.fail("Changed product must not add"),
+    async () => ({
+      status: "added",
+      message: "Added.",
+      quantityAdded: 1,
+      addedProduct: { productPath: "/products/shade", title: "Kitchen shade" },
+    }),
     "/products/shade",
   );
   const command = tool("add_to_cart", { productPath: "/products/shade" });
-  let approval = await ctx.executor.prepareApproval(command);
-  ctx.window.document.querySelector('[name="width"]').value = "400";
+  const result = await ctx.executor.execute(command.name, command.arguments);
+  assert.equal(result.status, "added");
+  assert.equal(result.addedProduct.title, "Kitchen shade");
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [
+    "add_to_cart",
+    {},
+  ]);
   await assert.rejects(
-    ctx.executor.executeApproved(command, approval),
-    /changed after review/,
+    ctx.executor.prepareApproval(command),
+    /does not need approval/,
   );
-  approval = await ctx.executor.prepareApproval(command);
-  const form = ctx.window.document.querySelector("form");
-  form.replaceWith(form.cloneNode(true));
-  await assert.rejects(
-    ctx.executor.executeApproved(command, approval),
-    /changed after review/,
-  );
-  approval = await ctx.executor.prepareApproval(command);
-  ctx.window.history.pushState({}, "", "/products/other");
-  await assert.rejects(
-    ctx.executor.executeApproved(command, approval),
-    /requested product/,
-  );
-  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.calls.length, 1);
 });
 
-test("a changed displayed theme price invalidates an add approval", async (t) => {
-  const ctx = setup(
-    t,
-    async () => assert.fail("A changed price requires another review"),
-    "/products/shade",
-  );
-  const price = ctx.window.document.createElement("p");
-  price.setAttribute("data-dynamic-price", "");
-  price.textContent = "£45.00";
-  ctx.window.document.querySelector("form").append(price);
-  const command = tool("add_to_cart", { productPath: "/products/shade" });
-  const approval = await ctx.executor.prepareApproval(command);
-  price.textContent = "£55.00";
-  await assert.rejects(
-    ctx.executor.executeApproved(command, approval),
-    /changed after review/,
-  );
-  assert.equal(ctx.calls.length, 0);
+test("direct adds still require the matching product and supported current form", async (t) => {
+  for (const change of ["path", "editing", "form", "template"]) {
+    await t.test(change, async (t) => {
+      const ctx = setup(
+        t,
+        () => assert.fail("Invalid product must not add"),
+        "/products/shade",
+      );
+      if (change === "path")
+        ctx.window.history.pushState({}, "", "/products/other");
+      if (change === "editing")
+        ctx.window.history.pushState({}, "", "/products/shade?line=2");
+      if (change === "form") ctx.window.document.querySelector("form").remove();
+      if (change === "template")
+        ctx.window.document.body.classList.remove("template-product");
+      await assert.rejects(
+        ctx.executor.execute("add_to_cart", { productPath: "/products/shade" }),
+      );
+      assert.equal(ctx.calls.length, 0);
+    });
+  }
 });
 
 test("add checks again after foreground queue wait and never leaks model productPath into theme action", async (t) => {
@@ -201,16 +201,14 @@ test("add checks again after foreground queue wait and never leaks model product
     "/products/shade",
   );
   const command = tool("add_to_cart", { productPath: "/products/shade" });
-  let approval = await ctx.executor.prepareApproval(command);
-  const result = await ctx.executor.executeApproved(command, approval);
+  const result = await ctx.executor.execute(command.name, command.arguments);
   assert.equal(result.status, "added");
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [
     "add_to_cart",
     {},
   ]);
-  approval = await ctx.executor.prepareApproval(command);
   const searching = ctx.executor.execute("search_products", { query: "shade" });
-  const adding = ctx.executor.executeApproved(command, approval);
+  const adding = ctx.executor.execute(command.name, command.arguments);
   await setImmediate();
   ctx.window.history.pushState({}, "", "/products/different");
   release({ products: [] });

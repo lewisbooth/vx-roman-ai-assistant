@@ -31,12 +31,11 @@ import {
   type ApplyMeasurementsResult,
 } from "../../../shared/measurements";
 import { applyMeasurements } from "../tools/measurements";
+import { inspectConfiguredProduct } from "../tools/product";
 import {
   cartReview,
-  inspectConfiguredProduct,
   publicCart,
   recheckCart,
-  recheckConfiguredProduct,
   type ToolApprovalReview,
 } from "./tool-approval";
 
@@ -254,7 +253,7 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<NavigationResult>;
   function execute(
-    name: "get_cart",
+    name: "get_cart" | "add_to_cart",
     input: unknown,
     signal?: AbortSignal,
   ): Promise<CartToolResult>;
@@ -309,6 +308,22 @@ export function createStorefrontExecutor(
         "foreground",
         async (signal) =>
           publicCart(await tools.execute(call.name, call.arguments, signal)),
+        signal,
+      );
+    }
+    if (name === "add_to_cart") {
+      const call = parseCartCall(name, input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          // Check after queue admission; the shopper may have changed pages.
+          inspectConfiguredProduct(call.arguments.productPath as string);
+          signal.throwIfAborted();
+          return parseCartResult(
+            call.name,
+            await tools.execute(call.name, {}, signal),
+          );
+        },
         signal,
       );
     }
@@ -377,47 +392,22 @@ export function createStorefrontExecutor(
       return enqueue(
         "foreground",
         async (signal) => {
-          let review: PreparedToolApproval;
-          let operation: (signal: AbortSignal) => Promise<CartToolResult>;
           const call = parseCartCall(tool.name, tool.arguments);
           if (!requiresCartConfirmation(call.name))
             throw new Error("This tool does not need approval.");
-          if (call.name === "add_to_cart") {
-            const path = call.arguments.productPath as string;
-            const context = inspectConfiguredProduct(path);
-            review = {
-              title: "Add this configured product?",
-              details: [
-                context.title,
-                ...(context.quantity ? [`Quantity ${context.quantity}.`] : []),
-                "Review the measurements, options, quantity and price on this page. This adds the current configuration to your cart; it does not check out.",
-              ],
-            };
-            operation = async (signal) => {
-              recheckConfiguredProduct(path, context);
-              signal.throwIfAborted();
-              return parseCartResult(
-                call.name,
-                await tools.execute(call.name, {}, signal),
-              );
-            };
-          } else {
-            const cart = publicCart(
+          const cart = publicCart(await tools.execute("get_cart", {}, signal));
+          const review = cartReview(call.name, call.arguments, cart);
+          const operation = async (signal: AbortSignal) => {
+            const current = publicCart(
               await tools.execute("get_cart", {}, signal),
             );
-            review = cartReview(call.name, call.arguments, cart);
-            operation = async (signal) => {
-              const current = publicCart(
-                await tools.execute("get_cart", {}, signal),
-              );
-              recheckCart(cart, current);
-              signal.throwIfAborted();
-              return parseCartResult(
-                call.name,
-                await tools.execute(call.name, call.arguments, signal),
-              );
-            };
-          }
+            recheckCart(cart, current);
+            signal.throwIfAborted();
+            return parseCartResult(
+              call.name,
+              await tools.execute(call.name, call.arguments, signal),
+            );
+          };
           signal.throwIfAborted();
           approvals.set(review, {
             command: JSON.stringify([tool.id, tool.name, tool.arguments]),

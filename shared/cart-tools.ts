@@ -18,6 +18,15 @@ export interface CartSnapshot {
     linePriceMinorUnits: number;
   }[];
 }
+export interface CartAddedProduct {
+  productPath: string;
+  title: string;
+  measurements?: {
+    width: number;
+    height: number;
+    unit: "mm" | "cm" | "in";
+  };
+}
 export interface CartActionResult {
   status:
     | "added"
@@ -30,6 +39,7 @@ export interface CartActionResult {
   message: string;
   quantityAdded?: number;
   cart?: CartSnapshot;
+  addedProduct?: CartAddedProduct;
 }
 export type CartToolResult = CartSnapshot | CartActionResult;
 
@@ -50,7 +60,7 @@ const definitions = [
   ],
   [
     "add_to_cart",
-    "Request shopper review and confirmation to add the configured product currently open on its verified productPath. The theme owns measurements, options and validation. Do not infer configuration from a draft, catalog price or page visit. This does not purchase or check out.",
+    "Add the configured product currently open on its verified productPath when the shopper asks. No additional on-screen approval is required. The theme owns measurements, options and validation. Do not infer configuration from a draft, catalog price or page visit. This does not purchase or check out.",
     { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
   ],
   [
@@ -91,8 +101,11 @@ export const cartToolDefinitions = definitions.map(
 export function isCartTool(name: string): name is CartToolName {
   return names.includes(name as CartToolName);
 }
-export function requiresCartConfirmation(name: string): boolean {
+export function isCartMutation(name: string): boolean {
   return isCartTool(name) && name !== "get_cart";
+}
+export function requiresCartConfirmation(name: string): boolean {
+  return isCartMutation(name) && name !== "add_to_cart";
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -130,6 +143,53 @@ function text(value: unknown, max: number): value is string {
   );
 }
 
+function productPath(value: unknown): string {
+  const { path } = parseNavigationCall({ path: value });
+  if (!/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/[^/?#]+\/?$/i.test(path))
+    throw new Error(
+      "Adding requires the verified current product page path without query or hash.",
+    );
+  return path.replace(/\/$/, "");
+}
+
+/** Public facts observed on the product form, never inferred from a saved draft. */
+export function parseCartAddedProduct(input: unknown): CartAddedProduct {
+  const value = object(input);
+  exact(value, [
+    "productPath",
+    "title",
+    ...(value.measurements !== undefined ? ["measurements"] : []),
+  ]);
+  const path = productPath(value.productPath);
+  if (!text(value.title, 300)) throw new Error("Invalid added product title.");
+  let measurements: CartAddedProduct["measurements"];
+  if (value.measurements !== undefined) {
+    const dimensions = object(value.measurements);
+    exact(dimensions, ["width", "height", "unit"]);
+    const dimension = (value: unknown): value is number =>
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      value > 0 &&
+      value <= Number.MAX_SAFE_INTEGER;
+    if (
+      !dimension(dimensions.width) ||
+      !dimension(dimensions.height) ||
+      !["mm", "cm", "in"].includes(dimensions.unit as string)
+    )
+      throw new Error("Invalid added product measurements.");
+    measurements = {
+      width: dimensions.width,
+      height: dimensions.height,
+      unit: dimensions.unit as "mm" | "cm" | "in",
+    };
+  }
+  return {
+    productPath: path,
+    title: value.title,
+    ...(measurements ? { measurements } : {}),
+  };
+}
+
 export function parseCartCall(
   name: string,
   input: unknown,
@@ -142,12 +202,7 @@ export function parseCartCall(
   }
   if (name === "add_to_cart") {
     exact(args, ["productPath"]);
-    const { path } = parseNavigationCall({ path: args.productPath });
-    if (!/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/[^/?#]+\/?$/i.test(path))
-      throw new Error(
-        "Adding requires the verified current product page path without query or hash.",
-      );
-    return { name, arguments: { productPath: path.replace(/\/$/, "") } };
+    return { name, arguments: { productPath: productPath(args.productPath) } };
   }
   exact(
     args,
@@ -240,6 +295,7 @@ export function parseCartResult(
     "message",
     ...(value.quantityAdded !== undefined ? ["quantityAdded"] : []),
     ...(value.cart !== undefined ? ["cart"] : []),
+    ...(value.addedProduct !== undefined ? ["addedProduct"] : []),
   ];
   exact(value, keys);
   if (
@@ -251,6 +307,8 @@ export function parseCartResult(
     throw new Error("Only confirmed updates can include a resulting cart.");
   if (value.status === "updated" && value.cart === undefined)
     throw new Error("A confirmed update needs the resulting cart.");
+  if (value.addedProduct !== undefined && value.status !== "added")
+    throw new Error("Only a confirmed addition can include an added product.");
   return {
     status: value.status as CartActionResult["status"],
     message: value.message,
@@ -259,6 +317,9 @@ export function parseCartResult(
       : {}),
     ...(value.cart !== undefined
       ? { cart: parseCartSnapshot(value.cart) }
+      : {}),
+    ...(value.addedProduct !== undefined
+      ? { addedProduct: parseCartAddedProduct(value.addedProduct) }
       : {}),
   };
 }
@@ -272,7 +333,6 @@ export function interruptedCartResult(claimed: boolean): CartActionResult {
       }
     : {
         status: "cancelled",
-        message:
-          "This cart change was not confirmed by the shopper and was not executed.",
+        message: "This cart change did not start and was not executed.",
       };
 }

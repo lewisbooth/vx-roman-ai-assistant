@@ -18,6 +18,8 @@ const {
   cartToolDefinitions,
   parseCartCall,
   parseCartResult,
+  parseCartAddedProduct,
+  isCartMutation,
   requiresCartConfirmation,
 } = module.exports;
 const cart = {
@@ -42,8 +44,9 @@ test("cart schemas have exact operation arguments and never accept model-supplie
     assert.ok(!("confirmed" in definition.parameters.properties));
     assert.equal(
       requiresCartConfirmation(definition.name),
-      definition.name !== "get_cart",
+      !["get_cart", "add_to_cart"].includes(definition.name),
     );
+    assert.equal(isCartMutation(definition.name), definition.name !== "get_cart");
   }
   for (const [name, input] of [
     ["get_cart", {}],
@@ -72,6 +75,67 @@ test("cart schemas have exact operation arguments and never accept model-supplie
     assert.throws(() =>
       parseCartCall("set_cart_quantity", { lineKey: "123:abc", quantity }),
     );
+});
+
+test("confirmed additions carry only actual bounded public product facts", () => {
+  const product = {
+    productPath: "/en-gb/products/shade",
+    title: "Configured shade",
+    measurements: { width: 34.125, height: 56.5, unit: "in" },
+  };
+  const result = { status: "added", message: "Added.", addedProduct: product };
+  assert.deepEqual(parseCartResult("add_to_cart", result), result);
+  assert.notEqual(
+    parseCartAddedProduct(product).measurements,
+    product.measurements,
+  );
+  assert.deepEqual(
+    parseCartAddedProduct({ productPath: "/products/shade/", title: "Shade" }),
+    {
+      productPath: "/products/shade",
+      title: "Shade",
+    },
+  );
+  assert.deepEqual(
+    parseCartResult("add_to_cart", {
+      status: "added",
+      message: "Historic addition.",
+    }),
+    {
+      status: "added",
+      message: "Historic addition.",
+    },
+  );
+  for (const value of [
+    { ...product, token: "PRIVATE_CART_TOKEN" },
+    { ...product, title: " " },
+    { ...product, title: "x".repeat(301) },
+    { ...product, title: "Private\ncontrol" },
+    { ...product, productPath: "https://other.example/products/shade" },
+    { ...product, productPath: "/cart/123:1" },
+    { ...product, productPath: "/products/shade?variant=123" },
+    { ...product, measurements: { ...product.measurements, note: "Private" } },
+    { ...product, measurements: { ...product.measurements, width: 0 } },
+    { ...product, measurements: { ...product.measurements, height: Infinity } },
+    { ...product, measurements: { ...product.measurements, width: "34" } },
+    { ...product, measurements: { ...product.measurements, unit: "feet" } },
+  ])
+    assert.throws(() => parseCartAddedProduct(value));
+  for (const status of [
+    "handed_off",
+    "uncertain",
+    "cancelled",
+    "needs_configuration",
+  ])
+    assert.throws(() => parseCartResult("add_to_cart", { ...result, status }));
+  assert.throws(() =>
+    parseCartResult("clear_cart", {
+      status: "updated",
+      message: "Updated.",
+      cart,
+      addedProduct: product,
+    }),
+  );
 });
 
 test("cart results contain only bounded public fields and preserve uncertainty", () => {

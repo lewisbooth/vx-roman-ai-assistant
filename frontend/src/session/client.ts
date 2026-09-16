@@ -15,7 +15,9 @@ import {
   parseProductGuidesCall,
 } from "../../../shared/product-guides";
 import {
+  isCartMutation,
   isCartTool,
+  parseCartAddedProduct,
   parseCartCall,
   requiresCartConfirmation,
 } from "../../../shared/cart-tools";
@@ -71,6 +73,24 @@ function record(value: unknown): value is Record<string, unknown> {
 function validGuidePart(value: unknown) {
   try {
     parseGuidePart(value, window.location.origin);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validCartAddedPart(value: Record<string, unknown>) {
+  if (
+    value.version !== 1 ||
+    typeof value.invocationId !== "string" ||
+    !UUID.test(value.invocationId) ||
+    Object.keys(value).some(
+      (key) => !["type", "version", "invocationId", "product"].includes(key),
+    )
+  )
+    return false;
+  try {
+    parseCartAddedProduct(value.product);
     return true;
   } catch {
     return false;
@@ -156,6 +176,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
             record(part) &&
             ((part.type === "text" && typeof part.text === "string") ||
               (part.type === "guides" && validGuidePart(part)) ||
+              (part.type === "cart_added" && validCartAddedPart(part)) ||
               (part.type === "voice" &&
                 part.version === 1 &&
                 typeof part.voiceId === "string" &&
@@ -593,7 +614,7 @@ export function createConversationClient(
     } finally {
       if (
         controller.signal.aborted &&
-        (requiresCartConfirmation(tool.name) ||
+        (isCartMutation(tool.name) ||
           tool.name === "apply_measurements")
       ) {
         const attempt = toolAttempts.get(tool.id);
@@ -724,9 +745,9 @@ export function createConversationClient(
                       tool.arguments,
                       signal,
                     )
-                  : tool.name === "get_cart"
+                  : tool.name === "get_cart" || tool.name === "add_to_cart"
                     ? await executor!.execute(
-                        "get_cart",
+                        tool.name,
                         tool.arguments,
                         signal,
                       )

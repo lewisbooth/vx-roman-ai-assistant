@@ -222,6 +222,27 @@
     @apply m-0 text-[14px] italic text-[#797366];
   }
 
+  .roman-question {
+    @apply mt-[16px] rounded-[14px] border border-solid border-[#e3e0d8] bg-[#f0ede5] p-[14px];
+  }
+
+  .roman-question-answers {
+    @apply mt-[12px] flex flex-wrap gap-[8px];
+  }
+
+  .roman-question-answers button {
+    @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#d1cbc0] bg-[#f7f5ef] px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#4e0e0e] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
+    font-family: inherit;
+  }
+
+  .roman-question-hint {
+    @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#797366];
+  }
+
+  .roman-question .roman-chat-error {
+    @apply mt-[10px] pb-0;
+  }
+
   .roman-tools {
     @apply h-full min-h-0 overflow-y-auto overscroll-contain px-[20px] pt-[12px] pb-[24px] text-[13px] text-[#545046];
     padding-bottom: max(24px, env(safe-area-inset-bottom));

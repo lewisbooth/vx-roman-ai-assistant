@@ -5,18 +5,52 @@ import { ProductCards } from "./ProductCards";
 import { GuideCards } from "./GuideCards";
 import { RichText } from "./RichText";
 import { StorefrontLink } from "./StorefrontLink";
+import { Question } from "./Question";
+import type { QuestionPart } from "../../../shared/questions";
 
 export function Timeline({
   messages,
   session,
   navigation,
   onContentChange,
+  activeQuestionId,
+  questionDisabled = false,
+  voice = false,
+  onAnswer,
 }: {
   messages: readonly ConversationMessage[];
   session: ConversationClient;
   navigation: StorefrontNavigation;
   onContentChange: () => void;
+  activeQuestionId?: string;
+  questionDisabled?: boolean;
+  voice?: boolean;
+  onAnswer?: (part: QuestionPart, answer: string) => Promise<void>;
 }) {
+  // Keep the current question below every widget and later journey event.
+  // Stable row IDs retain the question when its buttons retire after a reply.
+  const rows = messages.flatMap((message) => {
+    const questions = message.parts.filter((part) => part.type === "question");
+    const parts = message.parts.filter((part) => part.type !== "question");
+    return [
+      ...(parts.length || message.status !== "complete"
+        ? [{ ...message, parts }]
+        : []),
+      ...questions.map((part) => ({
+        ...message,
+        id: `${message.id}:question:${part.invocationId}`,
+        role: "assistant" as const,
+        parts: [part],
+      })),
+    ];
+  });
+  const activeRow = rows.findIndex((row) =>
+    row.parts.some(
+      (part) =>
+        part.type === "question" && part.invocationId === activeQuestionId,
+    ),
+  );
+  if (activeRow >= 0) rows.push(...rows.splice(activeRow, 1));
   return (
     <ol
       className="roman-timeline"
@@ -25,7 +59,7 @@ export function Timeline({
       aria-live="polite"
       aria-relevant="additions text"
     >
-      {messages.map((message) => (
+      {rows.map((message) => (
         <li
           key={message.id}
           className={`roman-message roman-message-${message.role}`}
@@ -37,6 +71,19 @@ export function Timeline({
           )}
           <div className="roman-message-parts">
             {message.parts.map((part, index) => {
+              if (part.type === "question")
+                return (
+                  <Question
+                    key={part.invocationId}
+                    part={part}
+                    active={
+                      !!onAnswer && part.invocationId === activeQuestionId
+                    }
+                    disabled={questionDisabled}
+                    voice={voice}
+                    onAnswer={onAnswer!}
+                  />
+                );
               if (part.type === "text")
                 return message.role === "assistant" ? (
                   <RichText
@@ -51,10 +98,24 @@ export function Timeline({
                 );
               if (part.type === "page_view")
                 return (
-                  <p key={index} className="roman-page-view">
+                  <p key={index} className="roman-inline-event roman-page-view">
                     Viewed{" "}
                     <StorefrontLink url={part.path} navigation={navigation}>
                       {part.title || part.path}
+                    </StorefrontLink>
+                  </p>
+                );
+              if (part.type === "cart_added")
+                return (
+                  <p
+                    key={index}
+                    className="roman-inline-event roman-cart-added"
+                  >
+                    Roman added {part.product.title} to your cart
+                    {part.product.measurements &&
+                      ` at ${part.product.measurements.width} x ${part.product.measurements.height}${part.product.measurements.unit}`}{" "}
+                    <StorefrontLink url="/cart" navigation={navigation}>
+                      View Cart
                     </StorefrontLink>
                   </p>
                 );

@@ -626,7 +626,7 @@ test("completed request replays never call the model again or duplicate messages
   );
 });
 
-test("the actual model client sets fast/low/store=false, passes the signal and keeps customer text out of instructions", async () => {
+test("the actual model client sets fast/medium/store=false, passes the signal and keeps customer text out of instructions", async () => {
   const env = setup();
   env.streams.push(
     (async function* () {
@@ -647,15 +647,28 @@ test("the actual model client sets fast/low/store=false, passes the signal and k
   assert.equal(input.store, false);
   assert.equal(input.stream, true);
   assert.equal(input.max_output_tokens, 1600);
-  assert.equal(
-    input.tools,
-    undefined,
-    "tools are exposed only when a browser executor is supplied",
+  assert.deepEqual(
+    input.tools.map((tool) => tool.name),
+    ["ask_question"],
+    "only the local question tool is available without a browser executor",
   );
   assert.equal(options.signal, signal);
   assert.equal(input.instructions.includes("Private room preference"), false);
   assert.match(input.instructions, /untrusted|not instructions/i);
   assert.match(input.instructions, /Never invent manufacturer tolerances/);
+  assert.match(input.instructions, /Use Markdown with short paragraphs/);
+  assert.match(input.instructions, /use this complete welcome exactly/);
+  assert.match(
+    input.instructions,
+    /shopper's add request needs no extra confirmation or on-screen approval panel/,
+  );
+  assert.match(
+    input.instructions,
+    /remove_from_cart, set_cart_quantity or clear_cart[^\n]+these three actions still require/,
+  );
+  assert.match(input.instructions, /actual submitted width, drop and units/);
+  assert.doesNotMatch(input.instructions, /Every cart mutation requires/);
+  assert.doesNotMatch(input.instructions, /visualize blinds in your room/);
   assert.deepEqual(
     plain(input.input),
     history.map(({ role, text }) => ({ role, content: text })),
@@ -663,6 +676,44 @@ test("the actual model client sets fast/low/store=false, passes the signal and k
   assert.deepEqual(plain(env.mock.clients), [
     { maxRetries: 0, timeout: 90000 },
   ]);
+});
+
+test("voice backend requests retain tool policy without text greetings or presentation instructions", async () => {
+  const env = setup();
+  env.streams.push(events(completed("The requested product was found.")));
+  await env.api.generateReply(
+    [{ role: "user", text: "Find blackout blinds." }],
+    () => {},
+    new AbortController().signal,
+    undefined,
+    "voice",
+  );
+  const instructions = env.calls.requests[0].input.instructions;
+  assert.match(instructions, /backend advisor supporting Roman's live voice/);
+  assert.match(instructions, /Never invent manufacturer tolerances/);
+  assert.match(
+    instructions,
+    /Use add_to_cart only when the shopper asks to add the chosen, configured product on the current product page/,
+  );
+  assert.match(
+    instructions,
+    /shopper's add request needs no extra confirmation or on-screen approval panel/,
+  );
+  assert.match(
+    instructions,
+    /remove_from_cart, set_cart_quantity or clear_cart[^\n]+these three actions still require/,
+  );
+  assert.match(
+    instructions,
+    /Only one cart\/form mutation is allowed per reply/,
+  );
+  assert.doesNotMatch(instructions, /Every cart mutation requires/);
+  assert.match(instructions, /save those exact values with set_measurements/);
+  assert.match(instructions, /Return only a concise factual briefing/);
+  assert.doesNotMatch(
+    instructions,
+    /use this complete welcome exactly|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
+  );
 });
 
 test("streaming and completed output show text/refusal content but never reasoning or tool data", async () => {
@@ -793,6 +844,99 @@ function catalogCall(
   };
 }
 
+test("voice briefings retain the final outcome while text replies retain preliminary tool narration", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    for (const status of ["updated", "uncertain"]) {
+      await t.test(`${mode}: ${status}`, async () => {
+        const env = setup();
+        const checking =
+          "I am checking the current cart before changing it. ".repeat(15);
+        const reviewing =
+          "The requested change needs your on-screen review. ".repeat(15);
+        const final =
+          status === "updated"
+            ? "The cart is now empty. The theme confirmed the change."
+            : "The cart change was not confirmed. Check the cart before requesting another change.";
+        const accumulated = `${checking}\n\n${reviewing}\n\n${final}`;
+        assert.ok(checking.length + reviewing.length > 1000);
+        env.streams.push(
+          events(
+            { type: "response.output_text.delta", delta: checking },
+            completed("", {
+              output: [
+                ...completed(checking).response.output,
+                catalogCall("read-cart", "get_cart", {}),
+              ],
+            }),
+          ),
+          events(
+            { type: "response.output_text.delta", delta: reviewing },
+            completed("", {
+              output: [
+                ...completed(reviewing).response.output,
+                catalogCall("clear-cart", "clear_cart", {}),
+              ],
+            }),
+          ),
+          events(
+            { type: "response.output_text.delta", delta: final },
+            completed(final),
+          ),
+        );
+        const partials = [];
+        const executions = [];
+        const reply = await env.api.generateReply(
+          [],
+          (text) => partials.push(text),
+          new AbortController().signal,
+          async (_id, name) => {
+            executions.push(name);
+            return name === "get_cart"
+              ? {
+                  currency: "GBP",
+                  itemCount: 0,
+                  totalPriceMinorUnits: 0,
+                  items: [],
+                }
+              : { status, message: final };
+          },
+          mode,
+        );
+        assert.deepEqual(executions, ["get_cart", "clear_cart"]);
+        assert.equal(env.calls.requests.length, 3);
+        assert.equal(reply.text, mode === "voice" ? final : accumulated);
+        if (mode === "voice") assert.equal(reply.text.slice(0, 1000), final);
+        else assert.equal(partials.at(-1), accumulated);
+      });
+    }
+  }
+});
+
+test("voice cannot substitute preliminary narration for an empty terminal briefing", async () => {
+  const env = setup();
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          ...completed("I will check the catalog.").response.output,
+          catalogCall("catalog-read"),
+        ],
+      }),
+    ),
+    events(completed("   ")),
+  );
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => ({ products: [], messages: [] }),
+      "voice",
+    ),
+    /empty reply/,
+  );
+});
+
 test("model cart changes have no confirmation argument and cannot automatically repeat a mutation", async () => {
   const env = setup();
   env.streams.push(
@@ -843,6 +987,71 @@ test("model cart changes have no confirmation argument and cannot automatically 
     JSON.parse(denied.output).error,
     /not confirmed.*not claim.*repeat/i,
   );
+});
+
+test("an addition without UI approval still consumes the one-mutation allowance in text and voice", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(
+        completed("", {
+          output: [
+            catalogCall("first-add", "add_to_cart", {
+              productPath: "/products/shade",
+            }),
+          ],
+        }),
+      ),
+      events(
+        completed("", {
+          output: [
+            catalogCall("repeat-add", "add_to_cart", {
+              productPath: "/products/shade",
+            }),
+          ],
+        }),
+      ),
+      events(completed("Please check the cart before another request.")),
+    );
+    const executions = [];
+    await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (id, name, args) => {
+        executions.push({ id, name, args });
+        throw new Error("The browser disconnected after submitting.");
+      },
+      mode,
+    );
+    assert.deepEqual(plain(executions), [
+      {
+        id: "first-add",
+        name: "add_to_cart",
+        args: { productPath: "/products/shade" },
+      },
+    ]);
+    const tools = env.calls.requests[1].input.tools.map((tool) => tool.name);
+    assert.ok(tools.includes("get_cart"));
+    for (const name of [
+      "add_to_cart",
+      "remove_from_cart",
+      "set_cart_quantity",
+      "clear_cart",
+      "apply_measurements",
+    ])
+      assert.equal(tools.includes(name), false, name);
+    for (const callId of ["first-add", "repeat-add"]) {
+      const output = env.calls.requests[2].input.input.find(
+        (item) =>
+          item.type === "function_call_output" && item.call_id === callId,
+      );
+      assert.match(
+        JSON.parse(output.output).error,
+        /not confirmed.*not claim.*repeat/i,
+      );
+    }
+  }
 });
 
 test("text and voice measurement tools execute on the server while cart reads use the browser", async () => {
@@ -973,6 +1182,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "apply_measurements",
         "show_products",
         "show_guides",
+        "ask_question",
       ],
     );
   }
@@ -1038,7 +1248,7 @@ test("catalog call budget leaves only presentation after four lookups and reject
     assert.equal(env.calls.requests.length, 5);
     assert.deepEqual(
       env.calls.requests[4].input.tools.map((tool) => tool.name),
-      ["show_products", "show_guides"],
+      ["show_products", "show_guides", "ask_question"],
     );
     assert.equal(env.calls.requests[4].input.tool_choice, "auto");
   }
@@ -1125,6 +1335,104 @@ const guideSelection = (
   args = { productPath: guidePath, kinds: ["fitting", "measuring"] },
   callId = "guides-show",
 ) => catalogCall(callId, "show_guides", args);
+
+const questionSelection = {
+  question: "Which matters most?",
+  answers: ["Blackout", "Daytime privacy"],
+};
+const questionCall = (args = questionSelection, callId = "question-1") =>
+  catalogCall(callId, "ask_question", args);
+
+test("questions work without catalog matches or a browser executor, including question-only replies", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [questionCall()] })),
+      events(completed("")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      undefined,
+      mode,
+    );
+    assert.equal(reply.text, "");
+    assert.deepEqual(plain(reply.questionPresentation), {
+      callId: "question-1",
+      ...questionSelection,
+    });
+    assert.deepEqual(
+      env.calls.requests[0].input.tools.map((tool) => tool.name),
+      ["ask_question"],
+    );
+    assert.equal(env.calls.requests[1].input.tools, undefined);
+    assert.equal(env.calls.browserTools.length, 0);
+    assert.deepEqual(
+      JSON.parse(
+        env.calls.requests[1].input.input.find(
+          (item) => item.type === "function_call_output",
+        ).output,
+      ),
+      questionSelection,
+    );
+  }
+});
+
+test("invalid questions consume the single attempt without rendering an invalid widget", async () => {
+  for (const selection of [
+    { ...questionSelection, answers: ["same", "SAME"] },
+    { ...questionSelection, answers: [] },
+    "bad JSON",
+  ]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [questionCall(selection)] })),
+      events(completed("Which matters most?")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+    );
+    assert.equal(reply.questionPresentation, undefined);
+    assert.match(
+      env.calls.requests[1].input.input.find(
+        (item) => item.type === "function_call_output",
+      ).output,
+      /No question was selected/,
+    );
+    assert.equal(env.calls.requests[1].input.tools, undefined);
+  }
+});
+
+test("a second question attempt cannot replace the first and a later failed model response cannot publish it", async () => {
+  for (const duplicate of [true, false]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [questionCall()] })),
+      duplicate
+        ? events(
+            completed("", {
+              output: [
+                questionCall(
+                  { question: "Another?", answers: ["Yes"] },
+                  "question-2",
+                ),
+              ],
+            }),
+          )
+        : events({
+            type: "response.failed",
+            response: { model: "gpt-5.6-terra", output: [] },
+          }),
+    );
+    await assert.rejects(
+      env.api.generateReply([], () => {}, new AbortController().signal),
+      duplicate ? /question presentation limit/ : /did not complete/,
+    );
+  }
+});
 
 test("guide lookup alone creates no widget and an explicit selection has only current lookup provenance", async () => {
   for (const selected of [false, true]) {
@@ -1519,7 +1827,7 @@ test("a second presentation attempt fails without replacing the first selection"
   assert.equal(env.calls.requests.length, 3);
 });
 
-test("four browser calls and both local presentations leave a final answer round without tools", async () => {
+test("four browser calls and all three local presentations leave a final answer round without tools", async () => {
   const env = setup();
   for (let index = 0; index < 2; index++)
     env.streams.push(
@@ -1542,6 +1850,16 @@ test("four browser calls and both local presentations leave a final answer round
     events(completed("", { output: [guideLookup()] })),
     events(completed("", { output: [showCall([123])] })),
     events(completed("", { output: [guideSelection()] })),
+    events(
+      completed("", {
+        output: [
+          catalogCall("question", "ask_question", {
+            question: "Which room?",
+            answers: ["Bedroom", "Kitchen"],
+          }),
+        ],
+      }),
+    ),
     events(completed("I opened the product and selected this option.")),
   );
   const dispatched = [];
@@ -1566,13 +1884,18 @@ test("four browser calls and both local presentations leave a final answer round
   ]);
   assert.deepEqual(
     env.calls.requests[4].input.tools.map((tool) => tool.name),
-    ["show_products", "show_guides"],
+    ["show_products", "show_guides", "ask_question"],
   );
   assert.deepEqual(
     env.calls.requests[5].input.tools.map((tool) => tool.name),
-    ["show_guides"],
+    ["show_guides", "ask_question"],
   );
-  assert.equal(env.calls.requests[6].input.tools, undefined);
+  assert.deepEqual(
+    env.calls.requests[6].input.tools.map((tool) => tool.name),
+    ["ask_question"],
+  );
+  assert.equal(env.calls.requests[7].input.tools, undefined);
+  assert.equal(reply.questionPresentation.question, "Which room?");
   assert.equal(reply.presentation.productIds[0], productGid(123));
   assert.equal(reply.guidePresentation.sourceCallId, "guides-lookup");
 });
@@ -1849,7 +2172,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
   );
   assert.match(
     env.calls.requests[0].input.instructions,
-    /not a second chat message/,
+    /Return only a concise factual briefing/,
   );
   assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");

@@ -233,15 +233,30 @@ const cartFixture = {
   ],
 };
 
-async function cartInvocation(name = "clear_cart", args = {}) {
+async function cartInvocation(name = "clear_cart", args = {}, voice = false) {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
   );
-  const turn = await repository.beginTurn(id, {
-    requestId: randomUUID(),
-    text: "Please change my cart.",
-  });
+  const voiceId = voice ? randomUUID() : undefined;
+  if (voiceId)
+    await database.voiceSession.create({
+      data: {
+        id: voiceId,
+        conversationId: id,
+        clientId: randomUUID(),
+        status: "active",
+        leaseExpiresAt: new Date(Date.now() + 45000),
+      },
+    });
+  const turn = await repository.beginTurn(
+    id,
+    {
+      requestId: randomUUID(),
+      text: voiceId ? "" : "Please change my cart.",
+    },
+    voiceId,
+  );
   const tool = await repository.createToolInvocation(id, turn.assistantId, {
     providerCallId: randomUUID(),
     name,
@@ -284,9 +299,8 @@ test("cart reads persist only sanitized results and remain available to future t
   assert.equal(stored.confirmedAt, null);
 });
 
-test("every cart mutation requires an invocation-specific shopper decision and decline is durable", async () => {
+test("cart removal, quantity and clearing require an invocation-specific shopper decision and decline is durable", async () => {
   for (const [name, args] of [
-    ["add_to_cart", { productPath: "/products/shade" }],
     ["remove_from_cart", { lineKey: "123:abc" }],
     ["set_cart_quantity", { lineKey: "123:abc", quantity: 2 }],
     ["clear_cart", {}],
@@ -338,28 +352,28 @@ test("every cart mutation requires an invocation-specific shopper decision and d
   }
 });
 
-test("confirmed cart completion is bound to its executor and uncertain outcomes never replay", async () => {
+test("cart additions need no approval but remain bound to their executor and uncertain outcomes never replay", async () => {
   const { id, turn, tool } = await cartInvocation("add_to_cart", {
     productPath: "/products/shade",
   });
   const claim = executor();
-  await repository.claimToolInvocation(id, tool.id, {
-    ...claim,
-    confirmed: true,
-  });
-  assert.ok(
+  for (const confirmed of [true, false])
+    await assert.rejects(
+      repository.claimToolInvocation(id, tool.id, { ...claim, confirmed }),
+      { status: 400 },
+    );
+  await repository.claimToolInvocation(id, tool.id, claim);
+  assert.equal(
     (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
       .confirmedAt,
+    null,
   );
   await assert.rejects(
     repository.claimToolInvocation(id, tool.id, { ...claim, confirmed: false }),
-    { status: 409 },
+    { status: 400 },
   );
   assert.deepEqual(
-    await repository.claimToolInvocation(id, tool.id, {
-      ...executor(),
-      confirmed: true,
-    }),
+    await repository.claimToolInvocation(id, tool.id, executor()),
     { claimed: false },
   );
   const result = {
@@ -397,34 +411,190 @@ test("confirmed cart completion is bound to its executor and uncertain outcomes 
   );
 });
 
+test("confirmed additions persist once before the model reply, survive failure and reload, and retain actual dimensions", async () => {
+  for (const voice of [false, true]) {
+    const product = {
+      productPath: "/en-gb/products/shade",
+      title: "Configured shade",
+      ...(voice
+        ? {}
+        : { measurements: { width: 18.125, height: 36.5, unit: "in" } }),
+    };
+    const { id, turn, tool } = await cartInvocation(
+      "add_to_cart",
+      { productPath: product.productPath },
+      voice,
+    );
+    const claim = executor();
+    await repository.claimToolInvocation(id, tool.id, claim);
+    const before = await repository.getSnapshot(id);
+    const result = {
+      productIds: [],
+      outcome: {
+        status: "added",
+        message: "The theme confirmed this addition.",
+        addedProduct: product,
+      },
+    };
+    await assert.rejects(
+      repository.completeToolInvocation(id, tool.id, claim, {
+        ...result,
+        outcome: {
+          ...result.outcome,
+          addedProduct: { ...product, productPath: "/products/other" },
+        },
+      }),
+      { status: 400 },
+    );
+    assert.deepEqual(await repository.getSnapshot(id), before);
+    await repository.completeToolInvocation(id, tool.id, claim, result);
+    const completed = await repository.getSnapshot(id);
+    const notifications = completed.messages.filter((message) =>
+      message.parts.some((part) => part.type === "cart_added"),
+    );
+    assert.equal(
+      completed.busy,
+      true,
+      "the durable addition does not await the assistant reply",
+    );
+    assert.equal(completed.revision, before.revision + 1);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].role, "context");
+    assert.equal(notifications[0].status, "complete");
+    assert.deepEqual(notifications[0].parts, [
+      { type: "cart_added", version: 1, invocationId: tool.id, product },
+    ]);
+    await repository.completeToolInvocation(id, tool.id, claim, result);
+    assert.deepEqual(
+      await repository.getSnapshot(id),
+      completed,
+      "a result retry cannot append another notification",
+    );
+    await repository.finishTurn(id, turn.assistantId, {
+      text: "",
+      status: "failed",
+    });
+    await repository.endConversation(id);
+    const reloaded = await loadRepository().getSnapshot(id);
+    assert.deepEqual(
+      reloaded.messages.filter((message) =>
+        message.parts.some((part) => part.type === "cart_added"),
+      ),
+      notifications,
+    );
+    const history = await repository.getModelHistory(id);
+    const actionHistory = history.filter((message) =>
+      message.text.includes("Historical storefront action"),
+    );
+    assert.equal(actionHistory.length, 1);
+    assert.match(actionHistory[0].text, /"addedProduct"/);
+    assert.equal(
+      history.some((message) => message.text.includes('"type":"cart_added"')),
+      false,
+      "the display notification does not duplicate the action in model context",
+    );
+  }
+});
+
+test("cart completion and its inline addition commit atomically", async () => {
+  const { id, tool } = await cartInvocation("add_to_cart", {
+    productPath: "/products/shade",
+  });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, claim);
+  const before = await repository.getSnapshot(id);
+  const result = {
+    productIds: [],
+    outcome: {
+      status: "added",
+      message: "Added.",
+      addedProduct: { productPath: "/products/shade", title: "Shade" },
+    },
+  };
+  await database.$executeRawUnsafe(`CREATE TRIGGER reject_add_event BEFORE INSERT ON ConversationMessage
+    WHEN NEW.role = 'context' BEGIN SELECT RAISE(ABORT, 'test event write failed'); END`);
+  try {
+    await assert.rejects(
+      repository.completeToolInvocation(id, tool.id, claim, result),
+    );
+    assert.deepEqual(await repository.getSnapshot(id), before);
+    const pending = await database.toolInvocation.findUnique({
+      where: { id: tool.id },
+    });
+    assert.equal(pending.status, "running");
+    assert.equal(pending.resultJson, null);
+  } finally {
+    await database.$executeRawUnsafe("DROP TRIGGER reject_add_event");
+  }
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  assert.equal(
+    (await repository.getSnapshot(id)).messages.filter((message) =>
+      message.parts.some((part) => part.type === "cart_added"),
+    ).length,
+    1,
+  );
+});
+
+test("unconfirmed outcomes and historical additions without metadata never fabricate inline additions", async () => {
+  for (const status of [
+    "handed_off",
+    "uncertain",
+    "cancelled",
+    "needs_configuration",
+    "added",
+  ]) {
+    const { id, tool } = await cartInvocation("add_to_cart", {
+      productPath: "/products/shade",
+    });
+    const claim = executor();
+    await repository.claimToolInvocation(id, tool.id, claim);
+    await repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome: { status, message: "Theme outcome." },
+    });
+    const snapshot = await repository.getSnapshot(id);
+    assert.equal(
+      snapshot.messages.some((message) =>
+        message.parts.some((part) => part.type === "cart_added"),
+      ),
+      false,
+      status,
+    );
+  }
+});
+
 test("timeout, End and restart preserve claimed cart uncertainty and unclaimed cancellation", async () => {
-  for (const cleanup of ["timeout", "end", "restart"])
-    for (const confirmed of [false, true]) {
-      const { id, tool } = await cartInvocation();
-      if (confirmed)
-        await repository.claimToolInvocation(id, tool.id, {
-          ...executor(),
-          confirmed: true,
+  for (const name of ["clear_cart", "add_to_cart"])
+    for (const cleanup of ["timeout", "end", "restart"])
+      for (const claimed of [false, true]) {
+        const { id, tool } = await cartInvocation(
+          name,
+          name === "add_to_cart" ? { productPath: "/products/shade" } : {},
+        );
+        if (claimed)
+          await repository.claimToolInvocation(id, tool.id, {
+            ...executor(),
+            ...(name === "clear_cart" ? { confirmed: true } : {}),
+          });
+        if (cleanup === "timeout")
+          await repository.failToolInvocation(id, tool.id, "Timed out.");
+        if (cleanup === "end") await repository.endConversation(id);
+        if (cleanup === "restart") {
+          await database.conversationMessage.updateMany({
+            where: { conversationId: id },
+            data: { createdAt: new Date(0) },
+          });
+          await repository.failPending(id);
+        }
+        const stored = await database.toolInvocation.findUnique({
+          where: { id: tool.id },
         });
-      if (cleanup === "timeout")
-        await repository.failToolInvocation(id, tool.id, "Timed out.");
-      if (cleanup === "end") await repository.endConversation(id);
-      if (cleanup === "restart") {
-        await database.conversationMessage.updateMany({
-          where: { conversationId: id },
-          data: { createdAt: new Date(0) },
-        });
-        await repository.failPending(id);
+        assert.equal(
+          JSON.parse(stored.resultJson).status,
+          claimed ? "uncertain" : "cancelled",
+          `${name}/${cleanup}/${claimed}`,
+        );
       }
-      const stored = await database.toolInvocation.findUnique({
-        where: { id: tool.id },
-      });
-      assert.equal(
-        JSON.parse(stored.resultJson).status,
-        confirmed ? "uncertain" : "cancelled",
-        `${cleanup}/${confirmed}`,
-      );
-    }
 });
 
 test("measurement application uses an ordinary claim bound to the exact order draft and result fingerprint", async () => {
@@ -1312,6 +1482,172 @@ test("a completed reply atomically presents one ordered subset of current-turn c
         entry.text.includes(productIds[2]),
     ),
   );
+});
+
+test("questions persist after product and guide widgets, survive reload and keep short answers meaningful", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Suggest no-drill blinds.",
+  });
+  const productIds = ["gid://shopify/Product/123"];
+  await completedCatalog(id, turn.assistantId, productIds);
+  const source = await guideLookup(id, turn.assistantId);
+  const questionPresentation = {
+    callId: randomUUID(),
+    question: "Is blackout your priority?",
+    answers: ["Yes", "Daytime privacy"],
+  };
+  const result = {
+    status: "complete",
+    text: "These offer different levels of light control.",
+    presentation: { callId: randomUUID(), productIds },
+    guidePresentation: guidePresentation(source.sourceCallId),
+    questionPresentation,
+  };
+  await repository.finishTurn(id, turn.assistantId, result);
+  const state = await loadRepository().getSnapshot(id);
+  assert.deepEqual(
+    state.messages[1].parts.map((part) => part.type),
+    ["text", "products", "guides", "question"],
+  );
+  const question = state.messages[1].parts.at(-1);
+  const saved = await database.toolInvocation.findFirstOrThrow({
+    where: { conversationId: id, name: "ask_question" },
+  });
+  assert.equal(saved.id, question.invocationId);
+  assert.equal(saved.status, "complete");
+  assert.equal(saved.claimClientId, null);
+  assert.equal(saved.confirmedAt, null);
+  await assert.rejects(repository.getBrowserToolContext(id, saved.id), {
+    status: 400,
+  });
+  await repository.finishTurn(id, turn.assistantId, result);
+  assert.deepEqual(await repository.getSnapshot(id), state);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "ask_question" } }),
+    1,
+  );
+  const next = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Yes",
+  });
+  assert.deepEqual(next.history.slice(-2), [
+    {
+      role: "assistant",
+      text: 'Is blackout your priority?\nSuggested answers: ["Yes","Daytime privacy"]',
+    },
+    { role: "user", text: "Yes" },
+  ]);
+  assert.ok(
+    next.history
+      .filter((entry) => entry.text.startsWith("Untrusted"))
+      .every((entry) => !entry.text.includes('"type":"question"')),
+  );
+  assert.deepEqual(
+    (await repository.getSnapshot(id)).messages[1].parts.at(-1),
+    question,
+  );
+});
+
+test("question-only replies persist without fabricated text, and invalid questions roll back every presentation", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Help me choose.",
+  });
+  const productIds = ["gid://shopify/Product/123"];
+  await completedCatalog(id, turn.assistantId, productIds);
+  const questionPresentation = {
+    callId: randomUUID(),
+    question: "Which room?",
+    answers: ["Bedroom", "Kitchen"],
+  };
+  for (const invalid of [
+    { ...questionPresentation, callId: "" },
+    { ...questionPresentation, answers: ["a", "A"] },
+  ]) {
+    await assert.rejects(
+      repository.finishTurn(id, turn.assistantId, {
+        text: "",
+        status: "complete",
+        presentation: { callId: randomUUID(), productIds },
+        questionPresentation: invalid,
+      }),
+      { status: 400 },
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { name: { in: ["show_products", "ask_question"] } },
+      }),
+      0,
+    );
+    assert.equal((await repository.getSnapshot(id)).busy, true);
+  }
+  await repository.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "complete",
+    questionPresentation,
+  });
+  const snapshot = await loadRepository().getSnapshot(id);
+  assert.deepEqual(
+    snapshot.messages[1].parts.map((part) => part.type),
+    ["question"],
+  );
+  assert.equal((await repository.getModelHistory(id)).at(-1).role, "assistant");
+  const corrupted = { ...snapshot.messages[1].parts[0], answers: ["a", "A"] };
+  await database.conversationMessage.update({
+    where: { id: turn.assistantId },
+    data: { partsJson: JSON.stringify([corrupted]) },
+  });
+  await assert.rejects(repository.getSnapshot(id));
+  await assert.rejects(repository.getModelHistory(id));
+});
+
+test("failed, cancelled and ended replies never persist questions", async () => {
+  for (const mode of ["failed", "cancelled", "ended"]) {
+    const { conversationId: id } = await repository.createConversation(
+      shop,
+      origin,
+    );
+    const turn = await repository.beginTurn(id, {
+      requestId: randomUUID(),
+      text: "Help me choose.",
+    });
+    if (mode === "ended") await repository.endConversation(id);
+    if (mode === "cancelled")
+      await repository.finishTurn(id, turn.assistantId, {
+        status: "failed",
+        text: "",
+        error: "Cancelled.",
+      });
+    await repository.finishTurn(id, turn.assistantId, {
+      status: mode === "failed" ? "failed" : "complete",
+      text: "Late overview.",
+      questionPresentation: {
+        callId: randomUUID(),
+        question: "Which room?",
+        answers: ["Bedroom", "Kitchen"],
+      },
+    });
+    assert.ok(
+      (await repository.getSnapshot(id)).messages.every((message) =>
+        message.parts.every((part) => part.type !== "question"),
+      ),
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { conversationId: id, name: "ask_question" },
+      }),
+      0,
+    );
+  }
 });
 
 test("invalid or ungrounded presentations cannot partially complete a reply", async () => {

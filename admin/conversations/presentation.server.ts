@@ -1,4 +1,9 @@
 import type { ProductGuideKind } from "../../shared/product-guides";
+import type { QuestionSelection } from "../../shared/questions";
+
+export interface QuestionPresentation extends QuestionSelection {
+  callId: string;
+}
 
 export interface ProductPresentation {
   callId: string;

@@ -150,7 +150,7 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
         signal,
       );
       if (signal.aborted) return;
-      const briefing = reply?.text.trim();
+      const briefing = reply?.text.trim() || reply?.questionPresentation?.question;
       await owner.provider!.appendCommentary(
         delegationId,
         briefing

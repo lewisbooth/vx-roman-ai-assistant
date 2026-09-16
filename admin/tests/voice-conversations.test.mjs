@@ -237,6 +237,19 @@ test("empty delegation bookkeeping does not split a spoken reply during or after
 
 for (const entry of [
   {
+    label: "confirmed additions",
+    role: "context",
+    status: "complete",
+    parts: [
+      {
+        type: "cart_added",
+        version: 1,
+        invocationId: "6dedf5cd-9d29-4c06-bcf6-ce5d3b49b7a9",
+        product: { productPath: "/products/shade", title: "Configured shade" },
+      },
+    ],
+  },
+  {
     label: "page visits",
     role: "context",
     status: "complete",
@@ -378,7 +391,12 @@ test("a delegated presentation persists only its selected widget beside actual p
   );
 });
 
-for (const widgetKinds of [["products"], ["guides"], ["products", "guides"]])
+for (const widgetKinds of [
+  ["products"],
+  ["guides"],
+  ["question"],
+  ["products", "guides", "question"],
+])
   test(`voice ${widgetKinds.join(" and ")} follow only their result captions and retain exact durable records`, () => {
     const voiceId = randomUUID();
     const widgetId = randomUUID();
@@ -395,15 +413,17 @@ for (const widgetKinds of [["products"], ["guides"], ["products", "guides"]])
           invocationId: randomUUID(),
           ...(type === "products"
             ? { productIds: ["gid://shopify/Product/123"] }
-            : {
-                productPath: "/products/shade",
-                guides: [
-                  {
-                    kind: "measuring",
-                    url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=123",
-                  },
-                ],
-              }),
+            : type === "question"
+              ? { question: "Which room?", answers: ["Bedroom", "Kitchen"] }
+              : {
+                  productPath: "/products/shade",
+                  guides: [
+                    {
+                      kind: "measuring",
+                      url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=123",
+                    },
+                  ],
+                }),
           voiceReply: { voiceId, afterSequence: 4 },
         })),
       ),
@@ -502,7 +522,7 @@ for (const widgetKinds of [["products"], ["guides"], ["products", "guides"]])
     }
   });
 
-test("combined voice products and guides persist together after captions and survive cancelled work and new voice sessions", async () => {
+test("combined voice products, guides and question persist after captions without crossing later customer replies", async () => {
   const session = await startVoice();
   await caption(session, "Show this blind and its guides.", 0);
   const turn = await conversation.beginTurn(id, textInput(""), session.id);
@@ -546,6 +566,11 @@ test("combined voice products and guides persist together after captions and sur
       productPath,
       kinds: ["fitting"],
     },
+    questionPresentation: {
+      callId: "ask-question",
+      question: "Which room?",
+      answers: ["Bedroom", "Kitchen"],
+    },
   });
   const spoken = await caption(
     session,
@@ -559,12 +584,17 @@ test("combined voice products and guides persist together after captions and sur
   assert.equal(widget.id, turn.assistantId);
   assert.deepEqual(
     widget.parts.map((part) => part.type),
-    ["products", "guides"],
+    ["products", "guides", "question"],
   );
   assert.deepEqual(widget.parts[1].guides, guides);
   assert.deepEqual(widget.parts[0].voiceReply, widget.parts[1].voiceReply);
+  assert.deepEqual(widget.parts[0].voiceReply, widget.parts[2].voiceReply);
   const history = await conversation.getModelHistory(id);
-  assert.match(history.at(-1).text, /"type":"guides"/);
+  assert.match(history.at(-2).text, /"type":"guides"/);
+  assert.deepEqual(history.at(-1), {
+    role: "assistant",
+    text: 'Which room?\nSuggested answers: ["Bedroom","Kitchen"]',
+  });
   assert.doesNotMatch(JSON.stringify(history), /UNSPOKEN_BRIEFING/);
   const pending = await conversation.beginTurn(id, textInput(""), session.id);
   await conversation.finishTurn(id, pending.assistantId, {

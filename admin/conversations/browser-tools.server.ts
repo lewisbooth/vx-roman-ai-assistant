@@ -9,7 +9,7 @@ import {
   isCartTool,
   parseCartCall,
   parseCartResult,
-  requiresCartConfirmation,
+  isCartMutation,
   interruptedCartResult,
   type CartToolResult,
 } from "../../shared/cart-tools";
@@ -178,7 +178,7 @@ export async function submitBrowserToolResult(
           "The product fields may have changed, but application was not confirmed. Check the form before requesting another change.",
       };
     } else
-      outcome = requiresCartConfirmation(context.name)
+      outcome = isCartMutation(context.name)
         ? interruptedCartResult(true)
         : { error };
   } else {

@@ -285,6 +285,64 @@ test("declined cart approval reaches the model only after its durable decision",
   assert.equal(env.calls.complete.length, 0);
 });
 
+test("confirmed addition facts reach the model only after durable completion", async () => {
+  const env = setup();
+  env.mock.toolName = "add_to_cart";
+  env.mock.toolArguments = { productPath: "/products/shade" };
+  const gate = deferred();
+  env.mock.beforeComplete = () => gate.promise;
+  let resolved = false;
+  const pending = env.api
+    .requestBrowserTool(
+      "conversation-1",
+      "assistant-1",
+      "add-call",
+      "add_to_cart",
+      env.mock.toolArguments,
+      new AbortController().signal,
+    )
+    .then((value) => {
+      resolved = true;
+      return value;
+    });
+  await flush();
+  const result = {
+    status: "added",
+    message: "The theme confirmed this addition.",
+    addedProduct: {
+      productPath: "/products/shade",
+      title: "Configured shade",
+      measurements: { width: 18.125, height: 36.5, unit: "in" },
+    },
+  };
+  await assert.rejects(
+    env.api.submitBrowserToolResult("conversation-1", "invocation-1", claim, {
+      ...result,
+      addedProduct: {
+        ...result.addedProduct,
+        privateProperties: { email: "private@example.test" },
+      },
+    }),
+    { status: 400 },
+  );
+  assert.equal(env.calls.complete.length, 0);
+  const submission = env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  await flush();
+  assert.equal(resolved, false);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [],
+    outcome: result,
+  });
+  gate.resolve();
+  await submission;
+  assert.deepEqual(plain(await pending), result);
+});
+
 test("cart timeout returns the persisted uncertain outcome without another operation", async () => {
   const env = setup();
   const outcome = {

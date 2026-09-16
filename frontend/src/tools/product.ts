@@ -1,8 +1,14 @@
+import {
+  parseCartCall,
+  type CartAddedProduct,
+} from "../../../shared/cart-tools";
+
 type PricingElement = HTMLElement & { variantId?: unknown; cart?: unknown };
 type ProductActionResult = {
   status: "added" | "needs_configuration" | "handed_off";
   message: string;
   quantityAdded?: number;
+  addedProduct?: CartAddedProduct;
 };
 
 const pendingProducts = new WeakSet<Element>();
@@ -26,10 +32,14 @@ function variantQuantity(cart: unknown, variantId: string): number | null {
   return Number.isSafeInteger(quantity) ? quantity : null;
 }
 
-export async function addConfiguredProduct(
-  signal: AbortSignal,
-): Promise<ProductActionResult> {
-  signal.throwIfAborted();
+export function inspectConfiguredProduct(productPath?: string) {
+  if (
+    productPath !== undefined &&
+    window.location.pathname.replace(/\/$/, "") !== productPath
+  )
+    throw new Error(
+      "Open the requested product and configure it before adding to cart.",
+    );
   if (!document.body.classList.contains("template-product"))
     throw new Error(
       "Open and configure a product before adding it to the cart.",
@@ -46,7 +56,102 @@ export async function addConfiguredProduct(
     throw new Error(
       "The current product has no unambiguous supported purchase form.",
     );
-  const form = forms[0];
+  return forms[0];
+}
+
+function submittedMeasurements(
+  form: HTMLFormElement,
+): CartAddedProduct["measurements"] {
+  const components = form.querySelectorAll("dynamic-pricing-measurements");
+  if (components.length !== 1) return;
+  const units = components[0].querySelectorAll<HTMLSelectElement>(
+    "select[data-measurement-select]",
+  );
+  const groups = components[0].querySelectorAll(
+    "[data-active-input-measurement]",
+  );
+  if (
+    units.length !== 1 ||
+    units[0].disabled ||
+    units[0].form !== form ||
+    groups.length !== 1 ||
+    groups[0].getAttribute("data-input-measurement-group") !== units[0].value
+  )
+    return;
+  const selectedUnit = units[0].value;
+  if (!["mm", "cm", "in", "inches"].includes(selectedUnit)) return;
+  const unit = selectedUnit === "inches" ? "in" : selectedUnit;
+  function value(selector: string) {
+    const fields = groups[0].querySelectorAll(selector);
+    if (fields.length !== 1) return;
+    const input = fields[0];
+    if (
+      !(
+        input instanceof HTMLSelectElement ||
+        (input instanceof HTMLInputElement && input.type === "number")
+      ) ||
+      input.disabled ||
+      input.form !== form ||
+      !input.value.trim()
+    )
+      return;
+    const number = Number(input.value);
+    return Number.isFinite(number) && number >= 0 ? number : undefined;
+  }
+  function dimension(axis: "width" | "drop") {
+    const whole = value(`[data-${axis}-input]`);
+    if (whole === undefined) return;
+    if (unit !== "in") return whole;
+    const fraction = value(`[data-${axis}-inches-input]`);
+    // The theme represents inches as a whole-number select and eighths.
+    if (
+      !Number.isSafeInteger(whole) ||
+      fraction === undefined ||
+      fraction >= 1 ||
+      !Number.isInteger(fraction * 8)
+    )
+      return;
+    return whole + fraction;
+  }
+  const width = dimension("width");
+  const height = dimension("drop");
+  if (
+    width === undefined ||
+    height === undefined ||
+    width <= 0 ||
+    height <= 0 ||
+    width > Number.MAX_SAFE_INTEGER ||
+    height > Number.MAX_SAFE_INTEGER
+  )
+    return;
+  return { width, height, unit: unit as "mm" | "cm" | "in" };
+}
+
+function submittedProduct(form: HTMLFormElement): CartAddedProduct | undefined {
+  const title = document
+    .querySelector("app-provider > main#main h1")
+    ?.textContent?.replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+  if (!title) return;
+  let productPath: string;
+  try {
+    productPath = parseCartCall("add_to_cart", {
+      productPath: window.location.pathname,
+    }).arguments.productPath as string;
+  } catch {
+    // An unsupported URL cannot supply trustworthy product context.
+    return;
+  }
+  const measurements = submittedMeasurements(form);
+  return { productPath, title, ...(measurements ? { measurements } : {}) };
+}
+
+export async function addConfiguredProduct(
+  signal: AbortSignal,
+): Promise<ProductActionResult> {
+  signal.throwIfAborted();
+  const form = inspectConfiguredProduct();
   const product = form.parentElement as PricingElement;
   const definition = customElements.get("dynamic-pricing");
   if (!definition || !(product instanceof definition) || !form.assignedSlot)
@@ -89,6 +194,8 @@ export async function addConfiguredProduct(
   return new Promise((resolve, reject) => {
     let settled = false;
     let submitted = false;
+    let captured = false;
+    let addedProduct: CartAddedProduct | undefined;
     const handedOff: ProductActionResult = {
       status: "handed_off",
       message:
@@ -100,6 +207,7 @@ export async function addConfiguredProduct(
       window.removeEventListener("pagehide", onLeave);
       document.removeEventListener("roman:navigation", onLeave);
       document.removeEventListener("submit", onSubmit);
+      form.removeEventListener("submit", captureSubmission, true);
       product.removeEventListener("cart:updated", onCartUpdated);
       product.removeEventListener("cart:error", onCartError);
       pendingProducts.delete(product);
@@ -111,6 +219,13 @@ export async function addConfiguredProduct(
       resolve(result);
     };
     const onLeave = () => finish(handedOff);
+    const captureSubmission = (event: SubmitEvent) => {
+      if (event.target !== form || captured) return;
+      captured = true;
+      // Snapshot the fields before the theme's slot handler submits them.
+      // Later edits or pricing updates must not rewrite the recorded add.
+      addedProduct = submittedProduct(form);
+    };
     const onSubmit = (event: SubmitEvent) => {
       if (event.target !== form) return;
       submitted = true;
@@ -128,6 +243,7 @@ export async function addConfiguredProduct(
     const onCartUpdated = (event: Event) => {
       if (
         event.target !== product ||
+        !captured ||
         !product.isConnected ||
         previousQuantity === null
       )
@@ -140,6 +256,7 @@ export async function addConfiguredProduct(
         finish({
           status: "added",
           quantityAdded: quantity - previousQuantity,
+          ...(addedProduct ? { addedProduct } : {}),
           message:
             "The storefront confirmed the configured product was added to the cart.",
         });
@@ -160,6 +277,7 @@ export async function addConfiguredProduct(
     window.addEventListener("pagehide", onLeave, { once: true });
     document.addEventListener("roman:navigation", onLeave, { once: true });
     document.addEventListener("submit", onSubmit);
+    form.addEventListener("submit", captureSubmission, true);
     product.addEventListener("cart:updated", onCartUpdated);
     product.addEventListener("cart:error", onCartError);
     try {

@@ -120,6 +120,7 @@ async function setup(t, options = {}) {
     },
     setVoice: (selectedVoice) => update({ selectedVoice }),
     stopVoice: async () => {
+      await options.onStopVoice?.(window);
       update({ voice: { status: "idle", muted: false, error: null } });
     },
     setVoiceMuted: (muted) => {
@@ -747,7 +748,7 @@ test("product errors have an explicit retry, and missing products remain honest"
   assert.equal(ctx.container.querySelector(".roman-product-card"), null);
 });
 
-test("journey entries are quiet linked text and unsafe URLs never become active links", async (t) => {
+test("journey entries use inline notification pills and unsafe URLs never become active links", async (t) => {
   const ctx = await setup(t, {
     state: {
       conversation: activeConversation([
@@ -780,6 +781,7 @@ test("journey entries are quiet linked text and unsafe URLs never become active 
   });
   const entries = ctx.container.querySelectorAll(".roman-page-view");
   assert.equal(entries.length, 2);
+  assert.ok([...entries].every((entry) => entry.classList.contains("roman-inline-event")));
   assert.equal(entries[0].textContent, "Viewed Lottie <img src=x>");
   assert.equal(entries[0].querySelector("img"), null);
   assert.equal(entries[1].querySelector("a"), null);
@@ -787,6 +789,33 @@ test("journey entries are quiet linked text and unsafe URLs never become active 
   assert.deepEqual(ctx.navigationCalls, [
     "https://hd-dev-single.myshopify.com/products/lottie",
   ]);
+});
+
+test("saved cart additions render product and submitted dimensions with a working cart link", async (t) => {
+  const products = [
+    { productPath: "/products/lottie", title: "Lottie <img src=x>", measurements: { width: 900, height: 1200, unit: "mm" } },
+    { productPath: "/products/lottie", title: "Lottie", measurements: { width: 35.5, height: 48.25, unit: "in" } },
+    { productPath: "/products/sample", title: "Sample" },
+  ];
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation(products.map((product, index) => ({
+        ...message(`cart-${index}`, "context", ""),
+        parts: [{ type: "cart_added", version: 1, invocationId: `cart-${index}`, product }],
+      }))),
+    },
+  });
+  const entries = ctx.container.querySelectorAll(".roman-cart-added");
+  assert.equal(entries.length, 3);
+  assert.ok([...entries].every((entry) => entry.classList.contains("roman-inline-event")));
+  assert.equal(entries[0].textContent, "Roman added Lottie <img src=x> to your cart at 900 x 1200mm View Cart");
+  assert.equal(entries[1].textContent, "Roman added Lottie to your cart at 35.5 x 48.25in View Cart");
+  assert.equal(entries[2].textContent, "Roman added Sample to your cart View Cart");
+  assert.equal(entries[0].querySelector("img"), null);
+  entries[0].querySelector("a").click();
+  assert.deepEqual(ctx.navigationCalls, ["https://hd-dev-single.myshopify.com/cart"]);
+  assert.deepEqual(ctx.productCalls, []);
+  assert.equal(ctx.container.querySelector(".roman-tool-approval"), null);
 });
 
 test("ending a chat retains its transcript and draft until acknowledged, then starts clean", async (t) => {
@@ -1078,5 +1107,350 @@ test("voice selection stays out of the customer controls when developer tools ar
     [...ctx.container.querySelectorAll("button")].some(
       (button) => button.textContent === "Start voice",
     ),
+  );
+});
+
+function questionMessage(id = "question-one", question = "What matters most?") {
+  return {
+    ...message(id, "assistant", ""),
+    parts: [
+      {
+        type: "question",
+        version: 1,
+        invocationId: id,
+        question,
+        answers: ["Full blackout", "Daytime privacy"],
+      },
+    ],
+  };
+}
+
+test("easy answers render once beneath all cards with a labelled literal question", async (t) => {
+  const row = questionMessage("question-one", "What matters most? <img src=x>");
+  row.parts.push(
+    { type: "text", text: "Here are a few useful options." },
+    productsMessage().parts[1],
+    {
+      type: "guides",
+      version: 1,
+      invocationId: "33333333-3333-4333-8333-333333333333",
+      productPath: "/products/example",
+      guides: [
+        {
+          kind: "measuring",
+          url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1",
+        },
+      ],
+    },
+  );
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([row]) },
+  });
+  const parts = ctx.container.querySelector(".roman-message-parts");
+  const widget = ctx.container.querySelector(".roman-question");
+  assert.ok(widget, "Question widget must be visible");
+  assert.ok(
+    ctx.container
+      .querySelector(".roman-timeline")
+      .lastElementChild.contains(widget),
+    "Question must follow all cards",
+  );
+  assert.ok(parts.querySelector(".roman-guides"));
+  assert.equal(widget.querySelector("p").textContent, row.parts[0].question);
+  assert.equal(
+    widget.getAttribute("aria-labelledby"),
+    widget.querySelector("p").id,
+  );
+  assert.deepEqual(
+    [...widget.querySelectorAll("button")].map((button) => button.textContent),
+    row.parts[0].answers,
+  );
+  assert.equal(widget.querySelector("img, a"), null);
+  assert.match(widget.textContent, /Or reply in your own words/);
+});
+
+test("clicking an easy answer submits ordinary customer text once and retires choices after acceptance", async (t) => {
+  const row = questionMessage();
+  let release;
+  const accepted = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([row]) },
+    onSend: () => accepted,
+  });
+  const button = ctx.container.querySelector(".roman-question button");
+  button.click();
+  button.click();
+  await until(
+    () => button.disabled,
+    "Question was not locked during submission",
+  );
+  assert.deepEqual(ctx.calls, ["Full blackout"]);
+  assert.equal(
+    ctx.container.querySelector(".roman-question").getAttribute("aria-busy"),
+    "true",
+  );
+  ctx.update({
+    conversation: activeConversation([
+      row,
+      message("reply", "user", "Full blackout"),
+    ]),
+  });
+  release();
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Accepted answer retained choices",
+  );
+  const first = ctx.container.querySelector(".roman-message-parts");
+  assert.equal(first.textContent, row.parts[0].question);
+  assert.equal(first.querySelectorAll("button").length, 0);
+  assert.ok(
+    ctx.container.getRootNode().activeElement === first.querySelector("p"),
+    "Focus should stay on the retired question",
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-message-user").textContent,
+    /Full blackout/,
+  );
+});
+
+test("journey activity leaves choices available but text and voice customer replies retire them", async (t) => {
+  for (const spoken of [false, true]) {
+    const row = questionMessage();
+    const journey = {
+      ...message("visit", "context", ""),
+      parts: [
+        {
+          type: "page_view",
+          version: 1,
+          path: "/products/example",
+          title: "Example",
+          occurredAt: row.createdAt,
+        },
+      ],
+    };
+    const ctx = await setup(t, {
+      state: { conversation: activeConversation([row, journey]) },
+    });
+    assert.ok(ctx.container.querySelector(".roman-question button"));
+    assert.ok(
+      ctx.container
+        .querySelector(".roman-timeline")
+        .lastElementChild.querySelector(".roman-question"),
+      "The active question must remain beneath journey activity",
+    );
+    const reply = message("reply", "user", "I prefer privacy");
+    if (spoken)
+      reply.parts = [
+        {
+          type: "voice",
+          version: 1,
+          voiceId: "22222222-2222-4222-8222-222222222222",
+          text: "I prefer privacy",
+          startMs: 10,
+          endMs: 20,
+        },
+      ];
+    ctx.update({ conversation: activeConversation([row, journey, reply]) });
+    await until(
+      () => !ctx.container.querySelector(".roman-question"),
+      "Customer reply retained choices",
+    );
+    assert.equal(
+      ctx.container.querySelector(".roman-message-parts").textContent,
+      row.parts[0].question,
+    );
+    assert.deepEqual(ctx.calls, []);
+  }
+});
+
+test("typing a free-text answer uses the normal composer and retires choices only when accepted", async (t) => {
+  const row = questionMessage();
+  let ctx;
+  ctx = await setup(t, {
+    state: { conversation: activeConversation([row]) },
+    onSend: (text) =>
+      ctx.update({
+        conversation: activeConversation([row, message("reply", "user", text)]),
+      }),
+  });
+  await ctx.type("A little of both, please");
+  assert.ok(ctx.container.querySelector(".roman-question"));
+  ctx.container.querySelector('.roman-composer button[type="submit"]').click();
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Typed answer retained choices",
+  );
+  assert.deepEqual(ctx.calls, ["A little of both, please"]);
+  assert.equal(
+    ctx.container.querySelector(".roman-message-parts").textContent,
+    row.parts[0].question,
+  );
+});
+
+test("only the newest question has choices and ended sessions retain plain questions", async (t) => {
+  const first = questionMessage();
+  const next = questionMessage("question-two", "Which room is this for?");
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([first, next]) },
+  });
+  assert.equal(ctx.container.querySelectorAll(".roman-question").length, 1);
+  assert.match(
+    ctx.container.querySelector(".roman-question").textContent,
+    /Which room is this for/,
+  );
+  assert.equal(
+    ctx.container.querySelector(".roman-message-parts").textContent,
+    first.parts[0].question,
+  );
+  ctx.update({
+    conversation: { ...activeConversation([first, next]), status: "ended" },
+  });
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Ended session retained clickable choices",
+  );
+  assert.ok(ctx.container.textContent.includes(first.parts[0].question));
+  assert.ok(ctx.container.textContent.includes(next.parts[0].question));
+});
+
+test("a failed easy answer stays retryable without automatically resending", async (t) => {
+  const row = questionMessage();
+  let attempts = 0;
+  let ctx;
+  ctx = await setup(t, {
+    state: { conversation: activeConversation([row]) },
+    onSend: (text, window) => {
+      if (++attempts === 1)
+        throw new window.Error("Connection lost. Please retry.");
+      ctx.update({
+        conversation: activeConversation([row, message("reply", "user", text)]),
+      });
+    },
+  });
+  ctx.container.querySelector(".roman-question button").click();
+  await until(
+    () => ctx.container.querySelector('.roman-question [role="alert"]'),
+    "Question failure was not displayed",
+  );
+  assert.match(
+    ctx.container.querySelector('.roman-question [role="alert"]').textContent,
+    /Connection lost/,
+  );
+  assert.deepEqual(ctx.calls, ["Full blackout"]);
+  assert.equal(
+    ctx.container.querySelector(".roman-question button").disabled,
+    false,
+  );
+  ctx.container.querySelector(".roman-question button").click();
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Retried answer was not accepted",
+  );
+  assert.deepEqual(ctx.calls, ["Full blackout", "Full blackout"]);
+});
+
+test("a voice answer button waits for voice shutdown before submitting text", async (t) => {
+  const row = questionMessage();
+  let stop;
+  let stopCalls = 0;
+  const stopped = new Promise((resolve) => {
+    stop = resolve;
+  });
+  let ctx;
+  ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([row]),
+      voice: { status: "active", muted: false, error: null },
+    },
+    onStopVoice: () => {
+      stopCalls++;
+      return stopped;
+    },
+    onSend: (text) =>
+      ctx.update({
+        conversation: activeConversation([row, message("reply", "user", text)]),
+      }),
+  });
+  assert.match(
+    ctx.container.querySelector(".roman-question-hint").textContent,
+    /switch to text/,
+  );
+  const button = ctx.container.querySelector(".roman-question button");
+  button.click();
+  button.click();
+  await until(() => stopCalls === 1, "Answer did not stop voice");
+  assert.deepEqual(ctx.calls, []);
+  stop();
+  await until(
+    () => ctx.calls.length === 1,
+    "Stopped voice did not submit the answer",
+  );
+  assert.deepEqual(ctx.calls, ["Full blackout"]);
+  assert.equal(stopCalls, 1);
+});
+
+test("voice shutdown rechecks that the question is current and does not submit a stale answer", async (t) => {
+  const row = questionMessage();
+  let stop;
+  let stopCalls = 0;
+  const stopped = new Promise((resolve) => {
+    stop = resolve;
+  });
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([row]),
+      voice: { status: "active", muted: false, error: null },
+    },
+    onStopVoice: () => {
+      stopCalls++;
+      return stopped;
+    },
+  });
+  ctx.container.querySelector(".roman-question button").click();
+  await until(() => stopCalls === 1, "Answer did not stop voice");
+  const replacement = questionMessage(
+    "question-two",
+    "Which room is this for?",
+  );
+  ctx.update({ conversation: activeConversation([row, replacement]) });
+  stop();
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-question button")?.disabled === false,
+    "Voice stop did not release the new question",
+  );
+  assert.deepEqual(ctx.calls, []);
+  assert.match(
+    ctx.container.querySelector(".roman-question").textContent,
+    /Which room is this for/,
+  );
+});
+
+test("failed voice shutdown preserves easy answers and never submits competing text", async (t) => {
+  const row = questionMessage();
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([row]),
+      voice: { status: "active", muted: false, error: null },
+    },
+    onStopVoice: (window) => {
+      throw new window.Error("Voice is still ending. Retry.");
+    },
+  });
+  ctx.container.querySelector(".roman-question button").click();
+  await until(
+    () => ctx.container.querySelector('.roman-question [role="alert"]'),
+    "Failed voice shutdown was not reported",
+  );
+  assert.deepEqual(ctx.calls, []);
+  assert.equal(
+    ctx.container.querySelector(".roman-question button").disabled,
+    false,
+  );
+  assert.match(
+    ctx.container.querySelector('.roman-question [role="alert"]').textContent,
+    /Voice is still ending/,
   );
 });

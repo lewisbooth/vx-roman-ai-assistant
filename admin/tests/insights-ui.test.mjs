@@ -160,6 +160,105 @@ test("inspection shows the same verified guide selection using safe PDF links", 
   assert.match(container.textContent, /guides are unavailable/);
 });
 
+test("inspection retains original question choices as literal read-only history after a reply", (t) => {
+  const { render, container } = setupView(t);
+  const question = "What matters most? <img src=x onerror=alert(1)>";
+  const answers = ["Full blackout", "[Daytime privacy](https://example.com)"];
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [
+      {
+        id: "question",
+        role: "assistant",
+        status: "complete",
+        createdAt: NOW,
+        parts: [
+          {
+            type: "products",
+            version: 1,
+            invocationId: "products",
+            productIds: ["gid://shopify/Product/23"],
+          },
+          {
+            type: "question",
+            version: 1,
+            invocationId: ID,
+            question,
+            answers,
+            voiceReply: { voiceId: "voice-1", afterSequence: 2 },
+          },
+        ],
+      },
+      {
+        id: "answer",
+        role: "user",
+        status: "complete",
+        createdAt: NOW,
+        parts: [{ type: "text", text: "Full blackout" }],
+      },
+    ],
+  });
+  const rows = [...container.querySelectorAll("ol[aria-label] > li")];
+  assert.equal(rows.length, 2);
+  assert.ok(rows[0].textContent.includes(question));
+  assert.ok(
+    rows[0].textContent.indexOf("Product carousel") <
+      rows[0].textContent.indexOf(question),
+  );
+  assert.match(rows[0].textContent, /Offered answers/);
+  assert.deepEqual(
+    [...rows[0].querySelectorAll("ul:last-child li")].map(
+      (item) => item.textContent,
+    ),
+    answers,
+  );
+  assert.equal(
+    container.querySelectorAll("button, s-button, input, a, img").length,
+    0,
+  );
+  assert.match(rows[1].textContent, /Full blackout/);
+});
+
+test("inspection renders confirmed cart additions as literal product facts and omits unknown dimensions", (t) => {
+  const { render, container } = setupView(t);
+  const part = {
+    type: "cart_added",
+    version: 1,
+    invocationId: ID,
+    product: {
+      productPath: "/en-gb/products/shade",
+      title: "<img src=x onerror=alert(1)> shade",
+      measurements: { width: 18.125, height: 36.5, unit: "in" },
+    },
+  };
+  const message = {
+    id: "addition",
+    role: "context",
+    status: "complete",
+    createdAt: NOW,
+    parts: [part],
+  };
+  render("ConversationTimeline", { origin: ORIGIN, messages: [message] });
+  assert.match(
+    container.textContent,
+    /Added to cart: <img src=x onerror=alert\(1\)> shade/,
+  );
+  assert.match(container.textContent, /Width 18\.125 in · Drop 36\.5 in/);
+  assert.equal(container.querySelector("img"), null);
+  assert.equal(
+    container.querySelector("a").href,
+    `${ORIGIN}/en-gb/products/shade`,
+  );
+  const { measurements, ...product } = part.product;
+  assert.ok(measurements);
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [{ ...message, parts: [{ ...part, product }] }],
+  });
+  assert.match(container.textContent, /Added to cart/);
+  assert.doesNotMatch(container.textContent, /Width|Drop|undefined/);
+});
+
 test("inspection retains saved timeline order and safely renders text, voice, visits and widget references", (t) => {
   const { render, container } = setupView(t);
   render("ConversationTimeline", {

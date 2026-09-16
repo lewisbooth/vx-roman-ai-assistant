@@ -9,7 +9,7 @@ import {
   romanVoicePrompt,
   ROMAN_VOICE_OPENING_PROMPTS,
   ROMAN_VOICE_OPENING_CUE,
-} from "../prompts/roman.server";
+} from "../prompts/voice.server";
 
 export const VOICE_MODEL = "gpt-live-1";
 const STARTUP_MS = 15_000;

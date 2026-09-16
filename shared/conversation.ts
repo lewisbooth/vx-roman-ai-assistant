@@ -1,8 +1,9 @@
 export type MessageStatus = "pending" | "complete" | "failed";
 
 import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
-import type { CartToolName } from "./cart-tools";
+import type { CartAddedProduct, CartToolName } from "./cart-tools";
 import type { ProductGuide } from "./product-guides";
+import type { QuestionPart } from "./questions";
 
 export interface TextPart {
   type: "text";
@@ -36,8 +37,21 @@ export interface GuidePart {
   voiceReply?: { voiceId: string; afterSequence: number };
 }
 
+export interface CartAddedPart {
+  type: "cart_added";
+  version: 1;
+  invocationId: string;
+  product: CartAddedProduct;
+}
+
 export type ConversationPart =
-  TextPart | ProductListPart | GuidePart | PageViewPart | VoiceCaptionPart;
+  | TextPart
+  | ProductListPart
+  | GuidePart
+  | QuestionPart
+  | CartAddedPart
+  | PageViewPart
+  | VoiceCaptionPart;
 
 export type CatalogToolName =
   "search_products" | "get_product" | "lookup_catalog";

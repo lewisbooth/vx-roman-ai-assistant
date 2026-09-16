@@ -18,6 +18,8 @@ import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
 import { ToolDrawer } from "./tools/ToolDrawer";
 import { VoiceChoice } from "./tools/VoiceChoice";
+import { latestQuestion } from "./chat/questions";
+import type { QuestionPart } from "../../shared/questions";
 
 type AssistantProps = {
   logoUrl: string;
@@ -49,6 +51,8 @@ function Assistant({
   const [endError, setEndError] = useState<string | null>(null);
   const [chatVersion, setChatVersion] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [answering, setAnswering] = useState(false);
+  const answeringRef = useRef(false);
   const voice = state.voice;
   const localVoice =
     voice.status === "starting" ||
@@ -59,6 +63,50 @@ function Assistant({
     !localVoice &&
     (state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active");
+  const activeQuestion =
+    state.conversation?.status === "active"
+      ? latestQuestion(messages ?? [])
+      : undefined;
+
+  async function answerQuestion(part: QuestionPart, answer: string) {
+    const current = session.getSnapshot();
+    const conversationId = current.conversation?.id;
+    if (
+      answeringRef.current ||
+      endingRef.current ||
+      current.pending ||
+      current.restoring ||
+      current.conversation?.busy
+    )
+      throw new Error("Wait for Roman's current reply.");
+    function assertCurrentQuestion() {
+      const snapshot = session.getSnapshot();
+      if (
+        snapshot.conversation?.id !== conversationId ||
+        snapshot.conversation?.status !== "active" ||
+        latestQuestion(snapshot.conversation.messages)?.invocationId !==
+          part.invocationId ||
+        !part.answers.includes(answer)
+      )
+        throw new Error(
+          "This question is no longer waiting for an answer. Continue with the latest message.",
+        );
+    }
+    assertCurrentQuestion();
+    answeringRef.current = true;
+    setAnswering(true);
+    try {
+      if (localVoice || waitingForVoice) {
+        await session.stopVoice();
+        assertCurrentQuestion();
+      }
+      following.current = true;
+      await session.sendMessage(answer);
+    } finally {
+      answeringRef.current = false;
+      setAnswering(false);
+    }
+  }
 
   async function endChat() {
     if (endingRef.current) return;
@@ -105,7 +153,9 @@ function Assistant({
               <button
                 type="button"
                 className="roman-end-chat"
-                disabled={ending || state.pending || state.restoring}
+                disabled={
+                  ending || answering || state.pending || state.restoring
+                }
                 onClick={() => void endChat()}
               >
                 {ending ? "Ending…" : "End chat"}
@@ -139,6 +189,17 @@ function Assistant({
               session={session}
               navigation={navigation}
               onContentChange={followConversation}
+              activeQuestionId={activeQuestion?.invocationId}
+              questionDisabled={
+                ending ||
+                answering ||
+                state.pending ||
+                !!state.conversation?.busy ||
+                voice.status === "starting" ||
+                voice.status === "stopping"
+              }
+              voice={localVoice || waitingForVoice}
+              onAnswer={answerQuestion}
             />
           ) : (
             <Welcome logoUrl={logoUrl} />
@@ -152,6 +213,7 @@ function Assistant({
           voice={voice}
           disabled={
             ending ||
+            answering ||
             state.pending ||
             state.restoring ||
             !!state.conversation?.busy
@@ -179,6 +241,7 @@ function Assistant({
           key={chatVersion}
           busy={
             ending ||
+            answering ||
             localVoice ||
             waitingForVoice ||
             state.pending ||

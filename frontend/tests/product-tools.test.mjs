@@ -18,7 +18,7 @@ function setup(
 ) {
   const dom = new JSDOM(
     `<!doctype html><body class="template-product"><app-provider>
-    <main id="main"><cart-add-sample><form><button type="submit">Add sample</button></form></cart-add-sample>
+    <main id="main"><h1>Kitchen shade</h1><cart-add-sample><form><button type="submit">Add sample</button></form></cart-add-sample>
     <dynamic-pricing><form data-dynamic-pricing-form>
       <input name="_width" value="100" required>
       <input name="_drop" value="150" required>
@@ -131,8 +131,148 @@ test("configured-product add uses the actual submitter and waits for a scoped ca
   const result = await action;
   assert.equal(result.status, "added");
   assert.equal(result.quantityAdded, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.addedProduct)), {
+    productPath: "/products/test",
+    title: "Kitchen shade",
+  });
   assert.equal(env.listeners.size, 0);
   assert.equal(env.hasDeadline(), false);
+});
+
+function measurements(env, unit = "mm") {
+  const component = env.document.createElement("dynamic-pricing-measurements");
+  component.innerHTML = `<select name="_product_measurement_type" data-measurement-select><option value="${unit}">${unit}</option></select>
+    <div data-active-input-measurement data-input-measurement-group="${unit}">
+      ${
+        unit === "inches"
+          ? `
+        <select name="_width" data-width-input><option value="40">40</option></select>
+        <select name="_width_inches" data-width-inches-input><option value="0.125">1/8</option></select>
+        <select name="_drop" data-drop-input><option value="60">60</option></select>
+        <select name="_drop_inches" data-drop-inches-input><option value="0.75">3/4</option></select>
+      `
+          : `
+        <input name="_width" type="number" data-width-input value="123.5" step="any">
+        <input name="_drop" type="number" data-drop-input value="234.25" step="any">
+      `
+      }
+    </div>
+    <div data-input-measurement-group="inactive"><input type="number" data-width-input value="999"><input type="number" data-drop-input value="999"></div>`;
+  env.form.prepend(component);
+  return component;
+}
+
+test("confirmed adds report the submitted active width, drop and unit, including exact inch fractions", async (t) => {
+  for (const unit of ["mm", "cm", "inches"]) {
+    await t.test(unit, async (t) => {
+      const env = setup(t, { url: "/en-gb/products/test/" });
+      measurements(env, unit);
+      const action = env.run();
+      env.update([{ variant_id: 123, quantity: 3 }]);
+      const result = await action;
+      assert.deepEqual(JSON.parse(JSON.stringify(result.addedProduct)), {
+        productPath: "/en-gb/products/test",
+        title: "Kitchen shade",
+        measurements:
+          unit === "inches"
+            ? { width: 40.125, height: 60.75, unit: "in" }
+            : { width: 123.5, height: 234.25, unit },
+      });
+    });
+  }
+});
+
+test("add metadata captures the actual submit event, not earlier fields or later theme changes", async (t) => {
+  const env = setup(t);
+  const component = measurements(env);
+  const width = component.querySelector(
+    "[data-active-input-measurement] [data-width-input]",
+  );
+  env.button.addEventListener("click", () => {
+    width.value = "345";
+  });
+  env.product.shadowRoot
+    .querySelector("slot")
+    .addEventListener("submit", () => {
+      width.value = "999";
+      env.document.querySelector("h1").textContent = "A later title";
+    });
+  const action = env.run();
+  env.update([{ variant_id: 123, quantity: 3 }]);
+  const result = await action;
+  assert.equal(result.addedProduct.title, "Kitchen shade");
+  assert.equal(result.addedProduct.measurements.width, 345);
+});
+
+test("a cart event before the actual submit cannot confirm this add", async (t) => {
+  const env = setup(t);
+  env.button.addEventListener("click", () => {
+    env.update([{ variant_id: 123, quantity: 50 }]);
+  });
+  let settled = false;
+  const action = env.run().then((result) => {
+    settled = true;
+    return result;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.equal(env.submissions(), 1);
+  env.update([{ variant_id: 123, quantity: 3 }]);
+  assert.equal((await action).quantityAdded, 2);
+});
+
+test("a synchronous theme confirmation after submit capture retains the submitted product", async (t) => {
+  const env = setup(t);
+  measurements(env);
+  env.product.shadowRoot
+    .querySelector("slot")
+    .addEventListener("submit", () => {
+      env.update([{ variant_id: 123, quantity: 3 }]);
+    });
+  const result = await env.run();
+  assert.equal(result.status, "added");
+  assert.equal(result.addedProduct.measurements.width, 123.5);
+});
+
+test("unknown or ambiguous measurement controls omit dimensions instead of inventing them", async (t) => {
+  for (const change of [
+    "missing",
+    "unit",
+    "ambiguous",
+    "fraction",
+    "disabled",
+  ]) {
+    await t.test(change, async (t) => {
+      const env = setup(t);
+      const component = measurements(
+        env,
+        change === "fraction" ? "inches" : "mm",
+      );
+      if (change === "missing")
+        component
+          .querySelector("[data-active-input-measurement] [data-drop-input]")
+          .remove();
+      if (change === "unit")
+        component
+          .querySelector("[data-active-input-measurement]")
+          .setAttribute("data-input-measurement-group", "cm");
+      if (change === "ambiguous")
+        component
+          .querySelector('[data-input-measurement-group="inactive"]')
+          .setAttribute("data-active-input-measurement", "");
+      if (change === "fraction")
+        component.querySelector("[data-width-inches-input]").remove();
+      if (change === "disabled")
+        component.querySelector(
+          "[data-active-input-measurement] [data-width-input]",
+        ).disabled = true;
+      const action = env.run();
+      env.update([{ variant_id: 123, quantity: 3 }]);
+      const result = await action;
+      assert.equal(result.status, "added");
+      assert.equal("measurements" in result.addedProduct, false);
+    });
+  }
 });
 
 test("disabled, hidden, invalid and pricing-pending forms remain theme-owned", async (t) => {
@@ -194,7 +334,9 @@ test("a missing confirmation times out as handed off and never retries", async (
   const action = env.run();
   await assert.rejects(env.run(), /already being submitted/);
   env.timeout();
-  assert.equal((await action).status, "handed_off");
+  const result = await action;
+  assert.equal(result.status, "handed_off");
+  assert.equal("addedProduct" in result, false);
   assert.equal(env.submissions(), 1);
   assert.equal(env.listeners.size, 0);
   assert.equal(env.hasDeadline(), false);

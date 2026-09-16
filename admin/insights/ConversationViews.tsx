@@ -205,6 +205,40 @@ export function ConversationTimeline({
                 return (
                   <InspectedGuides key={index} part={part} origin={origin} />
                 );
+              if (part.type === "question")
+                return (
+                  <div key={index}>
+                    <p className="whitespace-pre-wrap">{part.question}</p>
+                    <p className="mt-1 text-xs text-gray-600">Offered answers</p>
+                    <ul className="list-inside list-disc text-sm">
+                      {part.answers.map((answer) => (
+                        <li key={answer}>{answer}</li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              if (part.type === "cart_added")
+                return (
+                  <div key={index}>
+                    <p>
+                      Added to cart:{" "}
+                      <TranscriptLink
+                        value={part.product.productPath}
+                        origin={origin}
+                      >
+                        {part.product.title}
+                      </TranscriptLink>
+                    </p>
+                    {part.product.measurements && (
+                      <p className="text-sm text-gray-600">
+                        Width {part.product.measurements.width}{" "}
+                        {part.product.measurements.unit}
+                        {" · "}Drop {part.product.measurements.height}{" "}
+                        {part.product.measurements.unit}
+                      </p>
+                    )}
+                  </div>
+                );
               if (part.type === "voice")
                 return (
                   <div key={index}>

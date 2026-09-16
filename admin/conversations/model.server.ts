@@ -17,7 +17,7 @@ import {
   cartToolDefinitions,
   isCartTool,
   parseCartCall,
-  requiresCartConfirmation,
+  isCartMutation,
 } from "../../shared/cart-tools";
 import {
   measurementToolDefinitions,
@@ -33,15 +33,18 @@ import {
   parseGuideSelection,
   type ProductGuideKind,
 } from "../../shared/product-guides";
+import { ROMAN_TEXT_PROMPT } from "../prompts/text.server";
 import {
-  ROMAN_ADVISOR_PROMPT,
-  ROMAN_VOICE_BRIEFING_PROMPT,
-} from "../prompts/roman.server";
+  askQuestionToolDefinition,
+  parseQuestionSelection,
+} from "../../shared/questions";
+import { ROMAN_VOICE_BRIEFING_PROMPT } from "../prompts/voice.server";
 import {
   parseProductSelection,
   showProductsDefinition,
   type ProductPresentation,
   type GuidePresentation,
+  type QuestionPresentation,
 } from "./presentation.server";
 
 export const TEXT_MODEL = "gpt-5.6-terra";
@@ -59,6 +62,7 @@ export interface ModelReply {
   serviceTier?: string;
   presentation?: ProductPresentation;
   guidePresentation?: GuidePresentation;
+  questionPresentation?: QuestionPresentation;
 }
 
 let client: OpenAI | undefined;
@@ -147,15 +151,17 @@ export async function generateReply(
   let presentation: ProductPresentation | undefined;
   let guidePresentationAttempted = false;
   let guidePresentation: GuidePresentation | undefined;
+  let questionPresentationAttempted = false;
+  let questionPresentation: QuestionPresentation | undefined;
   const availableGuides = new Map<
     string,
     { sourceCallId: string; kinds: ProductGuideKind[] }
   >();
   const availableProductIds = new Set<string>();
   let accumulated = "";
-  for (let round = 0; round < 7; round++) {
+  for (let round = 0; round < 8; round++) {
     signal.throwIfAborted();
-    const tools = execute
+    const storefrontTools = execute
       ? [
           ...(browserCalls < 4
             ? [
@@ -164,8 +170,7 @@ export async function generateReply(
                 productGuidesToolDefinition,
                 ...measurementToolDefinitions,
                 ...cartToolDefinitions.filter(
-                  (tool) =>
-                    !mutationAttempted || !requiresCartConfirmation(tool.name),
+                  (tool) => !mutationAttempted || !isCartMutation(tool.name),
                 ),
                 ...(!mutationAttempted
                   ? [applyMeasurementsToolDefinition]
@@ -176,6 +181,10 @@ export async function generateReply(
           ...(!guidePresentationAttempted ? [showGuidesToolDefinition] : []),
         ]
       : [];
+    const tools = [
+      ...storefrontTools,
+      ...(!questionPresentationAttempted ? [askQuestionToolDefinition] : []),
+    ];
     const usageId = randomUUID();
     const attempt = responseUsage(usageId, "pending");
     // Persist the attempt before issuing a billed request. The callback remains
@@ -192,9 +201,7 @@ export async function generateReply(
           service_tier: TEXT_SERVICE_TIER,
           reasoning: { effort: "medium" },
           instructions:
-            mode === "voice"
-              ? ROMAN_VOICE_BRIEFING_PROMPT
-              : ROMAN_ADVISOR_PROMPT,
+            mode === "voice" ? ROMAN_VOICE_BRIEFING_PROMPT : ROMAN_TEXT_PROMPT,
           input,
           include: ["reasoning.encrypted_content"],
           ...(tools.length
@@ -259,20 +266,20 @@ export async function generateReply(
       (item) => item.type === "function_call",
     );
     if (!toolCalls.length) {
-      const answer = accumulated + text;
-      if (!answer.trim()) throw new Error("The model returned an empty reply.");
+      // Voice needs the final outcome; preliminary tool narration belongs only
+      // to the text transcript and can crowd out a bounded spoken briefing.
+      const answer = mode === "voice" ? text : accumulated + text;
+      if (!answer.trim() && !questionPresentation)
+        throw new Error("The model returned an empty reply.");
       return {
         text: answer,
         model: completed.model,
         serviceTier: completed.service_tier ?? undefined,
         ...(presentation ? { presentation } : {}),
         ...(guidePresentation ? { guidePresentation } : {}),
+        ...(questionPresentation ? { questionPresentation } : {}),
       };
     }
-    if (!execute)
-      throw new Error(
-        "Roman reached the storefront tool limit for this reply.",
-      );
     if (text.trim()) accumulated += text + "\n\n";
     // Preserve provider reasoning/function items only within this turn. Never
     // expose them as chat content or persist a second provider-owned transcript.
@@ -286,6 +293,35 @@ export async function generateReply(
     );
     for (const call of toolCalls) {
       signal.throwIfAborted();
+      if (call.name === "ask_question") {
+        if (questionPresentationAttempted)
+          throw new Error(
+            "Roman reached the question presentation limit for this reply.",
+          );
+        questionPresentationAttempted = true;
+        let outcome;
+        try {
+          const selection = parseQuestionSelection(JSON.parse(call.arguments));
+          if (!call.call_id || call.call_id.length > 200)
+            throw new Error("Invalid question presentation call ID.");
+          questionPresentation = { callId: call.call_id, ...selection };
+          outcome = {
+            question: selection.question,
+            answers: selection.answers,
+          };
+        } catch {
+          outcome = {
+            error:
+              "No question was selected. Ask one short plain-text question with one to four distinct short answers. Do not claim answer buttons were shown; ask the question naturally in your reply instead.",
+          };
+        }
+        input.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(outcome),
+        });
+        continue;
+      }
       if (call.name === "show_guides") {
         if (guidePresentationAttempted)
           throw new Error(
@@ -361,7 +397,7 @@ export async function generateReply(
         });
         continue;
       }
-      if (browserCalls >= 4)
+      if (!execute || browserCalls >= 4)
         throw new Error(
           "Roman reached the storefront tool limit for this reply.",
         );
@@ -370,8 +406,7 @@ export async function generateReply(
       try {
         const argumentsValue: unknown = JSON.parse(call.arguments);
         const mutation =
-          requiresCartConfirmation(call.name) ||
-          call.name === "apply_measurements";
+          isCartMutation(call.name) || call.name === "apply_measurements";
         if (mutation && mutationAttempted)
           throw new Error(
             "Only one confirmed storefront change is allowed per reply.",
@@ -425,8 +460,7 @@ export async function generateReply(
         signal.throwIfAborted();
         outcome = {
           error:
-            requiresCartConfirmation(call.name) ||
-            call.name === "apply_measurements"
+            isCartMutation(call.name) || call.name === "apply_measurements"
               ? "The storefront change was not confirmed. Do not claim it succeeded or repeat it automatically. Check the current cart/form and ask the shopper before requesting a new change."
               : call.name === "get_cart"
                 ? "The current cart could not be read. Do not infer its contents or claim it is empty."

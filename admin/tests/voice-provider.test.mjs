@@ -237,6 +237,18 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
   });
   assert.match(request.session.instructions, /Interruption policy:/);
   assert.match(request.session.instructions, /Terra/);
+  assert.match(
+    request.session.instructions,
+    /delegate the addition without asking for another confirmation or on-screen approval/,
+  );
+  assert.match(
+    request.session.instructions,
+    /removal, quantity changes and clearing the cart still require the shopper's separate confirmation/,
+  );
+  assert.match(
+    request.session.instructions,
+    /Wait for the backend to confirm that the theme added it before claiming success/,
+  );
   assert.equal(options.signal.aborted, false);
   assert.deepEqual(plain(app.mock.clientOptions[0]), {
     maxRetries: 0,
@@ -814,6 +826,11 @@ test("initial instructions select the opening from full history before Live crea
   );
   assert.match(first.instruction, /Wait for the application's opening cue/);
   assert.doesNotMatch(first.instruction, /Hi, it's Roman again/);
+  assert.doesNotMatch(first.instruction, /visualize blinds in your room/);
+  assert.doesNotMatch(
+    first.instruction,
+    /Use Markdown|Return the voice briefing/,
+  );
   const priorReply = {
     role: "assistant",
     text: "Would you like privacy while keeping daylight in?",

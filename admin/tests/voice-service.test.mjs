@@ -641,6 +641,27 @@ test("captions alone never trigger actions and repeated delegation events run on
   await state.stop();
 });
 
+test("a successful question-only delegation speaks the question instead of announcing failure", async () => {
+  const state = setup();
+  state.mock.onDelegate = async () => ({
+    text: "",
+    questionPresentation: {
+      callId: "question-1",
+      question: "Would you prefer blackout or filtered daylight?",
+      answers: ["Blackout", "Filtered daylight"],
+    },
+  });
+  await state.start();
+  state.emit(transcript());
+  await flush();
+  state.emit({ type: "delegation", delegationId: "item_1" });
+  await flush();
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["item_1", "Would you prefer blackout or filtered daylight?"],
+  ]);
+  await state.stop();
+});
+
 test("delegation waits for queued caption persistence and stops without late commentary", async () => {
   const state = setup();
   await state.start();
