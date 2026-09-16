@@ -50,6 +50,7 @@ interface VoiceOwner {
   activated: boolean;
   browserReady: boolean;
   openingStarted: boolean;
+  userSpeechObserved: boolean;
   error?: string;
   timer?: ReturnType<typeof setTimeout>;
   events: Promise<void>;
@@ -111,6 +112,7 @@ function beginConversation(owner: VoiceOwner) {
         owner.conversationId,
         owner.voiceId,
         owner.clientId,
+        !owner.userSpeechObserved,
       );
       if (owner.stopping || owners.get(owner.conversationId) !== owner) return;
       // Never hold the event queue for speech or playback acknowledgments.
@@ -231,6 +233,10 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
     beginConversation(owner);
     return;
   }
+  // Captions can arrive before the queued readiness write. Do not offer a
+  // generic welcome after the customer has already begun their request.
+  if (event.type === "transcript" && event.role === "user")
+    owner.userSpeechObserved = true;
   // Final captions remain accepted while close() drains the trusted sideband.
   if (owner.eventCount >= 128) {
     fail(
@@ -367,6 +373,7 @@ export async function startVoice(
     activated: false,
     browserReady: false,
     openingStarted: false,
+    userSpeechObserved: false,
     start: Promise.resolve({ voiceId: input.requestId, sdp: "" }),
     events: Promise.resolve(),
     eventCount: 0,

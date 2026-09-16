@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Prisma, VoiceSession, VoiceTranscript } from "@prisma/client";
 import type { VoiceTranscriptFragment } from "../../shared/voice-transcript";
 import type { VoiceEventPart } from "../../shared/voice";
+import type { QuestionPart } from "../../shared/questions";
+import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
 import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
 
@@ -276,7 +278,7 @@ async function appendVoiceEvent(
       where: { conversationId_requestId_role: identity },
     })
   )
-    return;
+    return false;
   if (
     terminal &&
     !(await transaction.conversationMessage.findUnique({
@@ -306,6 +308,7 @@ async function appendVoiceEvent(
       completedAt: occurredAt,
     },
   });
+  return true;
 }
 
 /** Only the service's provider-started + browser-ready gate calls this. */
@@ -313,6 +316,7 @@ export async function markVoiceStarted(
   conversationId: string,
   voiceId: string,
   clientId: string,
+  offerWelcome = false,
 ): Promise<void> {
   await voiceTransaction(async (transaction) => {
     const conversation = await requireConversation(transaction, conversationId);
@@ -326,7 +330,69 @@ export async function markVoiceStarted(
     requireActiveConversation(conversation.status);
     if (session.status !== "active" || !session.providerId)
       throw new ConversationError(409, "Voice is not connected.");
-    await appendVoiceEvent(transaction, session, "started");
+    const started = await appendVoiceEvent(transaction, session, "started");
+    if (!started || !offerWelcome) return;
+    const messages = await transaction.conversationMessage.findMany({
+      where: { conversationId },
+      select: { role: true, partsJson: true },
+    });
+    if (
+      messages.some(
+        (message) =>
+          message.role === "user" ||
+          message.role === "assistant" ||
+          (JSON.parse(message.partsJson) as { type: string }[]).some(
+            (part) => part.type === "question",
+          ),
+      ) ||
+      (await transaction.voiceTranscript.findFirst({
+        where: {
+          conversationId,
+          OR: [{ role: "user" }, { voiceId: { not: voiceId } }],
+        },
+      }))
+    )
+      return;
+    const updated = await transaction.conversation.update({
+      where: { id: conversationId },
+      data: { nextSequence: { increment: 1 }, revision: { increment: 1 } },
+    });
+    const invocationId = randomUUID();
+    const messageId = randomUUID();
+    const now = new Date();
+    const question: QuestionPart = {
+      type: "question",
+      version: 1,
+      invocationId,
+      question: ROMAN_WELCOME_QUESTION.question,
+      answers: [...ROMAN_WELCOME_QUESTION.answers],
+      voiceReply: { voiceId, afterSequence: updated.nextSequence },
+    };
+    await transaction.conversationMessage.create({
+      data: {
+        id: messageId,
+        conversationId,
+        requestId: `voice:${voiceId}:welcome`,
+        sequence: updated.nextSequence - 1,
+        role: "context",
+        status: "complete",
+        partsJson: JSON.stringify([question]),
+        createdAt: now,
+        completedAt: now,
+      },
+    });
+    await transaction.toolInvocation.create({
+      data: {
+        id: invocationId,
+        conversationId,
+        assistantId: messageId,
+        providerCallId: `voice:${voiceId}:welcome`,
+        name: "ask_question",
+        argumentsJson: JSON.stringify(ROMAN_WELCOME_QUESTION),
+        status: "complete",
+        completedAt: now,
+      },
+    });
   });
 }
 

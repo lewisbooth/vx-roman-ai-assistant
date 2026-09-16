@@ -3,6 +3,7 @@ import type { ResponseInputFile } from "openai/resources/responses/responses";
 import {
   parseProductGuidesResult,
   type ProductGuide,
+  type ProductGuideKind,
   type ProductGuidesResult,
 } from "../../shared/product-guides";
 
@@ -16,7 +17,12 @@ type FailureReason =
   | "invalid_pdf";
 
 export type ProductGuideFiles =
-  | { status: "ready"; sources: ProductGuide[]; files: ResponseInputFile[] }
+  | {
+      status: "ready";
+      sources: ProductGuide[];
+      files: ResponseInputFile[];
+      unavailable?: { kind: ProductGuideKind; reason: FailureReason }[];
+    }
   | { status: "unavailable"; reason: FailureReason };
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -90,7 +96,9 @@ async function download(url: string, signal: AbortSignal): Promise<Buffer> {
     requestSignal.throwIfAborted();
     if (!response.ok || response.redirected)
       throw new GuideReadError(
-        !response.redirected && response.status === 404 ? "not_found" : "network",
+        !response.redirected && response.status === 404
+          ? "not_found"
+          : "network",
       );
     if (
       !reader ||
@@ -153,8 +161,10 @@ export async function readProductGuideFiles(
   if (verified.status === "unavailable")
     return { status: "unavailable", reason: "no_guides" };
   const files: ResponseInputFile[] = [];
-  try {
-    for (const guide of verified.guides) {
+  const sources: ProductGuide[] = [];
+  const unavailable: { kind: ProductGuideKind; reason: FailureReason }[] = [];
+  for (const guide of verified.guides) {
+    try {
       const bytes = await download(guide.url, signal);
       signal.throwIfAborted();
       files.push({
@@ -163,13 +173,21 @@ export async function readProductGuideFiles(
         file_data: `data:application/pdf;base64,${bytes.toString("base64")}`,
         detail: "high",
       });
+      sources.push(guide);
+    } catch (error) {
+      signal.throwIfAborted();
+      unavailable.push({
+        kind: guide.kind,
+        reason: error instanceof GuideReadError ? error.reason : "network",
+      });
     }
-    return { status: "ready", sources: verified.guides, files };
-  } catch (error) {
-    signal.throwIfAborted();
-    return {
-      status: "unavailable",
-      reason: error instanceof GuideReadError ? error.reason : "network",
-    };
   }
+  if (!files.length)
+    return { status: "unavailable", reason: unavailable[0].reason };
+  return {
+    status: "ready",
+    sources,
+    files,
+    ...(unavailable.length ? { unavailable } : {}),
+  };
 }

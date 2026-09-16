@@ -847,7 +847,7 @@ test("initial instructions select the opening from full history before Live crea
   );
   assert.match(
     resumed.instruction,
-    /Do not say the question in this opening: after the backend briefing returns, say the displayed question once with its exact wording/,
+    /Do not say that other question in this opening: after the backend briefing returns, say the displayed question once with its exact wording/,
   );
   assert.doesNotMatch(resumed.instruction, /Say this complete welcome exactly/);
 

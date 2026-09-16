@@ -382,13 +382,29 @@ test("voice returns SDP before readiness and opens once after both transports ar
   await flush();
   assert.equal(state.providers[0].openingCount, 1);
   assert.deepEqual(state.calls.started, [
-    [state.conversationId, state.input.requestId, state.input.clientId],
+    [state.conversationId, state.input.requestId, state.input.clientId, true],
   ]);
   assert.ok(
     state.order.indexOf("start-saved") < state.order.indexOf("opening-sent"),
   );
   assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.calls.caption.length, 0);
+  await state.stop();
+});
+
+test("a customer caption received before the queued readiness write suppresses welcome choices", async () => {
+  const state = setup();
+  await state.start();
+  state.emit({ type: "started", eventId: "started" });
+  state.ready();
+  // The event has arrived, but its queued database write has not yet run.
+  state.emit(transcript());
+  await flush();
+  assert.deepEqual(state.calls.started, [
+    [state.conversationId, state.input.requestId, state.input.clientId, false],
+  ]);
+  assert.equal(state.calls.delegate.length, 0);
+  assert.equal(state.providers[0].openingCount, 1);
   await state.stop();
 });
 

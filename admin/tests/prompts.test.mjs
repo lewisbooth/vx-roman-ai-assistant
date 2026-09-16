@@ -8,6 +8,7 @@ const bundle = await build({
   stdin: {
     contents: `
       export { ROMAN_TEXT_PROMPT } from './admin/prompts/text.server';
+      export { ROMAN_PREAMBLE, ROMAN_WELCOME_INTRO, ROMAN_WELCOME_QUESTION } from './admin/prompts/shared.server';
       export { ROMAN_VOICE_BRIEFING_PROMPT, ROMAN_VOICE_OPENING_PROMPTS, romanVoicePrompt } from './admin/prompts/voice.server';
       export { productGuidesToolDefinition, showGuidesToolDefinition } from './shared/product-guides';
     `,
@@ -25,12 +26,79 @@ runInNewContext(bundle.outputFiles[0].text, {
 });
 const {
   ROMAN_TEXT_PROMPT,
+  ROMAN_PREAMBLE,
+  ROMAN_WELCOME_INTRO,
+  ROMAN_WELCOME_QUESTION,
   ROMAN_VOICE_BRIEFING_PROMPT,
   ROMAN_VOICE_OPENING_PROMPTS,
   romanVoicePrompt,
   productGuidesToolDefinition,
   showGuidesToolDefinition,
 } = module.exports;
+
+test("the generic welcome offers canonical quick answers without repeating text or voice openings", () => {
+  assert.equal(
+    ROMAN_PREAMBLE,
+    "Hi! I'm Roman, your digital shop-at-home advisor. I can help you to measure your windows, explain our product lines, or find your style. Where would you like to start?",
+  );
+  assert.equal(
+    ROMAN_WELCOME_QUESTION.question,
+    "Where would you like to start?",
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(ROMAN_WELCOME_QUESTION.answers)), [
+    "Help me measure",
+    "Explore products",
+    "Find my style",
+  ]);
+  assert.ok(
+    ROMAN_TEXT_PROMPT.includes(
+      `first call ask_question with ${JSON.stringify(ROMAN_WELCOME_QUESTION)}`,
+    ),
+  );
+  assert.ok(
+    ROMAN_TEXT_PROMPT.includes(
+      `write this introduction exactly once: "${ROMAN_WELCOME_INTRO}"`,
+    ),
+  );
+  assert.match(
+    ROMAN_TEXT_PROMPT,
+    /widget owns the welcome's final question; do not also write it/,
+  );
+  assert.match(
+    ROMAN_TEXT_PROMPT,
+    /specific request[\s\S]*do not offer the generic welcome menu/,
+  );
+  assert.match(
+    ROMAN_TEXT_PROMPT,
+    /If Roman has already spoken in text or voice, continue naturally without reintroducing yourself/,
+  );
+  assert.ok(
+    ROMAN_VOICE_OPENING_PROMPTS.newConversation.includes(
+      `Say this complete welcome exactly: "${ROMAN_PREAMBLE}"`,
+    ),
+  );
+  assert.match(
+    ROMAN_VOICE_OPENING_PROMPTS.newConversation,
+    /quick-answer choices automatically; do not delegate to create them or say the welcome again/,
+  );
+  assert.ok(
+    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation.includes(
+      `exactly matches this welcome question and its answers: ${JSON.stringify(ROMAN_WELCOME_QUESTION)}`,
+    ),
+  );
+  assert.match(
+    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
+    /say that question once directly; its saved choices are still visible/,
+  );
+  assert.match(
+    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
+    /Do not delegate, recreate the question or repeat the full introduction for this welcome-menu continuation/,
+  );
+  assert.match(
+    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
+    /For any other saved question, first delegate/,
+  );
+});
 
 test("both backend modes use concise card recommendations and optional answer choices without weakening action approvals", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
@@ -239,6 +307,16 @@ test("text and voice backend guidance require current PDF evidence and stop unsu
     assert.match(
       prompt,
       /Missing, unreadable, ambiguous or unsupported evidence stops/,
+    );
+    assert.match(
+      prompt,
+      /With documentStatus partial, use only the actually attached guide kinds/,
+    );
+    assert.match(prompt, /missing relevant document still stops that guidance/);
+    assert.match(prompt, /Guides must match this product family and mount/);
+    assert.match(
+      prompt,
+      /generic roller or panel-blind document is not evidence for Perfect Fit/,
     );
     assert.match(
       prompt,

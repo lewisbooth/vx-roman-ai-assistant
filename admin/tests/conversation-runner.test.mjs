@@ -686,7 +686,10 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   assert.match(input.instructions, /untrusted|not instructions/i);
   assert.match(input.instructions, /Never invent manufacturer tolerances/);
   assert.match(input.instructions, /Use Markdown with short paragraphs/);
-  assert.match(input.instructions, /use this complete welcome exactly/);
+  assert.match(
+    input.instructions,
+    /For a greeting or open-ended start in a new conversation, first call ask_question/,
+  );
   assert.match(
     input.instructions,
     /full-product addition needs one conversational configuration review/,
@@ -738,7 +741,7 @@ test("voice backend requests retain tool policy without text greetings or presen
   assert.match(instructions, /Return only a concise factual briefing/);
   assert.doesNotMatch(
     instructions,
-    /use this complete welcome exactly|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
+    /For a greeting or open-ended start in a new conversation, first call ask_question|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
   );
 });
 
@@ -2141,6 +2144,115 @@ test("text and voice runners carry guide selection to their durable finish witho
       /input_file|file_data|application\/pdf|synthetic-guide/,
     );
   }
+});
+
+test("partial guide reads attach and present only readable documents in text and voice replies", async (t) => {
+  for (const mode of ["text", "voice"])
+    for (const selectedKind of ["measuring", "fitting"])
+      await t.test(`${mode}: selecting ${selectedKind}`, async () => {
+        const env = setup();
+        env.mock.origin = "https://shopify-single-dev.hdecom.com";
+        const lookup = {
+          ...guideResult(),
+          guides: guideResult().guides.map((guide) => ({
+            ...guide,
+            url: guide.url.replace(guideOrigin, env.mock.origin),
+          })),
+        };
+        const readableGuides = lookup.guides.filter(
+          ({ kind }) => kind === "measuring",
+        );
+        const unavailable = [{ kind: "fitting", reason: "not_found" }];
+        env.mock.executeTool = async () => lookup;
+        env.mock.readGuides = async () => ({
+          status: "ready",
+          sources: readableGuides,
+          files: [syntheticGuideFile("measuring")],
+          unavailable,
+        });
+        const finalText =
+          "The measuring document is readable; the fitting guide could not be read.";
+        env.streams.push(
+          events(completed("", { output: [guideLookup()] })),
+          events(
+            completed("", {
+              output: [
+                guideSelection({
+                  productPath: guidePath,
+                  kinds: [selectedKind],
+                }),
+              ],
+            }),
+          ),
+          events(completed(finalText)),
+        );
+        if (mode === "voice") {
+          voiceHistory(env, [
+            { role: "user", text: "Show the guides for this blind." },
+          ]);
+          await env.api.runVoiceDelegation(
+            "voice",
+            VOICE_ID,
+            firstInput.requestId,
+            new AbortController().signal,
+          );
+        } else {
+          await env.api.startTurn("text", firstInput);
+          await flush();
+        }
+
+        assert.equal(env.calls.requests.length, 3);
+        assert.equal(env.calls.browserTools.length, 1);
+        assert.equal(env.calls.guideReads.length, 1);
+        assert.deepEqual(plain(env.calls.guideReads[0][0]), lookup);
+        assert.equal(env.calls.guideReads[0][1], env.mock.origin);
+        assert.equal(env.calls.guideReads[0][2].aborted, false);
+        const documentOutput = env.calls.requests[1].input.input.find(
+          (item) =>
+            item.type === "function_call_output" &&
+            item.call_id === "guides-lookup",
+        ).output;
+        assert.equal(documentOutput[0].type, "input_text");
+        const metadata = JSON.parse(documentOutput[0].text);
+        assert.equal(metadata.status, "found");
+        assert.equal(metadata.documentStatus, "partial");
+        assert.deepEqual(metadata.guides, readableGuides);
+        assert.deepEqual(metadata.unavailableGuides, unavailable);
+        assert.deepEqual(documentOutput.slice(1), [
+          syntheticGuideFile("measuring"),
+        ]);
+        const selectionOutput = JSON.parse(
+          env.calls.requests[2].input.input.find(
+            (item) =>
+              item.type === "function_call_output" &&
+              item.call_id === "guides-show",
+          ).output,
+        );
+        assert.equal(env.calls.finishes.length, 1);
+        const { result } = env.calls.finishes[0];
+        assert.equal(result.status, "complete");
+        assert.equal(result.text, finalText);
+        assert.equal(result.error, undefined);
+        if (selectedKind === "measuring") {
+          assert.deepEqual(selectionOutput, {
+            productPath: guidePath,
+            selectedKinds: ["measuring"],
+          });
+          assert.deepEqual(plain(result.guidePresentation), {
+            callId: "guides-show",
+            sourceCallId: "guides-lookup",
+            productPath: guidePath,
+            kinds: ["measuring"],
+          });
+        } else {
+          assert.match(selectionOutput.error, /No guide cards were selected/);
+          assert.equal(result.guidePresentation, undefined);
+        }
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /input_file|file_data|application\/pdf|synthetic-guide/,
+        );
+      });
 });
 
 test("explicit product presentation selects only the requested ordered subset without browser dispatch", async () => {

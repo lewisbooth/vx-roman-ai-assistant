@@ -1352,6 +1352,186 @@ test("selected answers have an independent bounded write allowance and preserve 
   );
 });
 
+test("a ready new voice conversation persists one welcome question behind speech and accepts durable clicks", async () => {
+  const session = await startVoice();
+  await voice.activateVoiceSession(
+    id,
+    session.id,
+    clientId,
+    "provider-welcome",
+  );
+  assert.equal(
+    load().latestQuestion((await conversation.getSnapshot(id)).messages),
+    undefined,
+  );
+  await Promise.all([
+    voice.markVoiceStarted(id, session.id, clientId, true),
+    voice.markVoiceStarted(id, session.id, clientId, true),
+  ]);
+  const question = load().latestQuestion(
+    (await conversation.getSnapshot(id)).messages,
+  );
+  assert.equal(question.question, "Where would you like to start?");
+  assert.deepEqual(question.answers, [
+    "Help me measure",
+    "Explore products",
+    "Find my style",
+  ]);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "ask_question" } }),
+    1,
+  );
+  await caption(
+    session,
+    "Hi! I'm Roman. Where would you like to start?",
+    0,
+    "assistant",
+  );
+  let snapshot = await load().conversation.getSnapshot(id);
+  assert.deepEqual(
+    snapshot.messages.map((message) => message.parts[0].type),
+    ["voice_event", "voice", "question"],
+  );
+  const input = {
+    questionId: question.invocationId,
+    clientId,
+    requestId: randomUUID(),
+    answer: "Explore products",
+  };
+  const saved = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  assert.equal(saved.created, true);
+  assert.equal(saved.question, question.question);
+  assert.equal(
+    (await conversation.findVoiceQuestionAnswer(id, session.id, input)).created,
+    false,
+  );
+  snapshot = await conversation.getSnapshot(id);
+  assert.equal(snapshot.voice.status, "active");
+  assert.equal(load().latestQuestion(snapshot.messages), undefined);
+  await voice.closeVoiceSession(id, session.id, clientId);
+  const next = await startVoice();
+  await voice.activateVoiceSession(id, next.id, clientId, "provider-resumed");
+  await voice.markVoiceStarted(id, next.id, clientId, true);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "ask_question" } }),
+    1,
+  );
+});
+
+test("unanswered welcome choices stay clickable through a new voice connection", async () => {
+  const first = await startVoice();
+  await voice.activateVoiceSession(id, first.id, clientId, "provider-first");
+  await voice.markVoiceStarted(id, first.id, clientId, true);
+  await caption(
+    first,
+    "Hi! I'm Roman. Where would you like to start?",
+    0,
+    "assistant",
+  );
+  const question = load().latestQuestion(
+    (await conversation.getSnapshot(id)).messages,
+  );
+  await voice.closeVoiceSession(id, first.id, clientId);
+  const second = await startVoice();
+  await voice.activateVoiceSession(id, second.id, clientId, "provider-second");
+  await voice.markVoiceStarted(id, second.id, clientId, true);
+  await caption(
+    second,
+    "Hi, it's Roman again. Where would you like to start?",
+    0,
+    "assistant",
+  );
+  assert.equal(
+    load().latestQuestion((await conversation.getSnapshot(id)).messages)
+      .invocationId,
+    question.invocationId,
+  );
+  const answer = await conversation.appendVoiceQuestionAnswer(id, second.id, {
+    questionId: question.invocationId,
+    clientId,
+    requestId: randomUUID(),
+    answer: "Find my style",
+  });
+  assert.equal(answer.created, true);
+  assert.equal(answer.question, question.question);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "ask_question" } }),
+    1,
+  );
+  assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
+});
+
+test("starting voice does not replace an unanswered saved question", async () => {
+  const { session, question } = await questionDuringVoice();
+  await voice.markVoiceStarted(id, session.id, clientId, true);
+  let snapshot = await conversation.getSnapshot(id);
+  assert.equal(
+    load().latestQuestion(snapshot.messages).invocationId,
+    question.invocationId,
+  );
+  await voice.closeVoiceSession(id, session.id, clientId);
+  const next = await startVoice();
+  await voice.activateVoiceSession(id, next.id, clientId, "provider-resumed");
+  await voice.markVoiceStarted(id, next.id, clientId, true);
+  snapshot = await conversation.getSnapshot(id);
+  assert.equal(
+    load().latestQuestion(snapshot.messages).invocationId,
+    question.invocationId,
+  );
+  assert.equal(
+    snapshot.messages
+      .flatMap((message) => message.parts)
+      .filter((part) => part.type === "question").length,
+    1,
+  );
+});
+
+for (const previous of [
+  "typed request",
+  "current customer speech",
+  "earlier voice conversation",
+]) {
+  test(`the welcome menu does not interrupt a ${previous}`, async () => {
+    if (previous === "typed request") {
+      const turn = await conversation.beginTurn(
+        id,
+        textInput("Show black blinds"),
+      );
+      await conversation.finishTurn(id, turn.assistantId, {
+        text: "I found these options.",
+        status: "complete",
+      });
+    }
+    if (previous === "earlier voice conversation") {
+      const earlier = await startVoice();
+      await caption(earlier, "Hi! I'm Roman.", 0, "assistant");
+      await voice.closeVoiceSession(id, earlier.id, clientId);
+    }
+    const session = await startVoice();
+    await voice.activateVoiceSession(
+      id,
+      session.id,
+      clientId,
+      "provider-existing",
+    );
+    if (previous === "current customer speech")
+      await caption(session, "Show black blinds", 0);
+    await voice.markVoiceStarted(id, session.id, clientId, true);
+    assert.equal(
+      load().latestQuestion((await conversation.getSnapshot(id)).messages),
+      undefined,
+    );
+    assert.equal(
+      await database.toolInvocation.count({ where: { name: "ask_question" } }),
+      0,
+    );
+  });
+}
+
 test("voice lifecycle entries survive reload and End without answering a question or entering model history", async () => {
   const { session, question } = await questionDuringVoice();
   const history = await conversation.getModelHistory(id);

@@ -116,20 +116,26 @@ export function parseProductGuideUrl(
     throw new Error("Invalid product guide URL.");
   const origin = new URL(storefrontOrigin);
   const url = new URL(input, origin.origin);
+  const supportedLocation =
+    (url.origin === storefrontOrigin &&
+      /^\/cdn\/shop\/files\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*\.pdf$/.test(
+        url.pathname,
+      )) ||
+    (url.origin === "https://cdn.shopify.com" &&
+      /^\/s\/files\/1\/(?:\d{1,12}\/){2,4}files\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*\.pdf$/.test(
+        url.pathname,
+      ));
   if (
     origin.protocol !== "https:" ||
     origin.origin !== storefrontOrigin ||
     url.protocol !== "https:" ||
-    url.origin !== storefrontOrigin ||
     url.username ||
     url.password ||
     url.hash ||
-    !/^\/cdn\/shop\/files\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*\.pdf$/.test(
-      url.pathname,
-    )
+    !supportedLocation
   )
     throw new Error(
-      "Product guides must be PDF files on this storefront's Shopify CDN.",
+      "Product guides must be PDF files on the storefront or Shopify file CDN.",
     );
   // Reject raw dot/encoded path segments before URL normalization can hide them.
   if (

@@ -16,6 +16,18 @@ const bundle = await build({
 });
 const origin = "https://hd-dev-single.myshopify.com";
 const pdf = Buffer.from("%PDF-1.7\npublic guide fixture\n%%EOF");
+const pairedGuides = {
+  status: "found",
+  productPath:
+    "/products/perfect-fit-chromium-thermal-blackout-black-roller-blind",
+  guides: [
+    {
+      kind: "measuring",
+      url: "https://cdn.shopify.com/s/files/1/0893/6659/3817/files/Measuring-for-all-Roller-blinds.pdf?v=1744119133",
+    },
+    { kind: "fitting", url: `${origin}/cdn/shop/files/fitting.pdf?v=2` },
+  ],
+};
 const maxBytes = 4 * 1024 * 1024;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const guide = (name = "measuring", version = 1) => ({
@@ -277,30 +289,109 @@ test("chunked PDF signatures and the exact 4 MiB limit are accepted", async () =
   assert.equal(stream.locked, false);
 });
 
-test("a second guide failure returns no partial attachment set and its failure is never cached", async () => {
-  let failing = true;
+test("either missing guide preserves the other file, its exact source URL and a per-kind failure without caching failures", async () => {
+  for (const failedKind of ["measuring", "fitting"]) {
+    let failing = true;
+    const failedGuide = pairedGuides.guides.find(
+      (source) => source.kind === failedKind,
+    );
+    const successfulGuide = pairedGuides.guides.find(
+      (source) => source.kind !== failedKind,
+    );
+    const ctx = setup(async (url) =>
+      url === failedGuide.url && failing
+        ? new Response("Missing file", { status: 404 })
+        : response(),
+    );
+    const partial = await ctx.read(pairedGuides);
+    assert.equal(partial.status, "ready");
+    assert.deepEqual(plain(partial.sources), [successfulGuide]);
+    assert.equal(partial.files.length, 1);
+    assert.equal(
+      partial.files[0].filename,
+      `${successfulGuide.kind}-guide.pdf`,
+    );
+    assert.deepEqual(plain(partial.unavailable), [
+      { kind: failedKind, reason: "not_found" },
+    ]);
+    assert.deepEqual(
+      ctx.calls.map((call) => call.url),
+      pairedGuides.guides.map((source) => source.url),
+    );
+    assert.equal(ctx.timers.size, 0);
+    failing = false;
+    const retried = await ctx.read(pairedGuides);
+    assert.equal(retried.files.length, 2);
+    assert.deepEqual(plain(retried.sources), pairedGuides.guides);
+    assert.equal(retried.unavailable, undefined);
+    assert.equal(
+      ctx.calls.length,
+      3,
+      "only the successfully read file may be cached",
+    );
+  }
+});
+
+test("all failed guides return the first categorical failure without attachments", async () => {
   const ctx = setup(async (url) =>
-    url.includes("fitting") && failing
-      ? response(Buffer.from("bad"))
-      : response(),
+    url === pairedGuides.guides[0].url
+      ? response(Buffer.from("Not a PDF"))
+      : new Response("Missing", { status: 404 }),
   );
-  const result = guide();
-  result.guides.push({
-    kind: "fitting",
-    url: `${origin}/cdn/shop/files/fitting.pdf`,
-  });
-  const failed = await ctx.read(result);
-  assert.deepEqual(plain(failed), {
+  assert.deepEqual(plain(await ctx.read(pairedGuides)), {
     status: "unavailable",
     reason: "invalid_pdf",
   });
-  failing = false;
-  assert.equal((await ctx.read(result)).files.length, 2);
-  assert.equal(
-    ctx.calls.length,
-    3,
-    "only the verified successful first file may be cached",
+  assert.equal(ctx.calls.length, 2);
+  assert.equal(ctx.timers.size, 0);
+  await ctx.read(pairedGuides);
+  assert.equal(ctx.calls.length, 4);
+});
+
+test("one file timing out does not prevent reading the remaining guide", async () => {
+  const ctx = setup(async (url, { signal }) => {
+    if (url === pairedGuides.guides[1].url) return response();
+    return new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  });
+  const reading = ctx.read(pairedGuides);
+  ctx.timeout();
+  const partial = await reading;
+  assert.equal(partial.status, "ready");
+  assert.deepEqual(plain(partial.sources), [pairedGuides.guides[1]]);
+  assert.deepEqual(plain(partial.unavailable), [
+    { kind: "measuring", reason: "timeout" },
+  ]);
+  assert.equal(ctx.calls.length, 2);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("caller abort after one successful file never returns a partial reply", async () => {
+  let cancelled = 0;
+  const body = new ReadableStream({
+    cancel() {
+      cancelled++;
+    },
+  });
+  const ctx = setup(async (url) =>
+    url === pairedGuides.guides[0].url
+      ? response()
+      : new Response(body, { headers: { "content-type": "application/pdf" } }),
   );
+  const controller = new AbortController();
+  const reason = new Error("The customer ended this turn");
+  const reading = ctx.read(pairedGuides, controller.signal);
+  const rejected = assert.rejects(reading, (error) => error === reason);
+  await setImmediate();
+  assert.equal(ctx.calls.length, 2);
+  controller.abort(reason);
+  await rejected;
+  assert.equal(cancelled, 1);
+  assert.equal(body.locked, false);
+  assert.equal(ctx.timers.size, 0);
 });
 
 test("caller abort before fetch or during a pending body preserves its exact reason and releases resources", async () => {

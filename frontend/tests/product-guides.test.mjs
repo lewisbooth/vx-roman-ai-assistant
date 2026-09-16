@@ -22,6 +22,8 @@ const origin = "https://hd-dev-single.myshopify.com";
 const productPath = "/products/lottie-mojito-roman-blind";
 const measuring = `${origin}/cdn/shop/files/b2g-measuring-guide-roman.pdf?v=5729100873718235920`;
 const fitting = `${origin}/cdn/shop/files/b2g-install-guide-roman-all_options.pdf?v=16605275457733919450`;
+const shopifyMeasuring =
+  "https://cdn.shopify.com/s/files/1/0893/6659/3817/files/Measuring-for-all-Roller-blinds.pdf?v=1744119133";
 const guides = [
   { kind: "measuring", url: measuring },
   { kind: "fitting", url: fitting },
@@ -86,6 +88,49 @@ test("guide extraction reads only the current product anchors and preserves full
   );
   assert.equal(ctx.fetches(), 0);
   assert.equal(ctx.window.location.pathname, productPath);
+});
+
+test("current product guide extraction preserves exact Shopify file CDN links and ignores unrelated links", async (t) => {
+  const path =
+    "/products/perfect-fit-chromium-thermal-blackout-black-roller-blind";
+  const ctx = setup(t, path);
+  const anchor = ctx.window.document.querySelector("#Details-measuring a");
+  for (const href of [
+    shopifyMeasuring,
+    shopifyMeasuring.replace("https:", ""),
+  ]) {
+    anchor.setAttribute("href", href);
+    const found = plain(await ctx.api.getProductGuides(path, ctx.signal()));
+    const expected = {
+      ...result,
+      productPath: path,
+      guides: [{ kind: "measuring", url: shopifyMeasuring }, guides[1]],
+    };
+    assert.deepEqual(found, expected);
+    assert.deepEqual(
+      plain(ctx.api.parseProductGuidesResult(found, origin)),
+      expected,
+    );
+    const part = {
+      type: "guides",
+      version: 1,
+      invocationId: id,
+      productPath: path,
+      guides: found.guides,
+    };
+    assert.deepEqual(plain(ctx.api.parseGuidePart(part, origin)), part);
+  }
+  anchor.remove();
+  const unrelated = ctx.window.document.createElement("a");
+  unrelated.href = shopifyMeasuring;
+  unrelated.textContent = "Measuring Guide";
+  ctx.window.document.querySelector("header").append(unrelated);
+  assert.deepEqual(plain(await ctx.api.getProductGuides(path, ctx.signal())), {
+    ...result,
+    productPath: path,
+    guides: [guides[1]],
+  });
+  assert.equal(ctx.fetches(), 0);
 });
 
 test("manual tool resolves current collection/locale product scope but explicit model path stays exact", async (t) => {
@@ -194,15 +239,60 @@ test("guide calls and selections reject invented URLs, duplicate kinds and nonca
   );
 });
 
-test("PDF URL validation requires this exact storefront CDN and a clean version query", (t) => {
+test("PDF URL validation requires an exact supported storefront or Shopify CDN path and clean version query", (t) => {
   const { api } = setup(t);
   assert.equal(api.parseProductGuideUrl(measuring, origin), measuring);
+  assert.equal(
+    api.parseProductGuideUrl(shopifyMeasuring, origin),
+    shopifyMeasuring,
+  );
+  assert.equal(
+    api.parseProductGuideUrl(shopifyMeasuring.replace("https:", ""), origin),
+    shopifyMeasuring,
+  );
+  assert.equal(
+    api.parseProductGuideUrl(shopifyMeasuring.split("?")[0], origin),
+    shopifyMeasuring.split("?")[0],
+  );
+  const olderShopifyUrl =
+    "https://cdn.shopify.com/s/files/1/2637/1970/files/specifications.pdf?v=1750477634";
+  assert.equal(
+    api.parseProductGuideUrl(olderShopifyUrl, origin),
+    olderShopifyUrl,
+  );
   assert.equal(
     api.parseProductGuideUrl("/cdn/shop/files/guide.pdf", origin),
     `${origin}/cdn/shop/files/guide.pdf`,
   );
   for (const value of [
     "https://cdn.shopify.com/s/files/1/123/files/guide.pdf",
+    ...[
+      shopifyMeasuring.replace(
+        "cdn.shopify.com",
+        "cdn.shopify.com.evil.example",
+      ),
+      shopifyMeasuring.replace("cdn.shopify.com", "files.cdn.shopify.com"),
+      shopifyMeasuring.replace("cdn.shopify.com", "cdn.shopify.com."),
+      shopifyMeasuring.replace("cdn.shopify.com", "cdn.shopify.com:444"),
+      shopifyMeasuring.replace("cdn.shopify.com", "cdn.shopify.com:80"),
+      shopifyMeasuring.replace("https:", "http:"),
+      shopifyMeasuring.replace("https://", "https://user:secret@"),
+      shopifyMeasuring.replace("/s/files/1/", "/s/files/2/"),
+      shopifyMeasuring.replace("/0893/", "/shop/"),
+      shopifyMeasuring.replace("/6659/", "/1234567890123/"),
+      shopifyMeasuring.replace("/0893/6659/3817/", "/0893/"),
+      shopifyMeasuring.replace("/0893/6659/3817/", "/1/2/3/4/5/"),
+      shopifyMeasuring.replace("/3817/files/", "/3817/products/"),
+      shopifyMeasuring.replace("/Measuring-", "/nested/Measuring-"),
+      shopifyMeasuring.replace(".pdf?", ".html?"),
+      shopifyMeasuring.replace("/Measuring-", "/../files/Measuring-"),
+      shopifyMeasuring.replace("/Measuring-", "/%2e%2e/Measuring-"),
+      shopifyMeasuring.replace("Measuring-", "Measuring%2f"),
+      `${shopifyMeasuring}#page=1`,
+      `${shopifyMeasuring}&download=1`,
+      `${shopifyMeasuring}&v=2`,
+      shopifyMeasuring.replace("v=1744119133", "v=wrong"),
+    ],
     "https://other.example/cdn/shop/files/guide.pdf",
     `${origin}/pages/measuring-blinds`,
     `${origin}/cdn/shop/files/guide.html`,
