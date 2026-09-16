@@ -220,7 +220,7 @@
   }
 
   .roman-reply-activity {
-    @apply m-0 shrink-0 px-[26px] pt-[8px] text-[14px] leading-[20px] text-[#797366];
+    @apply m-0 px-[26px] pb-[24px] text-[14px] leading-[20px] text-[#797366];
   }
 
   .roman-reply-activity span {
@@ -243,14 +243,6 @@
     }
     to {
       background-position: 0 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .roman-reply-activity span {
-      animation: none;
-      background: none;
-      color: #797366;
     }
   }
 
@@ -318,6 +310,7 @@
   .roman-voice-waveform span {
     @apply h-[24px] w-[3px] shrink-0 rounded-full bg-current;
     transform: scaleY(0.2);
+    animation: roman-voice-wave 1.4s ease-in-out infinite;
   }
 
   .roman-voice-waveform span:nth-child(3n) {
@@ -333,13 +326,6 @@
     animation-delay: -1.2s;
   }
 
-  .roman-voice-waveform[data-animated="true"] span {
-    animation-name: roman-voice-wave;
-    animation-duration: 1.4s;
-    animation-timing-function: ease-in-out;
-    animation-iteration-count: infinite;
-  }
-
   @keyframes roman-voice-wave {
     0%,
     100% {
@@ -347,13 +333,6 @@
     }
     50% {
       transform: scaleY(1);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .roman-voice-waveform[data-animated="true"] span {
-      animation: none;
-      transform: scaleY(0.65);
     }
   }
 
@@ -374,7 +353,7 @@
   }
 
   .roman-voice-notice {
-    @apply mt-[6px] block px-[10px] text-[12px] leading-[18px] text-[#797366];
+    @apply min-w-0 flex-1 px-[12px] text-[12px] leading-[18px] text-[#797366];
   }
 
   .roman-voice-controls {
@@ -533,12 +512,6 @@
       max-width: 130px;
       padding-left: 16px;
       opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .roman-action-label {
-      transition: none;
     }
   }
 

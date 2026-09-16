@@ -234,12 +234,12 @@ function Assistant({
           ) : (
             <Welcome logoUrl={logoUrl} />
           )}
+          <ReplyActivity
+            state={state}
+            ending={ending}
+            onContentChange={followConversation}
+          />
         </div>
-        <ReplyActivity
-          state={state}
-          ending={ending}
-          onContentChange={followConversation}
-        />
         {state.approval && (
           <ToolApproval approval={state.approval} session={session} />
         )}

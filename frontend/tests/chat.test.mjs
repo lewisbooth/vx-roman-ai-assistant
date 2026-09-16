@@ -1099,7 +1099,6 @@ test("the voice composer and dock synchronize mute state and restore the mounted
   const bar = ctx.container.querySelector(".roman-voice-composer > .roman-voice-bar");
   const waveform = bar.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
-  assert.equal(waveform.dataset.animated, "true");
   assert.equal(waveform.children.length, 13);
   assert.equal(button("Mute microphone").getAttribute("title"), "Mute microphone");
   assert.equal(button("End voice").type, "button");
@@ -1114,10 +1113,12 @@ test("the voice composer and dock synchronize mute state and restore the mounted
     button("Unmute microphone").getAttribute("aria-pressed"),
     "true",
   );
-  assert.equal(waveform.dataset.animated, "false");
+  assert.equal(!!bar.querySelector(".roman-voice-waveform"), false);
+  assert.equal(bar.querySelector(".roman-voice-notice").textContent, "Microphone muted");
   assert.deepEqual(ctx.muteCalls, [true]);
   button("Unmute microphone").click();
-  await until(() => waveform.dataset.animated === "true", "Unmute did not resume the decorative waveform");
+  await until(() => bar.querySelector(".roman-voice-waveform"), "Unmute did not restore the decorative waveform");
+  assert.equal(!!bar.querySelector(".roman-voice-notice"), false);
   assert.deepEqual(ctx.muteCalls, [true, false]);
   assert.ok(button("Mute microphone", ctx.voiceDock));
   button("Stop voice", ctx.voiceDock).click();
@@ -1157,7 +1158,8 @@ test("restored remote voice can be ended explicitly without activating the micro
   assert.equal(mute.disabled, true);
   mute.click();
   assert.deepEqual(ctx.muteCalls, []);
-  assert.equal(ctx.container.querySelector(".roman-voice-waveform").dataset.animated, "false");
+  assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
+  assert.ok(ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"));
   assert.equal(ctx.input().disabled, true);
   assert.equal(ctx.input().closest("form").hidden, true);
   assert.equal(ctx.input().closest(".roman-composer").hidden, true);
@@ -1257,8 +1259,8 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
   const input = ctx.input();
   ctx.update({ voice: { status: "starting", muted: false, error: null } });
   await until(() => ctx.container.querySelector('[aria-label="End voice"]'), "Connecting voice did not expose cancellation");
-  const waveform = ctx.container.querySelector(".roman-voice-waveform");
-  assert.equal(waveform.dataset.animated, "false");
+  assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
+  assert.ok(ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"));
   assert.match(ctx.container.querySelector(".roman-voice-status").textContent, /Connecting voice/);
   assert.equal(input.closest("form").hidden, true);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
@@ -1269,7 +1271,7 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
   ctx.container.querySelector('[aria-label="End voice"]').click();
   await until(() => ctx.container.querySelector('[aria-label="End voice"]')?.disabled, "Shutdown did not disable End voice");
   assert.match(ctx.container.querySelector(".roman-voice-status").textContent, /Ending voice/);
-  assert.equal(waveform.dataset.animated, "false");
+  assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
   ctx.container.querySelector('[aria-label="End voice"]').click();
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
   assert.equal(input.value, "My saved draft before connecting");
@@ -1303,7 +1305,7 @@ test("a failed voice start leaves text usable and retries voice only after anoth
   await delay(0);
   assert.deepEqual(ctx.startVoiceCalls, ["start"], "An unrelated state update retried voice");
   ctx.container.querySelector('[aria-label="Start voice"]').click();
-  await until(() => ctx.container.querySelector(".roman-voice-waveform")?.dataset.animated === "true", "Explicit voice retry did not connect");
+  await until(() => ctx.container.querySelector(".roman-voice-waveform"), "Explicit voice retry did not connect");
   assert.equal(input.closest("form").hidden, true);
   assert.equal(ctx.input(), input);
   assert.equal(input.value, "Keep this text after a failed microphone request");
@@ -1326,7 +1328,8 @@ test("a failed voice shutdown retains an explicit retry and reveals text only af
   assert.equal(input.closest("form").hidden, true);
   assert.equal(input.closest(".roman-composer").hidden, false, "Connection diagnostics must remain visible while the form is hidden");
   assert.match(input.closest(".roman-composer").textContent, /Connection needs attention/);
-  assert.equal(ctx.container.querySelector(".roman-voice-waveform").dataset.animated, "false");
+  assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
+  assert.ok(ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"));
   const mute = ctx.container.querySelector('[aria-label="Unmute microphone"]');
   assert.equal(mute.disabled, true);
   mute.click();
@@ -1696,7 +1699,7 @@ test("reply activity covers submission and the real empty text part, survives ch
   assert.equal(activity().textContent, "Roman is thinking…");
   assert.equal(activity().getAttribute("role"), "status");
   assert.equal(activity().getAttribute("aria-atomic"), "true");
-  assert.equal(ctx.container.querySelector(".roman-chat-scroll").contains(activity()), false);
+  assert.equal(ctx.container.querySelector(".roman-chat-scroll").contains(activity()), true);
   const user = message("request", "user", "Help me choose a blind");
   const pendingReply = {
     ...message("reply", "assistant", "", "pending"),

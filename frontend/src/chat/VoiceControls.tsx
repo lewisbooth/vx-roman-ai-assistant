@@ -56,6 +56,7 @@ export function VoiceControls({
     void operation.catch(() => undefined);
   };
   const active = voice.status === "active" && !waiting;
+  const showWaveform = active && !voice.muted;
   const muteLabel = voice.muted ? "Unmute microphone" : "Mute microphone";
   const stopLabel = dock ? "Stop voice" : "End voice";
   const status = waiting
@@ -152,26 +153,22 @@ export function VoiceControls({
         </>
       ) : (
         (needsStop || waiting) && (
-          <>
-            <div className="roman-voice-bar">
-              <div
-                className="roman-voice-waveform"
-                aria-hidden="true"
-                data-animated={active && !voice.muted}
-              >
-                {Array.from({ length: 13 }, (_, index) => (
-                  <span key={index} />
-                ))}
-              </div>
-              <div className="roman-voice-actions">{controls}</div>
-            </div>
+          <div className="roman-voice-bar">
             <span
-              className={`roman-voice-status ${active && !voice.muted ? "sr-only" : "roman-voice-notice"}`}
+              className={`roman-voice-status ${showWaveform ? "sr-only" : "roman-voice-notice"}`}
               role="status"
             >
               {status}
             </span>
-          </>
+            {showWaveform && (
+              <div className="roman-voice-waveform" aria-hidden="true">
+                {Array.from({ length: 13 }, (_, index) => (
+                  <span key={index} />
+                ))}
+              </div>
+            )}
+            <div className="roman-voice-actions">{controls}</div>
+          </div>
         )
       )}
       {voice.error && (

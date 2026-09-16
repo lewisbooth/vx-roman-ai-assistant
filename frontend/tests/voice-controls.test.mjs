@@ -57,7 +57,6 @@ test("active voice presents decorative activity and labelled mute/end actions", 
   render({ voice: { status: "active", muted: false, error: null } });
   const waveform = container.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
-  assert.equal(waveform.getAttribute("data-animated"), "true");
   assert.equal(waveform.children.length, 13);
   assert.equal(
     container.querySelector('[role="status"]').textContent,
@@ -75,16 +74,12 @@ test("active voice presents decorative activity and labelled mute/end actions", 
   render({ voice: { status: "active", muted: true, error: null } });
   const unmute = container.querySelector('[aria-label="Unmute microphone"]');
   assert.equal(unmute.getAttribute("aria-pressed"), "true");
-  assert.equal(
-    container
-      .querySelector(".roman-voice-waveform")
-      .getAttribute("data-animated"),
-    "false",
-  );
+  assert.equal(!!container.querySelector(".roman-voice-waveform"), false);
   assert.equal(
     container.querySelector('[role="status"]').textContent,
     "Microphone muted",
   );
+  assert.ok(container.querySelector(".roman-voice-bar > .roman-voice-notice"));
   unmute.click();
   container.querySelector('[aria-label="End voice"]').click();
   assert.deepEqual(calls, [["mute", true], ["mute", false], ["stop"]]);
@@ -110,12 +105,8 @@ test("connecting, stopping, restored and uncertain voice remain stoppable with i
     const end = container.querySelector('[aria-label="End voice"]');
     assert.equal(mute.disabled, true);
     mute.click();
-    assert.equal(
-      container
-        .querySelector(".roman-voice-waveform")
-        .getAttribute("data-animated"),
-      "false",
-    );
+    assert.equal(!!container.querySelector(".roman-voice-waveform"), false);
+    assert.ok(container.querySelector(".roman-voice-bar > .roman-voice-notice"));
     assert.equal(end.disabled, props.voice.status === "stopping");
     const before = calls.length;
     end.click();

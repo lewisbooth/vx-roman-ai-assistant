@@ -102,6 +102,9 @@ export default defineConfig(({ mode }) => ({
   },
   server: { host: "127.0.0.1", port: 5173, strictPort: true },
   build: {
+    // Native private fields keep the initial script below Shopify's 10 KB cap.
+    // Tailwind 4 already requires browsers newer than ES2022 support.
+    target: mode === "bootstrap" ? "es2022" : undefined,
     outDir: fileURLToPath(
       new URL("../extensions/vx-roman-ai-assistant/assets", import.meta.url),
     ),

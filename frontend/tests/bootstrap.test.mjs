@@ -137,6 +137,29 @@ function hidden(element) {
   return !element || !!element.closest("[hidden]");
 }
 
+function addVisibleHeader(document) {
+  const header = document.createElement("main-header");
+  const utilities = document.createElement("div");
+  utilities.className = "header__utilities";
+  const account = document.createElement("a");
+  account.dataset.testid = "menu-account-link";
+  account.getClientRects = () => [{ width: 1, height: 1 }];
+  utilities.append(account);
+  header.append(utilities);
+  document.body.prepend(header);
+  return { header, account };
+}
+
+function headerLauncher(document) {
+  return document.querySelector("[data-roman-header-launcher]");
+}
+
+function headerButton(document) {
+  return headerLauncher(document)?.shadowRoot?.querySelector(
+    "[data-roman-launcher]",
+  );
+}
+
 test("the production bootstrap excludes React, the app and storefront navigation", () => {
   const inputs = Object.keys(bundle.metafile.inputs).join("\n");
   assert.doesNotMatch(
@@ -708,6 +731,89 @@ test("readiness completion after disconnection cannot reopen or retain the old r
     false,
   );
   assert.equal(document.querySelector("style[data-roman-layout]"), null);
+});
+
+test("a visible theme header receives an accessible launcher that controls the existing sidebar", async (t) => {
+  const ctx = setup(t);
+  const { account } = addVisibleHeader(ctx.document);
+  await until(
+    () => !!headerButton(ctx.document),
+    "header launcher was not attached beside the visible account link",
+  );
+  const host = headerLauncher(ctx.document);
+  const button = headerButton(ctx.document);
+  assert.equal(account.nextElementSibling, host);
+  assert.equal(button.getAttribute("aria-label"), "Roman AI Assistant");
+  assert.equal(button.getAttribute("aria-expanded"), "false");
+  assert.equal(ctx.launcher().hidden, true);
+  button.click();
+  assert.equal(hidden(ctx.panel()), false);
+  assert.equal(button.getAttribute("aria-expanded"), "true");
+  assert.equal(ctx.launcher().getAttribute("aria-expanded"), "true");
+  ctx.close().click();
+  assert.equal(ctx.document.activeElement, host);
+  assert.equal(host.shadowRoot.activeElement, button);
+});
+
+test("header replacement preserves the open runtime and moves close focus to the replacement launcher", async (t) => {
+  const ctx = setup(t);
+  const first = addVisibleHeader(ctx.document);
+  await until(
+    () => !!headerButton(ctx.document),
+    "first header launcher was not attached",
+  );
+  headerButton(ctx.document).click();
+  const mounts = installRuntime(ctx.window);
+  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+  await until(
+    () => mounts.length === 1 && hidden(ctx.progress()),
+    "runtime did not become ready",
+  );
+  const replacement = addVisibleHeader(ctx.document);
+  first.header.remove();
+  await until(
+    () => {
+      const launcher = headerLauncher(ctx.document);
+      return !!launcher && replacement.account.nextElementSibling === launcher;
+    },
+    "header launcher was not moved to the replacement header",
+  );
+  const replacementHost = headerLauncher(ctx.document);
+  const replacementButton = headerButton(ctx.document);
+  assert.equal(hidden(ctx.panel()), false);
+  assert.equal(replacementButton.getAttribute("aria-expanded"), "true");
+  assert.equal(mounts.length, 1);
+  assert.equal(mounts[0].disposed, 0);
+  ctx.close().click();
+  assert.equal(ctx.document.activeElement, replacementHost);
+  assert.equal(replacementHost.shadowRoot.activeElement, replacementButton);
+});
+
+test("header launcher falls back when its hook disappears and is removed with the embed", async (t) => {
+  const ctx = setup(t);
+  const visible = addVisibleHeader(ctx.document);
+  await until(
+    () => !!headerLauncher(ctx.document),
+    "header launcher was not attached",
+  );
+  visible.account.getClientRects = () => [];
+  ctx.window.dispatchEvent(new ctx.window.Event("resize"));
+  await until(
+    () => !headerLauncher(ctx.document),
+    "hidden header hook did not remove its launcher",
+  );
+  assert.equal(ctx.launcher().hidden, false);
+  ctx.host.remove();
+  await delay(0);
+  const replacement = addVisibleHeader(ctx.document);
+  await delay(20);
+  assert.equal(
+    !!replacement.account.nextElementSibling?.hasAttribute(
+      "data-roman-header-launcher",
+    ),
+    false,
+    "a removed app embed must not retain a header observer",
+  );
 });
 
 test("the actual React runtime keeps its rendered content and storefront state across close and reopen", async (t) => {
