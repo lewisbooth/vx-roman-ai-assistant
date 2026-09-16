@@ -134,3 +134,25 @@ export function summarizeCart(cart: StoreCart): CartSnapshot {
 export async function getCart(signal: AbortSignal): Promise<CartSnapshot> {
   return summarizeCart(await getStoreCart(signal));
 }
+
+/** Theme cart events must confirm the exact variant's quantity increased. */
+export function cartVariantQuantity(cart: unknown, variantId: string): number | null {
+  if (!cart || typeof cart !== "object") return null;
+  const items = (cart as { items?: unknown }).items;
+  if (!Array.isArray(items)) return null;
+  let quantity = 0;
+  for (const item of items) {
+    if (!item || typeof item !== "object") return null;
+    const record = item as { variant_id?: unknown; quantity?: unknown };
+    if (
+      typeof record.variant_id !== "number" ||
+      !Number.isSafeInteger(record.variant_id) ||
+      record.variant_id <= 0 ||
+      typeof record.quantity !== "number" ||
+      !Number.isSafeInteger(record.quantity) ||
+      record.quantity < 0
+    ) return null;
+    if (String(record.variant_id) === variantId) quantity += record.quantity;
+  }
+  return Number.isSafeInteger(quantity) ? quantity : null;
+}

@@ -264,6 +264,20 @@ export function ConversationTimeline({
                     )}
                   </div>
                 );
+              if (part.type === "cart_sample_added")
+                return (
+                  <div key={index}>
+                    <p>
+                      Sample added to cart:{" "}
+                      <TranscriptLink
+                        value={part.sample.productPath}
+                        origin={origin}
+                      >
+                        {part.sample.title}
+                      </TranscriptLink>
+                    </p>
+                  </div>
+                );
               if (part.type === "voice") {
                 const text = voiceCaptionText(part.text);
                 if (!text) return null;

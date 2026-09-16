@@ -19,6 +19,7 @@ const {
   parseCartCall,
   parseCartResult,
   parseCartAddedProduct,
+  parseCartAddedSample,
   isCartMutation,
   requiresCartConfirmation,
 } = module.exports;
@@ -44,20 +45,37 @@ test("cart schemas have exact operation arguments and never accept model-supplie
     assert.ok(!("confirmed" in definition.parameters.properties));
     assert.equal(
       requiresCartConfirmation(definition.name),
-      !["get_cart", "add_to_cart"].includes(definition.name),
+      !["get_cart", "add_to_cart", "add_sample_to_cart"].includes(
+        definition.name,
+      ),
     );
-    assert.equal(isCartMutation(definition.name), definition.name !== "get_cart");
+    assert.equal(
+      isCartMutation(definition.name),
+      definition.name !== "get_cart",
+    );
   }
   for (const [name, input] of [
     ["get_cart", {}],
     ["clear_cart", {}],
     ["add_to_cart", { productPath: "/en-gb/products/shade/" }],
+    ["add_sample_to_cart", { productPath: "/en-gb/products/shade/" }],
     ["remove_from_cart", { lineKey: "123:abc" }],
     ["set_cart_quantity", { lineKey: "123:abc", quantity: 2 }],
   ]) {
     assert.equal(parseCartCall(name, input).name, name);
     assert.throws(() => parseCartCall(name, { ...input, confirmed: true }));
   }
+  for (const path of [
+    "/products/x?variant=123",
+    "/products/x?variant=not-a-number",
+    "/products/x?colour=black",
+    "/products/x#sample",
+    "/collections/all",
+  ])
+    assert.throws(
+      () => parseCartCall("add_sample_to_cart", { productPath: path }),
+      path,
+    );
   for (const path of [
     "//other.example/products/x",
     "/cart/123:1",
@@ -134,6 +152,60 @@ test("confirmed additions carry only actual bounded public product facts", () =>
       message: "Updated.",
       cart,
       addedProduct: product,
+    }),
+  );
+});
+
+test("confirmed sample additions remain distinct from full product additions", () => {
+  const sample = {
+    productPath: "/en-gb/products/shade",
+    title: "BiFold Matte Black Venetian - 16mm Slat",
+  };
+  const result = {
+    status: "added",
+    message: "The theme confirmed the sample addition.",
+    addedSample: sample,
+  };
+  assert.deepEqual(parseCartResult("add_sample_to_cart", result), result);
+  assert.notEqual(parseCartAddedSample(sample), sample);
+  assert.deepEqual(
+    parseCartResult("add_sample_to_cart", {
+      status: "unsupported",
+      message: "Samples are not available for this product.",
+    }),
+    {
+      status: "unsupported",
+      message: "Samples are not available for this product.",
+    },
+  );
+  assert.deepEqual(
+    parseCartResult("add_sample_to_cart", {
+      status: "already_in_cart",
+      message: "That sample is already in your cart.",
+    }),
+    {
+      status: "already_in_cart",
+      message: "That sample is already in your cart.",
+    },
+  );
+  for (const value of [
+    { status: "added", message: "Missing sample." },
+    { ...result, quantityAdded: 1 },
+    {
+      ...result,
+      addedProduct: { productPath: "/products/shade", title: "Blind" },
+    },
+    {
+      ...result,
+      addedSample: { ...sample, productPath: "/products/shade?variant=no" },
+    },
+    { ...result, addedSample: { ...sample, title: " " } },
+  ])
+    assert.throws(() => parseCartResult("add_sample_to_cart", value));
+  assert.throws(() =>
+    parseCartResult("add_to_cart", {
+      status: "unsupported",
+      message: "Not a full-product outcome.",
     }),
   );
 });

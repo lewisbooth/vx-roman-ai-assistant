@@ -86,7 +86,7 @@ export const applyMeasurementsToolDefinition = {
   type: "function",
   name: "apply_measurements",
   description:
-    "Fill the current product width and drop inputs after the customer has confirmed the pair and units in the conversation and chosen this product. Only an order-kind draft containing those confirmed input values can be applied. Use after set_measurements for configure/fill requests; there is no additional on-screen approval. This does not convert units, select mounting, validate fitting suitability, submit the form or add to cart. Window measurements must never be applied as order dimensions.",
+    "Fill the current product width and drop inputs after the customer has confirmed the pair and units in the conversation and chosen this product. Only an order-kind draft containing those confirmed input values can be applied. Use after set_measurements for configure/fill requests; there is no additional on-screen approval. It selects the confirmed mm/cm/in display unit, fills the dimensions, invokes the supported theme's native quote or Continue customizing step when required, and waits for pricing. It does not convert or round the customer's values, select mounting, validate fitting suitability, purchase or add to cart. Window measurements must never be applied as order dimensions.",
   strict: true,
   parameters: {
     type: "object",

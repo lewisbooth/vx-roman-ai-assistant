@@ -126,6 +126,18 @@ export function Timeline({
                     </StorefrontLink>
                   </p>
                 );
+              if (part.type === "cart_sample_added")
+                return (
+                  <p
+                    key={index}
+                    className="roman-inline-event roman-cart-added"
+                  >
+                    Roman added a sample of {part.sample.title} to your cart{" "}
+                    <StorefrontLink url="/cart" navigation={navigation}>
+                      View Cart
+                    </StorefrontLink>
+                  </p>
+                );
               if (part.type === "voice_event")
                 return (
                   <p

@@ -54,6 +54,9 @@ function Assistant({
   const [toolsOpen, setToolsOpen] = useState(false);
   const [answering, setAnswering] = useState(false);
   const answeringRef = useRef(false);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const voice = state.voice;
   const localVoice =
     voice.status === "starting" ||
@@ -65,11 +68,47 @@ function Assistant({
     (state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active");
   const voiceMode = localVoice || waitingForVoice;
+  const textBusy =
+    ending ||
+    answering ||
+    sending ||
+    voiceMode ||
+    state.pending ||
+    state.restoring ||
+    !!state.conversation?.busy;
   const previousVoiceMode = useRef(voiceMode);
   const activeQuestion =
     state.conversation?.status === "active"
       ? latestQuestion(messages ?? [])
       : undefined;
+
+  async function sendMessage(text: string) {
+    if (sendingRef.current || textBusy)
+      throw new Error("Wait for Roman's current reply.");
+    sendingRef.current = true;
+    setSending(true);
+    setStartError(null);
+    try {
+      following.current = true;
+      await session.sendMessage(text);
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  }
+
+  async function startTopic(text: string) {
+    if (sendingRef.current || textBusy) return;
+    try {
+      await sendMessage(text);
+    } catch (error) {
+      setStartError(
+        error instanceof Error
+          ? error.message
+          : "Your message could not be sent. Please retry.",
+      );
+    }
+  }
 
   async function answerQuestion(part: QuestionPart, answer: string) {
     const current = session.getSnapshot();
@@ -116,6 +155,7 @@ function Assistant({
     setEndError(null);
     try {
       await session.end();
+      setStartError(null);
       following.current = true;
       if (viewport.current) viewport.current.scrollTop = 0;
       setChatVersion((value) => value + 1);
@@ -231,7 +271,11 @@ function Assistant({
               onAnswer={answerQuestion}
             />
           ) : (
-            <Welcome logoUrl={logoUrl} />
+            <Welcome
+              logoUrl={logoUrl}
+              busy={textBusy}
+              onStart={(text) => void startTopic(text)}
+            />
           )}
           <ReplyActivity
             state={state}
@@ -267,24 +311,14 @@ function Assistant({
         <Composer
           key={chatVersion}
           hidden={voiceMode}
-          busy={
-            ending ||
-            answering ||
-            localVoice ||
-            waitingForVoice ||
-            state.pending ||
-            state.restoring ||
-            !!state.conversation?.busy
-          }
-          error={state.error || endError}
+          busy={textBusy}
+          error={state.error || startError || endError}
           onClearError={() => {
             setEndError(null);
+            setStartError(null);
             session.clearError();
           }}
-          onSend={(text) => {
-            following.current = true;
-            return session.sendMessage(text);
-          }}
+          onSend={sendMessage}
           onStartVoice={
             !localVoice && !waitingForVoice
               ? () => session.startVoice()

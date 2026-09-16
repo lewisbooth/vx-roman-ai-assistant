@@ -353,6 +353,42 @@ test("inspection renders confirmed cart additions as literal product facts and o
   assert.doesNotMatch(container.textContent, /Width|Drop|undefined/);
 });
 
+test("inspection identifies confirmed sample additions without calling them products", (t) => {
+  const { render, container } = setupView(t);
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [
+      {
+        id: "sample-addition",
+        role: "context",
+        status: "complete",
+        createdAt: NOW,
+        parts: [
+          {
+            type: "cart_sample_added",
+            version: 1,
+            invocationId: ID,
+            sample: {
+              productPath: "/products/shade",
+              title: "<img src=x onerror=alert(1)> sample",
+            },
+          },
+        ],
+      },
+    ],
+  });
+  assert.match(
+    container.textContent,
+    /Sample added to cart: <img src=x onerror=alert\(1\)> sample/,
+  );
+  assert.doesNotMatch(container.textContent, /^Added to cart:/);
+  assert.equal(container.querySelector("img"), null);
+  assert.equal(
+    container.querySelector("a").href,
+    `${ORIGIN}/products/shade`,
+  );
+});
+
 test("inspection retains saved timeline order and safely renders text, voice, visits and widget references", (t) => {
   const { render, container } = setupView(t);
   render("ConversationTimeline", {

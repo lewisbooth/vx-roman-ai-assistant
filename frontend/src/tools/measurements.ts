@@ -1,142 +1,282 @@
-import type { MeasurementDraft } from "../../../shared/measurements";
+import type {
+  ApplyMeasurementsResult,
+  MeasurementDraft,
+} from "../../../shared/measurements";
+import type { ProductMeasurements } from "../../../shared/product-configuration";
+import {
+  controlVisible,
+  currentProductForm,
+  isCurrentProduct,
+  notifyProductControl,
+} from "./product-controls";
+import { settleProductPrice } from "./product-pricing";
 
 const unavailable =
-  "These measurements need the product's own controls. Open the matching product with the same mm or cm unit, then review its measurements and fitting option.";
+  "These measurements need the product's own supported controls. Review its units, dimensions and fitting option on the matching product page.";
+type NumericControl = HTMLInputElement | HTMLSelectElement;
+const themeUnit = { mm: "mm", cm: "cm", in: "inches" } as const;
+const publicUnit = (unit: string): ProductMeasurements["unit"] =>
+  unit === "inches" ? "in" : unit === "mm" || unit === "cm" ? unit : null;
 
-function canonicalProductPath() {
-  const match =
-    /^(?:\/[a-z]{2}(?:-[a-z]{2})?)?(?:\/collections\/[^/]+)?\/products\/([^/]+)\/?$/i.exec(
-      window.location.pathname,
-    );
-  return match ? `/products/${match[1]}` : null;
-}
-
-function numericInput(group: Element, selector: string, value: number) {
-  const inputs = group.querySelectorAll(selector);
-  if (inputs.length !== 1 || !(inputs[0] instanceof HTMLInputElement))
-    throw new Error(unavailable);
-  const input = inputs[0];
-  for (
-    let element: Element | null = input;
-    element;
-    element = element.parentElement
-  ) {
-    const style = window.getComputedStyle(element);
-    if (
-      style.display === "none" ||
-      style.visibility === "hidden" ||
-      style.visibility === "collapse"
-    )
-      throw new Error(unavailable);
-  }
-  if (
-    input.type !== "number" ||
-    input.disabled ||
-    input.readOnly ||
-    input.closest('[hidden],[inert],[aria-hidden="true"]')
-  )
-    throw new Error(unavailable);
-  // Validate a detached native control first, so invalid dimensions never alter
-  // a live field or trigger theme pricing. Shopify owns its limits and steps.
-  const probe = input.cloneNode(false) as HTMLInputElement;
-  probe.value = String(value);
-  if (probe.valueAsNumber !== value || !probe.checkValidity())
-    throw new Error(
-      "The saved dimension does not match the product's allowed range or increments. Review it in the product controls.",
-    );
-  return input;
-}
-
-function inspectMeasurementApplication(draft: MeasurementDraft) {
-  if (
-    draft.kind !== "order" ||
-    !["mm", "cm"].includes(draft.unit) ||
-    canonicalProductPath() !== draft.productPath ||
-    !document.body.classList.contains("template-product") ||
-    new URL(window.location.href).searchParams.has("line")
-  )
-    throw new Error(unavailable);
-  const forms = document.querySelectorAll<HTMLFormElement>(
-    "app-provider > main#main dynamic-pricing > form[data-dynamic-pricing-form]",
-  );
-  if (forms.length !== 1) throw new Error(unavailable);
-  const form = forms[0];
+function measurementControls(form: HTMLFormElement) {
   const components = form.querySelectorAll<HTMLElement>(
     "dynamic-pricing-measurements",
   );
   if (components.length !== 1) throw new Error(unavailable);
-  const component = components[0];
-  const definition = customElements.get(component.localName);
+  const component = components[0],
+    definition = customElements.get(component.localName);
   if (
     !definition ||
     !(component instanceof definition) ||
-    !component.isConnected ||
     !component.shadowRoot?.querySelector("slot") ||
-    form.matches(".loading,.adding,.blocking,.variant-loading") ||
-    form.closest("dynamic-pricing.loading")
+    !controlVisible(component)
   )
     throw new Error(unavailable);
   const units = component.querySelectorAll<HTMLSelectElement>(
     "select[data-measurement-select]",
   );
-  const groups = component.querySelectorAll("[data-active-input-measurement]");
   if (
     units.length !== 1 ||
-    units[0].disabled ||
-    units[0].value !== draft.unit ||
-    groups.length !== 1 ||
-    groups[0].getAttribute("data-input-measurement-group") !== draft.unit
+    units[0].matches(":disabled") ||
+    units[0].form !== form ||
+    !controlVisible(units[0])
   )
     throw new Error(unavailable);
-  const width = numericInput(groups[0], "[data-width-input]", draft.width);
-  const height = numericInput(groups[0], "[data-drop-input]", draft.height);
-  if (width.form !== form || height.form !== form) throw new Error(unavailable);
-  return {
-    form,
-    component,
-    width,
-    height,
-  };
+  return { component, units: units[0] };
 }
 
-export function applyMeasurements(
+function numericControl(group: Element, selector: string): NumericControl {
+  const controls = group.querySelectorAll(selector);
+  if (controls.length !== 1) throw new Error(unavailable);
+  const control = controls[0];
+  if (
+    !(control instanceof HTMLSelectElement) &&
+    !(control instanceof HTMLInputElement && control.type === "number")
+  )
+    throw new Error(unavailable);
+  if (control instanceof HTMLSelectElement && control.multiple)
+    throw new Error(unavailable);
+  return control;
+}
+
+function validateValue(control: NumericControl, value: number) {
+  if (
+    control.matches(":disabled") ||
+    (control instanceof HTMLInputElement && control.readOnly) ||
+    !controlVisible(control)
+  )
+    throw new Error(unavailable);
+  if (control instanceof HTMLSelectElement) {
+    const options = [...control.options].filter(
+      (option) =>
+        option.value !== "" &&
+        Number(option.value) === value &&
+        !option.disabled &&
+        !option.closest("optgroup[disabled]"),
+    );
+    if (options.length !== 1)
+      throw new Error(
+        "The dimension is not one of the product's available sizes or inch fractions.",
+      );
+    return options[0].value;
+  }
+  const probe = control.cloneNode(false) as HTMLInputElement;
+  probe.value = String(value);
+  if (probe.valueAsNumber !== value || !probe.checkValidity())
+    throw new Error(
+      "The saved dimension does not match the product's allowed range or increments. Review it in the product controls.",
+    );
+  return String(value);
+}
+
+function groupFor(component: Element, unit: string) {
+  const groups = [
+    ...component.querySelectorAll("[data-input-measurement-group]"),
+  ].filter(
+    (group) => group.getAttribute("data-input-measurement-group") === unit,
+  );
+  if (groups.length !== 1) throw new Error(unavailable);
+  return groups[0];
+}
+
+function dimensions(group: Element, draft: MeasurementDraft) {
+  const width = numericControl(group, "[data-width-input]"),
+    height = numericControl(group, "[data-drop-input]");
+  if (draft.unit !== "in")
+    return [
+      { control: width, number: draft.width },
+      { control: height, number: draft.height },
+    ];
+  // Splitting an explicitly supplied inch value into the theme's whole/fraction
+  // fields changes its representation only. Never round to a supported fraction.
+  return [
+    { control: width, number: Math.floor(draft.width) },
+    {
+      control: numericControl(group, "[data-width-inches-input]"),
+      number: draft.width % 1,
+    },
+    { control: height, number: Math.floor(draft.height) },
+    {
+      control: numericControl(group, "[data-drop-inches-input]"),
+      number: draft.height % 1,
+    },
+  ];
+}
+
+export function readProductMeasurements(
+  form: HTMLFormElement,
+): ProductMeasurements | null {
+  try {
+    const { component, units } = measurementControls(form);
+    const unit = publicUnit(units.value);
+    const availableUnits = [
+      ...new Set(
+        [...units.options]
+          .filter(
+            (option) =>
+              !option.disabled && !option.closest("optgroup[disabled]"),
+          )
+          .map((option) => publicUnit(option.value))
+          .filter((unit) => unit !== null),
+      ),
+    ];
+    const result: ProductMeasurements = {
+      unit,
+      width: null,
+      height: null,
+      availableUnits,
+    };
+    if (!unit) return result;
+    const group = groupFor(component, units.value);
+    if (!group.hasAttribute("data-active-input-measurement")) return result;
+    const read = (axis: "width" | "drop") => {
+      const input = numericControl(group, `[data-${axis}-input]`);
+      const fraction =
+        unit === "in"
+          ? numericControl(group, `[data-${axis}-inches-input]`)
+          : null;
+      if (!input.value.trim() || (fraction && !fraction.value.trim()))
+        return null;
+      const value =
+        Number(input.value) + (fraction ? Number(fraction.value) : 0);
+      return Number.isFinite(value) &&
+        value > 0 &&
+        value <= Number.MAX_SAFE_INTEGER
+        ? value
+        : null;
+    };
+    result.width = read("width");
+    result.height = read("drop");
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+export async function applyMeasurements(
   draft: MeasurementDraft,
   signal: AbortSignal,
-) {
+): Promise<ApplyMeasurementsResult> {
   signal.throwIfAborted();
-  const current = inspectMeasurementApplication(draft);
-  signal.throwIfAborted();
-  // Assign both values before either event, so the theme reads one coherent pair.
-  current.width.value = String(draft.width);
-  current.height.value = String(draft.height);
-  for (const input of [current.width, current.height]) {
-    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-  }
+  if (draft.kind !== "order") throw new Error(unavailable);
+  const form = currentProductForm(draft.productPath);
+  const { component, units } = measurementControls(form);
+  const unit = themeUnit[draft.unit];
   if (
-    !current.form.isConnected ||
-    !current.component.isConnected ||
-    !current.width.isConnected ||
-    !current.height.isConnected ||
-    current.width.form !== current.form ||
-    current.height.form !== current.form ||
-    !current.component.contains(current.width) ||
-    !current.component.contains(current.height) ||
-    current.width.valueAsNumber !== draft.width ||
-    current.height.valueAsNumber !== draft.height
+    ![...units.options].some(
+      (option) =>
+        option.value === unit &&
+        !option.disabled &&
+        !option.closest("optgroup[disabled]"),
+    )
   )
-    return {
-      status: "uncertain" as const,
-      productPath: draft.productPath,
-      draftUpdatedAt: draft.updatedAt,
-      message:
-        "The theme changed the entered values. Review the product controls and price before continuing; nothing was added to the cart.",
-    };
-  return {
-    status: "applied" as const,
+    throw new Error(unavailable);
+  const target = groupFor(component, unit);
+  dimensions(target, draft); // Check the supported shape before changing any live control.
+  let changed = false;
+  const uncertain = (): ApplyMeasurementsResult => ({
+    status: "uncertain",
     productPath: draft.productPath,
     draftUpdatedAt: draft.updatedAt,
     message:
-      "Width and drop were entered in the product controls. Wait for the theme's price and check its fitting choice. Nothing was added to the cart.",
-  };
+      "The theme could not confirm the exact units and dimensions after updating. Review the product controls and price before continuing; nothing was added to the cart.",
+  });
+  try {
+    signal.throwIfAborted();
+    if (units.value !== unit) {
+      changed = true;
+      units.value = unit;
+      notifyProductControl(units);
+    }
+    signal.throwIfAborted();
+    const groups = component.querySelectorAll(
+      "[data-active-input-measurement]",
+    );
+    if (
+      !form.isConnected ||
+      !component.isConnected ||
+      !units.isConnected ||
+      units.value !== unit ||
+      groups.length !== 1 ||
+      groups[0] !== target
+    )
+      throw new Error(unavailable);
+    const fields = dimensions(target, draft).map(({ control, number }) => {
+      if (control.form !== form) throw new Error(unavailable);
+      return { control, number, value: validateValue(control, number) };
+    });
+    signal.throwIfAborted();
+    // Assign the complete pair (and inch fractions) before either event. Theme
+    // pricing always sees coherent confirmed values, never a half-written pair.
+    changed = true;
+    for (const { control, value } of fields) control.value = value;
+    for (const { control } of fields) notifyProductControl(control);
+    const finalGroups = component.querySelectorAll(
+      "[data-active-input-measurement]",
+    );
+    const finalFields = dimensions(target, draft);
+    if (
+      signal.aborted ||
+      !isCurrentProduct(draft.productPath) ||
+      !form.isConnected ||
+      !component.isConnected ||
+      !units.isConnected ||
+      units.value !== unit ||
+      finalGroups.length !== 1 ||
+      finalGroups[0] !== target ||
+      finalFields.some(
+        ({ control }, index) => control !== fields[index].control,
+      ) ||
+      fields.some(
+        ({ control, number }) =>
+          !control.isConnected ||
+          control.form !== form ||
+          !component.contains(control) ||
+          Number(control.value) !== number,
+      )
+    )
+      return uncertain();
+    const price = await settleProductPrice(form, draft.productPath, signal);
+    const measured = readProductMeasurements(form);
+    if (
+      price === "uncertain" ||
+      !isCurrentProduct(draft.productPath) ||
+      measured?.unit !== draft.unit ||
+      measured.width !== draft.width ||
+      measured.height !== draft.height
+    )
+      return uncertain();
+    return {
+      status: "applied",
+      productPath: draft.productPath,
+      draftUpdatedAt: draft.updatedAt,
+      message:
+        price === "needs_configuration"
+          ? "The confirmed units, width and drop are entered. The theme still needs product configuration before it can be added to the cart. Review its product controls; nothing was added."
+          : "The confirmed units, width and drop were entered in the product controls. Check the theme's price and fitting choice. Nothing was added to the cart.",
+    };
+  } catch (error) {
+    if (changed) return uncertain();
+    throw error;
+  }
 }

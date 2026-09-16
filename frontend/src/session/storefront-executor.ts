@@ -15,6 +15,7 @@ import {
   type NavigationResult,
 } from "../../../shared/navigation-tool";
 import type { AssistantTools } from "../tools";
+import { inspectSampleProduct } from "../tools/product-sample";
 import {
   parseProductGuidesCall,
   parseProductGuidesResult,
@@ -26,6 +27,12 @@ import {
   requiresCartConfirmation,
   type CartToolResult,
 } from "../../../shared/cart-tools";
+import {
+  isProductConfigurationTool,
+  parseProductConfigurationCall,
+  parseProductConfigurationResult,
+  type ProductConfigurationResult,
+} from "../../../shared/product-configuration";
 import {
   parseApplyMeasurementsCommand,
   parseApplyMeasurementsResult,
@@ -48,6 +55,7 @@ export type BrowserToolResult =
   | CatalogResult
   | NavigationResult
   | CartToolResult
+  | ProductConfigurationResult
   | ApplyMeasurementsResult
   | ProductGuidesResult;
 export type PreparedToolApproval = ToolApprovalReview;
@@ -278,10 +286,15 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<NavigationResult>;
   function execute(
-    name: "get_cart" | "add_to_cart",
+    name: "get_cart" | "add_to_cart" | "add_sample_to_cart",
     input: unknown,
     signal?: AbortSignal,
   ): Promise<CartToolResult>;
+  function execute(
+    name: "get_product_configuration" | "configure_product",
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<ProductConfigurationResult>;
   function execute(
     name: "get_product_guides",
     input: unknown,
@@ -304,7 +317,7 @@ export function createStorefrontExecutor(
         async (signal) =>
           // Inspect and fill together only after this foreground job is admitted.
           parseApplyMeasurementsResult(
-            applyMeasurements(command.draft, signal),
+            await applyMeasurements(command.draft, signal),
           ),
         signal,
       );
@@ -348,6 +361,38 @@ export function createStorefrontExecutor(
             call.name,
             await tools.execute(call.name, {}, signal),
           );
+        },
+        signal,
+      );
+    }
+    if (name === "add_sample_to_cart") {
+      const call = parseCartCall(name, input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          signal.throwIfAborted();
+          return parseCartResult(
+            call.name,
+            await tools.execute(call.name, call.arguments, signal),
+          );
+        },
+        signal,
+      );
+    }
+    if (isProductConfigurationTool(name)) {
+      const call = parseProductConfigurationCall(name, input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          const result = parseProductConfigurationResult(
+            call.name,
+            await tools.execute(call.name, call.arguments, signal),
+          );
+          if (result.productPath !== call.arguments.productPath)
+            throw new Error(
+              "The storefront returned choices for a different product.",
+            );
+          return result;
         },
         signal,
       );
@@ -403,10 +448,25 @@ export function createStorefrontExecutor(
         const { path } = parseNavigationCall({
           path: `${url.pathname}${url.search}${url.hash}`,
         });
+        let sampleAvailable = false;
+        if (
+          /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/[^/?#]+\/?(?:\?variant=\d+)?$/i.test(
+            path,
+          )
+        )
+          try {
+            inspectSampleProduct(path.split("?", 1)[0]);
+            sampleAvailable = true;
+          } catch {
+            // Missing or uninitialized sample controls are not an offered action.
+          }
         return {
           status: "navigated" as const,
           path,
           title: storefrontPageTitle(url.pathname),
+          ...(path.includes("/products/")
+            ? { actions: { sampleAvailable } }
+            : {}),
         };
       },
       signal,

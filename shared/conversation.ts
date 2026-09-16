@@ -1,7 +1,16 @@
 export type MessageStatus = "pending" | "complete" | "failed";
 
-import type { VoiceCaptionPart, VoiceEventPart, VoiceSessionSnapshot } from "./voice";
-import type { CartAddedProduct, CartToolName } from "./cart-tools";
+import type {
+  VoiceCaptionPart,
+  VoiceEventPart,
+  VoiceSessionSnapshot,
+} from "./voice";
+import type {
+  CartAddedProduct,
+  CartAddedSample,
+  CartToolName,
+} from "./cart-tools";
+import type { ProductConfigurationToolName } from "./product-configuration";
 import type { ProductGuide } from "./product-guides";
 import type { QuestionPart, QuestionAnswerReference } from "./questions";
 import type { NavigationPart } from "./navigation-tool";
@@ -47,6 +56,13 @@ export interface CartAddedPart {
   product: CartAddedProduct;
 }
 
+export interface CartSampleAddedPart {
+  type: "cart_sample_added";
+  version: 1;
+  invocationId: string;
+  sample: CartAddedSample;
+}
+
 export type ConversationPart =
   | TextPart
   | ProductListPart
@@ -54,6 +70,7 @@ export type ConversationPart =
   | QuestionPart
   | NavigationPart
   | CartAddedPart
+  | CartSampleAddedPart
   | PageViewPart
   | VoiceEventPart
   | VoiceCaptionPart;
@@ -64,6 +81,7 @@ export type CatalogToolName =
 export type BrowserToolName =
   | CatalogToolName
   | CartToolName
+  | ProductConfigurationToolName
   | "navigate"
   | "apply_measurements"
   | "get_product_guides";

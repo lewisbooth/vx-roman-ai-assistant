@@ -19,10 +19,20 @@ test("navigation results accept old executors and literal bounded titles; notifi
   const result = { status: "navigated", path: "/search?q=roller#results" };
   assert.deepEqual(parseNavigationResult(result), result);
   assert.deepEqual(
+    parseNavigationResult({
+      ...result,
+      actions: { sampleAvailable: true },
+    }),
+    { ...result, actions: { sampleAvailable: true } },
+  );
+  assert.deepEqual(
     parseNavigationResult({ ...result, title: "  <Shade> & **Blinds**  " }),
     { ...result, title: "<Shade> & **Blinds**" },
   );
   for (const invalid of [
+    { ...result, actions: {} },
+    { ...result, actions: { sampleAvailable: "yes" } },
+    { ...result, actions: { sampleAvailable: false, other: true } },
     null,
     { ...result, status: "pending" },
     { ...result, path: "/account" },

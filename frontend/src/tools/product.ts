@@ -2,6 +2,7 @@ import {
   parseCartCall,
   type CartAddedProduct,
 } from "../../../shared/cart-tools";
+import { cartVariantQuantity } from "./cart";
 
 type PricingElement = HTMLElement & { variantId?: unknown; cart?: unknown };
 type ProductActionResult = {
@@ -13,26 +14,7 @@ type ProductActionResult = {
 
 const pendingProducts = new WeakSet<Element>();
 
-function variantQuantity(cart: unknown, variantId: string): number | null {
-  if (!cart || typeof cart !== "object") return null;
-  const items = (cart as { items?: unknown }).items;
-  if (!Array.isArray(items)) return null;
-  let quantity = 0;
-  for (const item of items) {
-    if (!item || typeof item !== "object") return null;
-    const record = item as { variant_id?: unknown; quantity?: unknown };
-    if (
-      typeof record.quantity !== "number" ||
-      !Number.isSafeInteger(record.quantity) ||
-      record.quantity < 0
-    )
-      return null;
-    if (String(record.variant_id) === variantId) quantity += record.quantity;
-  }
-  return Number.isSafeInteger(quantity) ? quantity : null;
-}
-
-export function inspectConfiguredProduct(productPath?: string) {
+export function inspectProductPage(productPath?: string) {
   if (
     productPath !== undefined &&
     window.location.pathname.replace(/\/$/, "") !== productPath
@@ -48,7 +30,10 @@ export function inspectConfiguredProduct(productPath?: string) {
     throw new Error(
       "This page is editing an existing cart item. Finish that edit in the storefront first.",
     );
+}
 
+export function inspectConfiguredProduct(productPath?: string) {
+  inspectProductPage(productPath);
   const forms = document.querySelectorAll<HTMLFormElement>(
     "app-provider > main#main dynamic-pricing > form[data-dynamic-pricing-form]",
   );
@@ -187,7 +172,7 @@ export async function addConfiguredProduct(
 
   const variantId = String(product.variantId ?? "");
   const previousQuantity = /^\d+$/.test(variantId)
-    ? variantQuantity(product.cart, variantId)
+    ? cartVariantQuantity(product.cart, variantId)
     : null;
   pendingProducts.add(product);
 
@@ -248,7 +233,7 @@ export async function addConfiguredProduct(
         previousQuantity === null
       )
         return;
-      const quantity = variantQuantity(
+      const quantity = cartVariantQuantity(
         (event as CustomEvent<unknown>).detail,
         variantId,
       );

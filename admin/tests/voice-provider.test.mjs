@@ -247,7 +247,7 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
   );
   assert.match(
     request.session.instructions,
-    /Wait for the backend to confirm that the theme added it before claiming success/,
+    /Wait for the backend to confirm the specific product or sample added before claiming success/,
   );
   assert.equal(options.signal.aborted, false);
   assert.deepEqual(plain(app.mock.clientOptions[0]), {

@@ -18,6 +18,7 @@ import {
   isCartMutation,
   isCartTool,
   parseCartAddedProduct,
+  parseCartAddedSample,
   parseCartCall,
   requiresCartConfirmation,
 } from "../../../shared/cart-tools";
@@ -142,6 +143,24 @@ function validCartAddedPart(value: Record<string, unknown>) {
   }
 }
 
+function validCartSampleAddedPart(value: Record<string, unknown>) {
+  if (
+    value.version !== 1 ||
+    typeof value.invocationId !== "string" ||
+    !UUID.test(value.invocationId) ||
+    Object.keys(value).some(
+      (key) => !["type", "version", "invocationId", "sample"].includes(key),
+    )
+  )
+    return false;
+  try {
+    parseCartAddedSample(value.sample);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function credential(value: unknown): value is ConversationCredential {
   if (
     !record(value) ||
@@ -231,6 +250,8 @@ function snapshot(value: unknown): value is ConversationSnapshot {
                 validVoiceEvent(part)) ||
               (part.type === "navigation" && validNavigationPart(part)) ||
               (part.type === "cart_added" && validCartAddedPart(part)) ||
+              (part.type === "cart_sample_added" &&
+                validCartSampleAddedPart(part)) ||
               (part.type === "voice" &&
                 part.version === 1 &&
                 typeof part.voiceId === "string" &&
@@ -675,7 +696,9 @@ export function createConversationClient(
     } finally {
       if (
         controller.signal.aborted &&
-        (isCartMutation(tool.name) || tool.name === "apply_measurements")
+        (isCartMutation(tool.name) ||
+          tool.name === "apply_measurements" ||
+          tool.name === "configure_product")
       ) {
         const attempt = toolAttempts.get(tool.id);
         if (attempt) {
@@ -805,14 +828,25 @@ export function createConversationClient(
                       tool.arguments,
                       signal,
                     )
-                  : tool.name === "get_cart" || tool.name === "add_to_cart"
+                  : tool.name === "get_cart" ||
+                      tool.name === "add_to_cart" ||
+                      tool.name === "add_sample_to_cart"
                     ? await executor!.execute(tool.name, tool.arguments, signal)
-                    : await executor!.execute(
-                        tool.name as
-                          "search_products" | "get_product" | "lookup_catalog",
-                        tool.arguments,
-                        signal,
-                      ),
+                    : tool.name === "get_product_configuration" ||
+                        tool.name === "configure_product"
+                      ? await executor!.execute(
+                          tool.name,
+                          tool.arguments,
+                          signal,
+                        )
+                      : await executor!.execute(
+                          tool.name as
+                            | "search_products"
+                            | "get_product"
+                            | "lookup_catalog",
+                          tool.arguments,
+                          signal,
+                        ),
         };
       } catch (error) {
         attempt.outcome = {

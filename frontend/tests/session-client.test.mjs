@@ -579,14 +579,30 @@ const needsNavigation = {
 };
 const navigationResult = { status: "navigated", path: "/cart" };
 const orderDraft = {
-  productPath: "/products/shade", width: 300, height: 400, unit: "mm",
-  kind: "order", mount: "unknown", updatedAt: "2026-09-15T10:00:00.000Z",
+  productPath: "/products/shade",
+  width: 300,
+  height: 400,
+  unit: "mm",
+  kind: "order",
+  mount: "unknown",
+  updatedAt: "2026-09-15T10:00:00.000Z",
 };
 const needsMeasurementApplication = {
   ...needsTool,
-  tools: [{ ...needsTool.tools[0], name: "apply_measurements", arguments: { productPath: orderDraft.productPath, draft: orderDraft } }],
+  tools: [
+    {
+      ...needsTool.tools[0],
+      name: "apply_measurements",
+      arguments: { productPath: orderDraft.productPath, draft: orderDraft },
+    },
+  ],
 };
-const measurementApplicationResult = { status: "applied", productPath: orderDraft.productPath, draftUpdatedAt: orderDraft.updatedAt, message: "Filled width and drop. Nothing was added to the cart." };
+const measurementApplicationResult = {
+  status: "applied",
+  productPath: orderDraft.productPath,
+  draftUpdatedAt: orderDraft.updatedAt,
+  message: "Filled width and drop. Nothing was added to the cart.",
+};
 
 async function resume(ctx, value = complete) {
   ctx.respond(0, { ...access, conversation: value });
@@ -598,14 +614,39 @@ async function resume(ctx, value = complete) {
   );
 }
 
-test("guide tools use the claimed read path without shopper approval or catalog parsing", async t => {
-  const result = { status: "found", productPath: "/products/shade", guides: [{ kind: "measuring", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1" }] };
-  const guideTool = { ...needsTool, tools: [{ ...needsTool.tools[0], name: "get_product_guides", arguments: { productPath: result.productPath } }] };
+test("guide tools use the claimed read path without shopper approval or catalog parsing", async (t) => {
+  const result = {
+    status: "found",
+    productPath: "/products/shade",
+    guides: [
+      {
+        kind: "measuring",
+        url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1",
+      },
+    ],
+  };
+  const guideTool = {
+    ...needsTool,
+    tools: [
+      {
+        ...needsTool.tools[0],
+        name: "get_product_guides",
+        arguments: { productPath: result.productPath },
+      },
+    ],
+  };
   const executions = [];
-  const ctx = setup(t, { saved: access, executor: {
-    execute: async (...args) => { executions.push(args); return result; },
-    prepareApproval: () => assert.fail("Read-only guide tool needs no approval"),
-  } });
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: async (...args) => {
+        executions.push(args);
+        return result;
+      },
+      prepareApproval: () =>
+        assert.fail("Read-only guide tool needs no approval"),
+    },
+  });
   await resume(ctx, guideTool);
   await until(() => ctx.calls.length === 3, "Guide read was not claimed");
   assert.equal("confirmed" in ctx.calls[2].body, false);
@@ -613,21 +654,63 @@ test("guide tools use the claimed read path without shopper approval or catalog 
   ctx.respond(2, { claimed: true });
   await until(() => ctx.calls.length === 4, "Guide result was not submitted");
   assert.equal(executions[0][0], "get_product_guides");
-  assert.deepEqual(JSON.parse(JSON.stringify(executions[0][1])), { productPath: result.productPath });
+  assert.deepEqual(JSON.parse(JSON.stringify(executions[0][1])), {
+    productPath: result.productPath,
+  });
   assert.deepEqual(ctx.calls[3].body.result, result);
   ctx.respond(3, complete);
 });
 
-test("restored guide widgets validate their store origin and reject unsafe later snapshots", async t => {
-  const part = { type: "guides", version: 1, invocationId, productPath: "/products/shade", guides: [{ kind: "fitting", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=2" }], voiceReply: { voiceId: "22222222-2222-4222-8222-222222222222", afterSequence: 3 } };
-  const snapshot = { ...complete, messages: [{ ...complete.messages[1], parts: [part] }] };
+test("restored guide widgets validate their store origin and reject unsafe later snapshots", async (t) => {
+  const part = {
+    type: "guides",
+    version: 1,
+    invocationId,
+    productPath: "/products/shade",
+    guides: [
+      {
+        kind: "fitting",
+        url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=2",
+      },
+    ],
+    voiceReply: {
+      voiceId: "22222222-2222-4222-8222-222222222222",
+      afterSequence: 3,
+    },
+  };
+  const snapshot = {
+    ...complete,
+    messages: [{ ...complete.messages[1], parts: [part] }],
+  };
   const ctx = setup(t, { saved: access });
   await resume(ctx, snapshot);
   const restored = ctx.client.getSnapshot().conversation;
-  assert.deepEqual(JSON.parse(JSON.stringify(restored.messages[0].parts[0])), part);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(restored.messages[0].parts[0])),
+    part,
+  );
   ctx.client.clearError();
-  ctx.respond(2, { ...snapshot, revision: 3, messages: [{ ...snapshot.messages[0], parts: [{ ...part, guides: [{ kind: "fitting", url: "https://evil.example/fitting.pdf" }] }] }] });
-  await until(() => !!ctx.client.getSnapshot().error, "Unsafe guide response was accepted");
+  ctx.respond(2, {
+    ...snapshot,
+    revision: 3,
+    messages: [
+      {
+        ...snapshot.messages[0],
+        parts: [
+          {
+            ...part,
+            guides: [
+              { kind: "fitting", url: "https://evil.example/fitting.pdf" },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Unsafe guide response was accepted",
+  );
   assert.equal(ctx.client.getSnapshot().conversation, restored);
 });
 
@@ -676,17 +759,41 @@ test("confirmed navigation notifications survive response validation and unsafe 
 
 test("navigation history fits alongside maximum captions, visits and text turns", async (t) => {
   const parts = [
-    ...Array.from({ length: 1200 }, () => ({ type: "voice", version: 1,
-      voiceId: "22222222-2222-4222-8222-222222222222", text: "Caption", startMs: 0, endMs: 1 })),
-    ...Array.from({ length: 200 }, () => ({ type: "page_view", version: 1,
-      title: "Storefront", path: "/", occurredAt: "2026-09-15T10:00:00Z" })),
-    ...Array.from({ length: 80 }, () => ({ type: "text", text: "A conversation turn" })),
-    ...Array.from({ length: 160 }, () => ({ type: "navigation", version: 1,
-      invocationId, title: "Shade", path: "/products/shade" })),
+    ...Array.from({ length: 1200 }, () => ({
+      type: "voice",
+      version: 1,
+      voiceId: "22222222-2222-4222-8222-222222222222",
+      text: "Caption",
+      startMs: 0,
+      endMs: 1,
+    })),
+    ...Array.from({ length: 200 }, () => ({
+      type: "page_view",
+      version: 1,
+      title: "Storefront",
+      path: "/",
+      occurredAt: "2026-09-15T10:00:00Z",
+    })),
+    ...Array.from({ length: 80 }, () => ({
+      type: "text",
+      text: "A conversation turn",
+    })),
+    ...Array.from({ length: 160 }, () => ({
+      type: "navigation",
+      version: 1,
+      invocationId,
+      title: "Shade",
+      path: "/products/shade",
+    })),
   ];
-  const saved = { ...complete, messages: parts.map((part, index) => ({
-    ...complete.messages[1], id: `history-${index}`, parts: [part],
-  })) };
+  const saved = {
+    ...complete,
+    messages: parts.map((part, index) => ({
+      ...complete.messages[1],
+      id: `history-${index}`,
+      parts: [part],
+    })),
+  };
   const ctx = setup(t, { saved: access });
   await resume(ctx, saved);
   assert.equal(ctx.client.getSnapshot().error, null);
@@ -700,7 +807,12 @@ const recommendations = {
       ...complete.messages[1],
       parts: [
         { type: "text", text: "Here are a few no-drill options." },
-        { type: "products", version: 1, invocationId, productIds: ["gid://shopify/Product/123"] },
+        {
+          type: "products",
+          version: 1,
+          invocationId,
+          productIds: ["gid://shopify/Product/123"],
+        },
         questionPart,
       ],
     },
@@ -710,10 +822,13 @@ const recommendations = {
 test("a streamed reply completes with a carousel and question through the real response validator", async (t) => {
   const streaming = {
     ...pending,
-    messages: [pending.messages[0], {
-      ...pending.messages[1],
-      parts: [{ type: "text", text: "Here are a few" }],
-    }],
+    messages: [
+      pending.messages[0],
+      {
+        ...pending.messages[1],
+        parts: [{ type: "text", text: "Here are a few" }],
+      },
+    ],
   };
   const ctx = setup(t, { saved: access });
   await resume(ctx, streaming);
@@ -721,7 +836,9 @@ test("a streamed reply completes with a carousel and question through the real r
   await until(() => ctx.calls.length === 3, "Reply completion was not polled");
   ctx.respond(2, recommendations);
   await until(
-    () => !ctx.client.getSnapshot().conversation.busy || !!ctx.client.getSnapshot().error,
+    () =>
+      !ctx.client.getSnapshot().conversation.busy ||
+      !!ctx.client.getSnapshot().error,
     "Reply did not settle",
   );
   assert.equal(ctx.client.getSnapshot().error, null);
@@ -741,10 +858,15 @@ test("saved questions, including voice associations and answered history, surviv
       {
         ...complete.messages[1],
         id: "voice-question",
-        parts: [{
-          ...questionPart,
-          voiceReply: { voiceId: "22222222-2222-4222-8222-222222222222", afterSequence: 3 },
-        }],
+        parts: [
+          {
+            ...questionPart,
+            voiceReply: {
+              voiceId: "22222222-2222-4222-8222-222222222222",
+              afterSequence: 3,
+            },
+          },
+        ],
       },
     ],
   };
@@ -763,7 +885,9 @@ for (const [name, invalid] of Object.entries({
   "HTML question": { question: "<script>alert(1)</script>" },
   "unknown version": { version: 2 },
   "unexpected fields": { extra: true },
-  "invalid voice association": { voiceReply: { voiceId: "not-a-uuid", afterSequence: -1 } },
+  "invalid voice association": {
+    voiceReply: { voiceId: "not-a-uuid", afterSequence: -1 },
+  },
 })) {
   test(`invalid question response (${name}) preserves the last valid snapshot and can recover`, async (t) => {
     const ctx = setup(t, { saved: access });
@@ -773,60 +897,168 @@ for (const [name, invalid] of Object.entries({
     ctx.respond(2, {
       ...recommendations,
       revision: 3,
-      messages: [{ ...complete.messages[1], parts: [{ ...questionPart, ...invalid }] }],
+      messages: [
+        { ...complete.messages[1], parts: [{ ...questionPart, ...invalid }] },
+      ],
     });
-    await until(() => !!ctx.client.getSnapshot().error, "Invalid question was accepted");
-    assert.match(ctx.client.getSnapshot().error, /invalid conversation response/);
+    await until(
+      () => !!ctx.client.getSnapshot().error,
+      "Invalid question was accepted",
+    );
+    assert.match(
+      ctx.client.getSnapshot().error,
+      /invalid conversation response/,
+    );
     assert.equal(ctx.client.getSnapshot().conversation, previous);
     ctx.client.clearError();
-    await until(() => ctx.calls.length === 4, "Retry did not fetch the conversation");
+    await until(
+      () => ctx.calls.length === 4,
+      "Retry did not fetch the conversation",
+    );
     ctx.respond(3, { ...recommendations, revision: 3 });
     await until(
-      () => ctx.client.getSnapshot().conversation.revision === 3 || !!ctx.client.getSnapshot().error,
+      () =>
+        ctx.client.getSnapshot().conversation.revision === 3 ||
+        !!ctx.client.getSnapshot().error,
       "Corrected conversation did not settle",
     );
     assert.equal(ctx.client.getSnapshot().error, null);
     assert.deepEqual(
-      JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+      JSON.parse(
+        JSON.stringify(ctx.client.getSnapshot().conversation.messages),
+      ),
       recommendations.messages,
     );
   });
 }
 
 for (const [name, role, questionAnswer] of [
-  ["assistant provenance", "assistant", {questionId:"33333333-3333-4333-8333-333333333333",voiceId:"22222222-2222-4222-8222-222222222222"}],
-  ["invalid reference", "user", {questionId:"invalid",voiceId:"22222222-2222-4222-8222-222222222222"}],
-  ["unexpected reference data", "user", {questionId:"33333333-3333-4333-8333-333333333333",voiceId:"22222222-2222-4222-8222-222222222222",extra:true}],
+  [
+    "assistant provenance",
+    "assistant",
+    {
+      questionId: "33333333-3333-4333-8333-333333333333",
+      voiceId: "22222222-2222-4222-8222-222222222222",
+    },
+  ],
+  [
+    "invalid reference",
+    "user",
+    { questionId: "invalid", voiceId: "22222222-2222-4222-8222-222222222222" },
+  ],
+  [
+    "unexpected reference data",
+    "user",
+    {
+      questionId: "33333333-3333-4333-8333-333333333333",
+      voiceId: "22222222-2222-4222-8222-222222222222",
+      extra: true,
+    },
+  ],
 ]) {
-  test("selected answer rejects " + name + " without replacing valid history", async t => {
-    const ctx=setup(t,{saved:access});await resume(ctx);
-    const before=ctx.client.getSnapshot().conversation;
-    ctx.client.clearError();
-    ctx.respond(2,{...complete,revision:3,messages:[{...complete.messages[0],role,parts:[{type:"text",text:"Full blackout",questionAnswer}]}]});
-    await until(()=>!!ctx.client.getSnapshot().error,"Invalid selected answer accepted");
-    assert.match(ctx.client.getSnapshot().error,/invalid conversation response/);
-    assert.equal(ctx.client.getSnapshot().conversation,before);
-  });
+  test(
+    "selected answer rejects " + name + " without replacing valid history",
+    async (t) => {
+      const ctx = setup(t, { saved: access });
+      await resume(ctx);
+      const before = ctx.client.getSnapshot().conversation;
+      ctx.client.clearError();
+      ctx.respond(2, {
+        ...complete,
+        revision: 3,
+        messages: [
+          {
+            ...complete.messages[0],
+            role,
+            parts: [{ type: "text", text: "Full blackout", questionAnswer }],
+          },
+        ],
+      });
+      await until(
+        () => !!ctx.client.getSnapshot().error,
+        "Invalid selected answer accepted",
+      );
+      assert.match(
+        ctx.client.getSnapshot().error,
+        /invalid conversation response/,
+      );
+      assert.equal(ctx.client.getSnapshot().conversation, before);
+    },
+  );
 }
 
-test("saved voice lifecycle events restore without reacquiring audio", async t => {
-  const events={...complete,messages:["started","ended","disconnected"].map((event,index)=>({id:"event-"+index,role:"context",status:"complete",createdAt:"2026-09-16T10:00:00Z",parts:[{type:"voice_event",version:1,voiceId:"22222222-2222-4222-8222-222222222222",event}]}))};
-  const ctx=setup(t,{saved:access,mediaOptions:{}});await resume(ctx,events);
-  assert.equal(ctx.client.getSnapshot().error,null);
-  assert.deepEqual(JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),events.messages);
-  assert.equal(ctx.media.calls.microphone,0);
+test("saved voice lifecycle events restore without reacquiring audio", async (t) => {
+  const events = {
+    ...complete,
+    messages: ["started", "ended", "disconnected"].map((event, index) => ({
+      id: "event-" + index,
+      role: "context",
+      status: "complete",
+      createdAt: "2026-09-16T10:00:00Z",
+      parts: [
+        {
+          type: "voice_event",
+          version: 1,
+          voiceId: "22222222-2222-4222-8222-222222222222",
+          event,
+        },
+      ],
+    })),
+  };
+  const ctx = setup(t, { saved: access, mediaOptions: {} });
+  await resume(ctx, events);
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+    events.messages,
+  );
+  assert.equal(ctx.media.calls.microphone, 0);
 });
-for(const [name,role,changes] of [
-  ["unknown event","context",{event:"started_again"}],
-  ["invalid connection","context",{voiceId:"invalid"}],
-  ["assistant event","assistant",{}],
-  ["extra data","context",{text:"forged"}],
-]){
-  test("voice lifecycle rejects "+name+" and preserves accepted history",async t=>{
-    const ctx=setup(t,{saved:access});await resume(ctx);const before=ctx.client.getSnapshot().conversation;ctx.client.clearError();
-    ctx.respond(2,{...complete,revision:3,messages:[{id:"event",role,status:"complete",createdAt:"2026-09-16T10:00:00Z",parts:[{type:"voice_event",version:1,voiceId:"22222222-2222-4222-8222-222222222222",event:"started",...changes}]}]});
-    await until(()=>!!ctx.client.getSnapshot().error,"Invalid voice event accepted");assert.match(ctx.client.getSnapshot().error,/invalid conversation response/);assert.equal(ctx.client.getSnapshot().conversation,before);
-  });
+for (const [name, role, changes] of [
+  ["unknown event", "context", { event: "started_again" }],
+  ["invalid connection", "context", { voiceId: "invalid" }],
+  ["assistant event", "assistant", {}],
+  ["extra data", "context", { text: "forged" }],
+]) {
+  test(
+    "voice lifecycle rejects " + name + " and preserves accepted history",
+    async (t) => {
+      const ctx = setup(t, { saved: access });
+      await resume(ctx);
+      const before = ctx.client.getSnapshot().conversation;
+      ctx.client.clearError();
+      ctx.respond(2, {
+        ...complete,
+        revision: 3,
+        messages: [
+          {
+            id: "event",
+            role,
+            status: "complete",
+            createdAt: "2026-09-16T10:00:00Z",
+            parts: [
+              {
+                type: "voice_event",
+                version: 1,
+                voiceId: "22222222-2222-4222-8222-222222222222",
+                event: "started",
+                ...changes,
+              },
+            ],
+          },
+        ],
+      });
+      await until(
+        () => !!ctx.client.getSnapshot().error,
+        "Invalid voice event accepted",
+      );
+      assert.match(
+        ctx.client.getSnapshot().error,
+        /invalid conversation response/,
+      );
+      assert.equal(ctx.client.getSnapshot().conversation, before);
+    },
+  );
 }
 
 test("only a tab granted the tool claim executes the catalog command", async (t) => {
@@ -889,25 +1121,35 @@ const addedResult = {
 };
 const needsCartAdd = {
   ...needsTool,
-  tools: [{
-    ...needsTool.tools[0],
-    name: "add_to_cart",
-    arguments: { productPath: addedResult.addedProduct.productPath },
-  }],
+  tools: [
+    {
+      ...needsTool.tools[0],
+      name: "add_to_cart",
+      arguments: { productPath: addedResult.addedProduct.productPath },
+    },
+  ],
 };
 
 test("cart additions execute once after their claim without opening an approval panel", async (t) => {
   let executions = 0;
-  const ctx = setup(t, { saved: access, executor: {
-    prepareApproval: () => assert.fail("Adding must not open an approval panel"),
-    executeApproved: () => assert.fail("Adding uses the direct execution path"),
-    execute: async (name, args) => {
-      assert.equal(name, "add_to_cart");
-      assert.deepEqual(JSON.parse(JSON.stringify(args)), needsCartAdd.tools[0].arguments);
-      executions++;
-      return addedResult;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: () =>
+        assert.fail("Adding must not open an approval panel"),
+      executeApproved: () =>
+        assert.fail("Adding uses the direct execution path"),
+      execute: async (name, args) => {
+        assert.equal(name, "add_to_cart");
+        assert.deepEqual(
+          JSON.parse(JSON.stringify(args)),
+          needsCartAdd.tools[0].arguments,
+        );
+        executions++;
+        return addedResult;
+      },
     },
-  } });
+  });
   await resume(ctx, needsCartAdd);
   await until(() => ctx.calls.length === 3, "Add was not claimed");
   assert.equal(ctx.client.getSnapshot().approval, null);
@@ -920,16 +1162,91 @@ test("cart additions execute once after their claim without opening an approval 
   ctx.respond(3, complete);
 });
 
+test("sample additions execute directly with the verified PDP path", async (t) => {
+  const result = {
+    status: "added",
+    message: "Sample added.",
+    addedSample: {
+      productPath: "/products/shade",
+      title: "BiFold Matte Black Venetian - 16mm Slat",
+    },
+  };
+  const requested = {
+    ...needsTool,
+    tools: [
+      {
+        ...needsTool.tools[0],
+        name: "add_sample_to_cart",
+        arguments: { productPath: result.addedSample.productPath },
+      },
+    ],
+  };
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      prepareApproval: () => assert.fail("Sample additions do not need review"),
+      executeApproved: () =>
+        assert.fail("Sample additions use direct execution"),
+      execute: async (name, args) => {
+        assert.equal(name, "add_sample_to_cart");
+        assert.deepEqual(
+          JSON.parse(JSON.stringify(args)),
+          requested.tools[0].arguments,
+        );
+        return result;
+      },
+    },
+  });
+  await resume(ctx, requested);
+  await until(() => ctx.calls.length === 3, "Sample was not claimed");
+  assert.equal("confirmed" in ctx.calls[2].body, false);
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Sample outcome was not submitted");
+  assert.deepEqual(ctx.calls[3].body.result, result);
+  ctx.respond(3, complete);
+});
+
 test("saved cart additions survive restoration and malformed later event data is rejected", async (t) => {
-  const part = { type: "cart_added", version: 1, invocationId, product: addedResult.addedProduct };
-  const saved = { ...complete, messages: [{ ...complete.messages[1], role: "context", parts: [part] }] };
+  const part = {
+    type: "cart_added",
+    version: 1,
+    invocationId,
+    product: addedResult.addedProduct,
+  };
+  const saved = {
+    ...complete,
+    messages: [{ ...complete.messages[1], role: "context", parts: [part] }],
+  };
   const ctx = setup(t, { saved: access });
   await resume(ctx, saved);
   const restored = ctx.client.getSnapshot().conversation;
-  assert.deepEqual(JSON.parse(JSON.stringify(restored.messages[0].parts[0])), part);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(restored.messages[0].parts[0])),
+    part,
+  );
   ctx.client.clearError();
-  ctx.respond(2, { ...saved, revision: 3, messages: [{ ...saved.messages[0], parts: [{ ...part, product: { ...part.product, measurements: { width: -1, height: 1200, unit: "mm" } } }] }] });
-  await until(() => !!ctx.client.getSnapshot().error, "Invalid cart dimensions were accepted");
+  ctx.respond(2, {
+    ...saved,
+    revision: 3,
+    messages: [
+      {
+        ...saved.messages[0],
+        parts: [
+          {
+            ...part,
+            product: {
+              ...part.product,
+              measurements: { width: -1, height: 1200, unit: "mm" },
+            },
+          },
+        ],
+      },
+    ],
+  });
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Invalid cart dimensions were accepted",
+  );
   assert.equal(ctx.client.getSnapshot().conversation, restored);
 });
 
@@ -1236,11 +1553,15 @@ test("failed End cannot revive an approved action whose claim was in flight", as
   ctx.respond(6, { ...complete, revision: 3 });
 });
 
-test("failed End cannot revive an add-to-cart action whose ordinary claim was in flight", async t => {
-  const ctx = setup(t, { saved: access, executor: {
-    execute: () => assert.fail("An abandoned cart add must never execute"),
-    prepareApproval: () => assert.fail("Cart adds must not open an approval panel"),
-  } });
+test("failed End cannot revive an add-to-cart action whose ordinary claim was in flight", async (t) => {
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: () => assert.fail("An abandoned cart add must never execute"),
+      prepareApproval: () =>
+        assert.fail("Cart adds must not open an approval panel"),
+    },
+  });
   await resume(ctx, needsCartAdd);
   await until(() => ctx.calls.length === 3, "Add claim did not start");
   const originalClaim = ctx.calls[2].body;
@@ -1251,22 +1572,36 @@ test("failed End cannot revive an add-to-cart action whose ordinary claim was in
   ctx.respond(2, { claimed: true });
   await delay(10);
   ctx.client.clearError();
-  await until(() => ctx.calls.length === 5, "Reconciliation read did not start");
-  ctx.respond(4, { ...needsCartAdd, revision: 2, tools: [{ ...needsCartAdd.tools[0], status: "running" }] });
+  await until(
+    () => ctx.calls.length === 5,
+    "Reconciliation read did not start",
+  );
+  ctx.respond(4, {
+    ...needsCartAdd,
+    revision: 2,
+    tools: [{ ...needsCartAdd.tools[0], status: "running" }],
+  });
   await until(() => ctx.calls.length === 6, "Ownership was not reconciled");
   assert.deepEqual(ctx.calls[5].body, originalClaim);
   ctx.respond(5, { claimed: true });
-  await until(() => ctx.calls.length === 7, "Interrupted outcome was not reported");
+  await until(
+    () => ctx.calls.length === 7,
+    "Interrupted outcome was not reported",
+  );
   assert.match(ctx.calls[6].body.error, /interrupted/);
   assert.equal("result" in ctx.calls[6].body, false);
   ctx.respond(6, { ...complete, revision: 3 });
 });
 
-test("failed End cannot revive a measurement action whose ordinary claim was in flight", async t => {
-  const ctx = setup(t, { saved: access, executor: {
-    execute: () => assert.fail("An abandoned measurement must never execute"),
-    prepareApproval: () => assert.fail("Measurements must not open another approval panel"),
-  } });
+test("failed End cannot revive a measurement action whose ordinary claim was in flight", async (t) => {
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: () => assert.fail("An abandoned measurement must never execute"),
+      prepareApproval: () =>
+        assert.fail("Measurements must not open another approval panel"),
+    },
+  });
   await resume(ctx, needsMeasurementApplication);
   await until(() => ctx.calls.length === 3, "Measurement claim did not start");
   const originalClaim = ctx.calls[2].body;
@@ -1278,12 +1613,22 @@ test("failed End cannot revive a measurement action whose ordinary claim was in 
   ctx.respond(2, { claimed: true });
   await delay(10);
   ctx.client.clearError();
-  await until(() => ctx.calls.length === 5, "Reconciliation read did not start");
-  ctx.respond(4, { ...needsMeasurementApplication, revision: 2, tools: [{ ...needsMeasurementApplication.tools[0], status: "running" }] });
+  await until(
+    () => ctx.calls.length === 5,
+    "Reconciliation read did not start",
+  );
+  ctx.respond(4, {
+    ...needsMeasurementApplication,
+    revision: 2,
+    tools: [{ ...needsMeasurementApplication.tools[0], status: "running" }],
+  });
   await until(() => ctx.calls.length === 6, "Ownership was not reconciled");
   assert.deepEqual(ctx.calls[5].body, originalClaim);
   ctx.respond(5, { claimed: true });
-  await until(() => ctx.calls.length === 7, "Interrupted outcome was not reported");
+  await until(
+    () => ctx.calls.length === 7,
+    "Interrupted outcome was not reported",
+  );
   assert.match(ctx.calls[6].body.error, /interrupted/);
   assert.equal("result" in ctx.calls[6].body, false);
   assert.equal(ctx.client.getSnapshot().approval, null);
@@ -1295,14 +1640,13 @@ test("measurement application claims the frozen order draft without a second on-
   const ctx = setup(t, {
     saved: access,
     executor: {
-      prepareApproval: () => assert.fail("Measurements must not open another approval panel"),
-      executeApproved: () => assert.fail("Measurements do not use cart approvals"),
+      prepareApproval: () =>
+        assert.fail("Measurements must not open another approval panel"),
+      executeApproved: () =>
+        assert.fail("Measurements do not use cart approvals"),
       execute: async (name, args) => {
         assert.equal(name, "apply_measurements");
-        assert.deepEqual(
-          JSON.parse(JSON.stringify(args.draft)),
-          orderDraft,
-        );
+        assert.deepEqual(JSON.parse(JSON.stringify(args.draft)), orderDraft);
         executions++;
         return measurementApplicationResult;
       },
@@ -1387,11 +1731,12 @@ test("a lost tool-result response retries the same result without reexecuting or
 
 test("a refreshed client never claims or repeats navigation or measurement application already running in the previous page", async (t) => {
   for (const snapshot of [needsNavigation, needsMeasurementApplication])
-    await t.test(snapshot.tools[0].name, async t => {
+    await t.test(snapshot.tools[0].name, async (t) => {
       const ctx = setup(t, {
         saved: access,
         executor: {
-          execute: () => assert.fail("Previously claimed action must not replay"),
+          execute: () =>
+            assert.fail("Previously claimed action must not replay"),
         },
       });
       const running = {
@@ -1401,10 +1746,16 @@ test("a refreshed client never claims or repeats navigation or measurement appli
       await resume(ctx, running);
       assert.equal(ctx.calls.length, 2);
       ctx.tick();
-      await until(() => ctx.calls.length === 3, "Pending conversation was not polled");
+      await until(
+        () => ctx.calls.length === 3,
+        "Pending conversation was not polled",
+      );
       ctx.respond(2, running);
       await delay(0);
-      assert.equal(ctx.calls.filter((call) => /\/(claim|result)$/.test(call.url)).length, 0);
+      assert.equal(
+        ctx.calls.filter((call) => /\/(claim|result)$/.test(call.url)).length,
+        0,
+      );
       assert.equal(ctx.client.getSnapshot().approval, null);
     });
 });
@@ -1626,7 +1977,11 @@ async function activeVoice(ctx, conversation = empty) {
     () => ctx.calls.length === 3,
     "Active voice did not refresh the transcript",
   );
-  ctx.respond(2, { ...conversation, revision: conversation.revision + 1, voice });
+  ctx.respond(2, {
+    ...conversation,
+    revision: conversation.revision + 1,
+    voice,
+  });
   await delay(0);
   return voice;
 }
@@ -1634,13 +1989,49 @@ async function activeVoice(ctx, conversation = empty) {
 const voiceQuestionId = "33333333-3333-4333-8333-333333333333";
 const voiceQuestion = {
   ...empty,
-  messages: [{ id: "question", role: "assistant", status: "complete", createdAt: "2026-09-16T10:00:00Z",
-    parts: [{ type: "question", version: 1, invocationId: voiceQuestionId, question: "What matters most?", answers: ["Full blackout", "Daylight"] }] }],
+  messages: [
+    {
+      id: "question",
+      role: "assistant",
+      status: "complete",
+      createdAt: "2026-09-16T10:00:00Z",
+      parts: [
+        {
+          type: "question",
+          version: 1,
+          invocationId: voiceQuestionId,
+          question: "What matters most?",
+          answers: ["Full blackout", "Daylight"],
+        },
+      ],
+    },
+  ],
 };
 function acceptedVoiceAnswer(request, voice) {
-  return { ...voiceQuestion, revision: 2, voice,
-    messages: [...voiceQuestion.messages, { id: request.requestId, role: "user", status: "complete", createdAt: "2026-09-16T10:00:01Z",
-      parts: [{ type: "text", text: request.answer, questionAnswer: { questionId: request.questionId, voiceId: voice.id } }] }] };
+  return {
+    ...voiceQuestion,
+    revision: 2,
+    voice,
+    messages: [
+      ...voiceQuestion.messages,
+      {
+        id: request.requestId,
+        role: "user",
+        status: "complete",
+        createdAt: "2026-09-16T10:00:01Z",
+        parts: [
+          {
+            type: "text",
+            text: request.answer,
+            questionAnswer: {
+              questionId: request.questionId,
+              voiceId: voice.id,
+            },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 test("suggested voice answers preserve media and mute, persist once and reject duplicate/stale choices", async (t) => {
@@ -1650,13 +2041,24 @@ test("suggested voice answers preserve media and mute, persist once and reject d
   const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
   assert.equal(ctx.calls.length, 4);
   const call = ctx.calls[3];
-  assert.equal(call.url, access.apiBaseUrl + "/" + conversationId + "/voice/" + voice.id + "/answers");
+  assert.equal(
+    call.url,
+    access.apiBaseUrl +
+      "/" +
+      conversationId +
+      "/voice/" +
+      voice.id +
+      "/answers",
+  );
   assert.equal(call.init.headers.Authorization, "Bearer " + access.token);
   assert.equal(call.body.clientId, voice.clientId);
   assert.equal(call.body.questionId, voiceQuestionId);
   assert.equal(call.body.answer, "Full blackout");
   assert.match(call.body.requestId, /^[0-9a-f-]{36}$/);
-  await assert.rejects(ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"), /finished replying/);
+  await assert.rejects(
+    ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"),
+    /finished replying/,
+  );
   ctx.respond(3, acceptedVoiceAnswer(call.body, voice));
   await sending;
   assert.equal(ctx.client.getSnapshot().pending, false);
@@ -1666,8 +2068,14 @@ test("suggested voice answers preserve media and mute, persist once and reject d
   assert.equal(ctx.media.tracks[0].enabled, false);
   assert.equal(ctx.media.peers[0].closed, undefined);
   assert.equal(ctx.media.calls.microphone, 1);
-  assert.equal(ctx.client.getSnapshot().conversation.messages.at(-1).parts[0].text, "Full blackout");
-  await assert.rejects(ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"), /no longer waiting/);
+  assert.equal(
+    ctx.client.getSnapshot().conversation.messages.at(-1).parts[0].text,
+    "Full blackout",
+  );
+  await assert.rejects(
+    ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"),
+    /no longer waiting/,
+  );
   assert.equal(ctx.calls.length, 4);
 });
 
@@ -1688,7 +2096,12 @@ test("lost voice answer responses reconcile without replay and explicit retry re
   ctx.respond(5, acceptedVoiceAnswer(ctx.calls[5].body, voice));
   await retry;
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
-  assert.equal(ctx.calls.filter(call => call.url.endsWith("/messages") || call.url.endsWith("/stop")).length, 0);
+  assert.equal(
+    ctx.calls.filter(
+      (call) => call.url.endsWith("/messages") || call.url.endsWith("/stop"),
+    ).length,
+    0,
+  );
 });
 
 test("a lost response with a durable answer reconciles successfully without sending it again", async (t) => {
@@ -1696,28 +2109,49 @@ test("a lost response with a durable answer reconciles successfully without send
   const voice = await activeVoice(ctx, voiceQuestion);
   const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
   ctx.calls[3].reject(new Error("response lost"));
-  await until(() => ctx.calls.length === 5, "Accepted answer did not reconcile");
+  await until(
+    () => ctx.calls.length === 5,
+    "Accepted answer did not reconcile",
+  );
   ctx.respond(4, acceptedVoiceAnswer(ctx.calls[3].body, voice));
   await sending;
   assert.equal(ctx.client.getSnapshot().error, null);
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
-  assert.equal(ctx.calls.filter(call => call.url.endsWith("/answers")).length, 1);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/answers")).length,
+    1,
+  );
   assert.equal(ctx.media.tracks[0].stopped, false);
 });
 
 test("unoffered and remote voice answers are rejected without contacting the backend", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx, voiceQuestion);
-  await assert.rejects(ctx.client.sendVoiceAnswer(voiceQuestionId, "Unlisted"), /no longer waiting/);
-  await assert.rejects(ctx.client.sendVoiceAnswer("44444444-4444-4444-8444-444444444444", "Full blackout"), /no longer waiting/);
+  await assert.rejects(
+    ctx.client.sendVoiceAnswer(voiceQuestionId, "Unlisted"),
+    /no longer waiting/,
+  );
+  await assert.rejects(
+    ctx.client.sendVoiceAnswer(
+      "44444444-4444-4444-8444-444444444444",
+      "Full blackout",
+    ),
+    /no longer waiting/,
+  );
   assert.equal(ctx.calls.length, 3);
   const remote = setup(t, { saved: access });
   const conversation = { ...voiceQuestion, voice };
   remote.respond(0, { ...access, conversation });
   await until(() => remote.calls.length === 2, "Remote restore missing");
   remote.respond(1, conversation);
-  await until(() => !remote.client.getSnapshot().restoring, "Remote restore did not finish");
-  await assert.rejects(remote.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"), /connected here/);
+  await until(
+    () => !remote.client.getSnapshot().restoring,
+    "Remote restore did not finish",
+  );
+  await assert.rejects(
+    remote.client.sendVoiceAnswer(voiceQuestionId, "Full blackout"),
+    /connected here/,
+  );
   assert.equal(remote.calls.length, 2);
 });
 

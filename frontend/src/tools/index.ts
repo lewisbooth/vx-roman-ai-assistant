@@ -4,6 +4,9 @@ import { getCart } from "./cart";
 import { clearCart, removeFromCart, setCartQuantity } from "./cart-actions";
 import { getProduct, lookupCatalog, searchProducts } from "./catalog";
 import { addConfiguredProduct } from "./product";
+import { addProductSample } from "./product-sample";
+import { createProductConfigurationTools } from "./product-configuration";
+import { parseProductConfigurationCall } from "../../../shared/product-configuration";
 import { getProductGuides } from "./product-guides";
 import { parseProductGuidesCall } from "../../../shared/product-guides";
 import {
@@ -44,6 +47,26 @@ export const toolDefinitions = [
       "Submit the current product through the theme's configuration and validation. This can change your real cart.",
     example: {},
     actionLabel: "Add configured product to cart",
+  },
+  {
+    name: "add_sample_to_cart",
+    description:
+      "Add the current product's sample through its separate theme control. This changes your real cart and never adds the full blind.",
+    example: {},
+    actionLabel: "Add product sample to cart",
+  },
+  {
+    name: "get_product_configuration",
+    description:
+      "Read this PDP's available customization choices and measurements.",
+    example: {},
+  },
+  {
+    name: "configure_product",
+    description:
+      "Apply one available choice using IDs from get_product_configuration. Read again before each change; measurements use their own confirmed draft.",
+    example: { configurationId: "", controlId: "", optionId: "" },
+    actionLabel: "Apply product option",
   },
   {
     name: "remove_from_cart",
@@ -134,6 +157,7 @@ export function createAssistantTools(
 ) {
   let active: AbortController | undefined;
   let disposed = false;
+  const productConfiguration = createProductConfigurationTools();
 
   function productPath() {
     const path = new URL(navigation.getSnapshot().url).pathname;
@@ -184,6 +208,9 @@ export function createAssistantTools(
               "get_product_guides",
               "get_cart",
               "add_to_cart",
+              "add_sample_to_cart",
+              "get_product_configuration",
+              "configure_product",
               "remove_from_cart",
               "set_cart_quantity",
               "clear_cart",
@@ -248,6 +275,45 @@ export function createAssistantTools(
                   "Wait for storefront navigation to finish before adding a product.",
                 );
               return addConfiguredProduct(request.signal);
+            case "add_sample_to_cart": {
+              const args = argumentsObject(input, ["productPath"]);
+              if (navigation.getSnapshot().pending)
+                throw new Error(
+                  "Wait for storefront navigation to finish before adding a sample.",
+                );
+              return addProductSample(
+                args.productPath === undefined
+                  ? productPath()
+                  : textArgument(args, "productPath", 2048),
+                request.signal,
+              );
+            }
+            case "get_product_configuration":
+            case "configure_product": {
+              const args = argumentsObject(
+                input,
+                name === "get_product_configuration"
+                  ? ["productPath"]
+                  : ["productPath", "configurationId", "controlId", "optionId"],
+              );
+              const call = parseProductConfigurationCall(name, {
+                ...args,
+                productPath: args.productPath ?? productPath(),
+              });
+              if (navigation.getSnapshot().pending)
+                throw new Error(
+                  "Wait for storefront navigation to finish before using product controls.",
+                );
+              return call.name === "get_product_configuration"
+                ? productConfiguration.getProductConfiguration(
+                    call.arguments.productPath,
+                    request.signal,
+                  )
+                : productConfiguration.configureProduct(
+                    call.arguments,
+                    request.signal,
+                  );
+            }
             case "remove_from_cart": {
               const args = argumentsObject(input, ["lineKey"]);
               const lineKey = textArgument(args, "lineKey");
@@ -350,6 +416,7 @@ export function createAssistantTools(
         const handedOff =
           [
             "add_to_cart",
+            "add_sample_to_cart",
             "remove_from_cart",
             "set_cart_quantity",
             "clear_cart",
@@ -371,6 +438,7 @@ export function createAssistantTools(
     dispose() {
       disposed = true;
       active?.abort(new DOMException("Roman was removed.", "AbortError"));
+      productConfiguration.dispose();
     },
   };
 }

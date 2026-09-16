@@ -496,6 +496,74 @@ test("confirmed additions persist once before the model reply, survive failure a
   }
 });
 
+test("confirmed sample additions persist as distinct notifications and bind the verified PDP", async () => {
+  const sample = {
+    productPath: "/products/shade",
+    title: "BiFold Matte Black Venetian - 16mm Slat",
+  };
+  const { id, turn, tool } = await cartInvocation("add_sample_to_cart", {
+    productPath: sample.productPath,
+  });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, claim);
+  const result = {
+    productIds: [],
+    outcome: {
+      status: "added",
+      message: "The theme confirmed the sample addition.",
+      addedSample: sample,
+    },
+  };
+  await assert.rejects(
+    repository.completeToolInvocation(id, tool.id, claim, {
+      ...result,
+      outcome: {
+        ...result.outcome,
+        addedSample: { ...sample, productPath: "/products/other" },
+      },
+    }),
+    { status: 400 },
+  );
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  const completed = await repository.getSnapshot(id);
+  const notifications = completed.messages.filter((message) =>
+    message.parts.some((part) => part.type === "cart_sample_added"),
+  );
+  assert.deepEqual(notifications[0]?.parts, [
+    { type: "cart_sample_added", version: 1, invocationId: tool.id, sample },
+  ]);
+  assert.equal(
+    completed.messages.some((message) =>
+      message.parts.some((part) => part.type === "cart_added"),
+    ),
+    false,
+  );
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  assert.equal(
+    (await repository.getSnapshot(id)).messages.filter((message) =>
+      message.parts.some((part) => part.type === "cart_sample_added"),
+    ).length,
+    1,
+  );
+  await repository.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "failed",
+  });
+  const history = await repository.getModelHistory(id);
+  assert.equal(
+    history.some((message) =>
+      message.text.includes('"type":"cart_sample_added"'),
+    ),
+    false,
+  );
+  assert.match(
+    history.find((message) =>
+      message.text.includes("Historical storefront action"),
+    )?.text ?? "",
+    /"addedSample"/,
+  );
+});
+
 test("cart completion and its inline addition commit atomically", async () => {
   const { id, tool } = await cartInvocation("add_to_cart", {
     productPath: "/products/shade",

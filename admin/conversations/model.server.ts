@@ -20,6 +20,12 @@ import {
   isCartMutation,
 } from "../../shared/cart-tools";
 import {
+  isProductConfigurationTool,
+  parseProductConfigurationCall,
+  productConfigurationToolDefinitions,
+  type ProductConfigurationResult,
+} from "../../shared/product-configuration";
+import {
   measurementToolDefinitions,
   applyMeasurementsToolDefinition,
   parseMeasurementCall,
@@ -49,7 +55,8 @@ import {
 
 export const TEXT_MODEL = "gpt-5.6-terra";
 export const TEXT_SERVICE_TIER = "fast";
-type ModelToolOutcome = BrowserToolOutcome | MeasurementToolResult;
+type ModelToolOutcome =
+  BrowserToolOutcome | MeasurementToolResult | ProductConfigurationResult;
 
 export interface ModelMessage {
   role: "user" | "assistant";
@@ -146,7 +153,9 @@ export async function generateReply(
     content: text,
   }));
   let browserCalls = 0;
-  let mutationAttempted = false;
+  let cartMutationAttempted = false;
+  let formMutationAttempted = false;
+  let successfulAppliedProductPath: string | undefined;
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
   let guidePresentationAttempted = false;
@@ -170,9 +179,19 @@ export async function generateReply(
                 productGuidesToolDefinition,
                 ...measurementToolDefinitions,
                 ...cartToolDefinitions.filter(
-                  (tool) => !mutationAttempted || !isCartMutation(tool.name),
+                  (tool) =>
+                    !isCartMutation(tool.name) ||
+                    (!cartMutationAttempted &&
+                      (!formMutationAttempted ||
+                        (tool.name === "add_to_cart" &&
+                          successfulAppliedProductPath !== undefined))),
                 ),
-                ...(!mutationAttempted
+                ...productConfigurationToolDefinitions.filter(
+                  (tool) =>
+                    tool.name !== "configure_product" ||
+                    (!cartMutationAttempted && !formMutationAttempted),
+                ),
+                ...(!cartMutationAttempted && !formMutationAttempted
                   ? [applyMeasurementsToolDefinition]
                   : []),
               ]
@@ -405,12 +424,6 @@ export async function generateReply(
       let outcome: ModelToolOutcome;
       try {
         const argumentsValue: unknown = JSON.parse(call.arguments);
-        const mutation =
-          isCartMutation(call.name) || call.name === "apply_measurements";
-        if (mutation && mutationAttempted)
-          throw new Error(
-            "Only one confirmed storefront change is allowed per reply.",
-          );
         const parsed =
           call.name === "get_product_guides"
             ? {
@@ -424,19 +437,41 @@ export async function generateReply(
                 }
               : isCartTool(call.name)
                 ? parseCartCall(call.name, argumentsValue)
-                : call.name === "apply_measurements"
-                  ? {
-                      name: call.name,
-                      arguments: parseMeasurementCall(
-                        "get_measurements",
-                        argumentsValue,
-                      ).arguments,
-                    }
-                  : call.name === "get_measurements" ||
-                      call.name === "set_measurements"
-                    ? parseMeasurementCall(call.name, argumentsValue)
-                    : parseCatalogCall(call.name, argumentsValue);
-        if (mutation) mutationAttempted = true;
+                : isProductConfigurationTool(call.name)
+                  ? parseProductConfigurationCall(call.name, argumentsValue)
+                  : call.name === "apply_measurements"
+                    ? {
+                        name: call.name,
+                        arguments: parseMeasurementCall(
+                          "get_measurements",
+                          argumentsValue,
+                        ).arguments,
+                      }
+                    : call.name === "get_measurements" ||
+                        call.name === "set_measurements"
+                      ? parseMeasurementCall(call.name, argumentsValue)
+                      : parseCatalogCall(call.name, argumentsValue);
+        if (isCartMutation(parsed.name)) {
+          if (
+            cartMutationAttempted ||
+            (formMutationAttempted &&
+              (parsed.name !== "add_to_cart" ||
+                successfulAppliedProductPath !==
+                  (parsed.arguments as { productPath: string }).productPath))
+          )
+            throw new Error(
+              "Only one cart mutation is allowed per reply, after a confirmed same-product measurement application.",
+            );
+          cartMutationAttempted = true;
+        } else if (parsed.name === "apply_measurements") {
+          if (cartMutationAttempted || formMutationAttempted)
+            throw new Error("Only one form mutation is allowed per reply.");
+          formMutationAttempted = true;
+        } else if (parsed.name === "configure_product") {
+          if (cartMutationAttempted || formMutationAttempted)
+            throw new Error("Only one form mutation is allowed per reply.");
+          formMutationAttempted = true;
+        }
         if (parsed.name === "get_product_guides")
           availableGuides.delete(
             parseProductGuidesCall(parsed.arguments).productPath,
@@ -456,11 +491,21 @@ export async function generateReply(
             sourceCallId: call.call_id,
             kinds: outcome.guides.map((guide) => guide.kind),
           });
+        if (
+          parsed.name === "apply_measurements" &&
+          "status" in outcome &&
+          outcome.status === "applied" &&
+          outcome.productPath ===
+            (parsed.arguments as { productPath: string }).productPath
+        )
+          successfulAppliedProductPath = outcome.productPath;
       } catch {
         signal.throwIfAborted();
         outcome = {
           error:
-            isCartMutation(call.name) || call.name === "apply_measurements"
+            isCartMutation(call.name) ||
+            call.name === "apply_measurements" ||
+            call.name === "configure_product"
               ? "The storefront change was not confirmed. Do not claim it succeeded or repeat it automatically. Check the current cart/form and ask the shopper before requesting a new change."
               : call.name === "get_cart"
                 ? "The current cart could not be read. Do not infer its contents or claim it is empty."

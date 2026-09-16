@@ -134,9 +134,14 @@ async function setup(t, options = {}) {
       await options.onStopVoice?.(window);
       update({
         voice: { status: "idle", muted: false, error: null },
-        ...(state.conversation?.voice ? {
-          conversation: { ...state.conversation, voice: { ...state.conversation.voice, status: "closed" } },
-        } : {}),
+        ...(state.conversation?.voice
+          ? {
+              conversation: {
+                ...state.conversation,
+                voice: { ...state.conversation.voice, status: "closed" },
+              },
+            }
+          : {}),
       });
     },
     setVoiceMuted: (muted) => {
@@ -214,7 +219,7 @@ test("composer voice action starts only on its own click and preserves the unsen
   const form = ctx.container.querySelector(".roman-composer form");
   const field = form.querySelector(".roman-composer-field");
   const start = [...form.querySelectorAll("button")].find(
-    button => button.textContent === "Start voice",
+    (button) => button.textContent === "Start voice",
   );
   const send = form.querySelector('button[type="submit"]');
   assert.ok(start, "Start voice should be in the composer form");
@@ -227,16 +232,26 @@ test("composer voice action starts only on its own click and preserves the unsen
   assert.deepEqual(ctx.startVoiceCalls, []);
   start.focus();
   await ctx.type("Keep these measurements in my draft");
-  assert.deepEqual(ctx.startVoiceCalls, [], "focusing or typing must not start microphone work");
+  assert.deepEqual(
+    ctx.startVoiceCalls,
+    [],
+    "focusing or typing must not start microphone work",
+  );
   start.click();
-  await until(() => ctx.startVoiceCalls.length === 1 && ctx.input().disabled, "Voice did not start explicitly");
+  await until(
+    () => ctx.startVoiceCalls.length === 1 && ctx.input().disabled,
+    "Voice did not start explicitly",
+  );
   assert.deepEqual(ctx.calls, [], "the voice button must not submit the form");
   assert.equal(ctx.input().value, "Keep these measurements in my draft");
   assert.equal(form.hidden, true);
   assert.equal(form.closest(".roman-composer").hidden, true);
   const stop = ctx.container.querySelector('[aria-label="End voice"]');
   stop.click();
-  await until(() => !ctx.input().disabled, "Switching back did not restore text editing");
+  await until(
+    () => !ctx.input().disabled,
+    "Switching back did not restore text editing",
+  );
   assert.equal(ctx.input().value, "Keep these measurements in my draft");
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
@@ -246,15 +261,22 @@ test("composer voice action starts only on its own click and preserves the unsen
 
 test("the in-field Send submits the draft once and blocks voice while its local send is pending", async (t) => {
   let accept;
-  const accepted = new Promise(resolve => { accept = resolve; });
+  const accepted = new Promise((resolve) => {
+    accept = resolve;
+  });
   const ctx = await setup(t, { onSend: () => accepted });
   await ctx.type("  Show me blackout blinds  ");
-  const send = ctx.container.querySelector('.roman-composer-field button[type="submit"]');
-  const voice = [...ctx.container.querySelectorAll(".roman-composer button")].find(
-    button => button.textContent === "Start voice",
+  const send = ctx.container.querySelector(
+    '.roman-composer-field button[type="submit"]',
   );
+  const voice = [
+    ...ctx.container.querySelectorAll(".roman-composer button"),
+  ].find((button) => button.textContent === "Start voice");
   send.click();
-  await until(() => ctx.calls.length === 1 && send.disabled && voice.disabled, "Pending send did not block both actions");
+  await until(
+    () => ctx.calls.length === 1 && send.disabled && voice.disabled,
+    "Pending send did not block both actions",
+  );
   assert.deepEqual(ctx.calls, ["Show me blackout blinds"]);
   assert.equal(ctx.input().value, "  Show me blackout blinds  ");
   voice.click();
@@ -262,7 +284,10 @@ test("the in-field Send submits the draft once and blocks voice while its local 
   assert.deepEqual(ctx.startVoiceCalls, []);
   assert.equal(ctx.calls.length, 1);
   accept();
-  await until(() => ctx.input().value === "" && !voice.disabled, "Accepted text did not reset the composer");
+  await until(
+    () => ctx.input().value === "" && !voice.disabled,
+    "Accepted text did not reset the composer",
+  );
   assert.equal(send.disabled, true, "empty text must keep Send disabled");
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
@@ -271,33 +296,74 @@ test("composer Start voice remains disabled during restoration, accepted-request
   for (const [name, state] of [
     ["restoring", { restoring: true }],
     ["request", { pending: true }],
-    ["model", { conversation: { id: "chat", status: "active", busy: true, messages: [], tools: [] } }],
-  ]) await t.test(name, async t => {
-    const ctx = await setup(t, { state });
-    const voice = [...ctx.container.querySelectorAll(".roman-composer button")].find(
-      button => button.textContent === "Start voice",
-    );
-    assert.ok(voice);
-    assert.equal(voice.disabled, true);
-    voice.click();
-    assert.deepEqual(ctx.startVoiceCalls, []);
-    assert.deepEqual(ctx.calls, []);
-  });
+    [
+      "model",
+      {
+        conversation: {
+          id: "chat",
+          status: "active",
+          busy: true,
+          messages: [],
+          tools: [],
+        },
+      },
+    ],
+  ])
+    await t.test(name, async (t) => {
+      const ctx = await setup(t, { state });
+      const voice = [
+        ...ctx.container.querySelectorAll(".roman-composer button"),
+      ].find((button) => button.textContent === "Start voice");
+      assert.ok(voice);
+      assert.equal(voice.disabled, true);
+      voice.click();
+      assert.deepEqual(ctx.startVoiceCalls, []);
+      assert.deepEqual(ctx.calls, []);
+    });
 });
 
-test("saved guide cards open verified PDFs separately without fetching products, navigating or stopping voice", async t => {
+test("saved guide cards open verified PDFs separately without fetching products, navigating or stopping voice", async (t) => {
   const fetches = [];
   const guides = [
-    { kind: "measuring", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1" },
-    { kind: "fitting", url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=2" },
+    {
+      kind: "measuring",
+      url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1",
+    },
+    {
+      kind: "fitting",
+      url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=2",
+    },
   ];
   const ctx = await setup(t, {
-    beforeImport: window => { window.fetch = (...args) => { fetches.push(args); throw new Error("Guide cards must not fetch PDF content"); }; },
-    state: { voice: { status: "active", muted: false, error: null }, conversation: {
-      id: "chat", status: "active", busy: false, tools: [], messages: [
-        { ...message("guide-message", "assistant", ""), parts: [{ type: "guides", version: 1, invocationId: "11111111-1111-4111-8111-111111111111", productPath: "/products/example", guides }] },
-      ],
-    } },
+    beforeImport: (window) => {
+      window.fetch = (...args) => {
+        fetches.push(args);
+        throw new Error("Guide cards must not fetch PDF content");
+      };
+    },
+    state: {
+      voice: { status: "active", muted: false, error: null },
+      conversation: {
+        id: "chat",
+        status: "active",
+        busy: false,
+        tools: [],
+        messages: [
+          {
+            ...message("guide-message", "assistant", ""),
+            parts: [
+              {
+                type: "guides",
+                version: 1,
+                invocationId: "11111111-1111-4111-8111-111111111111",
+                productPath: "/products/example",
+                guides,
+              },
+            ],
+          },
+        ],
+      },
+    },
   });
   const list = ctx.container.querySelector('[aria-label="Product guides"]');
   const links = [...list.querySelectorAll("a")];
@@ -308,53 +374,111 @@ test("saved guide cards open verified PDFs separately without fetching products,
     assert.equal(link.href, guides[index].url);
     assert.equal(link.target, "_blank");
     assert.equal(link.rel, "noopener noreferrer");
-    link.addEventListener("click", event => event.preventDefault(), { once: true });
-    link.dispatchEvent(new ctx.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    link.addEventListener("click", (event) => event.preventDefault(), {
+      once: true,
+    });
+    link.dispatchEvent(
+      new ctx.window.MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
   }
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.productCalls, []);
   assert.deepEqual(fetches, []);
-  assert.equal(ctx.container.querySelector(".roman-composer textarea").disabled, true);
+  assert.equal(
+    ctx.container.querySelector(".roman-composer textarea").disabled,
+    true,
+  );
   assert.match(ctx.voiceDock.textContent, /Voice is on.*Stop voice/);
 });
 
-test("malformed or foreign guide records never become active chat links", async t => {
-  const ctx = await setup(t, { state: { conversation: {
-    id: "chat", status: "active", busy: false, tools: [], messages: [
-      { ...message("unsafe-guide", "assistant", ""), parts: [{ type: "guides", version: 1, invocationId: "11111111-1111-4111-8111-111111111111", productPath: "/products/example", guides: [{ kind: "measuring", url: "https://evil.example/measuring.pdf" }] }] },
-    ],
-  } } });
+test("malformed or foreign guide records never become active chat links", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      conversation: {
+        id: "chat",
+        status: "active",
+        busy: false,
+        tools: [],
+        messages: [
+          {
+            ...message("unsafe-guide", "assistant", ""),
+            parts: [
+              {
+                type: "guides",
+                version: 1,
+                invocationId: "11111111-1111-4111-8111-111111111111",
+                productPath: "/products/example",
+                guides: [
+                  {
+                    kind: "measuring",
+                    url: "https://evil.example/measuring.pdf",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
   assert.equal(ctx.container.querySelectorAll(".roman-guide-card").length, 0);
   assert.match(ctx.container.textContent, /product guides are unavailable/);
 });
 
-test("cart approval stays actionable during voice and is also available in the closed-sidebar dock", async t => {
+test("cart approval stays actionable during voice and is also available in the closed-sidebar dock", async (t) => {
   const choices = [];
-  const approval = { invocationId: "cart-one", title: "Remove this item?", details: ["Kitchen blind", "Remove quantity 2."] };
-  const ctx = await setup(t, { state: { approval, conversation: { id: "chat", status: "active", messages: [], busy: true, tools: [] }, voice: { status: "active", muted: false, error: null } }, onApproval: (...args) => choices.push(args) });
+  const approval = {
+    invocationId: "cart-one",
+    title: "Remove this item?",
+    details: ["Kitchen blind", "Remove quantity 2."],
+  };
+  const ctx = await setup(t, {
+    state: {
+      approval,
+      conversation: {
+        id: "chat",
+        status: "active",
+        messages: [],
+        busy: true,
+        tools: [],
+      },
+      voice: { status: "active", muted: false, error: null },
+    },
+    onApproval: (...args) => choices.push(args),
+  });
   const panel = ctx.container.querySelector(".roman-tool-approval");
   const dock = ctx.voiceDock.querySelector(".roman-tool-approval");
   assert.match(panel.textContent, /Kitchen blind.*quantity 2/);
   assert.ok(dock);
-  assert.equal(panel.getAttribute("aria-labelledby"), panel.querySelector("h2").id);
+  assert.equal(
+    panel.getAttribute("aria-labelledby"),
+    panel.querySelector("h2").id,
+  );
   assert.notEqual(panel.querySelector("h2").id, dock.querySelector("h2").id);
-  const approve = [...dock.querySelectorAll("button")].find(button => button.textContent === "Approve");
+  const approve = [...dock.querySelectorAll("button")].find(
+    (button) => button.textContent === "Approve",
+  );
   assert.equal(approve.disabled, false);
   approve.click();
   assert.deepEqual(choices, [["cart-one", true]]);
-  ctx.update({ approval: { ...approval, unavailable: "Review the new product." } });
-  await until(() => ctx.container.querySelector(".roman-tool-approval button:last-child").disabled, "Unavailable action was still approvable");
+  ctx.update({
+    approval: { ...approval, unavailable: "Review the new product." },
+  });
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-tool-approval button:last-child")
+        .disabled,
+    "Unavailable action was still approvable",
+  );
   ctx.container.querySelector(".roman-tool-approval button").click();
   assert.deepEqual(choices.at(-1), ["cart-one", false]);
 });
 
-test("welcome uses original asset paths, unavailable tiles and one hidden developer tools panel", async (t) => {
+test("welcome uses original asset paths, actionable tiles and one hidden developer tools panel", async (t) => {
   const { container } = await setup(t, { showTools: true });
   const tiles = [...container.querySelectorAll(".roman-welcome-tile")];
   assert.equal(tiles.length, 4);
-  assert.ok(
-    tiles.every((tile) => tile.disabled && /coming soon/.test(tile.ariaLabel)),
-  );
+  assert.ok(tiles.every((tile) => !tile.disabled && tile.type === "button"));
   assert.deepEqual(
     tiles.map((tile) => tile.querySelector(".roman-tile-title").textContent),
     [
@@ -373,13 +497,216 @@ test("welcome uses original asset paths, unavailable tiles and one hidden develo
   assert.equal(drawer.hidden, true);
   assert.equal(container.querySelectorAll(".roman-tools-toggle").length, 1);
   assert.equal(
-    container.querySelector(".roman-tools-toggle").getAttribute("aria-controls"),
+    container
+      .querySelector(".roman-tools-toggle")
+      .getAttribute("aria-controls"),
     drawer.id,
   );
   assert.equal(container.querySelectorAll("details").length, 0);
   assert.ok(drawer.querySelector(".roman-voice-choice select"));
   assert.ok(drawer.querySelector("form"));
   assert.equal(container.querySelector('nav[aria-label="Browse store"]'), null);
+});
+
+test("each welcome tile starts a normal text conversation without clearing the composer's draft", async (t) => {
+  const starters = [
+    "Help me measure my windows for blinds.",
+    "I'd like to visualize blinds in my room. Start by asking me to upload a room photo, then help me choose a blind. Image generation isn't available yet.",
+    "Help me find blinds that suit my room and style.",
+    "Help me find no-drill blinds for my home.",
+  ];
+  for (const [index, starter] of starters.entries())
+    await t.test(String(index), async (t) => {
+      let accept;
+      const accepted = new Promise((resolve) => {
+        accept = resolve;
+      });
+      const ctx = await setup(t, { onSend: () => accepted });
+      await ctx.type("Keep my unsent room description");
+      const input = ctx.input();
+      const tiles = [...ctx.container.querySelectorAll(".roman-welcome-tile")];
+      tiles[index].focus();
+      assert.equal(tiles[index].getRootNode().activeElement, tiles[index]);
+      assert.deepEqual(
+        ctx.calls,
+        [],
+        "keyboard focus must not start a conversation",
+      );
+      tiles[index].click();
+      tiles[index].click();
+      tiles[(index + 1) % tiles.length].click();
+      await until(
+        () => tiles.every((tile) => tile.disabled) && input.disabled,
+        "Tile submission did not lock every text action",
+      );
+      assert.deepEqual(ctx.calls, [starter]);
+      assert.deepEqual(ctx.startVoiceCalls, []);
+      assert.equal(input.value, "Keep my unsent room description");
+      ctx.update({
+        conversation: {
+          id: "chat",
+          status: "active",
+          busy: false,
+          tools: [],
+          messages: [message("user-one", "user", starter)],
+        },
+      });
+      accept();
+      await until(
+        () =>
+          !ctx.container.querySelector(".roman-welcome") &&
+          !ctx.input().disabled,
+        "Accepted tile did not become the normal conversation",
+      );
+      assert.equal(
+        ctx.input(),
+        input,
+        "the existing composer should stay mounted",
+      );
+      assert.equal(input.value, "Keep my unsent room description");
+      assert.equal(
+        ctx.container.querySelector(".roman-message-user .roman-message-text")
+          .textContent,
+        starter,
+      );
+      assert.deepEqual(ctx.errors, []);
+    });
+});
+
+test("welcome and composer share a same-tick submission guard", async (t) => {
+  for (const first of ["tile", "composer"])
+    await t.test(first, async (t) => {
+      let accept;
+      const accepted = new Promise((resolve) => {
+        accept = resolve;
+      });
+      const ctx = await setup(t, { onSend: () => accepted });
+      await ctx.type("My typed question");
+      const tile = ctx.container.querySelector(".roman-welcome-tile");
+      const form = ctx.container.querySelector(".roman-composer form");
+      const submit = () =>
+        form.dispatchEvent(
+          new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+        );
+      if (first === "tile") {
+        tile.click();
+        submit();
+      } else {
+        submit();
+        tile.click();
+      }
+      assert.deepEqual(ctx.calls, [
+        first === "tile"
+          ? "Help me measure my windows for blinds."
+          : "My typed question",
+      ]);
+      await until(
+        () => ctx.input().disabled,
+        "Submission did not lock the composer",
+      );
+      accept();
+      await until(
+        () =>
+          !ctx.input().disabled &&
+          (first === "tile" || ctx.input().value === ""),
+        "Submission did not finish",
+      );
+      assert.equal(
+        ctx.input().value,
+        first === "tile" ? "My typed question" : "",
+      );
+    });
+});
+
+test("welcome tiles do not submit during restoration, pending work or voice ownership", async (t) => {
+  for (const [name, state] of [
+    ["restoring", { restoring: true }],
+    ["pending", { pending: true }],
+    [
+      "model",
+      {
+        conversation: {
+          id: "chat",
+          status: "active",
+          busy: true,
+          messages: [],
+          tools: [],
+        },
+      },
+    ],
+    [
+      "voice starting",
+      { voice: { status: "starting", muted: false, error: null } },
+    ],
+    [
+      "voice active",
+      { voice: { status: "active", muted: false, error: null } },
+    ],
+    [
+      "voice stopping",
+      { voice: { status: "stopping", muted: false, error: null } },
+    ],
+    [
+      "remote voice",
+      {
+        conversation: {
+          id: "chat",
+          status: "active",
+          busy: false,
+          messages: [],
+          tools: [],
+          voice: { status: "active" },
+        },
+      },
+    ],
+  ])
+    await t.test(name, async (t) => {
+      const ctx = await setup(t, { state });
+      const tiles = [...ctx.container.querySelectorAll(".roman-welcome-tile")];
+      if (name === "restoring") assert.equal(tiles.length, 0);
+      else {
+        assert.equal(tiles.length, 4);
+        assert.ok(tiles.every((tile) => tile.disabled));
+        tiles.forEach((tile) => tile.click());
+      }
+      assert.deepEqual(ctx.calls, []);
+      assert.deepEqual(ctx.startVoiceCalls, []);
+    });
+});
+
+test("failed welcome submissions show one retryable error and retain the same starter and draft", async (t) => {
+  let attempts = 0;
+  const ctx = await setup(t, {
+    onSend: (_text, window) => {
+      if (++attempts === 1)
+        throw new window.Error("Connection lost. Please retry.");
+    },
+  });
+  await ctx.type("Keep my dimensions");
+  const tile = ctx.container.querySelector(".roman-welcome-tile");
+  tile.click();
+  await until(
+    () => ctx.container.querySelector('[role="alert"]'),
+    "Tile error was not displayed",
+  );
+  assert.equal(ctx.container.querySelectorAll('[role="alert"]').length, 1);
+  assert.match(
+    ctx.container.querySelector('[role="alert"]').textContent,
+    /Connection lost/,
+  );
+  assert.equal(ctx.input().value, "Keep my dimensions");
+  assert.equal(tile.disabled, false);
+  tile.click();
+  await until(
+    () => ctx.calls.length === 2 && !tile.disabled,
+    "Tile retry did not complete",
+  );
+  assert.deepEqual(ctx.calls, [
+    "Help me measure my windows for blinds.",
+    "Help me measure my windows for blinds.",
+  ]);
+  assert.equal(ctx.container.querySelector('[role="alert"]'), null);
+  assert.equal(ctx.input().value, "Keep my dimensions");
 });
 
 test("accepted submissions clear the draft and same-tick repeats cannot send twice", async (t) => {
@@ -851,10 +1178,15 @@ test("only Roman navigation uses a notification; manual visits stay hidden and l
       conversation: activeConversation([
         {
           ...message("manual", "context", ""),
-          parts: [{
-            type: "page_view", version: 1, title: "Manual browsing page",
-            path: "/collections/all", occurredAt: "2026-09-15T10:00:00.000Z",
-          }],
+          parts: [
+            {
+              type: "page_view",
+              version: 1,
+              title: "Manual browsing page",
+              path: "/collections/all",
+              occurredAt: "2026-09-15T10:00:00.000Z",
+            },
+          ],
         },
         {
           ...message("page", "context", ""),
@@ -885,9 +1217,16 @@ test("only Roman navigation uses a notification; manual visits stay hidden and l
   });
   const entries = ctx.container.querySelectorAll(".roman-navigation");
   assert.equal(entries.length, 2);
-  assert.equal(ctx.container.querySelectorAll(".roman-timeline > li").length, 2);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-timeline > li").length,
+    2,
+  );
   assert.doesNotMatch(ctx.container.textContent, /Manual browsing page|Viewed/);
-  assert.ok([...entries].every((entry) => entry.classList.contains("roman-inline-event")));
+  assert.ok(
+    [...entries].every((entry) =>
+      entry.classList.contains("roman-inline-event"),
+    ),
+  );
   assert.equal(entries[0].textContent, "Roman navigated to Lottie <img src=x>");
   assert.equal(entries[0].querySelector("img"), null);
   assert.equal(entries[1].querySelector("a"), null);
@@ -899,48 +1238,151 @@ test("only Roman navigation uses a notification; manual visits stay hidden and l
 
 test("saved cart additions render product and submitted dimensions with a working cart link", async (t) => {
   const products = [
-    { productPath: "/products/lottie", title: "Lottie <img src=x>", measurements: { width: 900, height: 1200, unit: "mm" } },
-    { productPath: "/products/lottie", title: "Lottie", measurements: { width: 35.5, height: 48.25, unit: "in" } },
+    {
+      productPath: "/products/lottie",
+      title: "Lottie <img src=x>",
+      measurements: { width: 900, height: 1200, unit: "mm" },
+    },
+    {
+      productPath: "/products/lottie",
+      title: "Lottie",
+      measurements: { width: 35.5, height: 48.25, unit: "in" },
+    },
     { productPath: "/products/sample", title: "Sample" },
   ];
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation(products.map((product, index) => ({
-        ...message(`cart-${index}`, "context", ""),
-        parts: [{ type: "cart_added", version: 1, invocationId: `cart-${index}`, product }],
-      }))),
+      conversation: activeConversation(
+        products.map((product, index) => ({
+          ...message(`cart-${index}`, "context", ""),
+          parts: [
+            {
+              type: "cart_added",
+              version: 1,
+              invocationId: `cart-${index}`,
+              product,
+            },
+          ],
+        })),
+      ),
     },
   });
   const entries = ctx.container.querySelectorAll(".roman-cart-added");
   assert.equal(entries.length, 3);
-  assert.ok([...entries].every((entry) => entry.classList.contains("roman-inline-event")));
-  assert.equal(entries[0].textContent, "Roman added Lottie <img src=x> to your cart at 900 x 1200mm View Cart");
-  assert.equal(entries[1].textContent, "Roman added Lottie to your cart at 35.5 x 48.25in View Cart");
-  assert.equal(entries[2].textContent, "Roman added Sample to your cart View Cart");
+  assert.ok(
+    [...entries].every((entry) =>
+      entry.classList.contains("roman-inline-event"),
+    ),
+  );
+  assert.equal(
+    entries[0].textContent,
+    "Roman added Lottie <img src=x> to your cart at 900 x 1200mm View Cart",
+  );
+  assert.equal(
+    entries[1].textContent,
+    "Roman added Lottie to your cart at 35.5 x 48.25in View Cart",
+  );
+  assert.equal(
+    entries[2].textContent,
+    "Roman added Sample to your cart View Cart",
+  );
   assert.equal(entries[0].querySelector("img"), null);
   entries[0].querySelector("a").click();
-  assert.deepEqual(ctx.navigationCalls, ["https://hd-dev-single.myshopify.com/cart"]);
+  assert.deepEqual(ctx.navigationCalls, [
+    "https://hd-dev-single.myshopify.com/cart",
+  ]);
   assert.deepEqual(ctx.productCalls, []);
   assert.equal(ctx.container.querySelector(".roman-tool-approval"), null);
 });
 
-test("voice lifecycle events remain chronological context and do not retire a pending follow-up", async t => {
-  const question=questionMessage();
-  const event=(id,event)=>({...message(id,"context",""),parts:[{type:"voice_event",version:1,voiceId:"22222222-2222-4222-8222-222222222222",event}]});
-  const rows=[event("voice-start","started"),message("voice-reply","assistant","What matters most?"),question,event("voice-end","ended"),event("voice-restart","started"),event("voice-disconnected","disconnected")];
-  const ctx=await setup(t,{state:{conversation:activeConversation(rows)}});
-  const entries=()=>[...ctx.container.querySelectorAll('.roman-voice-event')];
-  assert.deepEqual(entries().map(e=>e.textContent),["Voice chat started","Voice chat ended","Voice chat started","Voice chat disconnected"]);
-  assert.ok(entries().every(e=>e.classList.contains('roman-inline-event')));
-  assert.ok(entries().every(e=>e.closest('li').classList.contains('roman-message-context')));
-  assert.equal(ctx.container.querySelectorAll('.roman-question').length,1);
-  assert.equal(ctx.container.querySelectorAll('.roman-question button').length,question.parts[0].answers.length);
-  ctx.update({conversation:activeConversation(rows.map(row=>({...row})))});
+test("saved sample additions render as samples rather than full products", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([
+        {
+          ...message("sample-add", "context", ""),
+          parts: [
+            {
+              type: "cart_sample_added",
+              version: 1,
+              invocationId: "22222222-2222-4222-8222-222222222222",
+              sample: {
+                productPath: "/products/sample?variant=123",
+                title: "Sample <img src=x>",
+              },
+            },
+          ],
+        },
+      ]),
+    },
+  });
+  const entry = ctx.container.querySelector(".roman-cart-added");
+  assert.equal(
+    entry?.textContent,
+    "Roman added a sample of Sample <img src=x> to your cart View Cart",
+  );
+  assert.equal(entry?.querySelector("img"), null);
+  entry?.querySelector("a")?.click();
+  assert.deepEqual(ctx.navigationCalls, [
+    "https://hd-dev-single.myshopify.com/cart",
+  ]);
+});
+
+test("voice lifecycle events remain chronological context and do not retire a pending follow-up", async (t) => {
+  const question = questionMessage();
+  const event = (id, event) => ({
+    ...message(id, "context", ""),
+    parts: [
+      {
+        type: "voice_event",
+        version: 1,
+        voiceId: "22222222-2222-4222-8222-222222222222",
+        event,
+      },
+    ],
+  });
+  const rows = [
+    event("voice-start", "started"),
+    message("voice-reply", "assistant", "What matters most?"),
+    question,
+    event("voice-end", "ended"),
+    event("voice-restart", "started"),
+    event("voice-disconnected", "disconnected"),
+  ];
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation(rows) },
+  });
+  const entries = () => [
+    ...ctx.container.querySelectorAll(".roman-voice-event"),
+  ];
+  assert.deepEqual(
+    entries().map((e) => e.textContent),
+    [
+      "Voice chat started",
+      "Voice chat ended",
+      "Voice chat started",
+      "Voice chat disconnected",
+    ],
+  );
+  assert.ok(entries().every((e) => e.classList.contains("roman-inline-event")));
+  assert.ok(
+    entries().every((e) =>
+      e.closest("li").classList.contains("roman-message-context"),
+    ),
+  );
+  assert.equal(ctx.container.querySelectorAll(".roman-question").length, 1);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-question button").length,
+    question.parts[0].answers.length,
+  );
+  ctx.update({
+    conversation: activeConversation(rows.map((row) => ({ ...row }))),
+  });
   await delay(0);
-  assert.equal(entries().length,4);
-  assert.deepEqual(ctx.calls,[]);
-  assert.deepEqual(ctx.startVoiceCalls,[]);
-  assert.deepEqual(ctx.stopVoiceCalls,[]);
+  assert.equal(entries().length, 4);
+  assert.deepEqual(ctx.calls, []);
+  assert.deepEqual(ctx.startVoiceCalls, []);
+  assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 
 test("ending a chat retains its transcript and draft until acknowledged, then starts clean", async (t) => {
@@ -1100,31 +1542,59 @@ test("voice captions render as labelled plain text alongside the existing transc
 test("voice captions hide speech cues and orphaned punctuation for both speakers without changing stored text", async (t) => {
   const caption = (id, role, text) => ({
     ...message(id, role, ""),
-    parts: [{
-      type: "voice", version: 1, voiceId: "22222222-2222-4222-8222-222222222222",
-      text, startMs: 0, endMs: 500,
-    }],
+    parts: [
+      {
+        type: "voice",
+        version: 1,
+        voiceId: "22222222-2222-4222-8222-222222222222",
+        text,
+        startMs: 0,
+        endMs: 500,
+      },
+    ],
   });
   const rows = [
-    caption("user-caption", "user", " [chuckle] Black blinds, please. [breath] "),
+    caption(
+      "user-caption",
+      "user",
+      " [chuckle] Black blinds, please. [breath] ",
+    ),
     caption("roman-caption", "assistant", " . Yeah. [breath] Let me check."),
     caption("incoming-caption", "assistant", " [breath] . "),
     message("literal-customer", "user", "What does [breath] mean?"),
   ];
   const original = structuredClone(rows);
-  const ctx = await setup(t, { state: { conversation: activeConversation(rows) } });
-  const captions = () => [...ctx.container.querySelectorAll(".roman-voice-caption p")];
-  assert.deepEqual(captions().map((p) => p.textContent), [
-    "Black blinds, please.", "Yeah. Let me check.",
-  ]);
-  assert.equal(ctx.container.querySelectorAll(".roman-timeline > li").length, 3);
-  assert.match(ctx.container.querySelector(".roman-timeline").textContent, /What does \[breath\] mean\?/);
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation(rows) },
+  });
+  const captions = () => [
+    ...ctx.container.querySelectorAll(".roman-voice-caption p"),
+  ];
+  assert.deepEqual(
+    captions().map((p) => p.textContent),
+    ["Black blinds, please.", "Yeah. Let me check."],
+  );
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-timeline > li").length,
+    3,
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-timeline").textContent,
+    /What does \[breath\] mean\?/,
+  );
   assert.deepEqual(rows, original);
   const firstCaption = captions()[0];
-  ctx.update({ conversation: activeConversation([
-    ...rows.slice(0, 2), caption("incoming-caption", "assistant", " [breath] . Found one."), rows[3],
-  ]) });
-  await until(() => captions().length === 3, "Caption text did not appear after its cue-only fragment");
+  ctx.update({
+    conversation: activeConversation([
+      ...rows.slice(0, 2),
+      caption("incoming-caption", "assistant", " [breath] . Found one."),
+      rows[3],
+    ]),
+  });
+  await until(
+    () => captions().length === 3,
+    "Caption text did not appear after its cue-only fragment",
+  );
   assert.equal(captions()[0], firstCaption);
   assert.equal(captions()[2].textContent, "Found one.");
   assert.deepEqual(rows, original);
@@ -1141,7 +1611,8 @@ test("the voice composer and dock synchronize mute state and restore the mounted
   });
   const button = (label, parent = ctx.container) =>
     [...parent.querySelectorAll("button")].find(
-      (item) => item.getAttribute("aria-label") === label || item.textContent === label,
+      (item) =>
+        item.getAttribute("aria-label") === label || item.textContent === label,
     );
   assert.equal(ctx.input().disabled, false);
   await ctx.type("Save my kitchen dimensions");
@@ -1155,11 +1626,16 @@ test("the voice composer and dock synchronize mute state and restore the mounted
   assert.equal(ctx.input().disabled, true);
   assert.equal(form.hidden, true);
   assert.equal(form.closest(".roman-composer").hidden, true);
-  const bar = ctx.container.querySelector(".roman-voice-composer > .roman-voice-bar");
+  const bar = ctx.container.querySelector(
+    ".roman-voice-composer > .roman-voice-bar",
+  );
   const waveform = bar.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
   assert.equal(waveform.children.length, 13);
-  assert.equal(button("Mute microphone").getAttribute("title"), "Mute microphone");
+  assert.equal(
+    button("Mute microphone").getAttribute("title"),
+    "Mute microphone",
+  );
   assert.equal(button("End voice").type, "button");
   assert.ok(button("Stop voice", ctx.voiceDock));
   assert.equal(ctx.container.contains(ctx.voiceDock), false);
@@ -1173,10 +1649,16 @@ test("the voice composer and dock synchronize mute state and restore the mounted
     "true",
   );
   assert.equal(!!bar.querySelector(".roman-voice-waveform"), false);
-  assert.equal(bar.querySelector(".roman-voice-notice").textContent, "Microphone muted");
+  assert.equal(
+    bar.querySelector(".roman-voice-notice").textContent,
+    "Microphone muted",
+  );
   assert.deepEqual(ctx.muteCalls, [true]);
   button("Unmute microphone").click();
-  await until(() => bar.querySelector(".roman-voice-waveform"), "Unmute did not restore the decorative waveform");
+  await until(
+    () => bar.querySelector(".roman-voice-waveform"),
+    "Unmute did not restore the decorative waveform",
+  );
   assert.equal(!!bar.querySelector(".roman-voice-notice"), false);
   assert.deepEqual(ctx.muteCalls, [true, false]);
   assert.ok(button("Mute microphone", ctx.voiceDock));
@@ -1218,14 +1700,19 @@ test("restored remote voice can be ended explicitly without activating the micro
   mute.click();
   assert.deepEqual(ctx.muteCalls, []);
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
-  assert.ok(ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"));
+  assert.ok(
+    ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
+  );
   assert.equal(ctx.input().disabled, true);
   assert.equal(ctx.input().closest("form").hidden, true);
   assert.equal(ctx.input().closest(".roman-composer").hidden, true);
   assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.startVoiceCalls, []);
   end.click();
-  await until(() => !ctx.input().closest("form").hidden && !ctx.input().disabled, "Ending remote voice did not restore the text composer");
+  await until(
+    () => !ctx.input().closest("form").hidden && !ctx.input().disabled,
+    "Ending remote voice did not restore the text composer",
+  );
   assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
   assert.deepEqual(ctx.startVoiceCalls, []);
@@ -1256,7 +1743,8 @@ test("voice selector offers all Live voices, defaults to Marin and changes only 
   );
   const button = (text) =>
     [...ctx.container.querySelectorAll("button")].find(
-      (node) => node.getAttribute("aria-label") === text || node.textContent === text,
+      (node) =>
+        node.getAttribute("aria-label") === text || node.textContent === text,
     );
   button("Start voice").click();
   await until(() => selector.disabled, "Active voice selector stayed enabled");
@@ -1309,33 +1797,58 @@ test("voice selection stays out of the customer controls when developer tools ar
 
 test("connecting and stopping voice keep the text draft mounted and prevent repeated shutdown", async (t) => {
   let stopped;
-  const accepted = new Promise(resolve => { stopped = resolve; });
-  const ctx = await setup(t, { onStopVoice: () => {
-    ctx.update({ voice: { status: "stopping", muted: true, error: null } });
-    return accepted;
-  } });
+  const accepted = new Promise((resolve) => {
+    stopped = resolve;
+  });
+  const ctx = await setup(t, {
+    onStopVoice: () => {
+      ctx.update({ voice: { status: "stopping", muted: true, error: null } });
+      return accepted;
+    },
+  });
   await ctx.type("My saved draft before connecting");
   const input = ctx.input();
   ctx.update({ voice: { status: "starting", muted: false, error: null } });
-  await until(() => ctx.container.querySelector('[aria-label="End voice"]'), "Connecting voice did not expose cancellation");
+  await until(
+    () => ctx.container.querySelector('[aria-label="End voice"]'),
+    "Connecting voice did not expose cancellation",
+  );
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
-  assert.ok(ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"));
-  assert.match(ctx.container.querySelector(".roman-voice-status").textContent, /Connecting voice/);
+  assert.ok(
+    ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-voice-status").textContent,
+    /Connecting voice/,
+  );
   assert.equal(input.closest("form").hidden, true);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
   assert.equal(mute.disabled, true);
   mute.click();
   assert.deepEqual(ctx.muteCalls, []);
-  assert.deepEqual(ctx.startVoiceCalls, [], "Rendering connection state must not request another microphone session");
+  assert.deepEqual(
+    ctx.startVoiceCalls,
+    [],
+    "Rendering connection state must not request another microphone session",
+  );
   ctx.container.querySelector('[aria-label="End voice"]').click();
-  await until(() => ctx.container.querySelector('[aria-label="End voice"]')?.disabled, "Shutdown did not disable End voice");
-  assert.match(ctx.container.querySelector(".roman-voice-status").textContent, /Ending voice/);
+  await until(
+    () => ctx.container.querySelector('[aria-label="End voice"]')?.disabled,
+    "Shutdown did not disable End voice",
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-voice-status").textContent,
+    /Ending voice/,
+  );
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
   ctx.container.querySelector('[aria-label="End voice"]').click();
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
   assert.equal(input.value, "My saved draft before connecting");
   stopped();
-  await until(() => !input.closest("form").hidden && !input.disabled, "Completed shutdown did not restore editing");
+  await until(
+    () => !input.closest("form").hidden && !input.disabled,
+    "Completed shutdown did not restore editing",
+  );
   assert.equal(ctx.input(), input);
   assert.equal(input.value, "My saved draft before connecting");
   assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
@@ -1344,16 +1857,30 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
 
 test("a failed voice start leaves text usable and retries voice only after another explicit click", async (t) => {
   let attempts = 0;
-  const ctx = await setup(t, { onStartVoice: (window) => {
-    if (++attempts === 1) {
-      ctx.update({ voice: { status: "error", muted: false, error: "Allow microphone access to use voice." } });
-      throw new window.Error("Microphone unavailable");
-    }
-  } });
+  const ctx = await setup(t, {
+    onStartVoice: (window) => {
+      if (++attempts === 1) {
+        ctx.update({
+          voice: {
+            status: "error",
+            muted: false,
+            error: "Allow microphone access to use voice.",
+          },
+        });
+        throw new window.Error("Microphone unavailable");
+      }
+    },
+  });
   await ctx.type("Keep this text after a failed microphone request");
   const input = ctx.input();
   ctx.container.querySelector('[aria-label="Start voice"]').click();
-  await until(() => ctx.container.textContent.includes("Allow microphone access to use voice."), "Voice startup error was hidden");
+  await until(
+    () =>
+      ctx.container.textContent.includes(
+        "Allow microphone access to use voice.",
+      ),
+    "Voice startup error was hidden",
+  );
   assert.equal(input.closest("form").hidden, false);
   assert.equal(input.closest(".roman-composer").hidden, false);
   assert.equal(input.disabled, false);
@@ -1362,9 +1889,16 @@ test("a failed voice start leaves text usable and retries voice only after anoth
   assert.deepEqual(ctx.startVoiceCalls, ["start"]);
   ctx.update({ selectedVoice: "gleam" });
   await delay(0);
-  assert.deepEqual(ctx.startVoiceCalls, ["start"], "An unrelated state update retried voice");
+  assert.deepEqual(
+    ctx.startVoiceCalls,
+    ["start"],
+    "An unrelated state update retried voice",
+  );
   ctx.container.querySelector('[aria-label="Start voice"]').click();
-  await until(() => ctx.container.querySelector(".roman-voice-waveform"), "Explicit voice retry did not connect");
+  await until(
+    () => ctx.container.querySelector(".roman-voice-waveform"),
+    "Explicit voice retry did not connect",
+  );
   assert.equal(input.closest("form").hidden, true);
   assert.equal(ctx.input(), input);
   assert.equal(input.value, "Keep this text after a failed microphone request");
@@ -1374,32 +1908,56 @@ test("a failed voice start leaves text usable and retries voice only after anoth
 
 test("a failed voice shutdown retains an explicit retry and reveals text only after stop acknowledgement", async (t) => {
   let attempts = 0;
-  const ctx = await setup(t, { onStopVoice: (window) => {
-    if (++attempts === 1) throw new window.Error("Stop remains unconfirmed");
-  } });
+  const ctx = await setup(t, {
+    onStopVoice: (window) => {
+      if (++attempts === 1) throw new window.Error("Stop remains unconfirmed");
+    },
+  });
   await ctx.type("Do not discard my unsent measurements");
   const input = ctx.input();
   ctx.update({
-    voice: { status: "error", muted: true, error: "Voice stopped locally. End voice to finish saving." },
+    voice: {
+      status: "error",
+      muted: true,
+      error: "Voice stopped locally. End voice to finish saving.",
+    },
     error: "Connection needs attention.",
   });
-  await until(() => ctx.container.querySelector('[aria-label="End voice"]'), "Unconfirmed stop did not expose recovery");
+  await until(
+    () => ctx.container.querySelector('[aria-label="End voice"]'),
+    "Unconfirmed stop did not expose recovery",
+  );
   assert.equal(input.closest("form").hidden, true);
-  assert.equal(input.closest(".roman-composer").hidden, false, "Connection diagnostics must remain visible while the form is hidden");
-  assert.match(input.closest(".roman-composer").textContent, /Connection needs attention/);
+  assert.equal(
+    input.closest(".roman-composer").hidden,
+    false,
+    "Connection diagnostics must remain visible while the form is hidden",
+  );
+  assert.match(
+    input.closest(".roman-composer").textContent,
+    /Connection needs attention/,
+  );
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
-  assert.ok(ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"));
+  assert.ok(
+    ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
+  );
   const mute = ctx.container.querySelector('[aria-label="Unmute microphone"]');
   assert.equal(mute.disabled, true);
   mute.click();
   assert.deepEqual(ctx.muteCalls, []);
   ctx.container.querySelector('[aria-label="End voice"]').click();
-  await until(() => ctx.stopVoiceCalls.length === 1, "Stop retry was not attempted");
+  await until(
+    () => ctx.stopVoiceCalls.length === 1,
+    "Stop retry was not attempted",
+  );
   await delay(0);
   assert.equal(input.closest("form").hidden, true);
   assert.equal(input.value, "Do not discard my unsent measurements");
   ctx.container.querySelector('[aria-label="End voice"]').click();
-  await until(() => !input.closest("form").hidden && !input.disabled, "Acknowledged stop did not restore text");
+  await until(
+    () => !input.closest("form").hidden && !input.disabled,
+    "Acknowledged stop did not restore text",
+  );
   assert.equal(ctx.input(), input);
   assert.equal(input.value, "Do not discard my unsent measurements");
   assert.deepEqual(ctx.stopVoiceCalls, ["stop", "stop"]);
@@ -1728,7 +2286,9 @@ test("a failed easy answer stays retryable without automatically resending", asy
 test("a voice answer keeps the live bar and mic state, submits once, and retires accepted choices", async (t) => {
   const row = questionMessage();
   let accept;
-  const accepted = new Promise(resolve => { accept = resolve; });
+  const accepted = new Promise((resolve) => {
+    accept = resolve;
+  });
   let ctx;
   ctx = await setup(t, {
     state: {
@@ -1737,20 +2297,36 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     },
     onVoiceAnswer: async (_questionId, answer) => {
       await accepted;
-      ctx.update({ conversation: activeConversation([row, message("reply", "user", answer)]) });
+      ctx.update({
+        conversation: activeConversation([
+          row,
+          message("reply", "user", answer),
+        ]),
+      });
     },
   });
-  assert.equal(ctx.container.querySelector(".roman-question-hint").textContent, "Reply aloud or choose an answer.");
+  assert.equal(
+    ctx.container.querySelector(".roman-question-hint").textContent,
+    "Reply aloud or choose an answer.",
+  );
   const bar = ctx.container.querySelector(".roman-voice-composer");
   const button = ctx.container.querySelector(".roman-question button");
   button.click();
   button.click();
-  await until(() => ctx.voiceAnswers.length === 1, "Answer was not submitted to voice");
-  assert.deepEqual(ctx.voiceAnswers, [{ questionId: row.parts[0].invocationId, answer: "Full blackout" }]);
+  await until(
+    () => ctx.voiceAnswers.length === 1,
+    "Answer was not submitted to voice",
+  );
+  assert.deepEqual(ctx.voiceAnswers, [
+    { questionId: row.parts[0].invocationId, answer: "Full blackout" },
+  ]);
   assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.stopVoiceCalls, []);
   accept();
-  await until(() => !ctx.container.querySelector(".roman-question"), "Accepted answer retained choices");
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Accepted answer retained choices",
+  );
   assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
   assert.ok(ctx.container.querySelector('[aria-label="Unmute microphone"]'));
   assert.deepEqual(ctx.muteCalls, []);
@@ -1762,20 +2338,38 @@ test("failed voice answer stays retryable without stopping voice or generating t
   let attempts = 0;
   let ctx;
   ctx = await setup(t, {
-    state: { conversation: activeConversation([row]), voice: { status: "active", muted: false, error: null } },
+    state: {
+      conversation: activeConversation([row]),
+      voice: { status: "active", muted: false, error: null },
+    },
     onVoiceAnswer: (_questionId, answer, window) => {
-      if (++attempts === 1) throw new window.Error("Connection lost. Please retry.");
-      ctx.update({ conversation: activeConversation([row, message("reply", "user", answer)]) });
+      if (++attempts === 1)
+        throw new window.Error("Connection lost. Please retry.");
+      ctx.update({
+        conversation: activeConversation([
+          row,
+          message("reply", "user", answer),
+        ]),
+      });
     },
   });
   ctx.container.querySelector(".roman-question button").click();
-  await until(() => ctx.container.querySelector('.roman-question [role="alert"]'), "Voice answer failure not shown");
-  assert.equal(ctx.container.querySelector(".roman-question button").disabled, false);
+  await until(
+    () => ctx.container.querySelector('.roman-question [role="alert"]'),
+    "Voice answer failure not shown",
+  );
+  assert.equal(
+    ctx.container.querySelector(".roman-question button").disabled,
+    false,
+  );
   assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.stopVoiceCalls, []);
   assert.equal(ctx.voiceAnswers.length, 1);
   ctx.container.querySelector(".roman-question button").click();
-  await until(() => !ctx.container.querySelector(".roman-question"), "Retried answer not accepted");
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Retried answer not accepted",
+  );
   assert.equal(ctx.voiceAnswers.length, 2);
   assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.stopVoiceCalls, []);
@@ -1785,7 +2379,10 @@ test("a question waiting for voice in another page cannot end that connection or
   const row = questionMessage();
   const ctx = await setup(t, {
     state: {
-      conversation: { ...activeConversation([row]), voice: { id: "remote", clientId: "previous", status: "active" } },
+      conversation: {
+        ...activeConversation([row]),
+        voice: { id: "remote", clientId: "previous", status: "active" },
+      },
     },
   });
   const button = ctx.container.querySelector(".roman-question button");
@@ -1802,37 +2399,86 @@ test("reply activity covers submission and the real empty text part, survives ch
   assert.equal(activity().textContent, "Roman is thinking…");
   assert.equal(activity().getAttribute("role"), "status");
   assert.equal(activity().getAttribute("aria-atomic"), "true");
-  assert.equal(ctx.container.querySelector(".roman-chat-scroll").contains(activity()), true);
+  assert.equal(
+    ctx.container.querySelector(".roman-chat-scroll").contains(activity()),
+    true,
+  );
   const user = message("request", "user", "Help me choose a blind");
   const pendingReply = {
     ...message("reply", "assistant", "", "pending"),
     parts: [{ type: "text", text: "" }],
   };
-  ctx.update({ pending: false, conversation: { ...activeConversation([user, pendingReply]), busy: true } });
-  await until(() => ctx.container.querySelector('[role="log"]'), "Accepted reply did not render");
+  ctx.update({
+    pending: false,
+    conversation: { ...activeConversation([user, pendingReply]), busy: true },
+  });
+  await until(
+    () => ctx.container.querySelector('[role="log"]'),
+    "Accepted reply did not render",
+  );
   assert.equal(activity().textContent, "Roman is thinking…");
-  assert.equal(ctx.container.querySelectorAll(".roman-reply-activity").length, 1);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-reply-activity").length,
+    1,
+  );
   const node = activity();
-  for (const text of ["Here are", "Here are some suitable", "Here are some suitable blinds."]) {
-    ctx.update({ conversation: { ...activeConversation([user, message("reply", "assistant", text, "pending")]), busy: true } });
-    await until(() => activity()?.textContent === "Roman is replying…", "A streamed chunk lost reply feedback");
-    assert.equal(activity(), node, "A label update must retain its status region");
+  for (const text of [
+    "Here are",
+    "Here are some suitable",
+    "Here are some suitable blinds.",
+  ]) {
+    ctx.update({
+      conversation: {
+        ...activeConversation([
+          user,
+          message("reply", "assistant", text, "pending"),
+        ]),
+        busy: true,
+      },
+    });
+    await until(
+      () => activity()?.textContent === "Roman is replying…",
+      "A streamed chunk lost reply feedback",
+    );
+    assert.equal(
+      activity(),
+      node,
+      "A label update must retain its status region",
+    );
   }
-  ctx.update({ conversation: activeConversation([user, message("reply", "assistant", "Here are some suitable blinds.")]) });
-  await until(() => !activity(), "Completed reply retained its working indicator");
-  assert.match(ctx.container.querySelector('[role="log"]').textContent, /Here are some suitable blinds/);
+  ctx.update({
+    conversation: activeConversation([
+      user,
+      message("reply", "assistant", "Here are some suitable blinds."),
+    ]),
+  });
+  await until(
+    () => !activity(),
+    "Completed reply retained its working indicator",
+  );
+  assert.match(
+    ctx.container.querySelector('[role="log"]').textContent,
+    /Here are some suitable blinds/,
+  );
   assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
 
 test("tool progress names the running work and progress-only updates preserve the focused draft", async (t) => {
-  const ctx = await setup(t, { state: { conversation: activeConversation([]) } });
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([]) },
+  });
   await ctx.type("Keep my bedroom measurements");
   const input = ctx.input();
   input.focus();
   input.setSelectionRange(5, 15, "forward");
   const activity = () => ctx.container.querySelector(".roman-reply-activity");
-  const queued = { id: "queued", name: "get_cart", status: "pending", arguments: {} };
+  const queued = {
+    id: "queued",
+    name: "get_cart",
+    status: "pending",
+    arguments: {},
+  };
   // Tool state is independently projected: repainting it must not replace or
   // focus the input. The conversation owner separately controls input disabling.
   for (const [name, expected] of [
@@ -1844,15 +2490,32 @@ test("tool progress names the running work and progress-only updates preserve th
     ["set_cart_quantity", "Updating your cart…"],
     ["apply_measurements", "Entering your measurements…"],
   ]) {
-    ctx.update({ conversation: { ...activeConversation([]), tools: [queued, { id: "active", name, status: "running", arguments: {} }] } });
-    await until(() => activity()?.textContent === expected, `Missing customer progress for ${name}`);
+    ctx.update({
+      conversation: {
+        ...activeConversation([]),
+        tools: [
+          queued,
+          { id: "active", name, status: "running", arguments: {} },
+        ],
+      },
+    });
+    await until(
+      () => activity()?.textContent === expected,
+      `Missing customer progress for ${name}`,
+    );
     assert.equal(ctx.input(), input);
     assert.equal(input.getRootNode().activeElement, input);
     assert.equal(input.value, "Keep my bedroom measurements");
-    assert.deepEqual([input.selectionStart, input.selectionEnd, input.selectionDirection], [5, 15, "forward"]);
+    assert.deepEqual(
+      [input.selectionStart, input.selectionEnd, input.selectionDirection],
+      [5, 15, "forward"],
+    );
   }
   ctx.update({ conversation: { ...activeConversation([]), tools: [queued] } });
-  await until(() => activity()?.textContent === "Checking your cart…", "Pending work was not represented");
+  await until(
+    () => activity()?.textContent === "Checking your cart…",
+    "Pending work was not represented",
+  );
   ctx.update({ conversation: activeConversation([]) });
   await until(() => !activity(), "Retired tool progress remained visible");
   assert.equal(input.getRootNode().activeElement, input);
@@ -1861,72 +2524,177 @@ test("tool progress names the running work and progress-only updates preserve th
 });
 
 test("idle voice is quiet while delegated model and browser work show progress", async (t) => {
-  const ctx = await setup(t, { state: {
-    voice: { status: "active", muted: false, error: null },
-    conversation: activeConversation([]),
-  } });
+  const ctx = await setup(t, {
+    state: {
+      voice: { status: "active", muted: false, error: null },
+      conversation: activeConversation([]),
+    },
+  });
   const activity = () => ctx.container.querySelector(".roman-reply-activity");
   assert.equal(activity(), null);
   // The backend intentionally omits the empty voice-delegation context row.
   ctx.update({ conversation: { ...activeConversation([]), busy: true } });
-  await until(() => activity()?.textContent === "Roman is thinking…", "Voice delegation had no progress");
-  ctx.update({ conversation: { ...activeConversation([]), busy: true, tools: [{ id: "voice-search", name: "search_products", status: "running", arguments: {} }] } });
-  await until(() => activity()?.textContent === "Finding suitable products…", "Voice tool did not replace generic progress");
+  await until(
+    () => activity()?.textContent === "Roman is thinking…",
+    "Voice delegation had no progress",
+  );
+  ctx.update({
+    conversation: {
+      ...activeConversation([]),
+      busy: true,
+      tools: [
+        {
+          id: "voice-search",
+          name: "search_products",
+          status: "running",
+          arguments: {},
+        },
+      ],
+    },
+  });
+  await until(
+    () => activity()?.textContent === "Finding suitable products…",
+    "Voice tool did not replace generic progress",
+  );
   ctx.update({ conversation: activeConversation([]) });
-  await until(() => !activity(), "Finished delegation made idle voice appear busy");
+  await until(
+    () => !activity(),
+    "Finished delegation made idle voice appear busy",
+  );
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
 
 test("restoration, request errors, voice transitions and ended sessions suppress stale activity", async (t) => {
-  const working = { ...activeConversation([]), busy: true, tools: [{ id: "search", name: "search_products", status: "running", arguments: {} }] };
+  const working = {
+    ...activeConversation([]),
+    busy: true,
+    tools: [
+      {
+        id: "search",
+        name: "search_products",
+        status: "running",
+        arguments: {},
+      },
+    ],
+  };
   const ctx = await setup(t, { state: { conversation: working } });
   const activity = () => ctx.container.querySelector(".roman-reply-activity");
   for (const [name, changes] of [
     ["restoration", { restoring: true }],
     ["request error", { error: "Could not refresh. Please retry." }],
-    ["voice startup", { voice: { status: "starting", muted: false, error: null } }],
-    ["voice shutdown", { voice: { status: "stopping", muted: true, error: null } }],
+    [
+      "voice startup",
+      { voice: { status: "starting", muted: false, error: null } },
+    ],
+    [
+      "voice shutdown",
+      { voice: { status: "stopping", muted: true, error: null } },
+    ],
     ["ended session", { conversation: { ...working, status: "ended" } }],
   ]) {
-    ctx.update({ conversation: working, restoring: false, error: null, voice: { status: "idle", muted: false, error: null } });
-    await until(() => activity(), `Working baseline did not return before ${name}`);
+    ctx.update({
+      conversation: working,
+      restoring: false,
+      error: null,
+      voice: { status: "idle", muted: false, error: null },
+    });
+    await until(
+      () => activity(),
+      `Working baseline did not return before ${name}`,
+    );
     ctx.update(changes);
     await until(() => !activity(), `${name} retained stale progress`);
   }
-  const failed = { ...message("reply", "assistant", "", "failed"), error: "The reply was cancelled." };
-  ctx.update({ conversation: activeConversation([failed]), restoring: false, error: null, voice: { status: "idle", muted: false, error: null } });
-  await until(() => ctx.container.textContent.includes("The reply was cancelled."), "Failed reply was not shown");
+  const failed = {
+    ...message("reply", "assistant", "", "failed"),
+    error: "The reply was cancelled.",
+  };
+  ctx.update({
+    conversation: activeConversation([failed]),
+    restoring: false,
+    error: null,
+    voice: { status: "idle", muted: false, error: null },
+  });
+  await until(
+    () => ctx.container.textContent.includes("The reply was cancelled."),
+    "Failed reply was not shown",
+  );
   assert.equal(activity(), null);
 });
 
 test("an outstanding cart approval does not claim the action is already executing", async (t) => {
-  const tool = { id: "remove", name: "remove_from_cart", status: "pending", arguments: { lineKey: "line-one" } };
-  const ctx = await setup(t, { state: {
-    conversation: { ...activeConversation([]), busy: true, tools: [tool] },
-    approval: { invocationId: tool.id, title: "Remove this blind?", details: ["Bedroom blind"] },
-  } });
+  const tool = {
+    id: "remove",
+    name: "remove_from_cart",
+    status: "pending",
+    arguments: { lineKey: "line-one" },
+  };
+  const ctx = await setup(t, {
+    state: {
+      conversation: { ...activeConversation([]), busy: true, tools: [tool] },
+      approval: {
+        invocationId: tool.id,
+        title: "Remove this blind?",
+        details: ["Bedroom blind"],
+      },
+    },
+  });
   assert.ok(ctx.container.querySelector(".roman-tool-approval"));
   assert.equal(ctx.container.querySelector(".roman-reply-activity"), null);
   assert.doesNotMatch(ctx.container.textContent, /Updating your cart/);
-  ctx.update({ approval: null, conversation: { ...activeConversation([]), busy: true, tools: [{ ...tool, status: "running" }] } });
-  await until(() => ctx.container.querySelector(".roman-reply-activity")?.textContent === "Updating your cart…", "Confirmed running action had no feedback");
+  ctx.update({
+    approval: null,
+    conversation: {
+      ...activeConversation([]),
+      busy: true,
+      tools: [{ ...tool, status: "running" }],
+    },
+  });
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-reply-activity")?.textContent ===
+      "Updating your cart…",
+    "Confirmed running action had no feedback",
+  );
   ctx.update({ conversation: activeConversation([]) });
-  await until(() => !ctx.container.querySelector(".roman-reply-activity"), "Completed cart work retained activity");
+  await until(
+    () => !ctx.container.querySelector(".roman-reply-activity"),
+    "Completed cart work retained activity",
+  );
 });
 
 test("End removes progress before acknowledgement and does not restore it after cleanup", async (t) => {
   let finish;
-  const accepted = new Promise(resolve => { finish = resolve; });
+  const accepted = new Promise((resolve) => {
+    finish = resolve;
+  });
   const ctx = await setup(t, {
-    state: { conversation: { ...activeConversation([message("reply", "assistant", "Still replying", "pending")]), busy: true } },
+    state: {
+      conversation: {
+        ...activeConversation([
+          message("reply", "assistant", "Still replying", "pending"),
+        ]),
+        busy: true,
+      },
+    },
     onEnd: () => accepted,
   });
-  assert.equal(ctx.container.querySelector(".roman-reply-activity").textContent, "Roman is replying…");
+  assert.equal(
+    ctx.container.querySelector(".roman-reply-activity").textContent,
+    "Roman is replying…",
+  );
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => ctx.container.querySelector(".roman-end-chat")?.textContent === "Ending…", "End did not start");
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-end-chat")?.textContent === "Ending…",
+    "End did not start",
+  );
   assert.equal(ctx.container.querySelector(".roman-reply-activity"), null);
   assert.deepEqual(ctx.endCalls, ["end"]);
   finish();
-  await until(() => ctx.container.querySelector(".roman-welcome"), "End acknowledgement did not reset chat");
+  await until(
+    () => ctx.container.querySelector(".roman-welcome"),
+    "End acknowledgement did not reset chat",
+  );
   assert.equal(ctx.container.querySelector(".roman-reply-activity"), null);
 });

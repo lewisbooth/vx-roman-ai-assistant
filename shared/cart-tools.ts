@@ -3,6 +3,7 @@ import { parseNavigationCall } from "./navigation-tool";
 export type CartToolName =
   | "get_cart"
   | "add_to_cart"
+  | "add_sample_to_cart"
   | "remove_from_cart"
   | "set_cart_quantity"
   | "clear_cart";
@@ -27,11 +28,17 @@ export interface CartAddedProduct {
     unit: "mm" | "cm" | "in";
   };
 }
+export interface CartAddedSample {
+  productPath: string;
+  title: string;
+}
 export interface CartActionResult {
   status:
     | "added"
+    | "already_in_cart"
     | "updated"
     | "needs_configuration"
+    | "unsupported"
     | "needs_cart_page"
     | "handed_off"
     | "cancelled"
@@ -40,12 +47,14 @@ export interface CartActionResult {
   quantityAdded?: number;
   cart?: CartSnapshot;
   addedProduct?: CartAddedProduct;
+  addedSample?: CartAddedSample;
 }
 export type CartToolResult = CartSnapshot | CartActionResult;
 
 const names: readonly CartToolName[] = [
   "get_cart",
   "add_to_cart",
+  "add_sample_to_cart",
   "remove_from_cart",
   "set_cart_quantity",
   "clear_cart",
@@ -61,6 +70,11 @@ const definitions = [
   [
     "add_to_cart",
     "Add the configured product currently open on its verified productPath when the shopper asks. No additional on-screen approval is required. The theme owns measurements, options and validation. Do not infer configuration from a draft, catalog price or page visit. This does not purchase or check out.",
+    { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
+  ],
+  [
+    "add_sample_to_cart",
+    "Add a sample for the product currently open on its verified productPath without query or hash when the shopper explicitly asks. No additional on-screen approval is required. A sample is not a full blind, does not purchase or check out, and must never fall back to adding the full product. The theme owns sample availability and validation.",
     { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
   ],
   [
@@ -105,7 +119,11 @@ export function isCartMutation(name: string): boolean {
   return isCartTool(name) && name !== "get_cart";
 }
 export function requiresCartConfirmation(name: string): boolean {
-  return isCartMutation(name) && name !== "add_to_cart";
+  return (
+    isCartMutation(name) &&
+    name !== "add_to_cart" &&
+    name !== "add_sample_to_cart"
+  );
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -190,6 +208,15 @@ export function parseCartAddedProduct(input: unknown): CartAddedProduct {
   };
 }
 
+/** Public sample facts confirmed by the theme; never a substitute full-product add. */
+export function parseCartAddedSample(input: unknown): CartAddedSample {
+  const value = object(input);
+  exact(value, ["productPath", "title"]);
+  const path = productPath(value.productPath);
+  if (!text(value.title, 300)) throw new Error("Invalid added sample title.");
+  return { productPath: path, title: value.title };
+}
+
 export function parseCartCall(
   name: string,
   input: unknown,
@@ -200,9 +227,14 @@ export function parseCartCall(
     exact(args, []);
     return { name, arguments: {} };
   }
-  if (name === "add_to_cart") {
+  if (name === "add_to_cart" || name === "add_sample_to_cart") {
     exact(args, ["productPath"]);
-    return { name, arguments: { productPath: productPath(args.productPath) } };
+    return {
+      name,
+      arguments: {
+        productPath: productPath(args.productPath),
+      },
+    };
   }
   exact(
     args,
@@ -284,7 +316,15 @@ export function parseCartResult(
   const states =
     name === "add_to_cart"
       ? ["added", "needs_configuration", "handed_off"]
-      : ["updated", "needs_cart_page", "handed_off"];
+      : name === "add_sample_to_cart"
+        ? [
+            "added",
+            "already_in_cart",
+            "needs_configuration",
+            "unsupported",
+            "handed_off",
+          ]
+        : ["updated", "needs_cart_page", "handed_off"];
   if (
     !states.concat("cancelled", "uncertain").includes(String(value.status)) ||
     !text(value.message, 500)
@@ -296,6 +336,7 @@ export function parseCartResult(
     ...(value.quantityAdded !== undefined ? ["quantityAdded"] : []),
     ...(value.cart !== undefined ? ["cart"] : []),
     ...(value.addedProduct !== undefined ? ["addedProduct"] : []),
+    ...(value.addedSample !== undefined ? ["addedSample"] : []),
   ];
   exact(value, keys);
   if (
@@ -309,6 +350,22 @@ export function parseCartResult(
     throw new Error("A confirmed update needs the resulting cart.");
   if (value.addedProduct !== undefined && value.status !== "added")
     throw new Error("Only a confirmed addition can include an added product.");
+  if (value.addedSample !== undefined && value.status !== "added")
+    throw new Error("Only a confirmed addition can include an added sample.");
+  if (value.addedProduct !== undefined && value.addedSample !== undefined)
+    throw new Error("An action cannot add both a product and a sample.");
+  if (name === "add_to_cart" && value.addedSample !== undefined)
+    throw new Error("Only the sample action can include an added sample.");
+  if (name === "add_sample_to_cart" && value.addedProduct !== undefined)
+    throw new Error("The sample action cannot include an added product.");
+  if (name === "add_sample_to_cart" && value.quantityAdded !== undefined)
+    throw new Error("A sample addition cannot include a product quantity.");
+  if (
+    name === "add_sample_to_cart" &&
+    value.status === "added" &&
+    value.addedSample === undefined
+  )
+    throw new Error("A confirmed sample addition needs its added sample.");
   return {
     status: value.status as CartActionResult["status"],
     message: value.message,
@@ -320,6 +377,9 @@ export function parseCartResult(
       : {}),
     ...(value.addedProduct !== undefined
       ? { addedProduct: parseCartAddedProduct(value.addedProduct) }
+      : {}),
+    ...(value.addedSample !== undefined
+      ? { addedSample: parseCartAddedSample(value.addedSample) }
       : {}),
   };
 }

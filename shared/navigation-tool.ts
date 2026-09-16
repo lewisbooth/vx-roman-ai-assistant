@@ -2,6 +2,7 @@ export interface NavigationResult {
   status: "navigated";
   path: string;
   title?: string;
+  actions?: { sampleAvailable: boolean };
 }
 
 export interface NavigationPart {
@@ -29,7 +30,9 @@ export function parseNavigationResult(input: unknown): NavigationResult {
   const value = input as Record<string, unknown>;
   if (
     value.status !== "navigated" ||
-    Object.keys(value).some((key) => !["status", "path", "title"].includes(key))
+    Object.keys(value).some(
+      (key) => !["status", "path", "title", "actions"].includes(key),
+    )
   )
     throw new Error("Invalid navigation result.");
   return {
@@ -37,6 +40,25 @@ export function parseNavigationResult(input: unknown): NavigationResult {
     ...parseNavigationCall({ path: value.path }),
     ...(value.title !== undefined
       ? { title: navigationTitle(value.title) }
+      : {}),
+    ...(value.actions !== undefined
+      ? (() => {
+          if (
+            !value.actions ||
+            typeof value.actions !== "object" ||
+            Array.isArray(value.actions) ||
+            Object.keys(value.actions).length !== 1 ||
+            typeof (value.actions as Record<string, unknown>)
+              .sampleAvailable !== "boolean"
+          )
+            throw new Error("Invalid navigation actions.");
+          return {
+            actions: {
+              sampleAvailable: (value.actions as Record<string, boolean>)
+                .sampleAvailable,
+            },
+          };
+        })()
       : {}),
   };
 }

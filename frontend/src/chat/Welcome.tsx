@@ -5,28 +5,41 @@ const tiles = [
     image: "roman-tile-measure-line.png",
     width: 178,
     colour: "roman-tile-measure-colour.png",
+    starter: "Help me measure my windows for blinds.",
   },
   {
     title: "Visualize in room",
     description: "Upload a photo",
     image: "roman-tile-visualize.png",
     width: 76,
+    starter:
+      "I'd like to visualize blinds in my room. Start by asking me to upload a room photo, then help me choose a blind. Image generation isn't available yet.",
   },
   {
     title: "Find your style",
     description: "Upload a mood board",
     image: "roman-tile-style.png",
     width: 100,
+    starter: "Help me find blinds that suit my room and style.",
   },
   {
     title: "Explore No-Drill",
     description: "Easy fitting, no stress",
     image: "roman-tile-no-drill.png",
     width: 86,
+    starter: "Help me find no-drill blinds for my home.",
   },
 ] as const;
 
-export function Welcome({ logoUrl }: { logoUrl: string }) {
+export function Welcome({
+  logoUrl,
+  busy,
+  onStart,
+}: {
+  logoUrl: string;
+  busy: boolean;
+  onStart: (message: string) => void;
+}) {
   const assetUrl = (name: string) =>
     new URL(name, new URL(logoUrl, window.location.href)).href;
 
@@ -48,10 +61,9 @@ export function Welcome({ logoUrl }: { logoUrl: string }) {
           <button
             key={tile.title}
             type="button"
-            disabled
+            disabled={busy}
             className="roman-welcome-tile"
-            aria-label={`${tile.title} — coming soon`}
-            title="Coming soon"
+            onClick={() => onStart(tile.starter)}
           >
             <span className="roman-tile-art" aria-hidden="true">
               <img

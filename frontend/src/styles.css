@@ -725,8 +725,12 @@
   }
 
   .roman-welcome-tile {
-    @apply flex min-h-[185px] min-w-0 cursor-default flex-col items-center overflow-hidden rounded-[16px] border border-solid border-[#e3e0d8] bg-white px-[4px] pt-[16px] pb-[23px] text-[#402b2b] opacity-100 [box-shadow:0_2px_0_#00000014];
+    @apply flex min-h-[185px] min-w-0 cursor-pointer flex-col items-center overflow-hidden rounded-[16px] border border-solid border-[#e3e0d8] bg-white px-[4px] pt-[16px] pb-[23px] text-[#402b2b] opacity-100 disabled:cursor-default [box-shadow:0_2px_0_#00000014];
     font: inherit;
+  }
+
+  .roman-welcome-tile:not(:disabled):is(:hover, :focus-visible) {
+    border-color: #4e0e0e;
   }
 
   .roman-tile-art {

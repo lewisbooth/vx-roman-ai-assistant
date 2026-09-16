@@ -15,6 +15,12 @@ import {
   type CartToolResult,
 } from "../../shared/cart-tools";
 import {
+  isProductConfigurationTool,
+  parseProductConfigurationCall,
+  parseProductConfigurationResult,
+  type ProductConfigurationResult,
+} from "../../shared/product-configuration";
+import {
   parseMeasurementCall,
   parseApplyMeasurementsCommand,
   parseApplyMeasurementsResult,
@@ -41,6 +47,7 @@ export type BrowserToolOutcome =
   | CartToolResult
   | ApplyMeasurementsResult
   | ProductGuidesResult
+  | ProductConfigurationResult
   | { error: string };
 interface BrowserWaiter {
   invocationId?: string;
@@ -90,7 +97,9 @@ export async function requestBrowserTool(
           ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
           : isCartTool(name)
             ? parseCartCall(name, input)
-            : parseCatalogCall(name, input);
+            : isProductConfigurationTool(name)
+              ? parseProductConfigurationCall(name, input)
+              : parseCatalogCall(name, input);
   signal.throwIfAborted();
   if (waiting.has(conversationId))
     throw new Error("A storefront action is already running.");
@@ -178,6 +187,17 @@ export async function submitBrowserToolResult(
         message:
           "The product fields may have changed, but application was not confirmed. Check the form before requesting another change.",
       };
+    } else if (context.name === "configure_product") {
+      const call = parseProductConfigurationCall(
+        context.name,
+        context.arguments,
+      );
+      outcome = {
+        status: "uncertain",
+        productPath: call.arguments.productPath,
+        message:
+          "The product option may have changed, but application was not confirmed. Check the form before requesting another change.",
+      };
     } else
       outcome = isCartMutation(context.name)
         ? interruptedCartResult(true)
@@ -194,6 +214,10 @@ export async function submitBrowserToolResult(
         outcome = parseApplyMeasurementsResult(result);
       } else if (isCartTool(context.name)) {
         outcome = parseCartResult(context.name, result);
+      } else if (isProductConfigurationTool(context.name)) {
+        outcome = parseProductConfigurationResult(context.name, result);
+        if (outcome.productPath !== context.arguments.productPath)
+          throw new Error("Product configuration belongs to another product.");
       } else {
         outcome = parseCatalogResult(result, context.origin);
       }
@@ -218,13 +242,15 @@ export async function submitBrowserToolResult(
           ...(isCartTool(context.name) ||
           context.name === "navigate" ||
           context.name === "apply_measurements" ||
-          context.name === "get_product_guides"
+          context.name === "get_product_guides" ||
+          isProductConfigurationTool(context.name)
             ? {
                 outcome: outcome as
                   | CartToolResult
                   | ApplyMeasurementsResult
                   | NavigationResult
-                  | ProductGuidesResult,
+                  | ProductGuidesResult
+                  | ProductConfigurationResult,
               }
             : {}),
         },

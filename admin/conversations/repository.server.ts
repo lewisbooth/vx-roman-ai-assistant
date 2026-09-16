@@ -44,11 +44,19 @@ import {
   isCartMutation,
   parseCartCall,
   parseCartAddedProduct,
+  parseCartAddedSample,
   parseCartResult,
   requiresCartConfirmation,
   interruptedCartResult,
   type CartToolResult,
 } from "../../shared/cart-tools";
+import {
+  isProductConfigurationTool,
+  parseProductConfigurationCall,
+  parseProductConfigurationResult,
+  type ConfigureProductResult,
+  type ProductConfigurationResult,
+} from "../../shared/product-configuration";
 import {
   parseApplyMeasurementsCommand,
   parseApplyMeasurementsResult,
@@ -155,6 +163,16 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
       continue;
     }
     if (
+      part.type === "cart_sample_added" &&
+      part.version === 1 &&
+      typeof part.invocationId === "string" &&
+      uuidPattern.test(part.invocationId) &&
+      Object.keys(part).length === 4
+    ) {
+      parseCartAddedSample(part.sample);
+      continue;
+    }
+    if (
       part.type === "products" &&
       part.version === 1 &&
       typeof part.invocationId === "string" &&
@@ -188,10 +206,15 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
   return value as ConversationPart[];
 }
 
-type StoredActionResult = CartToolResult | ApplyMeasurementsResult;
+type StoredActionResult =
+  CartToolResult | ApplyMeasurementsResult | ProductConfigurationResult;
 
 function isStorefrontMutation(name: string) {
-  return isCartMutation(name) || name === "apply_measurements";
+  return (
+    isCartMutation(name) ||
+    name === "apply_measurements" ||
+    name === "configure_product"
+  );
 }
 
 function storedBrowserCall(
@@ -204,6 +227,8 @@ function storedBrowserCall(
     return { name, arguments: parseProductGuidesCall(input) };
   if (name === "apply_measurements")
     return { name, arguments: { ...parseApplyMeasurementsCommand(input) } };
+  if (isProductConfigurationTool(name))
+    return parseProductConfigurationCall(name, input);
   return isCartTool(name)
     ? parseCartCall(name, input)
     : parseCatalogCall(name, input);
@@ -227,6 +252,18 @@ function storedActionResult(
         400,
         "The added product does not match the requested product page.",
       );
+    if (
+      tool.name === "add_sample_to_cart" &&
+      "addedSample" in result &&
+      result.addedSample &&
+      result.addedSample.productPath !==
+        parseCartCall(tool.name, JSON.parse(tool.argumentsJson)).arguments
+          .productPath
+    )
+      throw new ConversationError(
+        400,
+        "The added sample does not match the requested product page.",
+      );
     return result;
   }
   if (tool.name === "apply_measurements") {
@@ -241,6 +278,19 @@ function storedActionResult(
       throw new ConversationError(
         400,
         "The applied measurements do not match the reviewed draft.",
+      );
+    return result;
+  }
+  if (isProductConfigurationTool(tool.name)) {
+    const result = parseProductConfigurationResult(tool.name, input);
+    const call = parseProductConfigurationCall(
+      tool.name,
+      JSON.parse(tool.argumentsJson),
+    );
+    if (result.productPath !== call.arguments.productPath)
+      throw new ConversationError(
+        400,
+        "The product configuration result does not match the requested product page.",
       );
     return result;
   }
@@ -264,6 +314,19 @@ function interruptedActionResult(
         ? "The product fields may have changed, but application was not confirmed. Check the form before requesting another change."
         : "This application did not start; Roman did not fill the product form.",
     };
+  }
+  if (tool.name === "configure_product") {
+    const command = parseProductConfigurationCall(
+      tool.name,
+      JSON.parse(tool.argumentsJson),
+    );
+    return {
+      status: claimed ? "uncertain" : "cancelled",
+      productPath: command.arguments.productPath,
+      message: claimed
+        ? "The product option may have changed, but application was not confirmed. Check the form before requesting another change."
+        : "This product option change did not start.",
+    } satisfies ConfigureProductResult;
   }
 }
 
@@ -491,7 +554,9 @@ function modelHistory(
   const recentCartResults = conversation.toolInvocations
     .filter(
       (tool) =>
-        (isCartTool(tool.name) || tool.name === "apply_measurements") &&
+        (isCartTool(tool.name) ||
+          tool.name === "apply_measurements" ||
+          isProductConfigurationTool(tool.name)) &&
         (tool.status === "complete" || tool.status === "failed"),
     )
     .slice(-8);
@@ -509,7 +574,8 @@ function modelHistory(
         part.type !== "voice" &&
         part.type !== "voice_event" &&
         part.type !== "question" &&
-        part.type !== "cart_added",
+        part.type !== "cart_added" &&
+        part.type !== "cart_sample_added",
     );
     return [
       ...(text
@@ -945,6 +1011,8 @@ export async function getBrowserToolContext(id: string, invocationId: string) {
       "get_product",
       "lookup_catalog",
       "apply_measurements",
+      "get_product_configuration",
+      "configure_product",
       "get_product_guides",
     ].includes(tool.name)
   )
@@ -1823,7 +1891,8 @@ export async function completeToolInvocation(
       isCartTool(tool.name) ||
       tool.name === "navigate" ||
       tool.name === "apply_measurements" ||
-      tool.name === "get_product_guides";
+      tool.name === "get_product_guides" ||
+      isProductConfigurationTool(tool.name);
     const outcome = persistsOutcome
       ? result.outcome === undefined
         ? isStorefrontMutation(tool.name) && error
@@ -1889,6 +1958,14 @@ export async function completeToolInvocation(
       outcome.status === "added"
         ? outcome.addedProduct
         : undefined;
+    const addedSample =
+      !error &&
+      tool.name === "add_sample_to_cart" &&
+      outcome &&
+      "status" in outcome &&
+      outcome.status === "added"
+        ? outcome.addedSample
+        : undefined;
     const navigation =
       !error &&
       tool.name === "navigate" &&
@@ -1899,17 +1976,24 @@ export async function completeToolInvocation(
         : undefined;
     const notification: ConversationPart | undefined = addedProduct
       ? { type: "cart_added", version: 1, invocationId, product: addedProduct }
-      : navigation
-        ? parseNavigationPart({
-            type: "navigation",
+      : addedSample
+        ? {
+            type: "cart_sample_added",
             version: 1,
             invocationId,
-            path: navigation.path.split(/[?#]/, 1)[0],
-            title:
-              navigation.title ??
-              navigation.path.split(/[?#]/, 1)[0].slice(0, 200),
-          })
-        : undefined;
+            sample: addedSample,
+          }
+        : navigation
+          ? parseNavigationPart({
+              type: "navigation",
+              version: 1,
+              invocationId,
+              path: navigation.path.split(/[?#]/, 1)[0],
+              title:
+                navigation.title ??
+                navigation.path.split(/[?#]/, 1)[0].slice(0, 200),
+            })
+          : undefined;
     await transaction.toolInvocation.update({
       where: { id: invocationId },
       data: {
@@ -1973,7 +2057,9 @@ export async function failToolInvocation(
       where: { id: invocationId, conversationId: id },
     });
     return tool &&
-      (isCartTool(tool.name) || tool.name === "apply_measurements") &&
+      (isCartTool(tool.name) ||
+        tool.name === "apply_measurements" ||
+        isProductConfigurationTool(tool.name)) &&
       tool.resultJson
       ? storedActionResult(tool, JSON.parse(tool.resultJson))
       : undefined;
