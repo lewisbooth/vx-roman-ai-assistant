@@ -119,6 +119,252 @@ async function journey() {
   });
 }
 
+test("cancelled voice search stays silent and no longer separates continuous captions on reload", async () => {
+  const session = await startVoice();
+  await caption(session, "Hm", 0, "assistant");
+  const turn = await conversation.beginTurn(id, textInput(""), session.id);
+  const tool = await conversation.createToolInvocation(id, turn.assistantId, {
+    providerCallId: randomUUID(),
+    name: "search_products",
+    arguments: { query: "sheer" },
+  });
+  const claim = { clientId, claimToken: randomBytes(32).toString("base64url") };
+  await conversation.claimToolInvocation(id, tool.id, claim);
+  await caption(session, ". Yeah", 200, "assistant");
+  const raw = await database.voiceTranscript.findMany({
+    orderBy: { sequence: "asc" },
+  });
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "cancelled",
+  });
+  const state = await conversation.getSnapshot(id);
+  assert.equal(state.busy, false);
+  assert.deepEqual(
+    state.messages.map((message) => message.parts[0].text),
+    ["Hm. Yeah"],
+  );
+  assert.ok(state.messages.every((message) => !message.error));
+  assert.deepEqual(state.tools, []);
+  const stored = await database.conversationMessage.findUniqueOrThrow({
+    where: { id: turn.assistantId },
+  });
+  assert.equal(stored.status, "complete");
+  assert.equal(stored.partsJson, "[]");
+  assert.equal(stored.error, null);
+  assert.equal(
+    (
+      await database.toolInvocation.findUniqueOrThrow({
+        where: { id: tool.id },
+      })
+    ).status,
+    "failed",
+  );
+  await voice.closeVoiceSession(id, session.id, clientId);
+  ({ conversation, voice } = load());
+  assert.deepEqual(
+    (await conversation.getSnapshot(id)).messages,
+    state.messages,
+  );
+  assert.deepEqual(
+    await database.voiceTranscript.findMany({ orderBy: { sequence: "asc" } }),
+    raw,
+  );
+  const input = textInput("My correction");
+  const next = await conversation.beginTurn(id, input);
+  assert.deepEqual(next.history.slice(0, 1), [
+    { role: "assistant", text: "Hm. Yeah" },
+  ]);
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "cancelled",
+  });
+  assert.equal((await conversation.getSnapshot(id)).busy, true);
+  assert.equal(
+    (await database.conversation.findUniqueOrThrow({ where: { id } }))
+      .pendingRequestId,
+    input.requestId,
+  );
+});
+
+test("voice cancellation preserves claimed action uncertainty, but confirmed and unclaimed outcomes stay quiet", async () => {
+  const session = await startVoice();
+  const draft = {
+    productPath: "/products/shade",
+    width: 300,
+    height: 400,
+    unit: "mm",
+    kind: "order",
+    mount: "recess",
+    updatedAt: new Date(clock).toISOString(),
+  };
+  const { updatedAt, ...values } = draft;
+  await database.measurementDraft.create({
+    data: { conversationId: id, ...values, updatedAt: new Date(updatedAt) },
+  });
+  for (const name of ["navigate", "add_to_cart", "apply_measurements"]) {
+    for (const mode of [
+      "unclaimed",
+      "running",
+      "abort-persisted",
+      "confirmed",
+    ]) {
+      const turn = await conversation.beginTurn(id, textInput(""), session.id);
+      const tool = await conversation.createToolInvocation(
+        id,
+        turn.assistantId,
+        {
+          providerCallId: randomUUID(),
+          name,
+          arguments:
+            name === "navigate"
+              ? { path: draft.productPath }
+              : name === "apply_measurements"
+                ? { productPath: draft.productPath, draft }
+                : { productPath: draft.productPath },
+        },
+      );
+      const claim = {
+        clientId,
+        claimToken: randomBytes(32).toString("base64url"),
+      };
+      if (mode !== "unclaimed")
+        await conversation.claimToolInvocation(id, tool.id, claim);
+      if (mode === "abort-persisted")
+        await conversation.failToolInvocation(
+          id,
+          tool.id,
+          "The prior action was interrupted.",
+        );
+      const outcome =
+        name === "navigate"
+          ? { status: "navigated", path: draft.productPath }
+          : name === "apply_measurements"
+            ? {
+                status: "applied",
+                productPath: draft.productPath,
+                draftUpdatedAt: draft.updatedAt,
+                message: "Applied.",
+              }
+            : { status: "added", quantityAdded: 1, message: "Added." };
+      if (mode === "confirmed")
+        await conversation.completeToolInvocation(id, tool.id, claim, {
+          productIds: [],
+          outcome,
+        });
+      await conversation.finishTurn(id, turn.assistantId, {
+        text: "",
+        status: "cancelled",
+      });
+      const state = await conversation.getSnapshot(id);
+      const row = state.messages.find(
+        (message) => message.id === turn.assistantId,
+      );
+      const uncertain = mode === "running" || mode === "abort-persisted";
+      assert.equal(!!row, uncertain, `${name}/${mode}`);
+      if (uncertain) {
+        assert.equal(row.status, "failed");
+        assert.match(row.error, /action was not confirmed/);
+      }
+      const stored = await database.toolInvocation.findUniqueOrThrow({
+        where: { id: tool.id },
+      });
+      assert.equal(stored.status, mode === "confirmed" ? "complete" : "failed");
+      if (name !== "navigate") {
+        const result = JSON.parse(stored.resultJson);
+        assert.equal(
+          result.status,
+          mode === "confirmed"
+            ? outcome.status
+            : uncertain
+              ? "uncertain"
+              : "cancelled",
+        );
+        if (uncertain)
+          assert.match(
+            JSON.stringify(await conversation.getModelHistory(id)),
+            /not confirmed/,
+          );
+      }
+      assert.ok(!state.tools.some((pending) => pending.id === tool.id));
+      assert.deepEqual(
+        await conversation.claimToolInvocation(id, tool.id, claim),
+        { claimed: false },
+      );
+      if (uncertain)
+        await assert.rejects(
+          conversation.completeToolInvocation(id, tool.id, claim, {
+            productIds: [],
+            outcome,
+          }),
+          { status: 409 },
+        );
+      const revision = state.revision;
+      await conversation.finishTurn(id, turn.assistantId, {
+        text: "",
+        status: "cancelled",
+      });
+      assert.equal((await conversation.getSnapshot(id)).revision, revision);
+    }
+  }
+});
+
+test("a declined cart action is quiet when its voice work is cancelled despite its saved claim receipt", async () => {
+  const session = await startVoice();
+  const turn = await conversation.beginTurn(id, textInput(""), session.id);
+  const tool = await conversation.createToolInvocation(id, turn.assistantId, {
+    providerCallId: randomUUID(),
+    name: "clear_cart",
+    arguments: {},
+  });
+  await conversation.claimToolInvocation(id, tool.id, {
+    clientId,
+    claimToken: randomBytes(32).toString("base64url"),
+    confirmed: false,
+  });
+  const stored = await database.toolInvocation.findUniqueOrThrow({
+    where: { id: tool.id },
+  });
+  assert.ok(stored.claimTokenHash);
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "cancelled",
+  });
+  assert.deepEqual((await conversation.getSnapshot(id)).messages, []);
+  assert.equal(JSON.parse(stored.resultJson).status, "cancelled");
+});
+
+test("real voice reply failures keep their visible boundary and cannot be erased by later cancellation", async () => {
+  const session = await startVoice();
+  await caption(session, "Hm", 0, "assistant");
+  const turn = await conversation.beginTurn(id, textInput(""), session.id);
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "failed",
+    error: "Roman could not finish this reply.",
+  });
+  await caption(session, ". Yeah", 200, "assistant");
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "",
+    status: "cancelled",
+  });
+  const state = await conversation.getSnapshot(id);
+  assert.equal(state.messages.length, 3);
+  assert.equal(state.messages[0].parts[0].text, "Hm");
+  assert.equal(state.messages[1].status, "failed");
+  assert.equal(state.messages[1].error, "Roman could not finish this reply.");
+  assert.equal(state.messages[2].parts[0].text, ". Yeah");
+  await voice.closeVoiceSession(id, session.id, clientId);
+  const text = await conversation.beginTurn(id, textInput("Continue in text"));
+  await assert.rejects(
+    conversation.finishTurn(id, text.assistantId, {
+      text: "",
+      status: "cancelled",
+    }),
+    { status: 400 },
+  );
+});
+
 test("text, exact voice captions and journey observations share one ordered history", async () => {
   const first = await conversation.beginTurn(id, textInput("I want blackout."));
   await conversation.finishTurn(id, first.assistantId, {

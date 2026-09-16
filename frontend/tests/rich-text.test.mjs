@@ -461,7 +461,7 @@ test("leading-space cleanup preserves indented, fenced and inline code whitespac
   );
 });
 
-test("voice captions trim only the displayed leading space while stored text stays unchanged", (t) => {
+test("voice captions trim displayed edge whitespace while internal spacing and stored text stay unchanged", (t) => {
   const { container, timeline } = setup(t);
   const text = " \n\tHi I'm Roman. Keep  these spaces. ";
   const part = Object.freeze({
@@ -483,7 +483,7 @@ test("voice captions trim only the displayed leading space while stored text sta
   ]);
   assert.equal(
     container.querySelector(".roman-voice-caption p").textContent,
-    "Hi I'm Roman. Keep  these spaces. ",
+    "Hi I'm Roman. Keep  these spaces.",
   );
   assert.equal(part.text, text);
 });

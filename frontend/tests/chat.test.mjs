@@ -1097,6 +1097,40 @@ test("voice captions render as labelled plain text alongside the existing transc
   );
 });
 
+test("voice captions hide speech cues and orphaned punctuation for both speakers without changing stored text", async (t) => {
+  const caption = (id, role, text) => ({
+    ...message(id, role, ""),
+    parts: [{
+      type: "voice", version: 1, voiceId: "22222222-2222-4222-8222-222222222222",
+      text, startMs: 0, endMs: 500,
+    }],
+  });
+  const rows = [
+    caption("user-caption", "user", " [chuckle] Black blinds, please. [breath] "),
+    caption("roman-caption", "assistant", " . Yeah. [breath] Let me check."),
+    caption("incoming-caption", "assistant", " [breath] . "),
+    message("literal-customer", "user", "What does [breath] mean?"),
+  ];
+  const original = structuredClone(rows);
+  const ctx = await setup(t, { state: { conversation: activeConversation(rows) } });
+  const captions = () => [...ctx.container.querySelectorAll(".roman-voice-caption p")];
+  assert.deepEqual(captions().map((p) => p.textContent), [
+    "Black blinds, please.", "Yeah. Let me check.",
+  ]);
+  assert.equal(ctx.container.querySelectorAll(".roman-timeline > li").length, 3);
+  assert.match(ctx.container.querySelector(".roman-timeline").textContent, /What does \[breath\] mean\?/);
+  assert.deepEqual(rows, original);
+  const firstCaption = captions()[0];
+  ctx.update({ conversation: activeConversation([
+    ...rows.slice(0, 2), caption("incoming-caption", "assistant", " [breath] . Found one."), rows[3],
+  ]) });
+  await until(() => captions().length === 3, "Caption text did not appear after its cue-only fragment");
+  assert.equal(captions()[0], firstCaption);
+  assert.equal(captions()[2].textContent, "Found one.");
+  assert.deepEqual(rows, original);
+  assert.deepEqual(ctx.errors, []);
+});
+
 test("the voice composer and dock synchronize mute state and restore the mounted text draft after stopping", async (t) => {
   const ctx = await setup(t, {
     state: {
@@ -1706,7 +1740,7 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
       ctx.update({ conversation: activeConversation([row, message("reply", "user", answer)]) });
     },
   });
-  assert.match(ctx.container.querySelector(".roman-question-hint").textContent, /Voice stays connected/);
+  assert.equal(ctx.container.querySelector(".roman-question-hint").textContent, "Reply aloud or choose an answer.");
   const bar = ctx.container.querySelector(".roman-voice-composer");
   const button = ctx.container.querySelector(".roman-question button");
   button.click();

@@ -28,6 +28,14 @@ export interface VoiceTranscriptGroup {
 
 const maxCaptionPauseMs = 3000;
 
+/** Display only: hide non-speech cues and punctuation orphaned at a group boundary. */
+export function voiceCaptionText(text: string): string {
+  return text
+    .replace(/[\t ]*\[(?:chuckle|breath)\][\t ]*/giu, " ")
+    .trim()
+    .replace(/^[.,!?;:](?:\s+|$)/u, "");
+}
+
 function adjacentInTimeline(
   previous: number,
   current: number,

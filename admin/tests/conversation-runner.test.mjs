@@ -226,7 +226,9 @@ function setup() {
         (message) => message.id === assistantId,
       );
       if (message?.status === "pending") {
-        Object.assign(message, result);
+        Object.assign(message, result, {
+          status: result.status === "cancelled" ? "complete" : result.status,
+        });
         ensure(id).revision++;
       }
       await mock.afterFinish?.(id, assistantId, result);
@@ -2307,7 +2309,8 @@ test("stopping voice aborts a waiting navigation and never retries the action", 
   assert.equal(await pending, undefined);
   assert.equal(env.calls.browserTools.length, 1);
   assert.equal(env.calls.requests.length, 1);
-  assert.equal(env.calls.finishes.at(-1).result.status, "failed");
+  assert.equal(env.calls.finishes.at(-1).result.status, "cancelled");
+  assert.equal(env.calls.finishes.at(-1).result.error, undefined);
   assert.equal((await env.api.readConversation("voice")).busy, false);
   assert.equal(env.logs.length, 0);
 });
@@ -2325,12 +2328,14 @@ test("cancel during voice initialization finishes the reserved work without call
     controller.signal,
   );
   await flush();
-  controller.abort();
   const cancelled = env.api.cancelVoiceDelegation("voice", VOICE_ID);
   begin.resolve();
   await Promise.all([pending, cancelled]);
   assert.equal(env.calls.requests.length, 0);
   assert.equal(env.calls.browserTools.length, 0);
+  assert.ok(
+    env.calls.finishes.every(({ result }) => result.status === "cancelled"),
+  );
   assert.equal((await env.api.readConversation("voice")).busy, false);
 });
 
@@ -2393,6 +2398,72 @@ test("a different voice ID cannot cancel the active delegated work", async () =>
   assert.equal(env.calls.finishes.length, 0);
   generation.complete();
   await pending;
+});
+
+test("a corrected voice request silently retires its search while the replacement can finish", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Actually, choose blackout." }]);
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          catalogCall("old-search", "search_products", { query: "sheer" }),
+        ],
+      }),
+    ),
+    events(completed("Here is the corrected blackout result.")),
+  );
+  env.mock.executeTool = async (...args) =>
+    new Promise((_resolve, reject) => {
+      const signal = args.at(-1);
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  const original = env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  await flush();
+  await env.api.cancelVoiceDelegation("voice", VOICE_ID);
+  assert.equal(await original, undefined);
+  assert.deepEqual(plain(env.calls.finishes[0].result), {
+    text: "",
+    status: "cancelled",
+  });
+  const replacement = await env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    secondInput.requestId,
+    new AbortController().signal,
+  );
+  assert.equal(replacement.text, "Here is the corrected blackout result.");
+  assert.equal(env.calls.browserTools.length, 1);
+  assert.equal(env.calls.finishes.at(-1).result.status, "complete");
+  assert.equal((await env.api.readConversation("voice")).busy, false);
+  assert.deepEqual(env.logs, []);
+});
+
+test("a genuine voice delegation provider failure remains a failed reply", async () => {
+  const env = setup();
+  voiceHistory(env, [{ role: "user", text: "Find me a blind." }]);
+  const response = pendingReply();
+  env.streams.push(response.stream);
+  const pending = env.api.runVoiceDelegation(
+    "voice",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+  );
+  await flush();
+  response.fail();
+  await pending;
+  assert.equal(env.calls.finishes.at(-1).result.status, "failed");
+  assert.match(env.calls.finishes.at(-1).result.error, /could not finish/);
+  assert.equal(env.logs.length, 1);
+  assert.doesNotMatch(JSON.stringify(env.logs), /private provider failure/);
 });
 
 test("confirmed order dimensions can be saved then applied in one text or voice reply", async (t) => {

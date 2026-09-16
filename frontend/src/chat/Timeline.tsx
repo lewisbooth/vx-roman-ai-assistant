@@ -8,6 +8,7 @@ import { StorefrontLink } from "./StorefrontLink";
 import { Question } from "./Question";
 import type { QuestionPart } from "../../../shared/questions";
 import { VOICE_EVENT_LABELS } from "../../../shared/voice";
+import { voiceCaptionText } from "../../../shared/voice-transcript";
 
 export function Timeline({
   messages,
@@ -32,9 +33,9 @@ export function Timeline({
   // Stable row IDs retain the question when its buttons retire after a reply.
   const rows = messages.flatMap((message) => {
     const questions = message.parts.filter((part) => part.type === "question");
-    const parts = message.parts.filter(
-      (part) => part.type !== "question" && part.type !== "page_view",
-    );
+    const parts = message.parts
+      .filter((part) => part.type !== "question" && part.type !== "page_view")
+      .filter((part) => part.type !== "voice" || voiceCaptionText(part.text));
     return [
       ...(parts.length || message.status !== "complete"
         ? [{ ...message, parts }]
@@ -139,7 +140,7 @@ export function Timeline({
                   <div key={index} className="roman-voice-caption">
                     <span className="roman-voice-label">Voice</span>
                     <p className="roman-message-text">
-                      {part.text.trimStart()}
+                      {voiceCaptionText(part.text)}
                     </p>
                   </div>
                 );

@@ -14,7 +14,7 @@ export function attachHeaderLauncher(
   button.className = "roman-header-button";
   button.innerHTML = "Ask <img alt=Roman>";
   (button.lastChild as HTMLImageElement).src = wordmarkUrl;
-  button.addEventListener("click", onClick);
+  button.onclick = onClick;
   shadow.append(style, button);
   const sync = () => {
     const account = document.querySelector<HTMLElement>(
@@ -48,7 +48,7 @@ export function attachHeaderLauncher(
     dispose() {
       observer.disconnect();
       window.removeEventListener("resize", sync);
-      button.removeEventListener("click", onClick);
+      button.onclick = null;
       host.remove();
       fallback.hidden = false;
     },

@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import type { ConversationMessage, GuidePart } from "../../shared/conversation";
 import { VOICE_EVENT_LABELS } from "../../shared/voice";
+import { voiceCaptionText } from "../../shared/voice-transcript";
 import {
   parseGuidePart,
   PRODUCT_GUIDE_LABELS,
@@ -154,14 +155,24 @@ export function ConversationTimeline({
     [origin],
   );
 
-  if (messages.length === 0)
+  const visibleMessages = messages.filter(
+    (message) =>
+      message.status !== "complete" ||
+      message.error ||
+      message.parts.length === 0 ||
+      message.parts.some(
+        (part) => part.type !== "voice" || voiceCaptionText(part.text),
+      ),
+  );
+
+  if (visibleMessages.length === 0)
     return (
       <s-paragraph>No messages recorded in this conversation.</s-paragraph>
     );
 
   return (
     <ol className="space-y-4" aria-label="Conversation transcript">
-      {messages.map((message) => (
+      {visibleMessages.map((message) => (
         <li key={message.id} className="rounded border border-gray-200 p-4">
           <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
             <strong>
@@ -253,15 +264,18 @@ export function ConversationTimeline({
                     )}
                   </div>
                 );
-              if (part.type === "voice")
+              if (part.type === "voice") {
+                const text = voiceCaptionText(part.text);
+                if (!text) return null;
                 return (
                   <div key={index}>
                     <span className="text-xs font-semibold text-gray-600">
                       Voice
                     </span>
-                    <p className="whitespace-pre-wrap">{part.text}</p>
+                    <p className="whitespace-pre-wrap">{text}</p>
                   </div>
                 );
+              }
               return message.role === "assistant" ? (
                 <div
                   key={index}

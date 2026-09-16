@@ -154,9 +154,33 @@ test("functional filters preserve unknown colour preferences and limited catalog
     );
     assert.match(
       prompt,
-      /A single search result, a casual product mention or your own recommendation alone is not a customer selection/,
+      /A raw catalog count, casual product mention or unvetted choice is not enough/,
     );
   }
+});
+
+test("a selected sole recommendation opens its verified PDP before a follow-up in text and voice", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(
+      prompt,
+      /proactively open the product detail page in the same turn when either the customer explicitly selected or preferred one product, or you deliberately present exactly one specific, verified product as the sole recommendation/,
+    );
+    assert.match(prompt, /Navigate before continuing with a fitting or preference question/);
+    assert.match(prompt, /A raw catalog count, casual product mention or unvetted choice is not enough/);
+    assert.match(prompt, /do not navigate if it already identifies that product page/);
+    assert.match(prompt, /Respect requests to stay in chat, continue comparing or decline navigation/);
+  }
+  assert.match(
+    ROMAN_TEXT_PROMPT,
+    /If presenting one selected recommendation, navigate to its verified PDP in that same turn before continuing with any fitting or preference question/,
+  );
+  const live = romanVoicePrompt("marin");
+  assert.match(
+    live,
+    /When presenting exactly one specific selected recommendation, delegate so Terra navigates to its verified PDP in that same turn/,
+  );
+  assert.match(live, /A raw single search result is not a selected recommendation/);
+  assert.match(live, /Respect a request to stay in chat or keep comparing/);
 });
 
 test("Live keeps functional requirements distinct from a chosen colour when presenting backend results", () => {

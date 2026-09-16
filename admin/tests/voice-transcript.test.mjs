@@ -17,7 +17,39 @@ new Function("require", "module", "exports", bundle.outputFiles[0].text)(
   module,
   module.exports,
 );
-const { groupVoiceTranscript } = module.exports;
+const { groupVoiceTranscript, voiceCaptionText } = module.exports;
+
+test("caption display removes only known cues and orphan leading punctuation while preserving paragraphs", () => {
+  for (const [raw, expected] of [
+    [" [ChUcKlE] . Hello [BREATH] there. [breath] ", "Hello there."],
+    ["[breath][chuckle]", ""],
+    [
+      "First paragraph.\n\n[breath] Second paragraph.",
+      "First paragraph.\n\n Second paragraph.",
+    ],
+    ["[laugh] Take [300] millimetres.", "[laugh] Take [300] millimetres."],
+    [".5 metres is 500 mm.", ".5 metres is 500 mm."],
+    ["... Let me think.", "... Let me think."],
+    ['"Yes," she said.', '"Yes," she said.'],
+    ["- Keep this dash.", "- Keep this dash."],
+    ["300.5, then 400; correct?", "300.5, then 400; correct?"],
+  ])
+    assert.equal(voiceCaptionText(raw), expected);
+});
+
+test("cleaning grouped captions leaves exact provider fragments and group text unchanged", () => {
+  const captions = [
+    fragment(1, " [chuckle] . Hello", 0, 100),
+    fragment(2, " [breath] there.", 200, 300),
+  ];
+  const original = structuredClone(captions);
+  const [group] = groupVoiceTranscript(captions);
+  const exact = group.text;
+  assert.equal(voiceCaptionText(group.text), "Hello there.");
+  assert.equal(group.text, exact);
+  assert.deepEqual(group.fragments, original);
+  assert.deepEqual(captions, original);
+});
 
 function fragment(sequence, text, startMs, endMs, extra = {}) {
   return {

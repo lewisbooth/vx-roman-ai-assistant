@@ -40,11 +40,12 @@
   .roman-header-button {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 6px;
+    padding: 0 12px;
     cursor: pointer;
     color: var(--color-button-tertiary-gray-fg);
     background: #fff;
-    font: 14px sans-serif;
+    font: 14px/1 sans-serif;
     border: 1px solid;
     border-radius: var(--button-radius);
   }

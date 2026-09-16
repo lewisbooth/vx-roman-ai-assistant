@@ -232,11 +232,10 @@ export async function runVoiceDelegation(
     turn.assistantId = started.assistantId;
     initialized();
     if (!started.assistantId) return;
-    if (signal.aborted) {
+    if (turn.controller.signal.aborted) {
       await finishTurn(id, started.assistantId, {
         text: "",
-        status: "failed",
-        error: "Voice work was interrupted.",
+        status: "cancelled",
       });
       return;
     }
@@ -256,9 +255,7 @@ export async function cancelVoiceDelegation(id: string, voiceId: string) {
   if (turn.assistantId)
     await finishTurn(id, turn.assistantId, {
       text: "",
-      status: "failed",
-      error:
-        "Voice work was interrupted. Check the page before repeating an action.",
+      status: "cancelled",
     });
   if (active.get(id) === turn) active.delete(id);
 }

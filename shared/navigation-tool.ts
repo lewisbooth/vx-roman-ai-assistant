@@ -71,7 +71,7 @@ export const navigationToolDefinition = {
   type: "function",
   name: "navigate",
   description:
-    "Open a verified public storefront page or the cart view when asked, or the PDP for the customer's clearly chosen product. Respect requests to stay in chat. Use a catalog/conversation path. This tool cannot visit account, checkout, app/API, cart-action or cart-permalink URLs. Redirects and unsafe theme swaps require the customer to open a normal link; never retry them automatically.",
+    "Open a verified public storefront page or the cart view when asked, or the PDP for the customer's clearly chosen product or one deliberately selected, verified recommendation. Do not navigate just because a catalog search returned one result. Respect requests to stay in chat. Use a catalog/conversation path. This tool cannot visit account, checkout, app/API, cart-action or cart-permalink URLs. Redirects and unsafe theme swaps require the customer to open a normal link; never retry them automatically.",
   strict: true,
   parameters: {
     type: "object",

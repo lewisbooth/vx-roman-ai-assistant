@@ -1095,7 +1095,7 @@ export async function finishTurn(
   assistantId: string,
   result: {
     text: string;
-    status: "complete" | "failed";
+    status: "complete" | "failed" | "cancelled";
     error?: string;
     model?: string;
     serviceTier?: string;
@@ -1117,6 +1117,32 @@ export async function finishTurn(
       },
     });
     if (!message) return;
+    if (result.status === "cancelled" && message.role !== "context")
+      throw new ConversationError(400, "Only voice work can be cancelled.");
+    // Cancelling ordinary voice work is expected bookkeeping, not a failed
+    // spoken reply. Retain a warning only when a claimed action has no confirmed
+    // outcome, including tools already failed by the browser waiter's abort.
+    const interruptedAction =
+      result.status === "cancelled" &&
+      conversation.toolInvocations.some(
+        (tool) =>
+          tool.assistantId === assistantId &&
+          (tool.name === "navigate" || isStorefrontMutation(tool.name)) &&
+          tool.claimTokenHash !== null &&
+          (tool.status === "running" || tool.status === "failed"),
+      );
+    const status =
+      result.status === "cancelled"
+        ? interruptedAction
+          ? "failed"
+          : "complete"
+        : result.status;
+    const error =
+      result.status === "cancelled"
+        ? interruptedAction
+          ? "The storefront action was not confirmed. Check the page or cart before repeating it."
+          : null
+        : (result.error ?? null);
     const content: ConversationPart[] =
       message.role === "context" || !result.text
         ? []
@@ -1340,11 +1366,11 @@ export async function finishTurn(
     const finished = await transaction.conversationMessage.updateMany({
       where: { id: assistantId, conversationId: id, status: "pending" },
       data: {
-        status: result.status,
+        status,
         partsJson: JSON.stringify(content),
         model: result.model,
         serviceTier: result.serviceTier,
-        error: result.error ?? null,
+        error,
         completedAt: new Date(),
       },
     });

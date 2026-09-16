@@ -443,6 +443,68 @@ test("inspection retains saved timeline order and safely renders text, voice, vi
   }
 });
 
+test("inspection cleans both speakers' voice captions without changing stored parts or hiding failures", (t) => {
+  const { render, container } = setupView(t);
+  const voicePart = (text) => ({
+    type: "voice",
+    version: 1,
+    voiceId: ID,
+    text,
+    startMs: 0,
+    endMs: 100,
+  });
+  const row = (id, role, parts, extra = {}) => ({
+    id,
+    role,
+    status: "complete",
+    createdAt: NOW,
+    parts,
+    ...extra,
+  });
+  const messages = [
+    row("customer", "user", [voicePart(" [BREATH] . Yes [chuckle] please. ")]),
+    row("roman", "assistant", [
+      voicePart(" [Chuckle] ! Of course.\n\n[breath] Next window? "),
+    ]),
+    row("cue-only", "assistant", [voicePart(" [chuckle] [breath] ")]),
+    row("mixed", "assistant", [
+      voicePart("[breath]"),
+      { type: "text", text: "Saved text remains." },
+    ]),
+    row("failed", "assistant", [voicePart("[chuckle]")], {
+      status: "failed",
+      error: "A real failure remains visible.",
+    }),
+    row("complete-with-error", "user", [voicePart("[breath]")], {
+      error: "An explicit error remains visible.",
+    }),
+  ];
+  const original = structuredClone(messages);
+  render("ConversationTimeline", { origin: ORIGIN, messages });
+  const rows = [
+    ...container.querySelectorAll(
+      'ol[aria-label="Conversation transcript"] > li',
+    ),
+  ];
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0].querySelector("strong").textContent, "Customer");
+  assert.equal(rows[0].querySelector("p").textContent, "Yes please.");
+  assert.equal(rows[1].querySelector("strong").textContent, "Roman");
+  assert.equal(
+    rows[1].querySelector("p").textContent,
+    "Of course.\n\n Next window?",
+  );
+  assert.match(rows[2].textContent, /Saved text remains/);
+  assert.doesNotMatch(rows[2].textContent, /Voice/);
+  assert.match(rows[3].textContent, /failed.*A real failure remains visible/);
+  assert.match(rows[4].textContent, /An explicit error remains visible/);
+  assert.doesNotMatch(container.textContent, /\[(?:chuckle|breath)\]/i);
+  assert.deepEqual(messages, original);
+  render("ConversationTimeline", { origin: ORIGIN, messages: [messages[2]] });
+  assert.equal(container.querySelectorAll("li").length, 0);
+  assert.deepEqual(messages, original);
+});
+
 test("transcript links reject other origins, credentials and private routes", (t) => {
   const { api } = setupView(t);
   assert.equal(
