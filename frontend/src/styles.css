@@ -18,7 +18,8 @@
 }
 
 @layer components {
-  .roman-chat {
+  .roman-chat,
+  .roman-conversation {
     @apply flex h-full min-h-0 w-full flex-col overflow-hidden font-serif font-normal text-[#4e0e0e];
   }
 
@@ -139,12 +140,13 @@
     @apply border-0 border-t border-solid border-[#d1cbc0];
   }
 
-  .roman-page-view {
-    @apply m-0 text-[12px] leading-[1.5] text-[#797366];
+  .roman-inline-event {
+    @apply mx-auto my-0 w-fit max-w-full rounded-full bg-[#4e0e0e] px-[18px] py-[8px] text-center text-[12px] leading-[1.5] text-white;
+    overflow-wrap: anywhere;
   }
 
-  .roman-page-view a {
-    @apply text-inherit underline decoration-[#c59745] underline-offset-2;
+  .roman-inline-event a {
+    @apply text-inherit underline underline-offset-2;
   }
 
   .roman-products {
@@ -221,7 +223,20 @@
   }
 
   .roman-tools {
-    @apply mx-[26px] mt-[16px] mb-[12px] border-0 border-t border-solid border-[#e3e0d8] pt-[12px] text-[13px] text-[#545046];
+    @apply h-full min-h-0 overflow-y-auto overscroll-contain px-[20px] pt-[12px] pb-[24px] text-[13px] text-[#545046];
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+
+  .roman-tools-toggle {
+    @apply absolute top-[12px] right-[52px] z-10 inline-flex size-[44px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-[#4e0e0e];
+  }
+
+  .roman-tools-toggle[aria-expanded="true"] {
+    background-color: #4e0e0e0d;
+  }
+
+  .roman-tools-heading {
+    @apply m-0 flex min-h-[44px] items-center pr-[84px] font-normal text-[18px] text-[#4e0e0e];
   }
 
   .roman-composer {
@@ -343,6 +358,10 @@
     @apply flex w-full flex-col items-center px-[26px] pt-[107px] pb-[24px] text-center;
   }
 
+  .roman-welcome-logo {
+    @apply h-[50px] w-[121px] shrink-0 object-contain;
+  }
+
   .roman-welcome-title {
     @apply mt-[57px] mb-0 min-h-[128px] w-[303px] max-w-full font-normal text-[41.809px] leading-[0.88575] tracking-[-0.02em];
   }
@@ -364,12 +383,77 @@
     @apply relative flex h-[100px] w-full shrink-0 items-center justify-center;
   }
 
+  .roman-tile-image {
+    @apply block h-[100px] max-w-none object-contain;
+  }
+
+  .roman-tile-colour {
+    @apply absolute mix-blend-multiply;
+  }
+
   .roman-tile-title {
     @apply block text-[16px] leading-[24px];
   }
 
   .roman-tile-description {
     @apply block text-[13px] leading-[20px] text-[#545046];
+  }
+
+  @media (max-width: 639px) {
+    .roman-welcome {
+      @apply px-[16px] pb-[16px];
+      padding-top: max(12px, env(safe-area-inset-top));
+    }
+
+    .roman-welcome-logo {
+      @apply h-[40px] w-[95px] self-start;
+    }
+
+    .roman-welcome-title {
+      @apply mt-[24px] min-h-0 text-[35px] leading-[1];
+    }
+
+    .roman-welcome-question {
+      @apply mt-[18px] text-[17px];
+    }
+
+    .roman-welcome-tiles {
+      @apply mt-[14px] gap-[10px];
+    }
+
+    .roman-welcome-tile {
+      @apply min-h-[140px] pt-[10px] pb-[12px];
+    }
+
+    .roman-tile-art,
+    .roman-tile-image {
+      @apply h-[76px];
+    }
+
+    .roman-tile-image {
+      width: auto;
+    }
+
+    .roman-tile-title {
+      @apply text-[15px] leading-[22px];
+    }
+
+    .roman-tile-description {
+      @apply text-[12px] leading-[18px];
+    }
+
+    .roman-composer {
+      @apply px-[16px] pt-[10px];
+      padding-bottom: max(12px, env(safe-area-inset-bottom));
+    }
+
+    .roman-voice-controls:not(.roman-voice-dock) {
+      @apply px-[16px] pt-[6px];
+    }
+
+    .roman-voice-controls button {
+      @apply min-h-[44px];
+    }
   }
 }
 

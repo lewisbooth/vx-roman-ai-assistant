@@ -48,6 +48,7 @@ function Assistant({
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
   const [chatVersion, setChatVersion] = useState(0);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const voice = state.voice;
   const localVoice =
     voice.status === "starting" ||
@@ -89,107 +90,117 @@ function Assistant({
       scroll.scrollTop = scroll.scrollHeight;
   }, [hasMessages]);
 
-  useLayoutEffect(followConversation, [messages, followConversation]);
+  useLayoutEffect(followConversation, [
+    messages,
+    toolsOpen,
+    followConversation,
+  ]);
 
   return (
     <div className="roman-content roman-chat">
-      {(hasMessages || state.restoring || state.conversation) && (
-        <header className="roman-chat-header">
-          {state.conversation?.status === "active" && (
-            <button
-              type="button"
-              className="roman-end-chat"
-              disabled={ending || state.pending || state.restoring}
-              onClick={() => void endChat()}
-            >
-              {ending ? "Ending…" : "End chat"}
-            </button>
+      <div className="roman-conversation" hidden={toolsOpen}>
+        {(hasMessages || state.restoring || state.conversation) && (
+          <header className="roman-chat-header">
+            {state.conversation?.status === "active" && (
+              <button
+                type="button"
+                className="roman-end-chat"
+                disabled={ending || state.pending || state.restoring}
+                onClick={() => void endChat()}
+              >
+                {ending ? "Ending…" : "End chat"}
+              </button>
+            )}
+            <img
+              src={logoUrl}
+              alt="Roman by SelectBlinds"
+              width={95}
+              height={40}
+              className="h-[40px] w-[95px] object-contain"
+            />
+          </header>
+        )}
+        <div
+          ref={viewport}
+          className="roman-chat-scroll"
+          onScroll={(event) => {
+            const scroll = event.currentTarget;
+            following.current =
+              scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
+          }}
+        >
+          {state.restoring ? (
+            <p className="roman-chat-restoring" role="status">
+              Restoring your conversation…
+            </p>
+          ) : hasMessages ? (
+            <Timeline
+              messages={messages!}
+              session={session}
+              navigation={navigation}
+              onContentChange={followConversation}
+            />
+          ) : (
+            <Welcome logoUrl={logoUrl} />
           )}
-          <img
-            src={logoUrl}
-            alt="Roman by SelectBlinds"
-            width={95}
-            height={40}
-            className="h-[40px] w-[95px] object-contain"
-          />
-        </header>
-      )}
-      <div
-        ref={viewport}
-        className="roman-chat-scroll"
-        onScroll={(event) => {
-          const scroll = event.currentTarget;
-          following.current =
-            scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
-        }}
-      >
-        {state.restoring ? (
-          <p className="roman-chat-restoring" role="status">
-            Restoring your conversation…
-          </p>
-        ) : hasMessages ? (
-          <Timeline
-            messages={messages!}
-            session={session}
-            navigation={navigation}
-            onContentChange={followConversation}
-          />
-        ) : (
-          <Welcome logoUrl={logoUrl} />
+        </div>
+        {state.approval && (
+          <ToolApproval approval={state.approval} session={session} />
         )}
-        {showTools && (
-          <ToolDrawer tools={tools}>
-            <VoiceChoice session={session} disabled={ending} />
-          </ToolDrawer>
-        )}
+        <VoiceControls
+          session={session}
+          voice={voice}
+          disabled={
+            ending ||
+            state.pending ||
+            state.restoring ||
+            !!state.conversation?.busy
+          }
+          waiting={waitingForVoice}
+        />
+        {voiceDock &&
+          (localVoice || state.approval) &&
+          createPortal(
+            <>
+              {state.approval && (
+                <ToolApproval
+                  approval={state.approval}
+                  session={session}
+                  dock
+                />
+              )}
+              {localVoice && (
+                <VoiceControls session={session} voice={voice} dock />
+              )}
+            </>,
+            voiceDock,
+          )}
+        <Composer
+          key={chatVersion}
+          busy={
+            ending ||
+            localVoice ||
+            waitingForVoice ||
+            state.pending ||
+            state.restoring ||
+            !!state.conversation?.busy
+          }
+          error={state.error || endError}
+          onClearError={() => {
+            setEndError(null);
+            session.clearError();
+          }}
+          onSend={(text) => {
+            following.current = true;
+            return session.sendMessage(text);
+          }}
+        />
       </div>
-      {state.approval && (
-        <ToolApproval approval={state.approval} session={session} />
+      {showTools && (
+        <ToolDrawer tools={tools} open={toolsOpen} onOpenChange={setToolsOpen}>
+          <VoiceChoice session={session} disabled={ending} />
+        </ToolDrawer>
       )}
-      <VoiceControls
-        session={session}
-        voice={voice}
-        disabled={
-          ending ||
-          state.pending ||
-          state.restoring ||
-          !!state.conversation?.busy
-        }
-        waiting={waitingForVoice}
-      />
-      {voiceDock &&
-        (localVoice || state.approval) &&
-        createPortal(
-          <>
-            {state.approval && (
-              <ToolApproval approval={state.approval} session={session} dock />
-            )}
-            {localVoice && (
-              <VoiceControls session={session} voice={voice} dock />
-            )}
-          </>,
-          voiceDock,
-        )}
-      <Composer
-        key={chatVersion}
-        busy={
-          ending ||
-          localVoice ||
-          waitingForVoice ||
-          state.pending ||
-          state.restoring ||
-          !!state.conversation?.busy
-        }
-        error={state.error || endError}
-        onClearError={() => {
-          setEndError(null);
-          session.clearError();
-        }}
-        onSend={(text) => {
-          following.current = true;
-          return session.sendMessage(text);
-        }}
-      />
     </div>
   );
 }

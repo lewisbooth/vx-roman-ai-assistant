@@ -250,7 +250,7 @@ test("cart approval stays actionable during voice and is also available in the c
   assert.deepEqual(choices.at(-1), ["cart-one", false]);
 });
 
-test("welcome uses original asset paths, unavailable tiles and one collapsed developer tools section", async (t) => {
+test("welcome uses original asset paths, unavailable tiles and one hidden developer tools panel", async (t) => {
   const { container } = await setup(t, { showTools: true });
   const tiles = [...container.querySelectorAll(".roman-welcome-tile")];
   assert.equal(tiles.length, 4);
@@ -272,8 +272,13 @@ test("welcome uses original asset paths, unavailable tiles and one collapsed dev
       /^https:\/\/cdn\.shopify\.com\/extensions\/version\/assets\/roman-tile-.+\.png$/,
     );
   const drawer = container.querySelector(".roman-tools");
-  assert.equal(drawer.open, false);
-  assert.equal(container.querySelectorAll("details").length, 1);
+  assert.equal(drawer.hidden, true);
+  assert.equal(container.querySelectorAll(".roman-tools-toggle").length, 1);
+  assert.equal(
+    container.querySelector(".roman-tools-toggle").getAttribute("aria-controls"),
+    drawer.id,
+  );
+  assert.equal(container.querySelectorAll("details").length, 0);
   assert.ok(drawer.querySelector(".roman-voice-choice select"));
   assert.ok(drawer.querySelector("form"));
   assert.equal(container.querySelector('nav[aria-label="Browse store"]'), null);
@@ -1004,7 +1009,8 @@ test("voice selector offers all Live voices, defaults to Marin and changes only 
   const ctx = await setup(t, { showTools: true });
   const selector = ctx.container.querySelector(".roman-voice-choice select");
   assert.ok(selector.closest(".roman-tools"));
-  assert.equal(ctx.container.querySelectorAll("details").length, 1);
+  assert.equal(ctx.container.querySelectorAll(".roman-tools-toggle").length, 1);
+  assert.equal(ctx.container.querySelectorAll("details").length, 0);
   assert.equal(
     ctx.container.querySelector(".roman-voice-controls select"),
     null,

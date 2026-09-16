@@ -86,7 +86,8 @@ function controlByLabel(container, text) {
 
 async function selectTool(window, container, name = "get_cart", args = {}) {
   const drawer = container.querySelector(".roman-tools");
-  if (!drawer.open) drawer.querySelector("summary").click();
+  if (drawer.hidden) container.querySelector(".roman-tools-toggle").click();
+  await until(() => !drawer.hidden, "the developer tools did not open");
   const select = controlByLabel(drawer, "Tool");
   select.value = name;
   select.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -138,16 +139,134 @@ test("the real runtime exposes manual tools only on development shops and makes 
         null,
       );
       const drawer = container.querySelector(".roman-tools");
+      const toggle = container.querySelector(".roman-tools-toggle");
       assert.equal(Boolean(drawer), visible);
+      assert.equal(Boolean(toggle), visible);
       if (drawer) {
-        assert.equal(drawer.open, false);
+        assert.equal(drawer.hidden, true);
+        assert.equal(toggle.getAttribute("aria-label"), "Developer tools");
+        assert.equal(toggle.getAttribute("aria-expanded"), "false");
+        assert.equal(toggle.getAttribute("aria-controls"), drawer.id);
         assert.equal(drawer.querySelector("details"), null);
-        drawer.querySelector("summary").click();
-        await delay(0);
+        toggle.click();
+        await until(() => !drawer.hidden, "the developer tools did not open");
+        assert.equal(toggle.getAttribute("aria-expanded"), "true");
       }
       assert.deepEqual(requests, []);
     });
   }
+});
+
+test("toggling developer tools preserves pending work and chat drafts, and Escape returns to the same conversation", async (t) => {
+  const { window, host, container, requests, errors } = await setup(t);
+  const conversation = container.querySelector(".roman-conversation");
+  const composer = conversation.querySelector(".roman-composer textarea");
+  const setTextarea = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value",
+  ).set;
+  setTextarea.call(composer, "Help me choose a kitchen blind");
+  composer.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await until(
+    () =>
+      !conversation.querySelector('.roman-composer button[type="submit"]')
+        .disabled,
+    "the chat draft was not accepted",
+  );
+
+  const drawer = await selectTool(window, container);
+  const toggle = container.querySelector(".roman-tools-toggle");
+  const args = controlByLabel(drawer, "Arguments (JSON)");
+  const customDraft = "{\n\n}";
+  setTextarea.call(args, customDraft);
+  args.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await delay(0);
+  assert.equal(conversation.hidden, true);
+  assert.equal(host.shadowRoot.activeElement, drawer.querySelector("h2"));
+  const form = drawer.querySelector("form");
+  const submit = form.querySelector('button[type="submit"]');
+  submit.click();
+  await until(
+    () => requests.length === 1 && submit.disabled,
+    "the manual cart request did not start",
+  );
+
+  toggle.click();
+  await until(
+    () => drawer.hidden,
+    "the developer tools did not close while pending",
+  );
+  assert.equal(host.shadowRoot.activeElement, toggle);
+  assert.equal(conversation.hidden, false);
+  assert.equal(container.querySelector(".roman-conversation"), conversation);
+  assert.equal(
+    conversation.querySelector(".roman-composer textarea"),
+    composer,
+  );
+  assert.equal(composer.value, "Help me choose a kitchen blind");
+  assert.equal(requests[0].options.signal.aborted, false);
+
+  requests[0].resolve(cartResponse());
+  await until(
+    () => drawer.querySelector('[aria-label="Tool result"]'),
+    "the hidden developer tools did not retain the completed result",
+  );
+  toggle.click();
+  await until(() => !drawer.hidden, "the developer tools did not reopen");
+  assert.equal(drawer.querySelector("form"), form);
+  assert.equal(controlByLabel(drawer, "Arguments (JSON)"), args);
+  assert.equal(args.value, customDraft);
+  assert.equal(controlByLabel(drawer, "Tool").value, "get_cart");
+  assert.equal(
+    JSON.parse(drawer.querySelector('[aria-label="Tool result"]').value)
+      .itemCount,
+    1,
+  );
+  assert.equal(submit.disabled, false);
+  assert.equal(
+    requests.length,
+    1,
+    "opening tools must not replay the completed action",
+  );
+
+  let shellEscapes = 0;
+  host.shadowRoot.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") shellEscapes++;
+  });
+  const escape = new window.KeyboardEvent("keydown", {
+    key: "Escape",
+    bubbles: true,
+    composed: true,
+    cancelable: true,
+  });
+  assert.equal(args.dispatchEvent(escape), false);
+  assert.equal(escape.defaultPrevented, true);
+  await until(() => drawer.hidden, "Escape did not close developer tools");
+  assert.equal(
+    shellEscapes,
+    0,
+    "developer tools must consume Escape before the sidebar shell",
+  );
+  assert.equal(host.shadowRoot.activeElement, toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(conversation.hidden, false);
+  assert.equal(container.querySelector(".roman-conversation"), conversation);
+  assert.equal(composer.value, "Help me choose a kitchen blind");
+  composer.dispatchEvent(
+    new window.KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }),
+  );
+  assert.equal(
+    shellEscapes,
+    1,
+    "ordinary conversation Escape must still reach the sidebar shell",
+  );
+  assert.equal(requests.length, 1);
+  assert.deepEqual(errors, []);
 });
 
 test("manual cart actions use the real executor, prevent duplicate submission and show results or errors", async (t) => {

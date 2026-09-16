@@ -37,7 +37,7 @@ export function Welcome({ logoUrl }: { logoUrl: string }) {
         alt="Roman by SelectBlinds"
         width={121}
         height={50}
-        className="h-[50px] w-[121px] shrink-0"
+        className="roman-welcome-logo"
       />
       <h1 id="roman-welcome-title" className="roman-welcome-title">
         A brighter home <em>starts</em> with a conversation.
@@ -59,8 +59,7 @@ export function Welcome({ logoUrl }: { logoUrl: string }) {
                 alt=""
                 width={tile.width}
                 height={100}
-                className="block h-[100px] max-w-none object-contain"
-                style={{ width: tile.width }}
+                className="roman-tile-image"
               />
               {"colour" in tile && (
                 <img
@@ -68,7 +67,7 @@ export function Welcome({ logoUrl }: { logoUrl: string }) {
                   alt=""
                   width={178}
                   height={100}
-                  className="absolute h-[100px] w-[178px] max-w-none object-contain mix-blend-multiply"
+                  className="roman-tile-image roman-tile-colour"
                 />
               )}
             </span>
