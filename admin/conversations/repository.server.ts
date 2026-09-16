@@ -30,7 +30,12 @@ import {
   parseQuestionSelection,
 } from "../../shared/questions";
 import { parseCatalogCall } from "../../shared/catalog-tools";
-import { parseNavigationCall } from "../../shared/navigation-tool";
+import {
+  parseNavigationCall,
+  parseNavigationResult,
+  parseNavigationPart,
+  type NavigationResult,
+} from "../../shared/navigation-tool";
 import {
   isCartTool,
   isCartMutation,
@@ -117,6 +122,10 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
     }
     if (part.type === "question") {
       parseQuestionPart(part);
+      continue;
+    }
+    if (part.type === "navigation") {
+      parseNavigationPart(part);
       continue;
     }
     if (
@@ -1510,7 +1519,7 @@ export async function completeToolInvocation(
   result: {
     productIds: string[];
     error?: string;
-    outcome?: StoredActionResult | ProductGuidesResult;
+    outcome?: StoredActionResult | ProductGuidesResult | NavigationResult;
   },
 ): Promise<void> {
   validateClaim(claim);
@@ -1536,6 +1545,7 @@ export async function completeToolInvocation(
       );
     const persistsOutcome =
       isCartTool(tool.name) ||
+      tool.name === "navigate" ||
       tool.name === "apply_measurements" ||
       tool.name === "get_product_guides";
     const outcome = persistsOutcome
@@ -1545,7 +1555,9 @@ export async function completeToolInvocation(
           : undefined
         : tool.name === "get_product_guides"
           ? parseProductGuidesResult(result.outcome, conversation.origin)
-          : storedActionResult(tool, result.outcome)
+          : tool.name === "navigate"
+            ? parseNavigationResult(result.outcome)
+            : storedActionResult(tool, result.outcome)
       : undefined;
     if (
       tool.name === "get_product_guides" &&
@@ -1601,6 +1613,27 @@ export async function completeToolInvocation(
       outcome.status === "added"
         ? outcome.addedProduct
         : undefined;
+    const navigation =
+      !error &&
+      tool.name === "navigate" &&
+      outcome &&
+      "status" in outcome &&
+      outcome.status === "navigated"
+        ? outcome
+        : undefined;
+    const notification: ConversationPart | undefined = addedProduct
+      ? { type: "cart_added", version: 1, invocationId, product: addedProduct }
+      : navigation
+        ? parseNavigationPart({
+            type: "navigation",
+            version: 1,
+            invocationId,
+            path: navigation.path.split(/[?#]/, 1)[0],
+            title:
+              navigation.title ??
+              navigation.path.split(/[?#]/, 1)[0].slice(0, 200),
+          })
+        : undefined;
     await transaction.toolInvocation.update({
       where: { id: invocationId },
       data: {
@@ -1617,13 +1650,7 @@ export async function completeToolInvocation(
         completedAt,
       },
     });
-    if (addedProduct) {
-      const part: ConversationPart = {
-        type: "cart_added",
-        version: 1,
-        invocationId,
-        product: addedProduct,
-      };
+    if (notification) {
       await transaction.conversationMessage.create({
         data: {
           id: randomUUID(),
@@ -1632,7 +1659,7 @@ export async function completeToolInvocation(
           sequence: conversation.nextSequence,
           role: "context",
           status: "complete",
-          partsJson: JSON.stringify([part]),
+          partsJson: JSON.stringify([notification]),
           createdAt: completedAt,
           completedAt,
         },
@@ -1642,7 +1669,7 @@ export async function completeToolInvocation(
       where: { id },
       data: {
         revision: { increment: 1 },
-        ...(addedProduct ? { nextSequence: { increment: 1 } } : {}),
+        ...(notification ? { nextSequence: { increment: 1 } } : {}),
       },
     });
   });

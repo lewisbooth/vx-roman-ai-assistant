@@ -31,7 +31,9 @@ export function Timeline({
   // Stable row IDs retain the question when its buttons retire after a reply.
   const rows = messages.flatMap((message) => {
     const questions = message.parts.filter((part) => part.type === "question");
-    const parts = message.parts.filter((part) => part.type !== "question");
+    const parts = message.parts.filter(
+      (part) => part.type !== "question" && part.type !== "page_view",
+    );
     return [
       ...(parts.length || message.status !== "complete"
         ? [{ ...message, parts }]
@@ -96,10 +98,10 @@ export function Timeline({
                     {part.text}
                   </p>
                 );
-              if (part.type === "page_view")
+              if (part.type === "navigation")
                 return (
-                  <p key={index} className="roman-inline-event roman-page-view">
-                    Viewed{" "}
+                  <p key={index} className="roman-inline-event roman-navigation">
+                    Roman navigated to{" "}
                     <StorefrontLink url={part.path} navigation={navigation}>
                       {part.title || part.path}
                     </StorefrontLink>

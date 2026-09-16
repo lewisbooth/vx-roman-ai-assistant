@@ -2,6 +2,7 @@ import { parseCatalogResult, type CatalogResult } from "../../shared/catalog";
 import { parseCatalogCall } from "../../shared/catalog-tools";
 import {
   parseNavigationCall,
+  parseNavigationResult,
   type NavigationResult,
 } from "../../shared/navigation-tool";
 import type { ToolClaim, ToolClaimInput } from "../../shared/conversation";
@@ -188,15 +189,7 @@ export async function submitBrowserToolResult(
         if (outcome.productPath !== context.arguments.productPath)
           throw new Error("Guide links belong to another product.");
       } else if (context.name === "navigate") {
-        if (!result || typeof result !== "object" || Array.isArray(result))
-          throw new Error("Invalid navigation result.");
-        const value = result as Record<string, unknown>;
-        if (value.status !== "navigated" || Object.keys(value).length !== 2)
-          throw new Error("Invalid navigation result.");
-        outcome = {
-          status: "navigated",
-          ...parseNavigationCall({ path: value.path }),
-        };
+        outcome = parseNavigationResult(result);
       } else if (context.name === "apply_measurements") {
         outcome = parseApplyMeasurementsResult(result);
       } else if (isCartTool(context.name)) {
@@ -223,12 +216,14 @@ export async function submitBrowserToolResult(
               ? outcome.products.map((product) => product.id)
               : [],
           ...(isCartTool(context.name) ||
+          context.name === "navigate" ||
           context.name === "apply_measurements" ||
           context.name === "get_product_guides"
             ? {
                 outcome: outcome as
                   | CartToolResult
                   | ApplyMeasurementsResult
+                  | NavigationResult
                   | ProductGuidesResult,
               }
             : {}),

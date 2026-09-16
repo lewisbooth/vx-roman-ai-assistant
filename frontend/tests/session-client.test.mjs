@@ -638,6 +638,60 @@ const questionPart = {
   question: "What matters most for your room?",
   answers: ["Blackout", "Daytime privacy", "A softer look"],
 };
+
+test("confirmed navigation notifications survive response validation and unsafe destinations are rejected", async (t) => {
+  const part = {
+    type: "navigation",
+    version: 1,
+    invocationId,
+    path: "/products/shade",
+    title: "A Roman shade <example>",
+  };
+  const saved = {
+    ...complete,
+    messages: [{ ...complete.messages[1], role: "context", parts: [part] }],
+  };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, saved);
+  const restored = ctx.client.getSnapshot().conversation;
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(restored.messages[0].parts[0])),
+    part,
+  );
+  ctx.client.clearError();
+  ctx.respond(2, {
+    ...saved,
+    revision: 3,
+    messages: [
+      { ...saved.messages[0], parts: [{ ...part, path: "/cart/add?id=123" }] },
+    ],
+  });
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Unsafe navigation destination was accepted",
+  );
+  assert.equal(ctx.client.getSnapshot().conversation, restored);
+});
+
+test("navigation history fits alongside maximum captions, visits and text turns", async (t) => {
+  const parts = [
+    ...Array.from({ length: 1200 }, () => ({ type: "voice", version: 1,
+      voiceId: "22222222-2222-4222-8222-222222222222", text: "Caption", startMs: 0, endMs: 1 })),
+    ...Array.from({ length: 200 }, () => ({ type: "page_view", version: 1,
+      title: "Storefront", path: "/", occurredAt: "2026-09-15T10:00:00Z" })),
+    ...Array.from({ length: 80 }, () => ({ type: "text", text: "A conversation turn" })),
+    ...Array.from({ length: 160 }, () => ({ type: "navigation", version: 1,
+      invocationId, title: "Shade", path: "/products/shade" })),
+  ];
+  const saved = { ...complete, messages: parts.map((part, index) => ({
+    ...complete.messages[1], id: `history-${index}`, parts: [part],
+  })) };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, saved);
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 1640);
+});
 const recommendations = {
   ...complete,
   messages: [
@@ -2141,6 +2195,36 @@ test("product widgets use the display lookup without changing fresh model execut
   const ids = ["gid://shopify/Product/123"];
   assert.equal(await ctx.client.loadProducts(ids), catalogResult);
   assert.deepEqual(calls, [ids]);
+});
+
+test("product images use their separate display owner and stop after client disposal", async (t) => {
+  const calls = [];
+  const image = "https://cdn.shopify.com/main.jpg";
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      loadProductImage: async (...args) => {
+        calls.push(args);
+        return image;
+      },
+      execute: () => assert.fail("Image loading must not invoke a model tool"),
+    },
+  });
+  await resume(ctx);
+  const controller = new ctx.window.AbortController();
+  const url = `${ctx.window.location.origin}/products/shade`;
+  assert.equal(
+    await ctx.client.loadProductImage(url, controller.signal),
+    image,
+  );
+  assert.equal(calls[0][0], url);
+  assert.equal(calls[0][1], controller.signal);
+  ctx.client.dispose();
+  await assert.rejects(
+    ctx.client.loadProductImage(url, controller.signal),
+    /Start a chat/,
+  );
+  assert.equal(calls.length, 1);
 });
 
 const measurementInput = {

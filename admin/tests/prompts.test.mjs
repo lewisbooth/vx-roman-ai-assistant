@@ -85,3 +85,59 @@ test("text links are conditional on carousel presentation and voice can offer ch
   assert.match(live, /Do not claim the customer must click to continue/);
   assert.match(live, /spoken agreement does not approve these actions/);
 });
+
+test("functional filters preserve unknown colour preferences and limited catalog coverage in both backend modes", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(
+      prompt,
+      /Confirming no-drill, full blackout or an inside\/recess fit does not choose a colour, pattern or style/,
+    );
+    assert.match(prompt, /blackout does not mean dark-coloured fabric/);
+    assert.match(prompt, /without adding an unrequested colour/);
+    assert.match(
+      prompt,
+      /sample, not evidence that it is the only matching product or colour available/,
+    );
+    assert.match(
+      prompt,
+      /make a focused range search[\s\S]*preserve the confirmed functional filters and verify each option/,
+    );
+    assert.match(
+      prompt,
+      /use ask_question for the next useful colour or style preference/,
+    );
+    assert.match(
+      prompt,
+      /These answers express preferences, not claims of availability/,
+    );
+    assert.match(
+      prompt,
+      /short overview and a small carousel of verified options before the question/,
+    );
+    assert.match(
+      prompt,
+      /Respect an existing colour preference or specific product choice[\s\S]*instead of reopening it or adding a style questionnaire to a configure\/fill request/,
+    );
+    assert.match(
+      prompt,
+      /A single search result, a casual product mention or your own recommendation alone is not a customer selection/,
+    );
+  }
+});
+
+test("Live keeps functional requirements distinct from a chosen colour when presenting backend results", () => {
+  const live = romanVoicePrompt("marin");
+  assert.match(
+    live,
+    /No-drill, blackout and recess requirements do not establish a colour\/style preference or select a specific product/,
+  );
+  assert.match(
+    live,
+    /a sampled colourway does not establish that it is the only available option/,
+  );
+  assert.match(
+    live,
+    /use the backend's easy question and let the customer choose rather than assuming charcoal or another colour/,
+  );
+  assert.match(live, /Respect a product or style already chosen/);
+});

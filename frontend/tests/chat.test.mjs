@@ -635,7 +635,7 @@ test("product references load live cards once across snapshot refreshes and use 
   assert.equal(card.querySelector("img").getAttribute("loading"), "lazy");
   assert.match(card.textContent, /Lottie Roman blind/);
   assert.match(card.textContent, /From £30.00/);
-  assert.match(
+  assert.doesNotMatch(
     ctx.container.textContent,
     /Final price depends on options and measurements/,
   );
@@ -748,19 +748,26 @@ test("product errors have an explicit retry, and missing products remain honest"
   assert.equal(ctx.container.querySelector(".roman-product-card"), null);
 });
 
-test("journey entries use inline notification pills and unsafe URLs never become active links", async (t) => {
+test("only Roman navigation uses a notification; manual visits stay hidden and link text stays literal", async (t) => {
   const ctx = await setup(t, {
     state: {
       conversation: activeConversation([
         {
+          ...message("manual", "context", ""),
+          parts: [{
+            type: "page_view", version: 1, title: "Manual browsing page",
+            path: "/collections/all", occurredAt: "2026-09-15T10:00:00.000Z",
+          }],
+        },
+        {
           ...message("page", "context", ""),
           parts: [
             {
-              type: "page_view",
+              type: "navigation",
               version: 1,
+              invocationId: "11111111-1111-4111-8111-111111111111",
               title: "Lottie <img src=x>",
               path: "/products/lottie",
-              occurredAt: "2026-09-15T10:00:00.000Z",
             },
           ],
         },
@@ -768,21 +775,23 @@ test("journey entries use inline notification pills and unsafe URLs never become
           ...message("unsafe", "context", ""),
           parts: [
             {
-              type: "page_view",
+              type: "navigation",
               version: 1,
+              invocationId: "22222222-2222-4222-8222-222222222222",
               title: "Unsafe link",
               path: "javascript:alert(1)",
-              occurredAt: "2026-09-15T10:00:01.000Z",
             },
           ],
         },
       ]),
     },
   });
-  const entries = ctx.container.querySelectorAll(".roman-page-view");
+  const entries = ctx.container.querySelectorAll(".roman-navigation");
   assert.equal(entries.length, 2);
+  assert.equal(ctx.container.querySelectorAll(".roman-timeline > li").length, 2);
+  assert.doesNotMatch(ctx.container.textContent, /Manual browsing page|Viewed/);
   assert.ok([...entries].every((entry) => entry.classList.contains("roman-inline-event")));
-  assert.equal(entries[0].textContent, "Viewed Lottie <img src=x>");
+  assert.equal(entries[0].textContent, "Roman navigated to Lottie <img src=x>");
   assert.equal(entries[0].querySelector("img"), null);
   assert.equal(entries[1].querySelector("a"), null);
   entries[0].querySelector("a").click();

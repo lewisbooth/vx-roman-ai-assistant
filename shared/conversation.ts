@@ -4,6 +4,7 @@ import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
 import type { CartAddedProduct, CartToolName } from "./cart-tools";
 import type { ProductGuide } from "./product-guides";
 import type { QuestionPart } from "./questions";
+import type { NavigationPart } from "./navigation-tool";
 
 export interface TextPart {
   type: "text";
@@ -49,6 +50,7 @@ export type ConversationPart =
   | ProductListPart
   | GuidePart
   | QuestionPart
+  | NavigationPart
   | CartAddedPart
   | PageViewPart
   | VoiceCaptionPart;
@@ -139,5 +141,7 @@ export interface SendMessageInput {
 }
 
 export const MAX_MESSAGE_LENGTH = 4000;
-export const MAX_CONVERSATION_MESSAGES = 1600;
+// 1,200 captions + 200 page observations + 40 turns with two message rows and
+// up to eight persisted tool notifications. Actual model action limits are lower.
+export const MAX_CONVERSATION_MESSAGES = 1800;
 export const CONVERSATION_STORAGE_KEY = "roman:conversation";

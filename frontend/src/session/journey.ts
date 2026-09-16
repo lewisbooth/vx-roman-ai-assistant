@@ -1,6 +1,7 @@
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "./types";
 import { isStorefrontPagePath } from "../../../shared/journey";
+import { storefrontPageTitle } from "./page-title";
 
 /** Observe completed pages, independently of whether the sidebar is visible. */
 export function createJourneyObserver(
@@ -32,20 +33,10 @@ export function createJourneyObserver(
     }
     if (path === previousPath) return;
     previousPath = path;
-    const title = (
-      document
-        .querySelector("app-provider > main#main h1")
-        ?.textContent?.trim() ||
-      document.title.trim() ||
-      path
-    )
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 200);
     // The client owns retry identity and reports failures in its normal state.
     void session
       .recordPage({
-        title,
+        title: storefrontPageTitle(path),
         path,
         occurredAt: new Date().toISOString(),
       })

@@ -1,3 +1,4 @@
+import { storefrontPageTitle } from "./page-title";
 import {
   normalizeCatalogResult,
   type CatalogMessage,
@@ -31,6 +32,10 @@ import {
   type ApplyMeasurementsResult,
 } from "../../../shared/measurements";
 import { applyMeasurements } from "../tools/measurements";
+import {
+  loadProductPageImage,
+  productImagePageUrl,
+} from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
 import {
   cartReview,
@@ -52,9 +57,10 @@ const MAX_DISPLAY_PRODUCTS = 60;
 const MAX_FOREGROUND_JOBS = 12;
 // A conversation permits 40 turns. Visibility normally keeps this much lower.
 const MAX_DISPLAY_JOBS = 40;
+const MAX_IMAGE_JOBS = 12;
 
 interface StorefrontJob {
-  kind: "foreground" | "display";
+  kind: "foreground" | "display" | "image";
   operation(signal: AbortSignal): Promise<unknown>;
   controller?: AbortController;
   preempted: boolean;
@@ -72,6 +78,7 @@ export function createStorefrontExecutor(
   const jobs = new Set<StorefrontJob>();
   const foreground: StorefrontJob[] = [];
   const display: StorefrontJob[] = [];
+  const images: StorefrontJob[] = [];
   let active: StorefrontJob | undefined;
   let disposed = false;
   const storefrontOrigin = window.location.origin;
@@ -85,6 +92,10 @@ export function createStorefrontExecutor(
   const displayProducts = new Map<
     string,
     { product: CatalogProduct; messages: CatalogMessage[]; expiresAt: number }
+  >();
+  const productImages = new Map<
+    string,
+    { image: string | undefined; expiresAt: number }
   >();
 
   function requireCurrentStore() {
@@ -129,7 +140,7 @@ export function createStorefrontExecutor(
 
   function pump() {
     if (active || disposed) return;
-    const job = foreground.shift() ?? display.shift();
+    const job = foreground.shift() ?? display.shift() ?? images.shift();
     if (!job) return;
     active = job;
     job.preempted = false;
@@ -146,7 +157,8 @@ export function createStorefrontExecutor(
         job.resolve(value);
       })
       .catch((error) => {
-        if (job.preempted && !job.cancelled && !disposed) display.unshift(job);
+        if (job.preempted && !job.cancelled && !disposed)
+          (job.kind === "image" ? images : display).unshift(job);
         else job.reject(error);
       })
       .finally(() => {
@@ -166,7 +178,11 @@ export function createStorefrontExecutor(
   ): Promise<T> {
     if (signal?.aborted) return Promise.reject(signal.reason);
     const limit =
-      kind === "foreground" ? MAX_FOREGROUND_JOBS : MAX_DISPLAY_JOBS;
+      kind === "foreground"
+        ? MAX_FOREGROUND_JOBS
+        : kind === "image"
+          ? MAX_IMAGE_JOBS
+          : MAX_DISPLAY_JOBS;
     if (
       disposed ||
       [...jobs].filter((job) => job.kind === kind).length >= limit
@@ -177,7 +193,12 @@ export function createStorefrontExecutor(
         ),
       );
     return new Promise<T>((resolve, reject) => {
-      const queue = kind === "foreground" ? foreground : display;
+      const queue =
+        kind === "foreground"
+          ? foreground
+          : kind === "image"
+            ? images
+            : display;
       const job: StorefrontJob = {
         kind,
         operation,
@@ -202,8 +223,12 @@ export function createStorefrontExecutor(
       jobs.add(job);
       queue.push(job);
       signal?.addEventListener("abort", cancel, { once: true });
-      // Only display reads can yield; foreground actions are never replayed.
-      if (kind === "foreground" && active?.kind === "display") {
+      // Read-only images also yield to card hydration. No visible carousel or
+      // foreground action waits for decorative PDP fetching to finish.
+      if (
+        (kind === "foreground" && active?.kind === "display") ||
+        (kind !== "image" && active?.kind === "image")
+      ) {
         active.preempted = true;
         active.controller?.abort(
           new DOMException("Display loading yielded to a tool", "AbortError"),
@@ -378,7 +403,11 @@ export function createStorefrontExecutor(
         const { path } = parseNavigationCall({
           path: `${url.pathname}${url.search}${url.hash}`,
         });
-        return { status: "navigated" as const, path };
+        return {
+          status: "navigated" as const,
+          path,
+          title: storefrontPageTitle(url.pathname),
+        };
       },
       signal,
     );
@@ -471,6 +500,34 @@ export function createStorefrontExecutor(
         signal,
       );
     },
+    async loadProductImage(url: string, signal: AbortSignal) {
+      requireCurrentStore();
+      signal.throwIfAborted();
+      const key = productImagePageUrl(url);
+      const cached = productImages.get(key);
+      if (cached && cached.expiresAt > Date.now()) return cached.image;
+      return enqueue(
+        "image",
+        async (signal) => {
+          const cached = productImages.get(key);
+          if (cached && cached.expiresAt > Date.now()) return cached.image;
+          const image = await loadProductPageImage(key, signal);
+          requireCurrentStore();
+          signal.throwIfAborted();
+          const now = Date.now();
+          for (const [url, entry] of productImages)
+            if (entry.expiresAt <= now) productImages.delete(url);
+          productImages.delete(key);
+          productImages.set(key, { image, expiresAt: now + DISPLAY_CACHE_MS });
+          for (const url of productImages.keys()) {
+            if (productImages.size <= MAX_DISPLAY_PRODUCTS) break;
+            productImages.delete(url);
+          }
+          return image;
+        },
+        signal,
+      );
+    },
     dispose() {
       disposed = true;
       for (const job of jobs) {
@@ -482,7 +539,9 @@ export function createStorefrontExecutor(
       jobs.clear();
       foreground.length = 0;
       display.length = 0;
+      images.length = 0;
       displayProducts.clear();
+      productImages.clear();
     },
   };
 }

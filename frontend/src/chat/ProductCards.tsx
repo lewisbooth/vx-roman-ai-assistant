@@ -9,6 +9,7 @@ import type { CatalogResult } from "../../../shared/catalog";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { StorefrontLink } from "./StorefrontLink";
+import { ProductImage } from "./ProductImage";
 
 export function ProductCards({
   productIds,
@@ -117,15 +118,12 @@ export function ProductCards({
                   navigation={navigation}
                   className="roman-product-card"
                 >
-                  {product.imageUrl && (
-                    <img
-                      src={product.imageUrl}
-                      alt=""
-                      width={176}
-                      height={140}
-                      loading="lazy"
-                    />
-                  )}
+                  <ProductImage
+                    productUrl={product.url}
+                    fallback={product.imageUrl}
+                    session={session}
+                    active={nearby}
+                  />
                   <span className="roman-product-title">{product.title}</span>
                   {product.priceLabel && (
                     <span className="roman-product-price">
@@ -140,11 +138,6 @@ export function ProductCards({
       ) : (
         <p className="roman-products-status">
           These products are no longer available.
-        </p>
-      )}
-      {result.products.some((product) => product.priceLabel) && (
-        <p className="roman-products-note">
-          Final price depends on options and measurements.
         </p>
       )}
       {result.messages.map((message, index) => (

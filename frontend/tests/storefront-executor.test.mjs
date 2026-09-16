@@ -33,11 +33,13 @@ function setup(execute) {
   const module = { exports: {} };
   const warnings = [];
   const location = { origin, href: `${origin}/` };
+  const document = { title: "Storefront", querySelector: () => null };
   const clock = { now: Date.now() };
   runInNewContext(bundle.outputFiles[0].text, {
     module,
     exports: module.exports,
     window: { location },
+    document,
     URL,
     Intl,
     AbortController,
@@ -56,7 +58,7 @@ function setup(execute) {
       return execute(...args);
     },
   });
-  return { executor, calls, warnings, location, clock };
+  return { executor, calls, warnings, location, clock, document };
 }
 
 test("rejected product data logs the failing field without dumping the catalog", async () => {
@@ -396,6 +398,9 @@ test("disposal rejects late results and queued calls without dispatching more br
 test("navigation uses the existing owner and reports its completed current path without catalog parsing", async () => {
   const ctx = setup(async () => {
     ctx.location.href = `${origin}/products/redirected?variant=123#measure`;
+    ctx.document.querySelector = () => ({
+      textContent: "  Redirected\nblind  ",
+    });
     return { status: "navigated", url: ctx.location.href, pending: false };
   });
   const result = await ctx.executor.execute("navigate", {
@@ -407,8 +412,27 @@ test("navigation uses the existing owner and reports its completed current path 
   assert.deepEqual(plain(result), {
     status: "navigated",
     path: "/products/redirected?variant=123#measure",
+    title: "Redirected blind",
   });
   assert.deepEqual(ctx.warnings, []);
+});
+
+test("navigation title falls back to the document title then the public pathname", async () => {
+  const ctx = setup(async () => ({
+    status: "navigated",
+    url: ctx.location.href,
+    pending: false,
+  }));
+  ctx.document.querySelector = () => ({ textContent: "\u0000\u0001\u0007" });
+  assert.equal(
+    (await ctx.executor.execute("navigate", { path: "/" })).title,
+    "Storefront",
+  );
+  ctx.document.title = "";
+  assert.equal(
+    (await ctx.executor.execute("navigate", { path: "/" })).title,
+    "/",
+  );
 });
 
 test("unsafe model navigation paths never reach the storefront owner", () => {

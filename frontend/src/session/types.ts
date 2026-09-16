@@ -29,6 +29,10 @@ export interface ConversationClient {
     signal?: AbortSignal,
   ): Promise<MeasurementToolResult>;
   loadProducts(ids: string[], signal?: AbortSignal): Promise<CatalogResult>;
+  loadProductImage(
+    url: string,
+    signal: AbortSignal,
+  ): Promise<string | undefined>;
   resolveToolApproval(invocationId: string, confirmed: boolean): void;
   startVoice(): Promise<void>;
   setVoice(voice: LiveVoice): void;

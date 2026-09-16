@@ -701,6 +701,7 @@ test("navigation validates its own result against the stored tool and releases a
   const navigation = {
     status: "navigated",
     path: "/products/shade?variant=123#details",
+    title: "Shade & <Blinds>",
   };
   await env.api.submitBrowserToolResult(
     "conversation-1",
@@ -709,7 +710,10 @@ test("navigation validates its own result against the stored tool and releases a
     navigation,
   );
   assert.deepEqual(plain(await pending), navigation);
-  assert.deepEqual(plain(env.calls.complete[0][3]), { productIds: [] });
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [],
+    outcome: navigation,
+  });
   assert.deepEqual(plain(env.calls.context[0]), [
     "conversation-1",
     "invocation-1",

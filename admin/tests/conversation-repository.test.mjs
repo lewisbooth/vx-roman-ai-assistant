@@ -1324,12 +1324,14 @@ test("navigation persists a claimed storefront action without product evidence o
   assert.deepEqual(await repository.getSnapshot(id), claimed);
   await repository.completeToolInvocation(id, tool.id, claim, {
     productIds: [],
+    outcome: { status: "navigated", path: input.arguments.path },
   });
   const completed = await repository.getSnapshot(id);
   assert.deepEqual(completed.tools, []);
   assert.deepEqual(completed.messages[1].parts, [{ type: "text", text: "" }]);
   await repository.completeToolInvocation(id, tool.id, claim, {
     productIds: [],
+    outcome: { status: "navigated", path: input.arguments.path },
   });
   assert.deepEqual(await repository.getSnapshot(id), completed);
   const persisted = await database.toolInvocation.findUniqueOrThrow({
@@ -1339,6 +1341,19 @@ test("navigation persists a claimed storefront action without product evidence o
   assert.equal(persisted.status, "complete");
   assert.deepEqual(JSON.parse(persisted.argumentsJson), input.arguments);
   assert.deepEqual(JSON.parse(persisted.productIdsJson), []);
+  assert.deepEqual(completed.messages.at(-1).parts, [
+    {
+      type: "navigation",
+      version: 1,
+      invocationId: tool.id,
+      path: "/products/dalmatians",
+      title: "/products/dalmatians",
+    },
+  ]);
+  assert.deepEqual(JSON.parse(persisted.resultJson), {
+    status: "navigated",
+    path: input.arguments.path,
+  });
   await assert.rejects(
     repository.finishTurn(id, turn.assistantId, {
       text: "An ungrounded recommendation.",
@@ -1357,6 +1372,150 @@ test("navigation persists a claimed storefront action without product evidence o
   assert.deepEqual((await repository.getSnapshot(id)).messages[1].parts, [
     { type: "text", text: "You are now on the blind page." },
   ]);
+});
+
+test("confirmed navigation persists once before text or voice completion and retains private journey context", async () => {
+  for (const voice of [false, true]) {
+    const { id, turn, tool } = await cartInvocation(
+      "navigate",
+      { path: "/collections/all" },
+      voice,
+    );
+    const claim = executor();
+    await repository.appendJourney(id, {
+      requestId: randomUUID(),
+      title: "Manually viewed page",
+      path: "/pages/measuring",
+      occurredAt: new Date().toISOString(),
+    });
+    await repository.claimToolInvocation(id, tool.id, claim);
+    const result = {
+      productIds: [],
+      outcome: {
+        status: "navigated",
+        path: "/search?q=roller#results",
+        title: "<Roller> & Blinds",
+      },
+    };
+    await repository.completeToolInvocation(id, tool.id, claim, result);
+    const snapshot = await repository.getSnapshot(id);
+    const events = snapshot.messages.filter((row) =>
+      row.parts.some((part) => part.type === "navigation"),
+    );
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].parts, [
+      {
+        type: "navigation",
+        version: 1,
+        invocationId: tool.id,
+        path: "/search",
+        title: "<Roller> & Blinds",
+      },
+    ]);
+    assert.equal(snapshot.busy, true);
+    await repository.completeToolInvocation(id, tool.id, claim, result);
+    assert.deepEqual(await repository.getSnapshot(id), snapshot);
+    await repository.finishTurn(id, turn.assistantId, {
+      status: "failed",
+      text: "",
+      error: "Provider failed after confirmed navigation.",
+    });
+    await repository.endConversation(id);
+    const reloaded = await loadRepository().getSnapshot(id);
+    assert.deepEqual(
+      reloaded.messages.filter((row) =>
+        row.parts.some((part) => part.type === "navigation"),
+      ),
+      events,
+    );
+    const history = JSON.stringify(await repository.getModelHistory(id));
+    assert.match(history, /Manually viewed page/);
+    assert.match(history, /navigation/);
+    assert.doesNotMatch(history, /q=roller|#results/);
+  }
+});
+
+test("navigation acknowledgements require a live owned claim and never fabricate failure or stale events", async () => {
+  for (const scenario of [
+    "wrong-owner",
+    "unclaimed",
+    "failed-result",
+    "timeout",
+    "cancelled",
+    "ended",
+  ]) {
+    const { id, turn, tool } = await cartInvocation("navigate", {
+      path: "/cart",
+    });
+    const claim = executor();
+    if (scenario !== "unclaimed")
+      await repository.claimToolInvocation(id, tool.id, claim);
+    if (scenario === "timeout")
+      await repository.failToolInvocation(id, tool.id, "Navigation timed out.");
+    if (scenario === "cancelled")
+      await repository.finishTurn(id, turn.assistantId, {
+        status: "failed",
+        text: "",
+        error: "Cancelled.",
+      });
+    if (scenario === "ended") await repository.endConversation(id);
+    const result =
+      scenario === "failed-result"
+        ? { productIds: [], error: "Page load unconfirmed." }
+        : {
+            productIds: [],
+            outcome: { status: "navigated", path: "/cart", title: "Cart" },
+          };
+    const completion = repository.completeToolInvocation(
+      id,
+      tool.id,
+      scenario === "wrong-owner" ? executor() : claim,
+      result,
+    );
+    if (scenario === "failed-result") await completion;
+    else await assert.rejects(completion);
+    assert.equal(
+      (await repository.getSnapshot(id)).messages.some((row) =>
+        row.parts.some((part) => part.type === "navigation"),
+      ),
+      false,
+      scenario,
+    );
+  }
+});
+
+test("navigation event persistence is atomic with the completed outcome", async () => {
+  const { id, tool } = await cartInvocation("navigate", { path: "/cart" });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, claim);
+  const before = await repository.getSnapshot(id);
+  const result = {
+    productIds: [],
+    outcome: { status: "navigated", path: "/cart", title: "Cart" },
+  };
+  await database.$executeRawUnsafe(`CREATE TRIGGER reject_navigation_event BEFORE INSERT ON ConversationMessage
+    WHEN NEW.role = 'context' BEGIN SELECT RAISE(ABORT, 'test event write failed'); END`);
+  try {
+    await assert.rejects(
+      repository.completeToolInvocation(id, tool.id, claim, result),
+    );
+    assert.deepEqual(await repository.getSnapshot(id), before);
+    const stored = await database.toolInvocation.findUniqueOrThrow({
+      where: { id: tool.id },
+    });
+    assert.equal(stored.status, "running");
+    assert.equal(stored.resultJson, null);
+  } finally {
+    await database.$executeRawUnsafe("DROP TRIGGER reject_navigation_event");
+  }
+  await repository.completeToolInvocation(id, tool.id, claim, result);
+  const after = await loadRepository().getSnapshot(id);
+  assert.equal(
+    after.messages.filter((row) =>
+      row.parts.some((part) => part.type === "navigation"),
+    ).length,
+    1,
+  );
 });
 
 test("navigation rejects external and malformed arguments before creating an invocation", async () => {

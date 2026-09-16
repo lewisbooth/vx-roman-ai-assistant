@@ -26,7 +26,10 @@ import {
   parseMeasurementCall,
   parseMeasurementToolResult,
 } from "../../../shared/measurements";
-import { parseNavigationCall } from "../../../shared/navigation-tool";
+import {
+  parseNavigationCall,
+  parseNavigationPart,
+} from "../../../shared/navigation-tool";
 import { parseQuestionPart } from "../../../shared/questions";
 import type {
   createStorefrontExecutor,
@@ -83,6 +86,15 @@ function validGuidePart(value: unknown) {
 function validQuestionPart(value: unknown) {
   try {
     parseQuestionPart(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validNavigationPart(value: unknown) {
+  try {
+    parseNavigationPart(value);
     return true;
   } catch {
     return false;
@@ -187,6 +199,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
             ((part.type === "text" && typeof part.text === "string") ||
               (part.type === "guides" && validGuidePart(part)) ||
               (part.type === "question" && validQuestionPart(part)) ||
+              (part.type === "navigation" && validNavigationPart(part)) ||
               (part.type === "cart_added" && validCartAddedPart(part)) ||
               (part.type === "voice" &&
                 part.version === 1 &&
@@ -625,8 +638,7 @@ export function createConversationClient(
     } finally {
       if (
         controller.signal.aborted &&
-        (isCartMutation(tool.name) ||
-          tool.name === "apply_measurements")
+        (isCartMutation(tool.name) || tool.name === "apply_measurements")
       ) {
         const attempt = toolAttempts.get(tool.id);
         if (attempt) {
@@ -757,11 +769,7 @@ export function createConversationClient(
                       signal,
                     )
                   : tool.name === "get_cart" || tool.name === "add_to_cart"
-                    ? await executor!.execute(
-                        tool.name,
-                        tool.arguments,
-                        signal,
-                      )
+                    ? await executor!.execute(tool.name, tool.arguments, signal)
                     : await executor!.execute(
                         tool.name as
                           "search_products" | "get_product" | "lookup_catalog",
@@ -1342,6 +1350,18 @@ export function createConversationClient(
           new Error("Start a chat to load these products."),
         );
       return executor.loadProducts(ids, signal);
+    },
+    loadProductImage(url, signal) {
+      if (
+        !executor ||
+        disposed ||
+        ending ||
+        state.conversation?.status !== "active"
+      )
+        return Promise.reject(
+          new Error("Start a chat to load product images."),
+        );
+      return executor.loadProductImage(url, signal);
     },
     resolveToolApproval(invocationId, confirmed) {
       if (approvalChoice?.id === invocationId && typeof confirmed === "boolean")

@@ -1,6 +1,70 @@
 export interface NavigationResult {
   status: "navigated";
   path: string;
+  title?: string;
+}
+
+export interface NavigationPart {
+  type: "navigation";
+  version: 1;
+  invocationId: string;
+  path: string;
+  title: string;
+}
+
+function navigationTitle(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 200 ||
+    /\p{Cc}/u.test(value)
+  )
+    throw new Error("Navigation title must be a short plain-text page name.");
+  return value.trim();
+}
+
+export function parseNavigationResult(input: unknown): NavigationResult {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid navigation result.");
+  const value = input as Record<string, unknown>;
+  if (
+    value.status !== "navigated" ||
+    Object.keys(value).some((key) => !["status", "path", "title"].includes(key))
+  )
+    throw new Error("Invalid navigation result.");
+  return {
+    status: "navigated",
+    ...parseNavigationCall({ path: value.path }),
+    ...(value.title !== undefined
+      ? { title: navigationTitle(value.title) }
+      : {}),
+  };
+}
+
+export function parseNavigationPart(input: unknown): NavigationPart {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid navigation notification.");
+  const value = input as Record<string, unknown>;
+  if (
+    Object.keys(value).length !== 5 ||
+    value.type !== "navigation" ||
+    value.version !== 1 ||
+    typeof value.invocationId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value.invocationId,
+    )
+  )
+    throw new Error("Invalid navigation notification.");
+  const { path } = parseNavigationCall({ path: value.path });
+  if (path.includes("?") || path.includes("#"))
+    throw new Error("Navigation notifications omit page query and fragment.");
+  return {
+    type: "navigation",
+    version: 1,
+    invocationId: value.invocationId,
+    path,
+    title: navigationTitle(value.title),
+  };
 }
 
 export const navigationToolDefinition = {

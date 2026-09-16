@@ -237,6 +237,20 @@ test("empty delegation bookkeeping does not split a spoken reply during or after
 
 for (const entry of [
   {
+    label: "confirmed navigation",
+    role: "context",
+    status: "complete",
+    parts: [
+      {
+        type: "navigation",
+        version: 1,
+        invocationId: "6dedf5cd-9d29-4c06-bcf6-ce5d3b49b7a9",
+        path: "/products/shade",
+        title: "Shade",
+      },
+    ],
+  },
+  {
     label: "confirmed additions",
     role: "context",
     status: "complete",

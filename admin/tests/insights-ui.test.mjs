@@ -140,22 +140,58 @@ function setupRoutes() {
   return { ...module.exports, calls, mock };
 }
 
-test("inspection shows the same verified guide selection using safe PDF links", t => {
+test("inspection shows the same verified guide selection using safe PDF links", (t) => {
   const { render, container } = setupView(t);
-  const part = { type: "guides", version: 1, invocationId: ID, productPath: "/products/shade", guides: [
-    { kind: "fitting", url: `${ORIGIN}/cdn/shop/files/fitting.pdf?v=2` },
-    { kind: "measuring", url: `${ORIGIN}/cdn/shop/files/measuring.pdf?v=1` },
-  ] };
-  const message = { id: "guides", role: "assistant", status: "complete", createdAt: NOW, parts: [part] };
+  const part = {
+    type: "guides",
+    version: 1,
+    invocationId: ID,
+    productPath: "/products/shade",
+    guides: [
+      { kind: "fitting", url: `${ORIGIN}/cdn/shop/files/fitting.pdf?v=2` },
+      { kind: "measuring", url: `${ORIGIN}/cdn/shop/files/measuring.pdf?v=1` },
+    ],
+  };
+  const message = {
+    id: "guides",
+    role: "assistant",
+    status: "complete",
+    createdAt: NOW,
+    parts: [part],
+  };
   render("ConversationTimeline", { origin: ORIGIN, messages: [message] });
   const links = [...container.querySelectorAll("a")];
-  assert.deepEqual(links.map(link => link.textContent), ["Fitting guide", "Measuring guide"]);
-  assert.deepEqual(links.map(link => link.href), part.guides.map(guide => guide.url));
+  assert.deepEqual(
+    links.map((link) => link.textContent),
+    ["Fitting guide", "Measuring guide"],
+  );
+  assert.deepEqual(
+    links.map((link) => link.href),
+    part.guides.map((guide) => guide.url),
+  );
   for (const link of links) {
     assert.equal(link.target, "_blank");
     assert.equal(link.rel, "noopener noreferrer");
   }
-  render("ConversationTimeline", { origin: ORIGIN, messages: [{ ...message, parts: [{ ...part, guides: [{ kind: "fitting", url: "https://other-shop.myshopify.com/cdn/shop/files/fitting.pdf" }] }] }] });
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [
+      {
+        ...message,
+        parts: [
+          {
+            ...part,
+            guides: [
+              {
+                kind: "fitting",
+                url: "https://other-shop.myshopify.com/cdn/shop/files/fitting.pdf",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
   assert.equal(container.querySelectorAll("a").length, 0);
   assert.match(container.textContent, /guides are unavailable/);
 });
@@ -217,6 +253,33 @@ test("inspection retains original question choices as literal read-only history 
     0,
   );
   assert.match(rows[1].textContent, /Full blackout/);
+});
+
+test("inspection distinguishes confirmed Roman navigation from ordinary visits and escapes page titles", (t) => {
+  const { render, container } = setupView(t);
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [
+      {
+        id: "navigation",
+        role: "context",
+        status: "complete",
+        createdAt: NOW,
+        parts: [
+          {
+            type: "navigation",
+            version: 1,
+            invocationId: ID,
+            path: "/products/shade",
+            title: "<img src=x> Shade",
+          },
+        ],
+      },
+    ],
+  });
+  assert.match(container.textContent, /Roman navigated to <img src=x> Shade/);
+  assert.equal(container.querySelector("img"), null);
+  assert.equal(container.querySelector("a").href, `${ORIGIN}/products/shade`);
 });
 
 test("inspection renders confirmed cart additions as literal product facts and omits unknown dimensions", (t) => {

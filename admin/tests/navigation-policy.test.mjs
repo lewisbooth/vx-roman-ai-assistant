@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import { build } from "esbuild";
 
@@ -9,9 +10,47 @@ const bundle = await build({
   format: "esm",
   platform: "node",
 });
-const { parseNavigationCall } = await import(
-  `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
-);
+const { parseNavigationCall, parseNavigationResult, parseNavigationPart } =
+  await import(
+    `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
+  );
+
+test("navigation results accept old executors and literal bounded titles; notifications remove queries and fragments", () => {
+  const result = { status: "navigated", path: "/search?q=roller#results" };
+  assert.deepEqual(parseNavigationResult(result), result);
+  assert.deepEqual(
+    parseNavigationResult({ ...result, title: "  <Shade> & **Blinds**  " }),
+    { ...result, title: "<Shade> & **Blinds**" },
+  );
+  for (const invalid of [
+    null,
+    { ...result, status: "pending" },
+    { ...result, path: "/account" },
+    { ...result, extra: true },
+    ...["", " ", "x".repeat(201), "Title\nagain", 5].map((title) => ({
+      ...result,
+      title,
+    })),
+  ])
+    assert.throws(() => parseNavigationResult(invalid));
+  const part = {
+    type: "navigation",
+    version: 1,
+    invocationId: "6dedf5cd-9d29-4c06-bcf6-ce5d3b49b7a9",
+    path: "/search",
+    title: "Search",
+  };
+  assert.deepEqual(parseNavigationPart(part), part);
+  for (const invalid of [
+    { ...part, path: result.path },
+    { ...part, path: "/cart#contents" },
+    { ...part, invocationId: "bad" },
+    { ...part, version: 2 },
+    { ...part, extra: true },
+    { ...part, title: "" },
+  ])
+    assert.throws(() => parseNavigationPart(invalid));
+});
 
 test("model navigation accepts public page categories and specific read queries", () => {
   for (const path of [

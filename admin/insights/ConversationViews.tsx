@@ -177,6 +177,15 @@ export function ConversationTimeline({
           </div>
           <div className="space-y-3 break-words">
             {message.parts.map((part, index) => {
+              if (part.type === "navigation")
+                return (
+                  <p key={index}>
+                    Roman navigated to{" "}
+                    <TranscriptLink value={part.path} origin={origin}>
+                      {part.title}
+                    </TranscriptLink>
+                  </p>
+                );
               if (part.type === "page_view")
                 return (
                   <p key={index}>
@@ -209,7 +218,9 @@ export function ConversationTimeline({
                 return (
                   <div key={index}>
                     <p className="whitespace-pre-wrap">{part.question}</p>
-                    <p className="mt-1 text-xs text-gray-600">Offered answers</p>
+                    <p className="mt-1 text-xs text-gray-600">
+                      Offered answers
+                    </p>
                     <ul className="list-inside list-disc text-sm">
                       {part.answers.map((answer) => (
                         <li key={answer}>{answer}</li>
