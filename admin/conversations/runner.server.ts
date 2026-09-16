@@ -124,7 +124,13 @@ export async function startTurn(
     }
     turn.assistantId = started.assistantId;
     // Generation belongs to the server, not to the lifetime of the HTTP request.
-    void completeTurn(id, started.assistantId, started.history, turn);
+    void completeTurn(
+      id,
+      started.assistantId,
+      started.history,
+      started.origin,
+      turn,
+    );
     return started.snapshot;
   } catch (error) {
     active.delete(id);
@@ -138,6 +144,7 @@ async function completeTurn(
   id: string,
   assistantId: string,
   history: Parameters<typeof generateReply>[0],
+  origin: string,
   turn: ActiveTurn,
 ): Promise<ModelReply | undefined> {
   try {
@@ -161,6 +168,7 @@ async function completeTurn(
           : requestBrowserTool(id, assistantId, callId, name, input, signal),
       turn.voiceId ? "voice" : "text",
       (usage) => recordModelUsage(id, assistantId, usage),
+      origin,
     );
     signal.throwIfAborted();
     await finishTurn(id, assistantId, {
@@ -239,7 +247,13 @@ export async function runVoiceDelegation(
       });
       return;
     }
-    return await completeTurn(id, started.assistantId, started.history, turn);
+    return await completeTurn(
+      id,
+      started.assistantId,
+      started.history,
+      started.origin,
+      turn,
+    );
   } finally {
     initialized();
     signal.removeEventListener("abort", abort);

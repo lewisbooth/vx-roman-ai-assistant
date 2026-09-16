@@ -1,0 +1,175 @@
+import { Buffer } from "node:buffer";
+import type { ResponseInputFile } from "openai/resources/responses/responses";
+import {
+  parseProductGuidesResult,
+  type ProductGuide,
+  type ProductGuidesResult,
+} from "../../shared/product-guides";
+
+type FailureReason =
+  | "invalid_guides"
+  | "no_guides"
+  | "not_found"
+  | "network"
+  | "timeout"
+  | "too_large"
+  | "invalid_pdf";
+
+export type ProductGuideFiles =
+  | { status: "ready"; sources: ProductGuide[]; files: ResponseInputFile[] }
+  | { status: "unavailable"; reason: FailureReason };
+
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_CACHE_BYTES = 32 * 1024 * 1024;
+const MAX_CACHE_ENTRIES = 16;
+const CACHE_TTL_MS = 15 * 60_000;
+const PDF_SIGNATURE = Buffer.from("%PDF-");
+const cache = new Map<string, { bytes: Buffer; expiresAt: number }>();
+let cachedBytes = 0;
+
+class GuideReadError extends Error {
+  constructor(readonly reason: FailureReason) {
+    super(reason);
+  }
+}
+
+function removeCached(url: string) {
+  const entry = cache.get(url);
+  if (entry) cachedBytes -= entry.bytes.length;
+  cache.delete(url);
+}
+
+function cachedFile(url: string) {
+  const now = Date.now();
+  for (const [key, entry] of cache)
+    if (entry.expiresAt <= now) removeCached(key);
+  const entry = cache.get(url);
+  if (entry) {
+    cache.delete(url);
+    cache.set(url, entry);
+  }
+  return entry?.bytes;
+}
+
+function cacheFile(url: string, bytes: Buffer) {
+  removeCached(url);
+  while (
+    cache.size >= MAX_CACHE_ENTRIES ||
+    cachedBytes + bytes.length > MAX_CACHE_BYTES
+  ) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    removeCached(oldest);
+  }
+  cache.set(url, { bytes, expiresAt: Date.now() + CACHE_TTL_MS });
+  cachedBytes += bytes.length;
+}
+
+async function download(url: string, signal: AbortSignal): Promise<Buffer> {
+  signal.throwIfAborted();
+  const cached = cachedFile(url);
+  if (cached) return cached;
+
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), 10_000);
+  const requestSignal = AbortSignal.any([signal, timeout.signal]);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const cancelReader = () => {
+    // Cleanup must not replace a caller's abort reason or the read failure.
+    void reader?.cancel().catch(() => undefined);
+  };
+  try {
+    const response = await fetch(url, {
+      signal: requestSignal,
+      redirect: "error",
+      credentials: "omit",
+      cache: "no-store",
+      headers: { Accept: "application/pdf" },
+    });
+    reader = response.body?.getReader();
+    requestSignal.throwIfAborted();
+    if (!response.ok || response.redirected)
+      throw new GuideReadError(
+        !response.redirected && response.status === 404 ? "not_found" : "network",
+      );
+    if (
+      !reader ||
+      response.headers
+        .get("content-type")
+        ?.split(";", 1)[0]
+        .trim()
+        .toLowerCase() !== "application/pdf"
+    )
+      throw new GuideReadError("invalid_pdf");
+    const length = response.headers.get("content-length");
+    if (length && /^\d+$/.test(length) && Number(length) > MAX_FILE_BYTES)
+      throw new GuideReadError("too_large");
+
+    requestSignal.addEventListener("abort", cancelReader, { once: true });
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      requestSignal.throwIfAborted();
+      const { done, value } = await reader.read();
+      requestSignal.throwIfAborted();
+      if (done) break;
+      size += value.length;
+      if (size > MAX_FILE_BYTES) throw new GuideReadError("too_large");
+      chunks.push(value);
+    }
+    const bytes = Buffer.concat(chunks, size);
+    if (!bytes.subarray(0, PDF_SIGNATURE.length).equals(PDF_SIGNATURE))
+      throw new GuideReadError("invalid_pdf");
+    signal.throwIfAborted();
+    cacheFile(url, bytes);
+    return bytes;
+  } catch (error) {
+    signal.throwIfAborted();
+    if (timeout.signal.aborted) throw new GuideReadError("timeout");
+    throw error instanceof GuideReadError
+      ? error
+      : new GuideReadError("network");
+  } finally {
+    clearTimeout(timer);
+    requestSignal.removeEventListener("abort", cancelReader);
+    cancelReader();
+    reader?.releaseLock();
+  }
+}
+
+/** Public guide bytes stay in bounded server memory, never in customer DTOs. */
+export async function readProductGuideFiles(
+  result: ProductGuidesResult,
+  storefrontOrigin: string,
+  signal: AbortSignal,
+): Promise<ProductGuideFiles> {
+  signal.throwIfAborted();
+  let verified: ProductGuidesResult;
+  try {
+    verified = parseProductGuidesResult(result, storefrontOrigin);
+  } catch {
+    return { status: "unavailable", reason: "invalid_guides" };
+  }
+  if (verified.status === "unavailable")
+    return { status: "unavailable", reason: "no_guides" };
+  const files: ResponseInputFile[] = [];
+  try {
+    for (const guide of verified.guides) {
+      const bytes = await download(guide.url, signal);
+      signal.throwIfAborted();
+      files.push({
+        type: "input_file",
+        filename: `${guide.kind}-guide.pdf`,
+        file_data: `data:application/pdf;base64,${bytes.toString("base64")}`,
+        detail: "high",
+      });
+    }
+    return { status: "ready", sources: verified.guides, files };
+  } catch (error) {
+    signal.throwIfAborted();
+    return {
+      status: "unavailable",
+      reason: error instanceof GuideReadError ? error.reason : "network",
+    };
+  }
+}

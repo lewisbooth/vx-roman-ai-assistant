@@ -822,7 +822,7 @@ test("initial instructions select the opening from full history before Live crea
   const first = await openingFor([]);
   assert.match(
     first.instruction,
-    /Say this complete welcome exactly: "Hi I'm Roman/,
+    /Say this complete welcome exactly: "Hi! I'm Roman/,
   );
   assert.match(first.instruction, /Wait for the application's opening cue/);
   assert.doesNotMatch(first.instruction, /Hi, it's Roman again/);
