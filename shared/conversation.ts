@@ -1,6 +1,6 @@
 export type MessageStatus = "pending" | "complete" | "failed";
 
-import type { VoiceCaptionPart, VoiceSessionSnapshot } from "./voice";
+import type { VoiceCaptionPart, VoiceEventPart, VoiceSessionSnapshot } from "./voice";
 import type { CartAddedProduct, CartToolName } from "./cart-tools";
 import type { ProductGuide } from "./product-guides";
 import type { QuestionPart, QuestionAnswerReference } from "./questions";
@@ -55,6 +55,7 @@ export type ConversationPart =
   | NavigationPart
   | CartAddedPart
   | PageViewPart
+  | VoiceEventPart
   | VoiceCaptionPart;
 
 export type CatalogToolName =
@@ -145,5 +146,6 @@ export interface SendMessageInput {
 export const MAX_MESSAGE_LENGTH = 4000;
 // 1,200 captions + 200 page observations + 40 turns with two message rows and
 // up to eight persisted tool notifications. Actual model action limits are lower.
+// Also accommodates 40 selected voice answers and 20 voice lifecycle events.
 export const MAX_CONVERSATION_MESSAGES = 1800;
 export const CONVERSATION_STORAGE_KEY = "roman:conversation";

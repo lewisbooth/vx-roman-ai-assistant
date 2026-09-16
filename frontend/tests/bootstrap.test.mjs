@@ -42,7 +42,7 @@ function setup(t, beforeImport, { url = `${origin}/`, storage = {} } = {}) {
     `<!doctype html><html data-roman-preview="true"><head><title>Store</title></head>
     <body><app-provider><main id="main"><h1>Store content</h1></main></app-provider>
     <roman-ai-assistant data-shop="hd-dev-multi.myshopify.com" data-label="Roman AI Assistant"
-      data-script-url="${runtimeUrl}" data-logo-url="/roman-logo.svg"></roman-ai-assistant></body></html>`,
+      data-script-url="${runtimeUrl}" data-logo-url="/roman-logo.svg" data-wordmark-url="/roman-wordmark.svg"></roman-ai-assistant></body></html>`,
     { url, runScripts: "outside-only", pretendToBeVisual: true },
   );
   const { window } = dom;
@@ -748,7 +748,7 @@ test("a visible theme header receives an accessible launcher that controls the e
   assert.equal(button.firstChild.textContent.trim(), "Ask");
   const logo = button.querySelector('img[alt="Roman"]');
   assert.equal(logo.alt, "Roman");
-  assert.match(logo.src, /roman-logo\.svg$/);
+  assert.match(logo.src, /roman-wordmark\.svg$/);
   assert.equal(ctx.launcher().hidden, true);
   button.click();
   assert.equal(hidden(ctx.panel()), false);

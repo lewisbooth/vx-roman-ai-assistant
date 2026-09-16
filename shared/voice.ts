@@ -50,6 +50,44 @@ export interface VoiceCaptionPart {
   endMs: number;
 }
 
+export interface VoiceEventPart {
+  type: "voice_event";
+  version: 1;
+  voiceId: string;
+  event: "started" | "ended" | "disconnected";
+}
+
+export const VOICE_EVENT_LABELS = {
+  started: "Voice chat started",
+  ended: "Voice chat ended",
+  disconnected: "Voice chat disconnected",
+} as const;
+
+export function parseVoiceEventPart(input: unknown): VoiceEventPart {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid voice event.");
+  const value = input as Record<string, unknown>;
+  if (
+    Object.keys(value).length !== 4 ||
+    value.type !== "voice_event" ||
+    value.version !== 1 ||
+    typeof value.voiceId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value.voiceId,
+    ) ||
+    (value.event !== "started" &&
+      value.event !== "ended" &&
+      value.event !== "disconnected")
+  )
+    throw new Error("Invalid voice event.");
+  return {
+    type: "voice_event",
+    version: 1,
+    voiceId: value.voiceId,
+    event: value.event,
+  };
+}
+
 export interface VoiceStartResult {
   voiceId: string;
   sdp: string;

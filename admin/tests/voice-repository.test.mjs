@@ -671,3 +671,111 @@ test("caption projection keeps exact fragments, stable IDs and conversational bo
   assert.equal(result[1].role, "assistant");
   assert.equal(result[2].sequence, 4);
 });
+
+async function lifecycleEvents() {
+  return (
+    await database.conversationMessage.findMany({
+      orderBy: { sequence: "asc" },
+    })
+  ).map((row) => ({ ...row, part: JSON.parse(row.partsJson)[0] }));
+}
+
+test("only a ready active owner creates a single durable start and ordered end", async () => {
+  const { session } = await reserve();
+  await assert.rejects(
+    repository.markVoiceStarted(conversationId, session.id, clientId),
+    { status: 409 },
+  );
+  assert.deepEqual(await lifecycleEvents(), []);
+  await repository.activateVoiceSession(
+    conversationId,
+    session.id,
+    clientId,
+    "provider-fixture",
+  );
+  assert.deepEqual(
+    await lifecycleEvents(),
+    [],
+    "provider creation alone is not browser readiness",
+  );
+  await assert.rejects(
+    repository.markVoiceStarted(conversationId, session.id, randomUUID()),
+    { status: 404 },
+  );
+  await Promise.all([
+    repository.markVoiceStarted(conversationId, session.id, clientId),
+    repository.markVoiceStarted(conversationId, session.id, clientId),
+  ]);
+  await append(session.id);
+  await repository.closeVoiceSession(conversationId, session.id, clientId);
+  const events = await lifecycleEvents();
+  assert.deepEqual(
+    events.map((row) => row.part.event),
+    ["started", "ended"],
+  );
+  assert.deepEqual(
+    events.map((row) => row.sequence),
+    [0, 2],
+  );
+  assert.ok(
+    events.every((row) => row.role === "context" && row.status === "complete"),
+  );
+  assert.ok(events.every((row) => row.part.voiceId === session.id));
+  const before = await storedConversation();
+  await repository.cancelVoiceSession(conversationId, session.id, clientId);
+  await repository.closeVoiceSession(conversationId, session.id, clientId, {
+    status: "failed",
+  });
+  assert.deepEqual(await lifecycleEvents(), events);
+  assert.deepEqual(await storedConversation(), before);
+  await assert.rejects(
+    repository.markVoiceStarted(conversationId, session.id, clientId),
+    { status: 409 },
+  );
+});
+
+for (const connected of [false, true]) {
+  for (const outcome of ["failure", "expiry", "restart"]) {
+    test(`${outcome} records disconnection only after an actual ready start (${connected})`, async () => {
+      const { session } = await reserve();
+      await repository.activateVoiceSession(
+        conversationId,
+        session.id,
+        clientId,
+        "provider-fixture",
+      );
+      if (connected)
+        await repository.markVoiceStarted(conversationId, session.id, clientId);
+      if (outcome === "failure")
+        await repository.closeVoiceSession(
+          conversationId,
+          session.id,
+          clientId,
+          { status: "failed", error: "Connection lost" },
+        );
+      else {
+        clock += outcome === "expiry" ? repository.VOICE_LEASE_MS : 1;
+        if (outcome === "restart") repository = load();
+        await repository.recoverVoiceSessions(conversationId);
+      }
+      const rows = await lifecycleEvents();
+      assert.deepEqual(
+        rows.map((row) => row.part.event),
+        connected ? ["started", "disconnected"] : [],
+      );
+      assert.equal(
+        (await repository.getVoiceState(conversationId)).status,
+        "failed",
+      );
+      await repository.recoverVoiceSessions(conversationId);
+      assert.deepEqual(await lifecycleEvents(), rows);
+    });
+  }
+}
+
+test("a cancelled reservation has no false lifecycle entries", async () => {
+  const voiceId = randomUUID();
+  await repository.cancelVoiceSession(conversationId, voiceId, clientId);
+  await repository.closeVoiceSession(conversationId, voiceId, clientId);
+  assert.deepEqual(await lifecycleEvents(), []);
+});

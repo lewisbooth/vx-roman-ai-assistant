@@ -924,6 +924,25 @@ test("saved cart additions render product and submitted dimensions with a workin
   assert.equal(ctx.container.querySelector(".roman-tool-approval"), null);
 });
 
+test("voice lifecycle events remain chronological context and do not retire a pending follow-up", async t => {
+  const question=questionMessage();
+  const event=(id,event)=>({...message(id,"context",""),parts:[{type:"voice_event",version:1,voiceId:"22222222-2222-4222-8222-222222222222",event}]});
+  const rows=[event("voice-start","started"),message("voice-reply","assistant","What matters most?"),question,event("voice-end","ended"),event("voice-restart","started"),event("voice-disconnected","disconnected")];
+  const ctx=await setup(t,{state:{conversation:activeConversation(rows)}});
+  const entries=()=>[...ctx.container.querySelectorAll('.roman-voice-event')];
+  assert.deepEqual(entries().map(e=>e.textContent),["Voice chat started","Voice chat ended","Voice chat started","Voice chat disconnected"]);
+  assert.ok(entries().every(e=>e.classList.contains('roman-inline-event')));
+  assert.ok(entries().every(e=>e.closest('li').classList.contains('roman-message-context')));
+  assert.equal(ctx.container.querySelectorAll('.roman-question').length,1);
+  assert.equal(ctx.container.querySelectorAll('.roman-question button').length,question.parts[0].answers.length);
+  ctx.update({conversation:activeConversation(rows.map(row=>({...row})))});
+  await delay(0);
+  assert.equal(entries().length,4);
+  assert.deepEqual(ctx.calls,[]);
+  assert.deepEqual(ctx.startVoiceCalls,[]);
+  assert.deepEqual(ctx.stopVoiceCalls,[]);
+});
+
 test("ending a chat retains its transcript and draft until acknowledged, then starts clean", async (t) => {
   let finish;
   const pending = new Promise((resolve) => {

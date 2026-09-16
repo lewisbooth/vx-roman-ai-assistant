@@ -146,7 +146,7 @@
   }
 
   .roman-inline-event {
-    @apply mx-auto my-0 w-fit max-w-full rounded-full bg-[#4e0e0e] px-[18px] py-[8px] text-center text-[12px] leading-[1.5] text-white;
+    @apply mx-auto my-0 w-fit max-w-full text-center text-[12px] leading-[1.5] text-[#716b60];
     overflow-wrap: anywhere;
   }
 
@@ -337,19 +337,20 @@
   }
 
   .roman-question {
-    @apply mt-[16px] rounded-[14px] border-2 border-solid border-transparent bg-[#4e0e0e] p-[14px] text-[#f7f5ef];
+    @apply mt-[16px] rounded-[14px] border-2 border-solid border-transparent bg-[#f7f5ef] p-[14px] text-[#4e0e0e];
     position: relative;
     isolation: isolate;
+    box-shadow: 0 6px 18px #4e0e0e26;
     background:
-      linear-gradient(#4e0e0e, #4e0e0e) padding-box,
+      linear-gradient(#f7f5ef, #f7f5ef) padding-box,
       linear-gradient(
           110deg,
-          #ad6572 20%,
-          #e6adad 35%,
+          #4e0e0e 20%,
+          #b87967 35%,
           #fff8e8 45%,
           #fff8e8 55%,
-          #e6adad 65%,
-          #ad6572 80%
+          #b87967 65%,
+          #4e0e0e 80%
         )
         border-box;
     background-size:
@@ -366,8 +367,8 @@
     border-radius: inherit;
     pointer-events: none;
     box-shadow:
-      0 0 5px 1px #e6adad99,
-      0 0 18px 4px #7b243c55;
+      0 0 5px 1px #b8796766,
+      0 0 16px 2px #4e0e0e1f;
     animation: roman-question-glow 3s ease-in-out infinite;
   }
 
@@ -399,7 +400,7 @@
   }
 
   .roman-question-answers button {
-    @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#9c7373] bg-[#652b2b] px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#f7f5ef] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
+    @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#4e0e0e66] bg-white px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#4e0e0e] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
     transition:
       background-color 160ms ease,
@@ -409,29 +410,29 @@
 
   @media (hover: hover) {
     .roman-question-answers button:not(:disabled):hover {
-      background-color: #f7f5ef;
-      border-color: #f7f5ef;
-      color: #4e0e0e;
+      background-color: #4e0e0e;
+      border-color: #4e0e0e;
+      color: #f7f5ef;
     }
   }
 
   .roman-question-answers button:not(:disabled):active {
-    background-color: #e6ded2;
-    border-color: #e6ded2;
-    color: #4e0e0e;
+    background-color: #351010;
+    border-color: #351010;
+    color: #f7f5ef;
   }
 
   .roman-question-answers button:focus-visible {
-    outline: 2px solid #f7f5ef;
+    outline: 2px solid #4e0e0e;
     outline-offset: 3px;
   }
 
   .roman-question-hint {
-    @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#e2ccc4];
+    @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#716b60];
   }
 
   .roman-question .roman-chat-error {
-    @apply mt-[10px] pb-0 text-[#ffd4ce];
+    @apply mt-[10px] pb-0 text-[#8b2424];
   }
 
   @media (forced-colors: active) {

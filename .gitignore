@@ -15,6 +15,7 @@ node_modules
 /extensions/*/assets/*.bundle.js
 # Figma assets copied from frontend/src/assets by the frontend build
 /extensions/vx-roman-ai-assistant/assets/roman-logo.svg
+/extensions/vx-roman-ai-assistant/assets/roman-wordmark.svg
 /extensions/vx-roman-ai-assistant/assets/ivory-texture.png
 
 # Ignore shopify files created during app dev

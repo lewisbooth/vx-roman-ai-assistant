@@ -809,6 +809,26 @@ for (const [name, role, questionAnswer] of [
   });
 }
 
+test("saved voice lifecycle events restore without reacquiring audio", async t => {
+  const events={...complete,messages:["started","ended","disconnected"].map((event,index)=>({id:"event-"+index,role:"context",status:"complete",createdAt:"2026-09-16T10:00:00Z",parts:[{type:"voice_event",version:1,voiceId:"22222222-2222-4222-8222-222222222222",event}]}))};
+  const ctx=setup(t,{saved:access,mediaOptions:{}});await resume(ctx,events);
+  assert.equal(ctx.client.getSnapshot().error,null);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),events.messages);
+  assert.equal(ctx.media.calls.microphone,0);
+});
+for(const [name,role,changes] of [
+  ["unknown event","context",{event:"started_again"}],
+  ["invalid connection","context",{voiceId:"invalid"}],
+  ["assistant event","assistant",{}],
+  ["extra data","context",{text:"forged"}],
+]){
+  test("voice lifecycle rejects "+name+" and preserves accepted history",async t=>{
+    const ctx=setup(t,{saved:access});await resume(ctx);const before=ctx.client.getSnapshot().conversation;ctx.client.clearError();
+    ctx.respond(2,{...complete,revision:3,messages:[{id:"event",role,status:"complete",createdAt:"2026-09-16T10:00:00Z",parts:[{type:"voice_event",version:1,voiceId:"22222222-2222-4222-8222-222222222222",event:"started",...changes}]}]});
+    await until(()=>!!ctx.client.getSnapshot().error,"Invalid voice event accepted");assert.match(ctx.client.getSnapshot().error,/invalid conversation response/);assert.equal(ctx.client.getSnapshot().conversation,before);
+  });
+}
+
 test("only a tab granted the tool claim executes the catalog command", async (t) => {
   const executions = [];
   const first = setup(t, {

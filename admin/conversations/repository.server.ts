@@ -56,6 +56,7 @@ import {
 } from "../../shared/measurements";
 import { isStorefrontPagePath } from "../../shared/journey";
 import { groupVoiceTranscript } from "../../shared/voice-transcript";
+import { parseVoiceEventPart } from "../../shared/voice";
 import {
   parseProductGuidesCall,
   parseProductGuidesResult,
@@ -65,6 +66,7 @@ import {
 } from "../../shared/product-guides";
 import {
   MAX_VOICE_DURATION_MS,
+  closeConversationVoiceSessions,
   expireVoiceSessions,
   expiredVoiceSessionWhere,
   recoverVoiceSessions,
@@ -132,6 +134,10 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
     }
     if (part.type === "question") {
       parseQuestionPart(part);
+      continue;
+    }
+    if (part.type === "voice_event" && message.role === "context") {
+      parseVoiceEventPart(part);
       continue;
     }
     if (part.type === "navigation") {
@@ -331,7 +337,11 @@ export function conversationTimeline(
       .filter(
         (row) =>
           (row.message.parts.length === 0 && row.message.status !== "failed") ||
-          row.message.parts.some((part) => voiceAssociation(part)),
+          row.message.parts.some(
+            (part) =>
+              voiceAssociation(part) ||
+              (part.type === "voice_event" && part.event === "started"),
+          ),
       )
       .map((row) => row.sequence),
     captionBoundaries,
@@ -378,6 +388,23 @@ export function conversationTimeline(
       position = next.endSequence + 0.5;
     }
     positions.set(row.message.id, position);
+  }
+  // Captions can beat the browser's readiness request to the server. Keep the
+  // recorded start before its own speech without changing stored chronology.
+  for (const row of rows) {
+    const start = row.message.parts.find(
+      (part) => part.type === "voice_event" && part.event === "started",
+    );
+    if (start?.type !== "voice_event") continue;
+    const firstCaption = rows.find((candidate) =>
+      candidate.message.parts.some(
+        (part) => part.type === "voice" && part.voiceId === start.voiceId,
+      ),
+    );
+    positions.set(
+      row.message.id,
+      Math.min(row.sequence, firstCaption?.sequence ?? row.sequence) - 0.5,
+    );
   }
   return rows
     .sort(
@@ -480,6 +507,7 @@ function modelHistory(
       (part) =>
         part.type !== "text" &&
         part.type !== "voice" &&
+        part.type !== "voice_event" &&
         part.type !== "question" &&
         part.type !== "cart_added",
     );
@@ -1505,10 +1533,7 @@ export async function endConversation(
       { conversationId: id },
       "The conversation ended before this storefront action completed.",
     );
-    await transaction.voiceSession.updateMany({
-      where: { conversationId: id, status: { in: ["starting", "active"] } },
-      data: { status: "closed", closedAt: new Date() },
-    });
+    await closeConversationVoiceSessions(transaction, id);
     return snapshot(await loadConversation(transaction, id));
   });
 }

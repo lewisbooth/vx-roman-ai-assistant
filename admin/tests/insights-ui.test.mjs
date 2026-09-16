@@ -282,6 +282,37 @@ test("inspection distinguishes confirmed Roman navigation from ordinary visits a
   assert.equal(container.querySelector("a").href, `${ORIGIN}/products/shade`);
 });
 
+test("inspection shows voice lifecycle activity as plain labels without provider data or controls", (t) => {
+  const { render, container } = setupView(t);
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: ["started", "ended", "disconnected"].map((event) => ({
+      id: event,
+      role: "context",
+      status: "complete",
+      createdAt: NOW,
+      parts: [{ type: "voice_event", version: 1, voiceId: ID, event }],
+    })),
+  });
+  assert.deepEqual(
+    [...container.querySelectorAll("li > div:last-child p")].map(
+      (paragraph) => paragraph.textContent,
+    ),
+    ["Voice chat started", "Voice chat ended", "Voice chat disconnected"],
+  );
+  assert.equal(
+    container.querySelectorAll("button, s-button, input, a").length,
+    0,
+  );
+  assert.doesNotMatch(container.textContent, new RegExp(ID));
+  assert.equal(
+    [...container.querySelectorAll("strong")].every(
+      (label) => label.textContent === "Activity",
+    ),
+    true,
+  );
+});
+
 test("inspection renders confirmed cart additions as literal product facts and omits unknown dimensions", (t) => {
   const { render, container } = setupView(t);
   const part = {

@@ -14,7 +14,8 @@ const bundle = await build({
   stdin: {
     contents: `export * as conversation from './admin/conversations/repository.server';
     export * as voice from './admin/voice/repository.server';
-    export { latestQuestion } from './shared/questions';`,
+    export { latestQuestion } from './shared/questions';
+    export { parseVoiceEventPart } from './shared/voice';`,
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -1102,5 +1103,113 @@ test("selected answers have an independent bounded write allowance and preserve 
   assert.equal(
     await database.conversationMessage.count({ where: { role: "user" } }),
     40,
+  );
+});
+
+test("voice lifecycle entries survive reload and End without answering a question or entering model history", async () => {
+  const { session, question } = await questionDuringVoice();
+  const history = await conversation.getModelHistory(id);
+  await voice.markVoiceStarted(id, session.id, clientId);
+  await voice.closeVoiceSession(id, session.id, clientId);
+  let snapshot = await conversation.getSnapshot(id);
+  assert.equal(
+    load().latestQuestion(snapshot.messages).invocationId,
+    question.invocationId,
+  );
+  assert.deepEqual(await conversation.getModelHistory(id), history);
+  assert.deepEqual(
+    snapshot.messages
+      .filter((row) => row.parts[0]?.type === "voice_event")
+      .map((row) => row.parts[0].event),
+    ["started", "ended"],
+  );
+  const second = await startVoice();
+  await voice.activateVoiceSession(id, second.id, clientId, "provider-second");
+  await voice.markVoiceStarted(id, second.id, clientId);
+  await caption(second, "Ready for another room", 0);
+  const ended = await conversation.endConversation(id);
+  assert.equal(ended.messages.at(-1).parts[0].event, "ended");
+  assert.deepEqual(
+    ended.messages
+      .filter((row) => row.parts[0]?.type === "voice_event")
+      .map((row) => row.parts[0].event),
+    ["started", "ended", "started", "ended"],
+  );
+  clock++;
+  snapshot = await load().conversation.getSnapshot(id);
+  assert.deepEqual(snapshot, ended);
+  assert.deepEqual(await conversation.endConversation(id), ended);
+  assert.equal(await database.voiceTranscript.count(), 2);
+});
+
+test("late browser readiness places start before same-call captions without splitting or rewriting speech", async () => {
+  const session = await startVoice();
+  await voice.activateVoiceSession(
+    id,
+    session.id,
+    clientId,
+    "provider-ready-late",
+  );
+  const first = await caption(session, "Good", 0, "assistant");
+  await voice.markVoiceStarted(id, session.id, clientId);
+  await caption(session, " morning", 100, "assistant");
+  await voice.closeVoiceSession(id, session.id, clientId);
+  const snapshot = await conversation.getSnapshot(id);
+  assert.deepEqual(
+    snapshot.messages.map((row) => row.parts[0].type),
+    ["voice_event", "voice", "voice_event"],
+  );
+  assert.equal(snapshot.messages[1].id, first.id);
+  assert.equal(snapshot.messages[1].parts[0].text, "Good morning");
+  const raw = await database.voiceTranscript.findMany({
+    orderBy: { sequence: "asc" },
+  });
+  assert.deepEqual(
+    raw.map((row) => ({ text: row.text, sequence: row.sequence })),
+    [
+      { text: "Good", sequence: 0 },
+      { text: " morning", sequence: 2 },
+    ],
+  );
+  assert.deepEqual(await conversation.getModelHistory(id), [
+    { role: "assistant", text: "Good morning" },
+  ]);
+});
+
+test("voice events require the exact typed contract and cannot masquerade as customer messages", async () => {
+  const part = {
+    type: "voice_event",
+    version: 1,
+    voiceId: randomUUID(),
+    event: "started",
+  };
+  const { parseVoiceEventPart } = load();
+  for (const event of ["started", "ended", "disconnected"])
+    assert.deepEqual(parseVoiceEventPart({ ...part, event }), {
+      ...part,
+      event,
+    });
+  for (const invalid of [
+    null,
+    { ...part, version: 2 },
+    { ...part, event: "connecting" },
+    { ...part, voiceId: "provider-secret" },
+    { ...part, extra: "hidden" },
+  ])
+    assert.throws(() => parseVoiceEventPart(invalid), /Invalid voice event/);
+  await database.conversationMessage.create({
+    data: {
+      id: randomUUID(),
+      conversationId: id,
+      requestId: randomUUID(),
+      sequence: 0,
+      role: "user",
+      status: "complete",
+      partsJson: JSON.stringify([part]),
+    },
+  });
+  await assert.rejects(
+    conversation.getSnapshot(id),
+    /Invalid stored conversation part/,
   );
 });

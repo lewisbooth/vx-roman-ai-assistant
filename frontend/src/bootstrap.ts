@@ -152,7 +152,7 @@ class RomanAssistant extends HTMLElement {
       launcher,
       styles,
       toggle,
-      this.dataset.logoUrl || "",
+      this.dataset.wordmarkUrl || "",
     );
     window.addEventListener("pageshow", this.#onPageShow);
     this.#restore();

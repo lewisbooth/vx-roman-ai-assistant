@@ -46,6 +46,7 @@ import { createVoiceConnection } from "./voice-connection";
 import {
   DEFAULT_LIVE_VOICE,
   isLiveVoice,
+  parseVoiceEventPart,
   type LiveVoice,
   type VoiceClientState,
 } from "../../../shared/voice";
@@ -99,6 +100,15 @@ function validQuestionPart(value: unknown) {
 function validQuestionAnswer(value: unknown) {
   try {
     parseQuestionAnswerReference(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validVoiceEvent(value: unknown) {
+  try {
+    parseVoiceEventPart(value);
     return true;
   } catch {
     return false;
@@ -216,6 +226,9 @@ function snapshot(value: unknown): value is ConversationSnapshot {
                   validQuestionAnswer(part.questionAnswer)))) ||
               (part.type === "guides" && validGuidePart(part)) ||
               (part.type === "question" && validQuestionPart(part)) ||
+              (part.type === "voice_event" &&
+                message.role === "context" &&
+                validVoiceEvent(part)) ||
               (part.type === "navigation" && validNavigationPart(part)) ||
               (part.type === "cart_added" && validCartAddedPart(part)) ||
               (part.type === "voice" &&

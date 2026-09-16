@@ -3,7 +3,7 @@ export function attachHeaderLauncher(
   fallback: HTMLButtonElement,
   css: string,
   onClick: () => void,
-  logoUrl: string,
+  wordmarkUrl: string,
 ) {
   const host = document.createElement("span");
   host.dataset.romanHeaderLauncher = "";
@@ -12,8 +12,8 @@ export function attachHeaderLauncher(
   style.textContent = css;
   const button = fallback.cloneNode(true) as HTMLButtonElement;
   button.className = "roman-header-button";
-  button.innerHTML = 'Ask <img alt="Roman">';
-  (button.lastChild as HTMLImageElement).src = logoUrl;
+  button.innerHTML = "Ask <img alt=Roman>";
+  (button.lastChild as HTMLImageElement).src = wordmarkUrl;
   button.addEventListener("click", onClick);
   shadow.append(style, button);
   const sync = () => {
@@ -29,10 +29,7 @@ export function attachHeaderLauncher(
       button.style.height = `${account!.offsetHeight}px`;
     } else host.remove();
     fallback.hidden = visible;
-    button.setAttribute(
-      "aria-expanded",
-      fallback.getAttribute("aria-expanded")!,
-    );
+    button.ariaExpanded = fallback.ariaExpanded;
   };
   const observer = new MutationObserver(sync);
   observer.observe(document.body, {

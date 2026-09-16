@@ -47,6 +47,7 @@ const bundle = await build({
           else
             contents = `export const reserveVoiceSession = (...args) => mock.reserve(...args);
         export const activateVoiceSession = (...args) => mock.activate(...args);
+        export const markVoiceStarted = (...args) => mock.markStarted(...args);
         export const appendVoiceTranscript = (...args) => mock.caption(...args);
         export const cancelVoiceSession = (...args) => mock.cancel(...args);
         export const closeVoiceSession = (...args) => mock.close(...args);
@@ -81,6 +82,7 @@ function setup() {
   const calls = {
     reserve: [],
     activate: [],
+    started: [],
     caption: [],
     cancel: [],
     close: [],
@@ -167,6 +169,7 @@ function setup() {
         providerId: "live_test",
         sdp: "v=0\r\nanswer",
         beginConversation: async () => {
+          order.push("opening-sent");
           record.openingCount++;
           await mock.onOpening?.(record);
         },
@@ -198,6 +201,11 @@ function setup() {
       row.status = "active";
       row.providerId = providerId;
       return row;
+    },
+    markStarted: async (...args) => {
+      await mock.beforeStarted?.(...args);
+      calls.started.push(args);
+      order.push("start-saved");
     },
     caption: async (...args) => {
       await mock.beforeCaption?.(...args);
@@ -362,6 +370,7 @@ test("voice returns SDP before readiness and opens once after both transports ar
   const state = setup();
   const answer = await state.start();
   assert.equal(answer.sdp, "v=0\r\nanswer");
+  assert.equal(state.calls.started.length, 0);
   assert.equal(state.providers[0].openingCount, 0);
   state.emit({ type: "started", eventId: "started_1" });
   state.emit({ type: "started", eventId: "started_1" });
@@ -372,6 +381,12 @@ test("voice returns SDP before readiness and opens once after both transports ar
   await state.start();
   await flush();
   assert.equal(state.providers[0].openingCount, 1);
+  assert.deepEqual(state.calls.started, [
+    [state.conversationId, state.input.requestId, state.input.clientId],
+  ]);
+  assert.ok(
+    state.order.indexOf("start-saved") < state.order.indexOf("opening-sent"),
+  );
   assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.calls.caption.length, 0);
   await state.stop();
@@ -395,7 +410,9 @@ test("browser readiness waits for native startup and cannot target a foreign or 
   }
   state.ready();
   assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.calls.started.length, 0);
   state.emit({ type: "started", eventId: "late_native_start" });
+  await flush();
   assert.equal(state.providers[0].openingCount, 1);
   await state.stop();
   assert.throws(state.ready, { status: 409 });
@@ -446,14 +463,18 @@ test("an early native started event waits for provider creation and activation w
   const started = state.start();
   await flush();
   assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.calls.started.length, 0);
   createGate.resolve();
   await flush();
   assert.equal(state.calls.activate.length, 1);
   assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.calls.started.length, 0);
   activateGate.resolve();
   assert.equal((await started).sdp, "v=0\r\nanswer");
   assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.calls.started.length, 0);
   state.ready();
+  await flush();
   assert.equal(state.providers[0].openingCount, 1);
   openingGate.resolve();
   await state.stop();
@@ -473,7 +494,101 @@ test("a cancelled connection never opens even when native readiness arrives duri
   state.emit({ type: "started", eventId: "started_after_stop" });
   await flush();
   assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.calls.started.length, 0);
   assert.equal(state.rows.get(state.input.requestId).status, "closed");
+});
+
+test("voice persists readiness before opening without blocking caption writes on its acknowledgement", async () => {
+  const state = setup();
+  const saved = deferred();
+  const opening = deferred();
+  state.mock.beforeStarted = () => saved.promise;
+  state.mock.onOpening = () => opening.promise;
+  await state.start();
+  state.emit({ type: "started", eventId: "native_started" });
+  state.ready();
+  state.ready();
+  await flush();
+  assert.equal(state.calls.started.length, 0);
+  assert.equal(state.providers[0].openingCount, 0);
+  saved.resolve();
+  await flush();
+  assert.equal(state.calls.started.length, 1);
+  assert.equal(state.providers[0].openingCount, 1);
+  state.emit(transcript());
+  await flush();
+  assert.equal(state.calls.caption.length, 1);
+  opening.resolve();
+  await state.stop();
+});
+
+test("stop before the queued readiness write skips the start event and opening", async () => {
+  const state = setup();
+  const caption = deferred();
+  state.mock.beforeCaption = () => caption.promise;
+  await state.start();
+  state.emit(transcript());
+  await flush();
+  state.emit({ type: "started", eventId: "native_started" });
+  state.ready();
+  const stopped = state.stop();
+  await flush();
+  assert.equal(state.calls.cancel.length, 0);
+  caption.resolve();
+  await stopped;
+  assert.equal(state.calls.caption.length, 1);
+  assert.equal(state.calls.started.length, 0);
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.rows.get(state.input.requestId).status, "closed");
+});
+
+test("stop drains an in-flight readiness write before durable close without sending a late opening", async () => {
+  const state = setup();
+  const saved = deferred();
+  state.mock.beforeStarted = () => saved.promise;
+  await state.start();
+  state.emit({ type: "started", eventId: "native_started" });
+  state.ready();
+  await flush();
+  const stopped = state.stop();
+  await flush();
+  assert.equal(state.calls.cancel.length, 0);
+  saved.resolve();
+  await stopped;
+  assert.equal(state.calls.started.length, 1);
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.ok(
+    state.order.indexOf("start-saved") <
+      state.order.indexOf("cancel-persisted"),
+  );
+  assert.deepEqual(state.logs, []);
+});
+
+test("readiness persistence failures close once without speaking or leaking the error", async () => {
+  const state = setup();
+  state.mock.beforeStarted = async () => {
+    throw new Error("private persistence payload");
+  };
+  await state.start();
+  state.emit({ type: "started", eventId: "native_started" });
+  state.ready();
+  state.ready();
+  await flush();
+  assert.equal(state.calls.started.length, 0);
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.providers[0].closeCount, 1);
+  assert.equal(state.calls.close.length, 1);
+  assert.equal(state.rows.get(state.input.requestId).status, "failed");
+  assert.match(
+    state.rows.get(state.input.requestId).error,
+    /conversation event could not be saved/,
+  );
+  assert.match(JSON.stringify(state.logs), /start_persistence_failed/);
+  assert.ok(
+    !JSON.stringify(state.logs).includes("private persistence payload"),
+  );
+  assert.equal(state.calls.caption.length, 0);
+  assert.equal(state.calls.delegate.length, 0);
 });
 
 test("opening failures close voice categorically without fabricating a greeting or invoking Terra", async () => {

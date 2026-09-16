@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import type { ConversationMessage, GuidePart } from "../../shared/conversation";
+import { VOICE_EVENT_LABELS } from "../../shared/voice";
 import {
   parseGuidePart,
   PRODUCT_GUIDE_LABELS,
@@ -177,6 +178,8 @@ export function ConversationTimeline({
           </div>
           <div className="space-y-3 break-words">
             {message.parts.map((part, index) => {
+              if (part.type === "voice_event")
+                return <p key={index}>{VOICE_EVENT_LABELS[part.event]}</p>;
               if (part.type === "navigation")
                 return (
                   <p key={index}>

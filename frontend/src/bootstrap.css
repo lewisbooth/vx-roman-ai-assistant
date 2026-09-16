@@ -42,14 +42,14 @@
     align-items: center;
     gap: 3px;
     cursor: pointer;
-    padding: 0 8px;
-    color: #18181b;
+    color: var(--color-button-tertiary-gray-fg);
     background: #fff;
-    font: 13px sans-serif;
-    border: 0;
+    font: 14px sans-serif;
+    border: 1px solid;
+    border-radius: var(--button-radius);
   }
   .roman-header-button img {
-    width: 47px;
+    width: 60px;
   }
   .roman-panel {
     @apply fixed top-0 right-0 z-[2147483647] h-dvh w-[400px] max-w-full overflow-hidden bg-roman-ivory font-roman text-roman-burgundy [box-shadow:-8px_0_24px_#00000040];

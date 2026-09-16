@@ -7,6 +7,7 @@ import { RichText } from "./RichText";
 import { StorefrontLink } from "./StorefrontLink";
 import { Question } from "./Question";
 import type { QuestionPart } from "../../../shared/questions";
+import { VOICE_EVENT_LABELS } from "../../../shared/voice";
 
 export function Timeline({
   messages,
@@ -100,7 +101,10 @@ export function Timeline({
                 );
               if (part.type === "navigation")
                 return (
-                  <p key={index} className="roman-inline-event roman-navigation">
+                  <p
+                    key={index}
+                    className="roman-inline-event roman-navigation"
+                  >
                     Roman navigated to{" "}
                     <StorefrontLink url={part.path} navigation={navigation}>
                       {part.title || part.path}
@@ -121,11 +125,22 @@ export function Timeline({
                     </StorefrontLink>
                   </p>
                 );
+              if (part.type === "voice_event")
+                return (
+                  <p
+                    key={index}
+                    className="roman-inline-event roman-voice-event"
+                  >
+                    {VOICE_EVENT_LABELS[part.event]}
+                  </p>
+                );
               if (part.type === "voice")
                 return (
                   <div key={index} className="roman-voice-caption">
                     <span className="roman-voice-label">Voice</span>
-                    <p className="roman-message-text">{part.text.trimStart()}</p>
+                    <p className="roman-message-text">
+                      {part.text.trimStart()}
+                    </p>
                   </div>
                 );
               if (part.type === "guides")

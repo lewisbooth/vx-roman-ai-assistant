@@ -30,6 +30,7 @@ import {
   closeVoiceSession,
   getVoiceState,
   heartbeatVoiceSession,
+  markVoiceStarted,
   reserveVoiceSession,
 } from "./repository.server";
 
@@ -101,16 +102,35 @@ function beginConversation(owner: VoiceOwner) {
   )
     return;
   owner.openingStarted = true;
-  // Both transports must be connected before the one opening cue. Never await
-  // speech or playback here: producing audio may be needed to resolve play().
-  void owner.provider.beginConversation().catch(() => {
-    if (!owner.stopping)
-      fail(
-        owner,
-        "Roman could not begin speaking. Start voice again to reconnect.",
-        "opening_failed",
+  // Readiness is a durable event before the one opening cue. Shutdown drains
+  // this write with captions; a connection stopped while queued never starts.
+  owner.events = owner.events
+    .then(async () => {
+      if (owner.stopping || owners.get(owner.conversationId) !== owner) return;
+      await markVoiceStarted(
+        owner.conversationId,
+        owner.voiceId,
+        owner.clientId,
       );
-  });
+      if (owner.stopping || owners.get(owner.conversationId) !== owner) return;
+      // Never hold the event queue for speech or playback acknowledgments.
+      void owner.provider!.beginConversation().catch(() => {
+        if (!owner.stopping)
+          fail(
+            owner,
+            "Roman could not begin speaking. Start voice again to reconnect.",
+            "opening_failed",
+          );
+      });
+    })
+    .catch(() => {
+      if (!owner.stopping)
+        fail(
+          owner,
+          "Voice could not start because its conversation event could not be saved. Start voice again.",
+          "start_persistence_failed",
+        );
+    });
 }
 
 function scheduleDelegation(owner: VoiceOwner, delegationId: string) {

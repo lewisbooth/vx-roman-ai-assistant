@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma, VoiceSession, VoiceTranscript } from "@prisma/client";
 import type { VoiceTranscriptFragment } from "../../shared/voice-transcript";
+import type { VoiceEventPart } from "../../shared/voice";
 import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
 
@@ -88,22 +89,22 @@ export async function expireVoiceSessions(
   conversationId: string,
   now = new Date(),
 ) {
-  const changed = await transaction.voiceSession.updateMany({
+  const expired = await transaction.voiceSession.findMany({
     where: {
       conversationId,
       ...expiredVoiceSessionWhere(now),
     },
-    data: {
-      status: "failed",
-      error: "Voice disconnected. Start voice again to reconnect.",
-      closedAt: now,
-    },
   });
-  if (changed.count)
-    await transaction.conversation.update({
-      where: { id: conversationId },
-      data: { revision: { increment: 1 } },
-    });
+  for (const session of expired)
+    await closeSession(
+      transaction,
+      session,
+      {
+        status: "failed",
+        error: "Voice disconnected. Start voice again to reconnect.",
+      },
+      now,
+    );
 }
 
 /** Healthy reads never acquire a writer; the transaction rechecks a stale probe. */
@@ -250,6 +251,85 @@ export async function activateVoiceSession(
   });
 }
 
+function voiceEventRequestId(voiceId: string, event: "started" | "ended") {
+  return `voice:${voiceId}:${event}`;
+}
+
+async function appendVoiceEvent(
+  transaction: Prisma.TransactionClient,
+  session: VoiceSession,
+  event: VoiceEventPart["event"],
+  occurredAt = new Date(),
+) {
+  const terminal = event !== "started";
+  const requestId = voiceEventRequestId(
+    session.id,
+    terminal ? "ended" : "started",
+  );
+  const identity = {
+    conversationId: session.conversationId,
+    requestId,
+    role: "context",
+  };
+  if (
+    await transaction.conversationMessage.findUnique({
+      where: { conversationId_requestId_role: identity },
+    })
+  )
+    return;
+  if (
+    terminal &&
+    !(await transaction.conversationMessage.findUnique({
+      where: {
+        conversationId_requestId_role: {
+          ...identity,
+          requestId: voiceEventRequestId(session.id, "started"),
+        },
+      },
+    }))
+  )
+    return;
+  const conversation = await transaction.conversation.update({
+    where: { id: session.conversationId },
+    data: { nextSequence: { increment: 1 }, revision: { increment: 1 } },
+  });
+  await transaction.conversationMessage.create({
+    data: {
+      id: randomUUID(),
+      ...identity,
+      sequence: conversation.nextSequence - 1,
+      status: "complete",
+      partsJson: JSON.stringify([
+        { type: "voice_event", version: 1, voiceId: session.id, event },
+      ]),
+      createdAt: occurredAt,
+      completedAt: occurredAt,
+    },
+  });
+}
+
+/** Only the service's provider-started + browser-ready gate calls this. */
+export async function markVoiceStarted(
+  conversationId: string,
+  voiceId: string,
+  clientId: string,
+): Promise<void> {
+  await voiceTransaction(async (transaction) => {
+    const conversation = await requireConversation(transaction, conversationId);
+    await expireVoiceSessions(transaction, conversationId);
+    const session = await requireSession(
+      transaction,
+      conversationId,
+      voiceId,
+      clientId,
+    );
+    requireActiveConversation(conversation.status);
+    if (session.status !== "active" || !session.providerId)
+      throw new ConversationError(409, "Voice is not connected.");
+    await appendVoiceEvent(transaction, session, "started");
+  });
+}
+
 export async function heartbeatVoiceSession(
   conversationId: string,
   voiceId: string,
@@ -311,6 +391,7 @@ async function closeSession(
   transaction: Prisma.TransactionClient,
   session: VoiceSession,
   outcome: { status: "closed" | "failed"; error?: string },
+  closedAt = new Date(),
 ): Promise<VoiceSession> {
   if (!activeStatuses.includes(session.status)) return session;
   const updated = await transaction.voiceSession.update({
@@ -318,14 +399,32 @@ async function closeSession(
     data: {
       status: outcome.status,
       error: outcome.error ?? null,
-      closedAt: new Date(),
+      closedAt,
     },
   });
   await transaction.conversation.update({
     where: { id: session.conversationId },
     data: { revision: { increment: 1 } },
   });
+  await appendVoiceEvent(
+    transaction,
+    updated,
+    outcome.status === "closed" ? "ended" : "disconnected",
+    closedAt,
+  );
   return updated;
+}
+
+/** End chat shares the same terminal event owner as stop and lease recovery. */
+export async function closeConversationVoiceSessions(
+  transaction: Prisma.TransactionClient,
+  conversationId: string,
+) {
+  const sessions = await transaction.voiceSession.findMany({
+    where: { conversationId, status: { in: activeStatuses } },
+  });
+  for (const session of sessions)
+    await closeSession(transaction, session, { status: "closed" });
 }
 
 /** A stop may arrive before start. Persist that request so a late start cannot reconnect. */
