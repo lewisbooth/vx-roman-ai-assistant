@@ -342,6 +342,47 @@ test("text and voice backend guidance require current PDF evidence and stop unsu
   );
 });
 
+test("readable but mismatched product guides are reported honestly in both backend modes and live speech", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(
+      prompt,
+      /Read the page-linked PDFs before assessing that match; development-store links can be misconfigured/,
+    );
+    assert.match(
+      prompt,
+      /readable PDF covers a different product family or mount, explicitly say you read it but it does not match this product/,
+    );
+    assert.match(
+      prompt,
+      /briefly naming the mismatch supported by the document/,
+    );
+    assert.match(
+      prompt,
+      /Do not describe a readable mismatch as a download or reading failure/,
+    );
+    assert.match(
+      prompt,
+      /Do not invent alternative guide URLs or fill the gap with generic advice or another product's guide/,
+    );
+    assert.match(
+      prompt,
+      /Missing, unreadable, ambiguous or unsupported evidence stops the measuring\/fitting workflow/,
+    );
+    assert.doesNotMatch(
+      prompt,
+      /arbitrary Download Guide link is not a substitute/,
+    );
+  }
+  assert.match(
+    romanVoicePrompt("marin"),
+    /readable but mismatched guide, say it was read but covers the wrong product family or mount/,
+  );
+  assert.match(
+    romanVoicePrompt("marin"),
+    /do not turn that mismatch into a claim that the PDF could not be read/,
+  );
+});
+
 test("Live delegates every guidance follow-up and preserves backend source limitations", () => {
   const live = romanVoicePrompt("marin");
   assert.match(
