@@ -72,6 +72,7 @@ async function setup(t, options = {}) {
   const listeners = new Set();
   const calls = [];
   const endCalls = [];
+  const startVoiceCalls = [];
   const productCalls = [];
   const navigationCalls = [];
   let state = {
@@ -116,6 +117,8 @@ async function setup(t, options = {}) {
     },
     dispose() {},
     startVoice: async () => {
+      startVoiceCalls.push("start");
+      await options.onStartVoice?.(window);
       update({ voice: { status: "active", muted: false, error: null } });
     },
     setVoice: (selectedVoice) => update({ selectedVoice }),
@@ -183,10 +186,84 @@ async function setup(t, options = {}) {
     type,
     errors,
     endCalls,
+    startVoiceCalls,
     productCalls,
     navigationCalls,
   };
 }
+
+test("composer voice action starts only on its own click and preserves the unsent text draft", async (t) => {
+  const ctx = await setup(t);
+  const form = ctx.container.querySelector(".roman-composer form");
+  const field = form.querySelector(".roman-composer-field");
+  const start = [...form.querySelectorAll("button")].find(
+    button => button.textContent === "Start voice",
+  );
+  const send = form.querySelector('button[type="submit"]');
+  assert.ok(start, "Start voice should be in the composer form");
+  assert.equal(start.type, "button");
+  assert.equal(start.getAttribute("aria-label"), "Start voice");
+  assert.equal(field.contains(start), false);
+  assert.equal(field.contains(ctx.input()), true);
+  assert.equal(field.contains(send), true);
+  assert.equal(send.getAttribute("aria-label"), "Send");
+  assert.deepEqual(ctx.startVoiceCalls, []);
+  start.focus();
+  await ctx.type("Keep these measurements in my draft");
+  assert.deepEqual(ctx.startVoiceCalls, [], "focusing or typing must not start microphone work");
+  start.click();
+  await until(() => ctx.startVoiceCalls.length === 1 && ctx.input().disabled, "Voice did not start explicitly");
+  assert.deepEqual(ctx.calls, [], "the voice button must not submit the form");
+  assert.equal(ctx.input().value, "Keep these measurements in my draft");
+  const stop = [...ctx.container.querySelectorAll("button")].find(
+    button => button.textContent === "Switch to text",
+  );
+  stop.click();
+  await until(() => !ctx.input().disabled, "Switching back did not restore text editing");
+  assert.equal(ctx.input().value, "Keep these measurements in my draft");
+  assert.equal(ctx.startVoiceCalls.length, 1);
+});
+
+test("the in-field Send submits the draft once and blocks voice while its local send is pending", async (t) => {
+  let accept;
+  const accepted = new Promise(resolve => { accept = resolve; });
+  const ctx = await setup(t, { onSend: () => accepted });
+  await ctx.type("  Show me blackout blinds  ");
+  const send = ctx.container.querySelector('.roman-composer-field button[type="submit"]');
+  const voice = [...ctx.container.querySelectorAll(".roman-composer button")].find(
+    button => button.textContent === "Start voice",
+  );
+  send.click();
+  await until(() => ctx.calls.length === 1 && send.disabled && voice.disabled, "Pending send did not block both actions");
+  assert.deepEqual(ctx.calls, ["Show me blackout blinds"]);
+  assert.equal(ctx.input().value, "  Show me blackout blinds  ");
+  voice.click();
+  send.click();
+  assert.deepEqual(ctx.startVoiceCalls, []);
+  assert.equal(ctx.calls.length, 1);
+  accept();
+  await until(() => ctx.input().value === "" && !voice.disabled, "Accepted text did not reset the composer");
+  assert.equal(send.disabled, true, "empty text must keep Send disabled");
+  assert.deepEqual(ctx.startVoiceCalls, []);
+});
+
+test("composer Start voice remains disabled during restoration, accepted-request work and model work", async (t) => {
+  for (const [name, state] of [
+    ["restoring", { restoring: true }],
+    ["request", { pending: true }],
+    ["model", { conversation: { id: "chat", status: "active", busy: true, messages: [], tools: [] } }],
+  ]) await t.test(name, async t => {
+    const ctx = await setup(t, { state });
+    const voice = [...ctx.container.querySelectorAll(".roman-composer button")].find(
+      button => button.textContent === "Start voice",
+    );
+    assert.ok(voice);
+    assert.equal(voice.disabled, true);
+    voice.click();
+    assert.deepEqual(ctx.startVoiceCalls, []);
+    assert.deepEqual(ctx.calls, []);
+  });
+});
 
 test("saved guide cards open verified PDFs separately without fetching products, navigating or stopping voice", async t => {
   const fetches = [];

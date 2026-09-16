@@ -211,13 +211,6 @@ function Assistant({
         <VoiceControls
           session={session}
           voice={voice}
-          disabled={
-            ending ||
-            answering ||
-            state.pending ||
-            state.restoring ||
-            !!state.conversation?.busy
-          }
           waiting={waitingForVoice}
         />
         {voiceDock &&
@@ -257,6 +250,11 @@ function Assistant({
             following.current = true;
             return session.sendMessage(text);
           }}
+          onStartVoice={
+            !localVoice && !waitingForVoice
+              ? () => session.startVoice()
+              : undefined
+          }
         />
       </div>
       {showTools && (

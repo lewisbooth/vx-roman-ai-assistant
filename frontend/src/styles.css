@@ -82,8 +82,9 @@
     margin: 0;
   }
 
-  .roman-rich-text > * + * {
-    margin-top: 12px;
+  .roman-rich-text > :not(:first-child),
+  .roman-rich-text blockquote > :not(:first-child) {
+    margin-top: 16px;
   }
 
   .roman-rich-text :is(ul, ol) {
@@ -352,14 +353,83 @@
     @apply flex items-end gap-[10px];
   }
 
+  .roman-composer-field {
+    @apply relative min-w-0 flex-1 rounded-[27px] border border-solid border-[#e3e0d8] bg-white;
+  }
+
   .roman-composer textarea {
-    @apply block min-h-[54px] min-w-0 flex-1 resize-none rounded-[27px] border border-solid border-[#e3e0d8] bg-white px-[18px] py-[15px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
+    @apply block min-h-[54px] w-full resize-none rounded-[27px] border-0 bg-transparent py-[15px] pr-[54px] pl-[18px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
     font-family: inherit;
+    outline: none;
+    box-shadow: none;
+  }
+
+  .roman-composer textarea:is(:focus, :focus-visible) {
+    outline: none;
+    box-shadow: none;
+  }
+
+  .roman-composer-field:has(textarea:focus-visible) {
+    outline: 2px solid #797366;
+    outline-offset: 3px;
+  }
+
+  .roman-composer-voice {
+    @apply relative size-[54px] shrink-0;
   }
 
   .roman-composer button {
-    @apply flex min-h-[54px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-[#c59745] px-[15px] text-[16px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
+  }
+
+  .roman-composer-action {
+    @apply absolute inline-flex cursor-pointer items-center rounded-full border-0 p-0 text-[15px] whitespace-nowrap disabled:cursor-default disabled:opacity-50;
+    height: var(--roman-action-size);
+    min-width: var(--roman-action-size);
+  }
+
+  .roman-send-button {
+    @apply right-[5px] bottom-[5px] z-[2] bg-[#f7f5ef] text-[#4e0e0e];
+    --roman-action-size: 44px;
+  }
+
+  .roman-start-voice {
+    @apply right-0 bottom-0 z-[3] bg-[#4e0e0e] text-[#f7f5ef];
+    --roman-action-size: 54px;
+  }
+
+  .roman-action-icon {
+    @apply inline-flex shrink-0 items-center justify-center;
+    width: var(--roman-action-size);
+    height: var(--roman-action-size);
+  }
+
+  .roman-action-label {
+    @apply min-w-0 max-w-0 overflow-hidden pl-0 opacity-0;
+    transition:
+      max-width 160ms ease,
+      padding-left 160ms ease,
+      opacity 160ms ease;
+  }
+
+  .roman-composer-action:focus-visible .roman-action-label {
+    max-width: 130px;
+    padding-left: 16px;
+    opacity: 1;
+  }
+
+  @media (hover: hover) {
+    .roman-composer-action:hover .roman-action-label {
+      max-width: 130px;
+      padding-left: 16px;
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .roman-action-label {
+      transition: none;
+    }
   }
 
   .roman-chat-error {
@@ -367,10 +437,10 @@
   }
 
   .roman-composer .roman-chat-retry {
-    @apply mt-[8px] min-h-[36px] rounded-full border border-solid border-[#8d2525] bg-transparent px-[12px] text-[13px] text-[#8d2525];
+    @apply mt-[8px] flex min-h-[36px] cursor-pointer items-center rounded-full border border-solid border-[#8d2525] bg-transparent px-[12px] text-[13px] text-[#8d2525];
   }
 
-  .roman-chat :is(button, textarea, summary, a, [tabindex]):focus-visible {
+  .roman-chat :is(button, summary, a, [tabindex]):focus-visible {
     outline: 2px solid #4e0e0e;
     outline-offset: 3px;
   }

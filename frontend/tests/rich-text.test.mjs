@@ -305,3 +305,106 @@ test("store-linked PDF guides in Markdown open separately without replacing the 
   );
   assert.equal(container.querySelector("a"), null);
 });
+
+test("authored prose returns create separate paragraphs without splitting naturally wrapped text", (t) => {
+  const { container, render } = setup(t);
+  const first = "These blinds offer privacy while keeping the room bright.";
+  const second = "The fabric and fitting can be chosen for your window.";
+  for (const separator of ["\n", "\r\n", "\n\n", "  \n"]) {
+    render(`${first}${separator}${second}`);
+    assert.deepEqual(
+      [...container.querySelectorAll(".roman-rich-text > p")].map(
+        (paragraph) => paragraph.textContent,
+      ),
+      [first, second],
+    );
+    assert.equal(container.querySelector("br"), null);
+  }
+  const wrapped = `${first} ${second} ${first}`;
+  render(wrapped);
+  assert.equal(container.querySelectorAll("p").length, 1);
+  assert.equal(container.querySelector("p").textContent, wrapped);
+});
+
+test("prose returns preserve inline emphasis and safe storefront links across paragraphs", (t) => {
+  const { container, render, calls } = setup(t);
+  render(
+    "**Light filtering\nDaytime privacy**\n[View the\nproduct](/products/roman) and `300 mm`.",
+  );
+  const paragraphs = [...container.querySelectorAll(".roman-rich-text > p")];
+  assert.deepEqual(
+    paragraphs.map((paragraph) => paragraph.textContent),
+    ["Light filtering", "Daytime privacy", "View the", "product and 300 mm."],
+  );
+  assert.deepEqual(
+    [...container.querySelectorAll("strong")].map((node) => node.textContent),
+    ["Light filtering", "Daytime privacy"],
+  );
+  assert.equal(container.querySelectorAll("a").length, 2);
+  assert.equal(paragraphs[3].querySelector("code").textContent, "300 mm");
+  paragraphs[3].querySelector("a").click();
+  assert.deepEqual(calls, [
+    "https://hd-dev-single.myshopify.com/products/roman",
+  ]);
+});
+
+test("list continuations and code keep their Markdown layout while surrounding prose separates", (t) => {
+  const { container, render } = setup(t);
+  render(
+    [
+      "First overview.",
+      "Next thought.",
+      "",
+      "- A **blackout** option",
+      "  with a continuation",
+      "  - Nested choice",
+      "- A light-filtering option",
+      "",
+      "1. Measure the width",
+      "   at three points",
+      "2. Measure the drop",
+      "",
+      "```text",
+      "width = 300",
+      "drop = 400",
+      "```",
+      "",
+      "Inline `width\ndrop` stays code.",
+    ].join("\n"),
+  );
+  assert.equal(container.querySelectorAll(".roman-rich-text > p").length, 3);
+  assert.equal(container.querySelectorAll("ul ul > li").length, 1);
+  assert.match(
+    container.querySelector("ul > li").textContent,
+    /blackout option\nwith a continuation/,
+  );
+  assert.equal(container.querySelectorAll("li p").length, 0);
+  assert.match(
+    container.querySelector("ol > li").textContent,
+    /width\nat three points/,
+  );
+  assert.equal(
+    container.querySelector("pre code").textContent,
+    "width = 300\ndrop = 400\n",
+  );
+  assert.equal(container.querySelector("p code").textContent, "width drop");
+});
+
+test("streamed prose paragraphs preserve link focus and keep HTML and unsafe links inert", (t) => {
+  const { window, container, render } = setup(t);
+  const initial = "[View the product](/products/roman) before measuring.";
+  render(initial);
+  const link = container.querySelector("a");
+  link.focus();
+  render(`${initial}\nMeasure the **width**.`);
+  assert.ok(container.querySelector("a") === link);
+  assert.ok(container.getRootNode().activeElement === link);
+  assert.equal(container.querySelectorAll("p").length, 2);
+  render(
+    "Safe first line.\n[Unsafe](javascript:alert(1))\n<img src=x onerror=window.compromised=true>\nSafe last line.",
+  );
+  assert.equal(container.querySelector("img, script, iframe, a"), null);
+  assert.equal(window.compromised, undefined);
+  assert.match(container.textContent, /Safe first line/);
+  assert.match(container.textContent, /Unsafe/);
+});

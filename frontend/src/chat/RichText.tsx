@@ -24,6 +24,55 @@ const allowedElements = [
   "hr",
 ];
 
+type MarkdownNode = {
+  type: string;
+  value?: string;
+  children?: MarkdownNode[];
+};
+
+function proseLines(children: MarkdownNode[]): MarkdownNode[][] {
+  const lines: MarkdownNode[][] = [[]];
+  for (const child of children) {
+    const segments =
+      child.type === "text"
+        ? (child.value ?? "")
+            .split(/\r?\n/)
+            .map((value) => (value ? [{ ...child, value }] : []))
+        : child.type === "break"
+          ? [[], []]
+          : child.children
+            ? proseLines(child.children).map((line) =>
+                line.length ? [{ ...child, children: line }] : [],
+              )
+            : [[child]];
+    segments.forEach((segment, index) => {
+      if (index) lines.push([]);
+      lines[lines.length - 1].push(...segment);
+    });
+  }
+  return lines;
+}
+
+/** Authored prose returns become paragraphs; list/code layout stays Markdown-owned. */
+function remarkProseParagraphs() {
+  return function transform(node: MarkdownNode) {
+    if (!node.children || node.type === "list") return;
+    node.children = node.children.flatMap((child) => {
+      if (child.type !== "paragraph") {
+        transform(child);
+        return [child];
+      }
+      return proseLines(child.children ?? [])
+        .filter((line) =>
+          line.some((item) => item.type !== "text" || item.value?.trim()),
+        )
+        .map((children) => ({ ...child, children }));
+    });
+  };
+}
+
+const remarkPlugins = [remarkProseParagraphs];
+
 export const RichText = memo(function RichText({
   text,
   navigation,
@@ -50,6 +99,7 @@ export const RichText = memo(function RichText({
     <div className="roman-rich-text">
       <Markdown
         skipHtml
+        remarkPlugins={remarkPlugins}
         allowedElements={allowedElements}
         components={components}
       >

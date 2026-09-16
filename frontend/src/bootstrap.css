@@ -35,7 +35,7 @@
     line-height: 1;
   }
   .roman-panel {
-    @apply fixed top-0 right-0 z-[2147483647] h-dvh w-[400px] max-w-[100vw] overflow-hidden bg-roman-ivory font-roman text-roman-burgundy [box-shadow:-8px_0_24px_#00000040];
+    @apply fixed top-0 right-0 z-[2147483647] h-dvh w-[400px] max-w-full overflow-hidden bg-roman-ivory font-roman text-roman-burgundy [box-shadow:-8px_0_24px_#00000040];
   }
   .roman-texture {
     @apply pointer-events-none absolute top-[-32.32%] left-[-28.74%] h-[132.32%] w-[208.38%] max-w-none opacity-30 mix-blend-screen;
