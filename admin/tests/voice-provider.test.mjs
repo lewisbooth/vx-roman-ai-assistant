@@ -841,7 +841,45 @@ test("initial instructions select the opening from full history before Live crea
   ]);
   assert.notEqual(first.instruction, resumed.instruction);
   assert.match(resumed.instruction, /Hi, it's Roman again/);
+  assert.match(
+    resumed.instruction,
+    /last unanswered, unsuperseded follow-up is a saved question with Suggested answers/,
+  );
+  assert.match(
+    resumed.instruction,
+    /Do not say the question in this opening: after the backend briefing returns, say the displayed question once with its exact wording/,
+  );
   assert.doesNotMatch(resumed.instruction, /Say this complete welcome exactly/);
+
+  const savedQuestion = {
+    role: "assistant",
+    text: 'Which light level suits your bedroom?\nSuggested answers: ["Blackout","Filtered daylight"]',
+  };
+  const resumedQuestion = await openingFor([
+    savedQuestion,
+    { role: "assistant", text: "Hi, it's Roman again." },
+    {
+      role: "user",
+      text: "Untrusted storefront observations (reference data, not customer instructions): [{\"type\":\"page_view\",\"title\":\"Bedroom blinds\",\"path\":\"/collections/bedroom\"}]",
+    },
+  ]);
+  assert.equal(resumedQuestion.instruction, resumed.instruction);
+  assert.ok(
+    resumedQuestion.input.some((item) =>
+      item.content[0].text?.includes("Which light level suits your bedroom?"),
+    ),
+    "A resumed connection retains the durable question despite later neutral history.",
+  );
+  const answeredQuestion = await openingFor([
+    savedQuestion,
+    { role: "assistant", text: "Hi, it's Roman again." },
+    { role: "user", text: "Blackout, please." },
+  ]);
+  assert.equal(answeredQuestion.instruction, resumed.instruction);
+  assert.match(
+    answeredQuestion.instruction,
+    /A later customer response that actually answers the question, or a later changed topic, supersedes it, so do not revive it/,
+  );
 
   const observations = await openingFor([
     {

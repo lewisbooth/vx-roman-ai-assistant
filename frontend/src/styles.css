@@ -158,6 +158,84 @@
     @apply max-w-full overflow-x-auto overscroll-x-contain rounded-[14px] pb-[8px];
   }
 
+  .roman-product-carousel {
+    @apply relative min-w-0;
+  }
+
+  .roman-product-carousel::before,
+  .roman-product-carousel::after {
+    @apply pointer-events-none absolute top-0 bottom-[8px] z-10 w-[36px];
+    content: "";
+    opacity: 0;
+  }
+
+  .roman-product-carousel::before {
+    left: 0;
+    background: linear-gradient(to right, #f7f5ef, transparent);
+  }
+
+  .roman-product-carousel::after {
+    right: 0;
+    background: linear-gradient(to left, #f7f5ef, transparent);
+  }
+
+  .roman-product-carousel[data-left="true"]::before,
+  .roman-product-carousel[data-right="true"]::after {
+    opacity: 1;
+  }
+
+  .roman-carousel-previous,
+  .roman-carousel-next {
+    @apply absolute top-[46px] z-30 flex size-[44px] cursor-pointer items-center justify-center rounded-full border border-solid border-[#e3e0d8] bg-[#f7f5ef] p-[12px] text-[#4e0e0e];
+  }
+
+  .roman-carousel-previous {
+    left: 0;
+  }
+  .roman-carousel-next {
+    right: 0;
+  }
+  .roman-product-carousel button:disabled {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .roman-product-carousel button:focus-visible {
+    outline: 2px solid #4e0e0e;
+    outline-offset: 2px;
+  }
+  .roman-product-carousel svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+  }
+  .roman-product-scroll[data-dragging="true"] {
+    cursor: grabbing;
+    user-select: none;
+  }
+  .roman-product-scroll[data-dragging="true"] * {
+    cursor: grabbing;
+  }
+  .roman-product-scroll:focus-visible,
+  .roman-product-card:focus-visible {
+    outline: 2px solid #4e0e0e;
+    outline-offset: -3px;
+  }
+  .roman-product-card:focus-visible {
+    position: relative;
+    z-index: 20;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .roman-product-scroll {
+      cursor: grab;
+    }
+    .roman-product-carousel button:hover:not(:disabled) {
+      background-color: #e3e0d8;
+    }
+  }
+
   .roman-product-list {
     @apply m-0 flex list-none gap-[10px] p-0;
   }
@@ -255,7 +333,29 @@
   }
 
   .roman-question {
-    @apply mt-[16px] rounded-[14px] border border-solid border-[#e3e0d8] bg-[#f0ede5] p-[14px];
+    @apply mt-[16px] rounded-[14px] border-2 border-solid border-transparent bg-[#4e0e0e] p-[14px] text-[#f7f5ef];
+    background:
+      linear-gradient(#4e0e0e, #4e0e0e) padding-box,
+      linear-gradient(
+          110deg,
+          #865050 25%,
+          #c0a69a 43%,
+          #fff8e8 50%,
+          #c0a69a 57%,
+          #865050 75%
+        )
+        border-box;
+    background-size: 100% 100%, 300% 100%;
+    animation: roman-question-shine 3s linear infinite;
+  }
+
+  @keyframes roman-question-shine {
+    from {
+      background-position: 0 0, 100% 0;
+    }
+    to {
+      background-position: 0 0, -100% 0;
+    }
   }
 
   .roman-question-answers {
@@ -263,16 +363,52 @@
   }
 
   .roman-question-answers button {
-    @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#d1cbc0] bg-[#f7f5ef] px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#4e0e0e] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
+    @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#9c7373] bg-[#652b2b] px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#f7f5ef] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
+    transition:
+      background-color 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease;
+  }
+
+  @media (hover: hover) {
+    .roman-question-answers button:not(:disabled):hover {
+      background-color: #f7f5ef;
+      border-color: #f7f5ef;
+      color: #4e0e0e;
+    }
+  }
+
+  .roman-question-answers button:not(:disabled):active {
+    background-color: #e6ded2;
+    border-color: #e6ded2;
+    color: #4e0e0e;
+  }
+
+  .roman-question-answers button:focus-visible {
+    outline: 2px solid #f7f5ef;
+    outline-offset: 3px;
   }
 
   .roman-question-hint {
-    @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#797366];
+    @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#e2ccc4];
   }
 
   .roman-question .roman-chat-error {
-    @apply mt-[10px] pb-0;
+    @apply mt-[10px] pb-0 text-[#ffd4ce];
+  }
+
+  @media (forced-colors: active) {
+    .roman-question {
+      animation: none;
+      border-color: CanvasText;
+      background: Canvas;
+      color: CanvasText;
+    }
+    .roman-question-hint,
+    .roman-question .roman-chat-error {
+      color: CanvasText;
+    }
   }
 
   .roman-tools {

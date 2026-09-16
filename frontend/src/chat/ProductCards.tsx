@@ -10,6 +10,7 @@ import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { StorefrontLink } from "./StorefrontLink";
 import { ProductImage } from "./ProductImage";
+import { ProductCarousel } from "./ProductCarousel";
 
 export function ProductCards({
   productIds,
@@ -105,11 +106,7 @@ export function ProductCards({
   return frame(
     <div className="roman-products">
       {result.products.length > 0 ? (
-        <div
-          className="roman-product-scroll"
-          role="region"
-          aria-label="Recommended products"
-        >
+        <ProductCarousel>
           <ul className="roman-product-list">
             {result.products.map((product) => (
               <li key={product.id}>
@@ -134,7 +131,7 @@ export function ProductCards({
               </li>
             ))}
           </ul>
-        </div>
+        </ProductCarousel>
       ) : (
         <p className="roman-products-status">
           These products are no longer available.

@@ -1503,6 +1503,83 @@ test("journey activity leaves choices available but text and voice customer repl
   }
 });
 
+test("voice restart retains saved choices and a re-asked question replaces them without a second active widget", async (t) => {
+  const row = questionMessage();
+  row.role = "context";
+  row.parts[0].voiceReply = {
+    voiceId: "22222222-2222-4222-8222-222222222222",
+    afterSequence: 2,
+  };
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([row]),
+      voice: { status: "active", muted: false, error: null },
+    },
+  });
+  const original = ctx.container.querySelector(".roman-question");
+  ctx.container.querySelector('[aria-label="End voice"]').click();
+  await until(
+    () => ctx.container.querySelector('[aria-label="Start voice"]'),
+    "Voice did not stop",
+  );
+  assert.equal(ctx.container.querySelector(".roman-question"), original);
+  ctx.container.querySelector('[aria-label="Start voice"]').click();
+  await until(
+    () => ctx.container.querySelector('[aria-label="End voice"]'),
+    "Voice did not restart",
+  );
+  const greeting = {
+    ...message("resumed-greeting", "assistant", ""),
+    parts: [
+      {
+        type: "voice",
+        version: 1,
+        voiceId: "33333333-3333-4333-8333-333333333333",
+        text: "Hi, it's Roman again. What matters most?",
+        startMs: 0,
+        endMs: 1000,
+      },
+    ],
+  };
+  ctx.update({ conversation: activeConversation([row, greeting]) });
+  await until(
+    () => ctx.container.querySelector(".roman-voice-caption"),
+    "Resumed greeting did not render",
+  );
+  assert.equal(ctx.container.querySelector(".roman-question"), original);
+  const repeated = questionMessage("resumed-question");
+  ctx.update({ conversation: activeConversation([row, greeting, repeated]) });
+  await until(
+    () => ctx.container.querySelector(".roman-question") !== original,
+    "Re-asked question did not replace the old choices",
+  );
+  assert.equal(ctx.container.querySelectorAll(".roman-question").length, 1);
+  assert.equal(original.isConnected, false);
+  const answer = {
+    ...message("spoken-answer", "user", ""),
+    parts: [
+      {
+        type: "voice",
+        version: 1,
+        voiceId: "33333333-3333-4333-8333-333333333333",
+        text: "Full blackout",
+        startMs: 2000,
+        endMs: 3000,
+      },
+    ],
+  };
+  ctx.update({
+    conversation: activeConversation([row, greeting, repeated, answer]),
+  });
+  await until(
+    () => !ctx.container.querySelector(".roman-question"),
+    "Spoken answer retained the re-asked choices",
+  );
+  assert.deepEqual(ctx.calls, []);
+  assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
+  assert.deepEqual(ctx.startVoiceCalls, ["start"]);
+});
+
 test("typing a free-text answer uses the normal composer and retires choices only when accepted", async (t) => {
   const row = questionMessage();
   let ctx;

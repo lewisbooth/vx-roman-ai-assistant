@@ -60,11 +60,15 @@ test("question selection is bounded, normalized and plain text with distinct ans
   assert.equal(askQuestionToolDefinition.name, "ask_question");
   assert.match(
     askQuestionToolDefinition.description,
-    /When this tool succeeds, keep the text reply to its concise overview and do not end it with a question/,
+    /When this tool succeeds, keep a written text reply to its concise overview and do not end it with a question/,
   );
   assert.match(
     askQuestionToolDefinition.description,
-    /Only end with a direct question when you do not call this tool/,
+    /Only end a written text reply with a direct question when you do not call this tool/,
+  );
+  assert.match(
+    askQuestionToolDefinition.description,
+    /In a voice briefing, provide this exact question once after the overview for Roman to say aloud/,
   );
   assert.equal(
     askQuestionToolDefinition.parameters.additionalProperties,
