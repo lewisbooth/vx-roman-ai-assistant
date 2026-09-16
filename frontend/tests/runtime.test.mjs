@@ -71,11 +71,12 @@ function setup(t, initialTime = 0) {
     window,
     container,
     timers,
-    mount(loadingStartedAt) {
+    mount(loadingStartedAt, onSessionChange) {
       const runtime = window.RomanAssistant.mountAssistant(
         host,
         container,
         loadingStartedAt,
+        onSessionChange,
       );
       const result = { runtime, state: "pending", error: undefined };
       runtime.ready.then(
@@ -101,6 +102,86 @@ function setup(t, initialTime = 0) {
     },
   };
 }
+
+test("runtime reports confirmed conversation activity, not an open panel or saved credential hint", async (t) => {
+  const ctx = setup(t, 1000);
+  const access = {
+    conversationId: "11111111-1111-4111-8111-111111111111",
+    token: "a".repeat(43),
+    expiresAt: "2099-09-15T10:00:00Z",
+    apiBaseUrl: "https://roman.example/api/conversations",
+  };
+  const conversation = {
+    id: access.conversationId,
+    messages: [],
+    status: "active",
+    busy: false,
+    revision: 0,
+    tools: [],
+  };
+  ctx.window.sessionStorage.setItem(
+    "roman:conversation",
+    JSON.stringify(access),
+  );
+  let resolveBootstrap;
+  let resolveEnd;
+  const response = (body) => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "application/json" },
+    json: async () => body,
+  });
+  ctx.window.fetch = async (url) => {
+    if (String(url).includes("/apps/roman/bootstrap"))
+      return new Promise((resolve) => {
+        resolveBootstrap = resolve;
+      });
+    if (String(url).endsWith("/end"))
+      return new Promise((resolve) => {
+        resolveEnd = resolve;
+      });
+    return response(conversation);
+  };
+  const activity = [];
+  const mounted = ctx.mount(0, (active) => activity.push(active));
+  mounted.runtime.setOpen(true);
+  assert.ok(activity.length > 0);
+  assert.ok(activity.every((active) => active === false));
+  resolveBootstrap(response({ ...access, conversation }));
+  await until(
+    () => activity.at(-1) === true,
+    "restored conversation did not activate launcher state",
+  );
+  await until(
+    () =>
+      [...ctx.container.querySelectorAll("button")].some(
+        (button) => button.textContent === "End chat" && !button.disabled,
+      ),
+    "restoration did not finish",
+  );
+  mounted.runtime.setOpen(false);
+  assert.equal(
+    activity.at(-1),
+    true,
+    "closing the sidebar must not end its conversation",
+  );
+  [...ctx.container.querySelectorAll("button")]
+    .find((button) => button.textContent === "End chat")
+    .click();
+  await until(() => !!resolveEnd, "End request was not sent");
+  assert.equal(
+    activity.at(-1),
+    true,
+    "the pending End request must retain confirmed session state",
+  );
+  resolveEnd(response({ ...conversation, status: "ended", revision: 1 }));
+  await until(
+    () => activity.at(-1) === false,
+    "confirmed End did not deactivate launcher state",
+  );
+  mounted.runtime.dispose();
+  assert.equal(activity.at(-1), false);
+});
 
 test("a fast cached runtime waits until one second from loading start and React commit", async (t) => {
   const ctx = setup(t, 1200);

@@ -10,6 +10,7 @@ type RuntimeModule = {
     host: HTMLElement,
     container: HTMLElement,
     loadingStartedAt: number,
+    onSessionChange: (active: boolean) => void,
   ) => AssistantRuntime;
 };
 declare global {
@@ -50,7 +51,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       );
     return download.promise;
   }
-  const status = { failed: false };
+  let failed = false;
   const promise = new Promise<RuntimeModule>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = url;
@@ -61,7 +62,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       script.onload = null;
       script.onerror = null;
       if (error) {
-        status.failed = true;
+        failed = true;
         script.remove();
         reject(error);
       } else resolve(window.RomanAssistant!);
@@ -93,7 +94,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
     url,
     promise,
     get failed() {
-      return status.failed;
+      return failed;
     },
   };
   return promise;
@@ -137,8 +138,8 @@ class RomanAssistant extends HTMLElement {
     const launcher = document.createElement("button");
     launcher.type = "button";
     launcher.dataset.romanLauncher = "";
-    launcher.setAttribute("aria-label", this.dataset.label || APP_NAME);
-    launcher.setAttribute("aria-expanded", "false");
+    launcher.ariaLabel = this.dataset.label || APP_NAME;
+    launcher.ariaExpanded = "false";
     launcher.textContent = this.dataset.initial || ASSISTANT_INITIAL;
     launcher.className = "roman-launcher";
     const toggle = () => {
@@ -150,7 +151,7 @@ class RomanAssistant extends HTMLElement {
     shadow.replaceChildren(style, launcher);
     this.#headerLauncher = attachHeaderLauncher(
       launcher,
-      styles,
+      style,
       toggle,
       this.dataset.wordmarkUrl || "",
     );
@@ -163,7 +164,7 @@ class RomanAssistant extends HTMLElement {
     panel.hidden = !this.#open;
     panel.id = `roman-panel-${crypto.randomUUID()}`;
     panel.dataset.romanPanel = "";
-    panel.setAttribute("aria-label", this.dataset.label || APP_NAME);
+    panel.ariaLabel = this.#launcher!.ariaLabel;
     panel.className = "roman-panel";
     // Static markup only. Theme-provided URLs are assigned as DOM properties.
     panel.innerHTML = `
@@ -218,7 +219,7 @@ class RomanAssistant extends HTMLElement {
     savedState(open ? "1" : "0");
     if (open && !this.#panel) this.#createPanel();
     this.#panel!.hidden = !open;
-    this.#launcher!.setAttribute("aria-expanded", String(open));
+    this.#launcher!.ariaExpanded = String(open);
     this.#headerLauncher?.sync();
     document.documentElement.toggleAttribute("data-roman-sidebar-open", open);
     if (open) document.head.append(this.#layout!);
@@ -237,7 +238,7 @@ class RomanAssistant extends HTMLElement {
     loadingStartedAt ??= performance.now();
     const generation = ++this.#generation;
     this.#state = "loading";
-    this.#panel!.setAttribute("aria-busy", "true");
+    this.#panel!.ariaBusy = "true";
     this.#loading!.hidden = false;
     this.#progress!.hidden = false;
     this.#error!.hidden = true;
@@ -258,6 +259,7 @@ class RomanAssistant extends HTMLElement {
         this,
         this.#content!,
         loadingStartedAt,
+        this.#headerLauncher!.setActive,
       );
       this.#runtime = runtime;
       runtime.setOpen(this.#open);
@@ -266,14 +268,14 @@ class RomanAssistant extends HTMLElement {
       this.#state = "ready";
       this.#content!.hidden = false;
       this.#loading!.hidden = true;
-      this.#panel!.setAttribute("aria-busy", "false");
+      this.#panel!.ariaBusy = "false";
     } catch (error) {
       if (!this.isConnected || generation !== this.#generation) return;
       this.#runtime?.dispose();
       this.#runtime = undefined;
       this.#content!.replaceChildren();
       this.#state = "error";
-      this.#panel!.setAttribute("aria-busy", "false");
+      this.#panel!.ariaBusy = "false";
       this.#progress!.hidden = true;
       this.#error!.textContent =
         error instanceof Error

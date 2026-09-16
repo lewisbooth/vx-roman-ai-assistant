@@ -17,6 +17,7 @@ export function mountAssistant(
   host: HTMLElement,
   container: HTMLElement,
   loadingStartedAt: number,
+  onSessionChange: (active: boolean) => void = () => {},
 ): AssistantRuntime {
   const deadline = (firstLoadingDeadline ??= loadingStartedAt + 1000);
   const logoUrl = host.dataset.logoUrl;
@@ -30,7 +31,8 @@ export function mountAssistant(
   });
   const navigation = createStorefrontNavigation(host);
   const tools = createAssistantTools(host, navigation, (name, input, signal) =>
-    session.executeMeasurements(name, input, signal));
+    session.executeMeasurements(name, input, signal),
+  );
   const executor = createStorefrontExecutor(tools);
   const session = createConversationClient(executor);
   const stopJourney = createJourneyObserver(session, navigation);
@@ -44,6 +46,7 @@ export function mountAssistant(
   host.shadowRoot?.append(voiceDock);
   function syncVoiceDock() {
     const state = session.getSnapshot();
+    onSessionChange(state.conversation?.status === "active");
     const status = state.voice.status;
     const active =
       status === "starting" || status === "active" || status === "stopping";
@@ -51,6 +54,7 @@ export function mountAssistant(
     navigation.setSidebarOpen(sidebarOpen || active || !!state.approval);
   }
   const stopVoiceDock = session.subscribe(syncVoiceDock);
+  syncVoiceDock();
 
   function onReady() {
     if (disposed || readyTimer !== undefined) return;
@@ -95,6 +99,7 @@ export function mountAssistant(
     stopJourney();
     session.dispose();
     stopVoiceDock();
+    onSessionChange(false);
     voiceDock.remove();
     navigation.dispose();
     throw error;
@@ -121,6 +126,7 @@ export function mountAssistant(
       stopJourney();
       session.dispose();
       stopVoiceDock();
+      onSessionChange(false);
       voiceDock.remove();
       navigation.dispose();
     },

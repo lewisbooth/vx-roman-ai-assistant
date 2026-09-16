@@ -38,6 +38,32 @@
         padding: 24px;
         background: #e7e5e4;
       }
+      main-header {
+        --button-radius: 999px;
+        --color-button-tertiary-gray-fg: #27272a;
+        --color-button-secondary-border: #cecbc1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .header__utilities {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      [data-testid="menu-account-link"] {
+        display: inline-flex;
+        align-items: center;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid var(--color-button-secondary-border);
+        border-radius: var(--button-radius);
+        background: #fff;
+        color: inherit;
+        font: inherit;
+      }
       main {
         max-width: 720px;
         min-height: 65vh;
@@ -55,10 +81,20 @@
   </head>
   <body class="template-index">
     <app-provider>
-      <header>Roman storefront preview</header>
+      <header>
+        <main-header>
+          <span>Roman storefront preview</span>
+          <div class="header__utilities">
+            <button type="button" data-testid="menu-account-link">
+              Profile
+            </button>
+          </div>
+        </main-header>
+      </header>
       <main id="main" tabindex="-1"><!-- roman:page --></main>
       <footer>
-        Open the R button to test Roman. Use the page links above to navigate.
+        Open Ask Roman beside Profile to test the sidebar. Use the page links
+        above to navigate.
       </footer>
     </app-provider>
     <roman-ai-assistant

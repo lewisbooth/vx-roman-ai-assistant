@@ -16,6 +16,7 @@
     color-scheme: light;
     position: relative;
     z-index: 2147483647;
+    @apply font-roman;
   }
   *,
   *::before,
@@ -30,36 +31,47 @@
   }
 }
 @layer components {
+  .roman-launcher,
+  .roman-header-button,
+  .roman-close,
+  .roman-retry {
+    @apply inline-flex cursor-pointer items-center justify-center rounded-[999px];
+  }
   .roman-launcher {
-    @apply fixed bottom-[calc(20px+env(safe-area-inset-bottom))] left-[calc(20px+env(safe-area-inset-left))] z-[2147483647] inline-flex size-[48px] cursor-pointer items-center justify-center rounded-[999px] bg-roman-burgundy font-roman text-[26px] text-roman-ivory [box-shadow:0_6px_24px_#00000026];
+    @apply fixed bottom-[calc(20px+env(safe-area-inset-bottom))] left-[calc(20px+env(safe-area-inset-left))] z-[2147483647] size-[48px] bg-roman-burgundy text-[26px] text-roman-ivory [box-shadow:0_6px_24px_#00000026];
     line-height: 1;
   }
   :host([data-roman-header-launcher]) {
     display: inline-flex;
   }
   .roman-header-button {
-    display: inline-flex;
-    align-items: center;
     gap: 6px;
     padding: 0 12px;
-    cursor: pointer;
     color: var(--color-button-tertiary-gray-fg);
     background: #fff;
     font: 14px/1 sans-serif;
-    border: 1px solid;
+    border: 1px solid var(--color-button-secondary-border);
     border-radius: var(--button-radius);
   }
   .roman-header-button img {
     width: 60px;
+    margin-bottom: 3px;
+  }
+  .roman-header-button[aria-expanded="true"] {
+    background: #4e0e0e;
+    color: #f7f5ef;
+    img {
+      filter: brightness(0) invert(1);
+    }
   }
   .roman-panel {
-    @apply fixed top-0 right-0 z-[2147483647] h-dvh w-[400px] max-w-full overflow-hidden bg-roman-ivory font-roman text-roman-burgundy [box-shadow:-8px_0_24px_#00000040];
+    @apply fixed top-0 right-0 z-[2147483647] h-dvh w-[400px] max-w-full overflow-hidden bg-roman-ivory text-roman-burgundy [box-shadow:-8px_0_24px_#00000040];
   }
   .roman-texture {
     @apply pointer-events-none absolute top-[-32.32%] left-[-28.74%] h-[132.32%] w-[208.38%] max-w-none opacity-30 mix-blend-screen;
   }
   .roman-close {
-    @apply absolute top-[12px] right-[8px] z-10 inline-flex size-[44px] cursor-pointer items-center justify-center rounded-[999px] bg-transparent;
+    @apply absolute top-[12px] right-[8px] z-10 size-[44px] bg-transparent;
     border: 0;
   }
   .roman-content-scroll {
@@ -82,15 +94,15 @@
     line-height: 1.4;
   }
   .roman-retry {
-    @apply mt-[16px] min-h-[44px] cursor-pointer rounded-[999px] bg-transparent px-[24px] text-[16px] text-roman-burgundy;
+    @apply mt-[16px] min-h-[44px] bg-transparent px-[24px] text-[16px] text-roman-burgundy;
   }
   /* Explicit borders and outlines avoid @property dependencies in Shadow DOM. */
   .roman-launcher,
   .roman-retry {
-    border: 1px solid var(--color-roman-burgundy);
+    border: 1px solid #4e0e0e;
   }
   button:focus-visible {
-    outline: 2px solid var(--color-roman-burgundy);
+    outline: 2px solid #4e0e0e;
     outline-offset: 2px;
   }
   .roman-launcher:focus-visible {
