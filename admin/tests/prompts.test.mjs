@@ -72,8 +72,13 @@ test("both backend modes use concise card recommendations and optional answer ch
     );
     assert.match(
       prompt,
-      /Once width, drop and units are clear, read them back together/,
+      /Once width, drop and units are clear, read them back together in ask_question/,
     );
+    assert.match(
+      prompt,
+      /exactly two answers: "That's correct" and "Change measurements"/,
+    );
+    assert.match(prompt, /"Change measurements" does not confirm it/);
   }
 });
 
@@ -100,6 +105,11 @@ test("text leaves a displayed question to its widget while voice says it once", 
     /Do not reword it, repeat it, add a second question or turn it into a written customer reply/,
   );
   const live = romanVoicePrompt("marin");
+  assert.match(
+    live,
+    /delegate so the backend calls ask_question with the pair/,
+  );
+  assert.match(live, /exactly "That's correct" and "Change measurements"/);
   assert.match(live, /Delegate a choice-based clarification so its quick answers can appear/);
   assert.match(live, /carousels, on-screen answer choices or navigation/);
   assert.match(
