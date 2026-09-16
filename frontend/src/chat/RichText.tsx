@@ -53,6 +53,24 @@ function proseLines(children: MarkdownNode[]): MarkdownNode[][] {
   return lines;
 }
 
+function trimProseStart(children: MarkdownNode[]): MarkdownNode[] {
+  for (let index = 0; index < children.length; index++) {
+    const child = children[index];
+    if (child.type === "text") {
+      const value = (child.value ?? "").trimStart();
+      if (value) return [{ ...child, value }, ...children.slice(index + 1)];
+    } else if (child.children) {
+      const trimmed = trimProseStart(child.children);
+      if (trimmed.length)
+        return [{ ...child, children: trimmed }, ...children.slice(index + 1)];
+    } else {
+      // Inline code owns its whitespace, even at the start of a paragraph.
+      return children.slice(index);
+    }
+  }
+  return [];
+}
+
 /** Authored prose returns become paragraphs; list/code layout stays Markdown-owned. */
 function remarkProseParagraphs() {
   return function transform(node: MarkdownNode) {
@@ -63,6 +81,7 @@ function remarkProseParagraphs() {
         return [child];
       }
       return proseLines(child.children ?? [])
+        .map(trimProseStart)
         .filter((line) =>
           line.some((item) => item.type !== "text" || item.value?.trim()),
         )

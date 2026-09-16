@@ -329,7 +329,7 @@ export function conversationTimeline(
   for (const caption of captions)
     rows.push({
       sequence: caption.sequence,
-      endSequence: caption.fragments.at(-1)!.sequence,
+      endSequence: caption.endSequence,
       message: {
         id: caption.id,
         role: caption.role,

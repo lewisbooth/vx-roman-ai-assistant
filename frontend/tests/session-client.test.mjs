@@ -2049,14 +2049,14 @@ test("voice choice defaults to Marin, validates tab preferences and survives end
 test("selected voice is fixed during startup and active media, then can change after stop", async (t) => {
   const ctx = setup(t, { mediaOptions: {}, savedVoice: "gleam" });
   const activating = activeVoice(ctx);
-  assert.throws(() => ctx.client.setVoice("willow"), /Switch to text/);
+  assert.throws(() => ctx.client.setVoice("willow"), /End voice/);
   await assert.rejects(ctx.client.startVoice(), /current session/);
   const voice = await activating;
   assert.equal(ctx.calls[1].body.voice, "gleam");
   assert.equal(ctx.media.calls.microphone, 1);
-  assert.throws(() => ctx.client.setVoice("willow"), /Switch to text/);
+  assert.throws(() => ctx.client.setVoice("willow"), /End voice/);
   const stopping = ctx.client.stopVoice();
-  assert.throws(() => ctx.client.setVoice("willow"), /Switch to text/);
+  assert.throws(() => ctx.client.setVoice("willow"), /End voice/);
   ctx.respond(3, {
     ...empty,
     revision: 2,

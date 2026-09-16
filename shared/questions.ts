@@ -15,7 +15,7 @@ export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. After product suggestions, give a brief overview, show the selected carousel, then use this tool for the next useful choice instead of duplicating product descriptions in a long list. Call once per reply. The customer can answer by clicking or writing their own reply; this does not grant approval for purchases or other actions. Do not repeat the question in your text reply.",
+    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. After product suggestions, give a brief overview, show the selected carousel, then use this tool for the next useful choice instead of duplicating product descriptions in a long list. Call once per reply. When this tool succeeds, keep the text reply to its concise overview and do not end it with a question, repeat this question, or add a differently worded follow-up: the widget owns the one written question. Only end with a direct question when you do not call this tool. The customer can answer by clicking or writing their own reply; this does not grant approval for purchases or other actions.",
   strict: true,
   parameters: {
     type: "object",

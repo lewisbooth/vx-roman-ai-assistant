@@ -58,6 +58,14 @@ test("question selection is bounded, normalized and plain text with distinct ans
   ])
     assert.throws(() => parseQuestionSelection(invalid));
   assert.equal(askQuestionToolDefinition.name, "ask_question");
+  assert.match(
+    askQuestionToolDefinition.description,
+    /When this tool succeeds, keep the text reply to its concise overview and do not end it with a question/,
+  );
+  assert.match(
+    askQuestionToolDefinition.description,
+    /Only end with a direct question when you do not call this tool/,
+  );
   assert.equal(
     askQuestionToolDefinition.parameters.additionalProperties,
     false,

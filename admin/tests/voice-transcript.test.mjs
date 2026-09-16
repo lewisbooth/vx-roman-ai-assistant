@@ -120,3 +120,80 @@ test("a caption older than the group's interval is kept in order as a separate r
     captions.map((row) => row.id),
   );
 });
+
+test("late input captions precede Roman's reply without changing either speaker's exact deltas", () => {
+  const captions = [
+    fragment(1, "G", 1100, 1150),
+    fragment(2, "Su", 1000, 1050, { role: "user" }),
+    fragment(3, "reat.", 1150, 1200),
+    fragment(4, "re", 1050, 1100, { role: "user" }),
+  ];
+  const original = structuredClone(captions);
+  assert.equal(
+    groupVoiceTranscript(captions.slice(0, 1))[0].id,
+    captions[0].id,
+  );
+  const groups = groupVoiceTranscript(captions);
+  assert.deepEqual(
+    groups.map(({ role, text, sequence, endSequence }) => ({
+      role,
+      text,
+      sequence,
+      endSequence,
+    })),
+    [
+      { role: "user", text: "Sure", sequence: 1, endSequence: 2 },
+      { role: "assistant", text: "Great.", sequence: 3, endSequence: 4 },
+    ],
+  );
+  assert.deepEqual(
+    groups.map((group) => group.id),
+    [captions[1].id, captions[0].id],
+  );
+  assert.deepEqual(groups[0].fragments, [captions[1], captions[3]]);
+  assert.deepEqual(groups[1].fragments, [captions[0], captions[2]]);
+  assert.deepEqual(captions, original);
+});
+
+test("equal cross-speaker timestamps retain arrival order", () => {
+  for (const role of ["user", "assistant"]) {
+    const captions = [
+      fragment(1, "First", 1000, 1050, { role }),
+      fragment(2, "Second", 1000, 1050, {
+        role: role === "user" ? "assistant" : "user",
+      }),
+    ];
+    assert.deepEqual(
+      groupVoiceTranscript(captions).map((group) => group.id),
+      captions.map((row) => row.id),
+    );
+  }
+});
+
+test("late captions cross hidden bookkeeping but never visible, completion, or connection boundaries", () => {
+  const captions = [
+    fragment(1, "Great.", 2000, 2200),
+    fragment(3, "Sure", 1000, 1200, { role: "user" }),
+  ];
+  assert.deepEqual(
+    groupVoiceTranscript(captions, [2]).map((group) => group.text),
+    ["Sure", "Great."],
+  );
+  for (const [hidden, breaks] of [
+    [[], []],
+    [[2], [2]],
+    [[2], [3]],
+  ]) {
+    assert.deepEqual(
+      groupVoiceTranscript(captions, hidden, breaks).map((group) => group.text),
+      ["Great.", "Sure"],
+    );
+  }
+  assert.deepEqual(
+    groupVoiceTranscript(
+      [captions[0], { ...captions[1], voiceId: "voice-2" }],
+      [2],
+    ).map((group) => group.text),
+    ["Great.", "Sure"],
+  );
+});

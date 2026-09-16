@@ -15,7 +15,9 @@ export interface VoiceTranscriptGroup {
   /** The first fragment's ID remains stable when another caption joins it. */
   id: string;
   voiceId: string;
+  /** Display positions reuse arrival slots; stored fragment sequences stay exact. */
   sequence: number;
+  endSequence: number;
   role: "user" | "assistant";
   text: string;
   startMs: number;
@@ -50,30 +52,71 @@ export function groupVoiceTranscript(
   const ordered = [...fragments].sort(
     (left, right) => left.sequence - right.sequence,
   );
-  for (const fragment of ordered) {
-    const previous = groups.at(-1);
-    const lastFragment = previous?.fragments.at(-1);
-    if (
-      previous &&
-      lastFragment &&
-      previous.voiceId === fragment.voiceId &&
-      previous.role === fragment.role &&
-      adjacentInTimeline(lastFragment.sequence, fragment.sequence, hidden) &&
-      !breakBeforeSequences.some(
-        (sequence) =>
-          sequence > lastFragment.sequence && sequence <= fragment.sequence,
-      ) &&
-      fragment.startMs >= previous.startMs &&
-      // Natural pauses within speech should not create separate chat bubbles.
-      fragment.startMs <= previous.endMs + maxCaptionPauseMs
-    ) {
-      previous.fragments.push(fragment);
-      // Provider deltas may split a word. Never infer spaces or completed intent.
-      previous.text += fragment.text;
-      previous.endMs = Math.max(previous.endMs, fragment.endMs);
-    } else {
-      groups.push({ ...fragment, fragments: [fragment] });
+  let segment: VoiceTranscriptFragment[] = [];
+
+  function appendSegment() {
+    // Input ASR can arrive after Roman's response caption. Both streams carry
+    // times on the same Live-session clock, but each speaker's deltas must be
+    // appended in delivery order (they may split words and have equal times).
+    const users = segment.filter((fragment) => fragment.role === "user");
+    const assistants = segment.filter(
+      (fragment) => fragment.role === "assistant",
+    );
+    let userIndex = 0;
+    let assistantIndex = 0;
+    let previous: VoiceTranscriptGroup | undefined;
+    for (const slot of segment) {
+      const user = users[userIndex];
+      const assistant = assistants[assistantIndex];
+      const takeUser =
+        user &&
+        (!assistant ||
+          user.startMs < assistant.startMs ||
+          (user.startMs === assistant.startMs &&
+            user.sequence < assistant.sequence));
+      const fragment = takeUser
+        ? users[userIndex++]
+        : assistants[assistantIndex++];
+      if (
+        previous &&
+        previous.role === fragment.role &&
+        adjacentInTimeline(previous.endSequence, slot.sequence, hidden) &&
+        fragment.startMs >= previous.startMs &&
+        // Natural pauses within speech should not create separate chat bubbles.
+        fragment.startMs <= previous.endMs + maxCaptionPauseMs
+      ) {
+        previous.fragments.push(fragment);
+        previous.text += fragment.text;
+        previous.endMs = Math.max(previous.endMs, fragment.endMs);
+        previous.endSequence = slot.sequence;
+      } else {
+        previous = {
+          ...fragment,
+          sequence: slot.sequence,
+          endSequence: slot.sequence,
+          fragments: [fragment],
+        };
+        groups.push(previous);
+      }
     }
   }
+
+  for (const fragment of ordered) {
+    const previous = segment.at(-1);
+    if (
+      previous &&
+      (previous.voiceId !== fragment.voiceId ||
+        !adjacentInTimeline(previous.sequence, fragment.sequence, hidden) ||
+        breakBeforeSequences.some(
+          (sequence) =>
+            sequence > previous.sequence && sequence <= fragment.sequence,
+        ))
+    ) {
+      appendSegment();
+      segment = [];
+    }
+    segment.push(fragment);
+  }
+  appendSegment();
   return groups;
 }

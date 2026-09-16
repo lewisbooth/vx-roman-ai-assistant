@@ -10,6 +10,7 @@ import { StartVoiceButton } from "./VoiceControls";
 
 type ComposerProps = {
   busy: boolean;
+  hidden?: boolean;
   error: string | null;
   onClearError: () => void;
   onSend: (message: string) => Promise<void>;
@@ -18,6 +19,7 @@ type ComposerProps = {
 
 export function Composer({
   busy,
+  hidden = false,
   error,
   onClearError,
   onSend,
@@ -34,10 +36,10 @@ export function Composer({
 
   useLayoutEffect(() => {
     const input = textarea.current;
-    if (!input) return;
+    if (!input || hidden) return;
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
-  }, [message]);
+  }, [message, hidden]);
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -62,7 +64,7 @@ export function Composer({
   }
 
   return (
-    <div className="roman-composer">
+    <div className="roman-composer" hidden={hidden && !displayedError}>
       {displayedError && (
         <p className="roman-chat-error" role="alert">
           {displayedError}
@@ -80,7 +82,11 @@ export function Composer({
           )}
         </p>
       )}
-      <form onSubmit={(event) => void submit(event)} aria-busy={pending}>
+      <form
+        hidden={hidden}
+        onSubmit={(event) => void submit(event)}
+        aria-busy={pending}
+      >
         <label htmlFor={id} className="sr-only">
           Message Roman
         </label>

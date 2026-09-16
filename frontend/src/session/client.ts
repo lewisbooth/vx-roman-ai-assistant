@@ -355,7 +355,7 @@ export function createConversationClient(
       state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active"
     )
-      throw new Error("Switch to text before changing the voice.");
+      throw new Error("End voice before changing the voice.");
     update({ selectedVoice: voice });
     try {
       window.sessionStorage.setItem(VOICE_STORAGE_KEY, voice);
@@ -1395,7 +1395,7 @@ export function createConversationClient(
               status: "error",
               muted: true,
               error:
-                "Microphone stopped. Switch to text to confirm voice has ended.",
+                "Microphone stopped. Use End voice to confirm voice has ended.",
             },
           });
         throw error;

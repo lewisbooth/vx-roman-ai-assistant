@@ -125,7 +125,7 @@ export function Timeline({
                 return (
                   <div key={index} className="roman-voice-caption">
                     <span className="roman-voice-label">Voice</span>
-                    <p className="roman-message-text">{part.text}</p>
+                    <p className="roman-message-text">{part.text.trimStart()}</p>
                   </div>
                 );
               if (part.type === "guides")
@@ -141,9 +141,6 @@ export function Timeline({
               );
             })}
           </div>
-          {message.status === "pending" && message.parts.length === 0 && (
-            <p className="roman-message-status">Roman is thinking…</p>
-          )}
           {message.status === "failed" && (
             <p className="roman-chat-error">
               {message.error ||

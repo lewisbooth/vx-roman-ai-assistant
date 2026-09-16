@@ -39,7 +39,7 @@ export function VoiceChoice({
       </select>
       <span id={`${id}-hint`} className="roman-voice-choice-hint">
         {needsStop
-          ? "Switch to text to change voice."
+          ? "End voice to change voice."
           : "Used for your next voice connection."}
       </span>
     </div>

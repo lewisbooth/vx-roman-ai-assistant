@@ -44,7 +44,15 @@ test("both backend modes use concise card recommendations and optional answer ch
     );
     assert.match(
       prompt,
-      /Do not repeat that question or its options in the written reply/,
+      /do not end it with a question, repeat the displayed question, or ask a differently worded follow-up/,
+    );
+    assert.match(
+      prompt,
+      /When it succeeds, keep your reply to a concise overview and do not end it with a question/,
+    );
+    assert.match(
+      prompt,
+      /Only end your reply with a direct question when you do not call ask_question/,
     );
     assert.match(
       prompt,
@@ -65,7 +73,7 @@ test("both backend modes use concise card recommendations and optional answer ch
   }
 });
 
-test("text links are conditional on carousel presentation and voice can offer choices without requiring a click", () => {
+test("text links are conditional on carousel presentation and voice leaves a displayed question to its widget", () => {
   assert.match(
     ROMAN_TEXT_PROMPT,
     /When referring to a product without a carousel, link its name/,
@@ -73,15 +81,21 @@ test("text links are conditional on carousel presentation and voice can offer ch
   assert.doesNotMatch(ROMAN_TEXT_PROMPT, /link each product name/);
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /If ask_question succeeded, identify the displayed question once in this briefing/,
+    /If ask_question succeeded, return only the factual overview and, if needed, state as non-spoken metadata that a widget question is displayed/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /do not repeat the options or create a separate written reply/,
+    /Do not include, end with, or reword that question or its options/,
   );
   const live = romanVoicePrompt("marin");
   assert.match(live, /Terra uses ask_question/);
   assert.match(live, /carousels, on-screen answer choices or navigation/);
+  assert.match(
+    live,
+    /give only the concise factual overview/,
+  );
+  assert.match(live, /Do not ask, read, paraphrase, or end with any question/);
+  assert.match(live, /only when the shopper explicitly asks to hear them/);
   assert.match(live, /Do not claim the customer must click to continue/);
   assert.match(live, /spoken agreement does not approve these actions/);
 });

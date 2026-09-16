@@ -169,6 +169,53 @@ test("text, exact voice captions and journey observations share one ordered hist
   );
 });
 
+test("late input ASR projects before Roman's reply on reload and in model history without rewriting captions", async () => {
+  const session = await startVoice();
+  const reply = await caption(session, "Great.", 200, "assistant");
+  const customer = await caption(session, "Sure", 0);
+  await caption(session, "!", 100);
+  await caption(session, " Let's continue.", 500, "assistant");
+  const raw = await database.voiceTranscript.findMany({
+    orderBy: { sequence: "asc" },
+  });
+  const expected = [
+    { role: "user", text: "Sure!" },
+    { role: "assistant", text: "Great. Let's continue." },
+  ];
+  for (let read = 0; read < 2; read++) {
+    const state = await conversation.getSnapshot(id);
+    assert.deepEqual(
+      state.messages.map((message) => ({
+        role: message.role,
+        text: message.parts[0].text,
+      })),
+      expected,
+    );
+    assert.deepEqual(
+      state.messages.map((message) => message.id),
+      [customer.id, reply.id],
+    );
+    assert.deepEqual(await conversation.getModelHistory(id), expected);
+    if (read === 0) {
+      await voice.closeVoiceSession(id, session.id, clientId);
+      ({ conversation, voice } = load());
+    }
+  }
+  assert.deepEqual(
+    await database.voiceTranscript.findMany({ orderBy: { sequence: "asc" } }),
+    raw,
+  );
+  assert.deepEqual(
+    raw.map((row) => row.text),
+    ["Great.", "Sure", "!", " Let's continue."],
+  );
+  const next = await conversation.beginTurn(id, textInput("What next?"));
+  assert.deepEqual(next.history, [
+    ...expected,
+    { role: "user", text: "What next?" },
+  ]);
+});
+
 test("voice delegation has one hidden context owner and never fabricates spoken transcript", async () => {
   const session = await startVoice();
   await caption(session, "Show me blackout options", 0);
@@ -473,6 +520,36 @@ for (const widgetKinds of [
     assert.equal(rows[1].parts[0].text, "Let me check.");
     assert.equal(rows[2].parts[0].text, "Here are the options.");
     assert.deepEqual(base, original);
+    // The final response fragment can arrive after the customer's next caption.
+    // Widget placement must use the projected response end, not that fragment's
+    // later arrival sequence, or it crosses the customer's next utterance.
+    rows = conversation.conversationTimeline({
+      ...base,
+      voiceTranscripts: [
+        ...base.voiceTranscripts.slice(0, 4),
+        fragment(5, "Thanks", "user", { startMs: 1900, endMs: 2000 }),
+        fragment(6, " the options.", "assistant", {
+          startMs: 1600,
+          endMs: 1800,
+        }),
+        fragment(7, "You're welcome", "assistant", {
+          startMs: 2100,
+          endMs: 2300,
+        }),
+      ],
+    });
+    assert.deepEqual(
+      rows.map((row) => row.id),
+      [
+        "caption-0",
+        "caption-2",
+        "caption-4",
+        widgetId,
+        "caption-5",
+        "caption-7",
+      ],
+    );
+    assert.equal(rows[2].parts[0].text, "Here are the options.");
     for (const barrier of [
       {
         ...widget,

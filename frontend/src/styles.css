@@ -219,8 +219,47 @@
     font-family: inherit;
   }
 
-  .roman-message-status {
-    @apply m-0 text-[14px] italic text-[#797366];
+  .roman-reply-activity {
+    @apply m-0 shrink-0 px-[26px] pt-[8px] text-[14px] leading-[20px] text-[#797366];
+  }
+
+  .roman-reply-activity span {
+    background: linear-gradient(
+      100deg,
+      #797366 30%,
+      #4e0e0e 46%,
+      #c0a69a 50%,
+      #797366 64%
+    );
+    background-size: 250% 100%;
+    background-clip: text;
+    color: transparent;
+    animation: roman-activity-shimmer 2s linear infinite;
+  }
+
+  @keyframes roman-activity-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .roman-reply-activity span {
+      animation: none;
+      background: none;
+      color: #797366;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .roman-reply-activity span {
+      animation: none;
+      background: none;
+      color: CanvasText;
+    }
   }
 
   .roman-question {
@@ -261,10 +300,81 @@
     @apply m-0 flex min-h-[44px] items-center pr-[84px] font-normal text-[18px] text-[#4e0e0e];
   }
 
-  .roman-composer {
+  .roman-composer,
+  .roman-voice-composer {
     @apply z-10 shrink-0 px-[26px] pt-[14px] pb-[24px];
     padding-bottom: max(24px, env(safe-area-inset-bottom));
     background: linear-gradient(transparent, #f7f5ef 14px);
+  }
+
+  .roman-voice-bar {
+    @apply flex min-h-[56px] items-center gap-[10px] rounded-[28px] border border-solid border-[#e3e0d8] bg-white p-[5px];
+  }
+
+  .roman-voice-waveform {
+    @apply flex h-[44px] min-w-0 flex-1 items-center justify-center gap-[4px] px-[8px] text-[#4e0e0e];
+  }
+
+  .roman-voice-waveform span {
+    @apply h-[24px] w-[3px] shrink-0 rounded-full bg-current;
+    transform: scaleY(0.2);
+  }
+
+  .roman-voice-waveform span:nth-child(3n) {
+    height: 34px;
+    animation-delay: -0.8s;
+  }
+  .roman-voice-waveform span:nth-child(3n + 1) {
+    height: 18px;
+    animation-delay: -0.3s;
+  }
+  .roman-voice-waveform span:nth-child(4n) {
+    height: 28px;
+    animation-delay: -1.2s;
+  }
+
+  .roman-voice-waveform[data-animated="true"] span {
+    animation-name: roman-voice-wave;
+    animation-duration: 1.4s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+  }
+
+  @keyframes roman-voice-wave {
+    0%,
+    100% {
+      transform: scaleY(0.25);
+    }
+    50% {
+      transform: scaleY(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .roman-voice-waveform[data-animated="true"] span {
+      animation: none;
+      transform: scaleY(0.65);
+    }
+  }
+
+  .roman-voice-actions {
+    @apply flex shrink-0 items-center gap-[6px];
+  }
+
+  .roman-voice-icon {
+    @apply inline-flex size-[44px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-[#f7f5ef] p-0 text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
+  }
+
+  .roman-voice-icon:last-child {
+    @apply bg-[#4e0e0e] text-[#f7f5ef];
+  }
+
+  .roman-voice-icon[aria-pressed="true"] {
+    background-color: #e3d5d1;
+  }
+
+  .roman-voice-notice {
+    @apply mt-[6px] block px-[10px] text-[12px] leading-[18px] text-[#797366];
   }
 
   .roman-voice-controls {
@@ -533,13 +643,14 @@
       @apply text-[12px] leading-[18px];
     }
 
-    .roman-composer {
+    .roman-composer,
+    .roman-voice-composer {
       @apply px-[16px] pt-[10px];
       padding-bottom: max(12px, env(safe-area-inset-bottom));
     }
 
-    .roman-voice-controls:not(.roman-voice-dock) {
-      @apply px-[16px] pt-[6px];
+    .roman-reply-activity {
+      @apply px-[16px];
     }
 
     .roman-voice-controls button {

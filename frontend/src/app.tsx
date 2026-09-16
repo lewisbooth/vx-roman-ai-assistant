@@ -12,6 +12,7 @@ import { Composer } from "./chat/Composer";
 import { Timeline } from "./chat/Timeline";
 import { Welcome } from "./chat/Welcome";
 import { VoiceControls } from "./chat/VoiceControls";
+import { ReplyActivity } from "./chat/ReplyActivity";
 import { ToolApproval } from "./chat/ToolApproval";
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
@@ -43,6 +44,7 @@ function Assistant({
 }: AssistantProps) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const viewport = useRef<HTMLDivElement>(null);
+  const conversationView = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const messages = state.conversation?.messages;
   const hasMessages = !!messages?.length;
@@ -63,6 +65,8 @@ function Assistant({
     !localVoice &&
     (state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active");
+  const voiceMode = localVoice || waitingForVoice;
+  const previousVoiceMode = useRef(voiceMode);
   const activeQuestion =
     state.conversation?.status === "active"
       ? latestQuestion(messages ?? [])
@@ -132,6 +136,28 @@ function Assistant({
 
   useEffect(() => onReady(), [onReady]);
 
+  useLayoutEffect(() => {
+    if (previousVoiceMode.current === voiceMode) return;
+    previousVoiceMode.current = voiceMode;
+    const view = conversationView.current;
+    if (!view || view.hidden || !view.getClientRects().length) return;
+    const active = (view.getRootNode() as ShadowRoot).activeElement;
+    // Preserve focus in a question or other widget while its action stops voice.
+    if (
+      active &&
+      view.contains(active) &&
+      !active.closest(".roman-composer, .roman-voice-composer")
+    )
+      return;
+    view
+      .querySelector<HTMLElement>(
+        voiceMode
+          ? ".roman-voice-composer button:not(:disabled)"
+          : ".roman-composer textarea",
+      )
+      ?.focus({ preventScroll: true });
+  }, [voiceMode]);
+
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
     if (hasMessages && following.current && scroll)
@@ -146,7 +172,11 @@ function Assistant({
 
   return (
     <div className="roman-content roman-chat">
-      <div className="roman-conversation" hidden={toolsOpen}>
+      <div
+        ref={conversationView}
+        className="roman-conversation"
+        hidden={toolsOpen}
+      >
         {(hasMessages || state.restoring || state.conversation) && (
           <header className="roman-chat-header">
             {state.conversation?.status === "active" && (
@@ -205,6 +235,11 @@ function Assistant({
             <Welcome logoUrl={logoUrl} />
           )}
         </div>
+        <ReplyActivity
+          state={state}
+          ending={ending}
+          onContentChange={followConversation}
+        />
         {state.approval && (
           <ToolApproval approval={state.approval} session={session} />
         )}
@@ -232,6 +267,7 @@ function Assistant({
           )}
         <Composer
           key={chatVersion}
+          hidden={voiceMode}
           busy={
             ending ||
             answering ||

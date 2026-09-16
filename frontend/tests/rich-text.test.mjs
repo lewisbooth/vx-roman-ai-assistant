@@ -408,3 +408,82 @@ test("streamed prose paragraphs preserve link focus and keep HTML and unsafe lin
   assert.match(container.textContent, /Safe first line/);
   assert.match(container.textContent, /Unsafe/);
 });
+
+test("displayed prose trims leading text and bold starts without losing internal word spaces", (t) => {
+  const { container, render } = setup(t);
+  for (const text of [
+    "  Roman can help.",
+    "&nbsp; Roman can help.",
+    "&nbsp; **Roman** can help.",
+    "**&#32;Roman** can help.",
+  ]) {
+    render(text);
+    assert.equal(container.querySelector("p").textContent, "Roman can help.");
+  }
+  render("First thought.\n&nbsp; **Another** thought with  two spaces.");
+  assert.deepEqual(
+    [...container.querySelectorAll("p")].map(
+      (paragraph) => paragraph.textContent,
+    ),
+    ["First thought.", "Another thought with  two spaces."],
+  );
+  assert.equal(container.querySelector("strong").textContent, "Another");
+});
+
+test("streaming an indented prose start retains a single word separator and stable emphasis", (t) => {
+  const { container, render } = setup(t);
+  render("&nbsp; **Roman**");
+  const bold = container.querySelector("strong");
+  for (const suffix of [" can", " can help", " can help you."]) {
+    render(`&nbsp; **Roman**${suffix}`);
+    assert.equal(container.querySelector("p").textContent, `Roman${suffix}`);
+    assert.ok(container.querySelector("strong") === bold);
+  }
+});
+
+test("leading-space cleanup preserves indented, fenced and inline code whitespace", (t) => {
+  const { container, render } = setup(t);
+  render("    if (width) {\n      measure();\n    }");
+  assert.equal(
+    container.querySelector("pre code").textContent,
+    "if (width) {\n  measure();\n}\n",
+  );
+  render("```text\n  width = 300\n    drop = 400\n```");
+  assert.equal(
+    container.querySelector("pre code").textContent,
+    "  width = 300\n    drop = 400\n",
+  );
+  render("&nbsp; `  300 mm  ` stays code.");
+  assert.equal(container.querySelector("p code").textContent, " 300 mm ");
+  assert.equal(
+    container.querySelector("p").textContent,
+    " 300 mm  stays code.",
+  );
+});
+
+test("voice captions trim only the displayed leading space while stored text stays unchanged", (t) => {
+  const { container, timeline } = setup(t);
+  const text = " \n\tHi I'm Roman. Keep  these spaces. ";
+  const part = Object.freeze({
+    type: "voice",
+    version: 1,
+    voiceId: "22222222-2222-4222-8222-222222222222",
+    text,
+    startMs: 0,
+    endMs: 100,
+  });
+  timeline([
+    {
+      id: "voice-reply",
+      role: "assistant",
+      status: "complete",
+      createdAt: "2026-09-15T10:00:00.000Z",
+      parts: [part],
+    },
+  ]);
+  assert.equal(
+    container.querySelector(".roman-voice-caption p").textContent,
+    "Hi I'm Roman. Keep  these spaces. ",
+  );
+  assert.equal(part.text, text);
+});
