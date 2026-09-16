@@ -319,6 +319,7 @@ function Assistant({
           key={chatVersion}
           hidden={voiceMode}
           busy={textBusy}
+          disabled={ending || state.restoring}
           error={state.error || startError || endError}
           onClearError={() => {
             setEndError(null);

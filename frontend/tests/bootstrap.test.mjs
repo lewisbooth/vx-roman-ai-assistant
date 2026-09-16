@@ -167,15 +167,31 @@ function hidden(element) {
 
 function addVisibleHeader(document) {
   const header = document.createElement("main-header");
+  const form = document.createElement("form");
+  form.dataset.form = "header-search";
+  const row = document.createElement("div");
+  row.dataset.searchContainer = "";
+  const field = document.createElement("div");
+  const search = document.createElement("input");
+  search.dataset.testid = "menu-search-input";
+  search.getClientRects = () => [{ width: 1, height: 48 }];
+  Object.defineProperty(search, "offsetHeight", { value: 48 });
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  field.append(search, submit);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.dataset.searchClose = "";
+  row.append(field, cancel);
+  form.append(row);
   const utilities = document.createElement("div");
   utilities.className = "header__utilities";
   const account = document.createElement("a");
   account.dataset.testid = "menu-account-link";
-  account.getClientRects = () => [{ width: 1, height: 1 }];
   utilities.append(account);
-  header.append(utilities);
+  header.append(form, utilities);
   document.body.prepend(header);
-  return { header, account };
+  return { header, search, form, cancel, account };
 }
 
 function headerLauncher(document) {
@@ -763,16 +779,26 @@ test("readiness completion after disconnection cannot reopen or retain the old r
   assert.equal(document.querySelector("style[data-roman-layout]"), null);
 });
 
-test("a visible theme header receives an accessible launcher that controls the existing sidebar", async (t) => {
+test("the header launcher sits after the search field and controls Roman without submitting search", async (t) => {
   const ctx = setup(t);
-  const { account } = addVisibleHeader(ctx.document);
+  const { search, form, cancel, account } = addVisibleHeader(ctx.document);
+  let submitted = 0;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitted++;
+  });
   await until(
     () => !!headerButton(ctx.document),
-    "header launcher was not attached beside the visible account link",
+    "header launcher was not attached beside the visible search input",
   );
   const host = headerLauncher(ctx.document);
   const button = headerButton(ctx.document);
-  assert.equal(account.previousElementSibling, host);
+  assert.equal(search.parentElement.nextElementSibling, host);
+  assert.equal(host.nextElementSibling, cancel);
+  assert.equal(host.closest(".header__utilities"), null);
+  assert.equal(account.parentElement.children.length, 1);
+  assert.equal(button.style.height, "48px");
+  assert.equal(button.type, "button");
   assert.equal(button.getAttribute("aria-label"), "Roman AI Assistant");
   assert.equal(button.getAttribute("aria-expanded"), "false");
   assert.equal(button.firstChild.textContent.trim(), "Ask");
@@ -781,6 +807,7 @@ test("a visible theme header receives an accessible launcher that controls the e
   assert.match(logo.src, /roman-wordmark\.svg$/);
   assert.equal(ctx.launcher().hidden, true);
   button.click();
+  assert.equal(submitted, 0);
   assert.equal(hidden(ctx.panel()), false);
   assert.equal(button.getAttribute("aria-expanded"), "true");
   assert.equal(ctx.launcher().getAttribute("aria-expanded"), "true");
@@ -808,7 +835,8 @@ test("header replacement preserves the open runtime and moves close focus to the
   await until(() => {
     const launcher = headerLauncher(ctx.document);
     return (
-      !!launcher && replacement.account.previousElementSibling === launcher
+      !!launcher &&
+      replacement.search.parentElement.nextElementSibling === launcher
     );
   }, "header launcher was not moved to the replacement header");
   const replacementHost = headerLauncher(ctx.document);
@@ -834,7 +862,7 @@ test("an active conversation falls back when its header hook disappears and clea
   loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
   await until(() => mounts.length === 1, "runtime did not mount");
   mounts[0].setSessionActive(true);
-  visible.account.getClientRects = () => [];
+  visible.search.getClientRects = () => [];
   ctx.window.dispatchEvent(new ctx.window.Event("resize"));
   await until(
     () => !headerLauncher(ctx.document),
@@ -847,7 +875,7 @@ test("an active conversation falls back when its header hook disappears and clea
   const replacement = addVisibleHeader(ctx.document);
   await delay(20);
   assert.equal(
-    !!replacement.account.nextElementSibling?.hasAttribute(
+    !!replacement.search.parentElement.nextElementSibling?.hasAttribute(
       "data-roman-header-launcher",
     ),
     false,
@@ -862,13 +890,13 @@ test("scrolling or opening the home view never shows the floating R without a co
     true,
     "a missing header is not a session",
   );
-  const { account } = addVisibleHeader(ctx.document);
+  const { search } = addVisibleHeader(ctx.document);
   await until(
     () => !!headerButton(ctx.document),
     "header launcher did not attach",
   );
   const header = headerLauncher(ctx.document);
-  ctx.setInView(account, false);
+  ctx.setInView(search, false);
   ctx.window.dispatchEvent(new ctx.window.Event("scroll"));
   assert.equal(
     header.isConnected,
@@ -877,12 +905,12 @@ test("scrolling or opening the home view never shows the floating R without a co
   );
   assert.equal(ctx.launcher().hidden, true);
   assert.equal(ctx.requests.length, 0);
-  ctx.setInView(account, true);
+  ctx.setInView(search, true);
   headerButton(ctx.document).click();
   const mounts = installRuntime(ctx.window);
   loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
   await until(() => mounts.length === 1, "home runtime did not mount");
-  ctx.setInView(account, false);
+  ctx.setInView(search, false);
   assert.equal(hidden(ctx.panel()), false);
   assert.equal(
     ctx.launcher().hidden,
@@ -895,7 +923,7 @@ test("scrolling or opening the home view never shows the floating R without a co
 
 test("active text or voice conversations float only offscreen and confirmed End hides the R immediately", async (t) => {
   const ctx = setup(t);
-  const { account } = addVisibleHeader(ctx.document);
+  const { search } = addVisibleHeader(ctx.document);
   await until(
     () => !!headerButton(ctx.document),
     "header launcher did not attach",
@@ -907,7 +935,7 @@ test("active text or voice conversations float only offscreen and confirmed End 
   const trigger = headerButton(ctx.document);
   mounts[0].setSessionActive(true);
   assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(account, false);
+  ctx.setInView(search, false);
   assert.equal(ctx.launcher().hidden, false);
   assert.equal(headerButton(ctx.document), trigger);
   ctx.close().click();
@@ -915,14 +943,14 @@ test("active text or voice conversations float only offscreen and confirmed End 
   assert.equal(ctx.launcher().getAttribute("aria-expanded"), "false");
   ctx.launcher().click();
   assert.equal(trigger.getAttribute("aria-expanded"), "true");
-  ctx.setInView(account, true);
+  ctx.setInView(search, true);
   assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(account, false);
+  ctx.setInView(search, false);
   assert.equal(ctx.launcher().hidden, false);
   mounts[0].setSessionActive(false);
   assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(account, true);
-  ctx.setInView(account, false);
+  ctx.setInView(search, true);
+  ctx.setInView(search, false);
   assert.equal(
     ctx.launcher().hidden,
     true,
@@ -944,22 +972,22 @@ test("header replacement ignores old intersection notifications without restarti
   loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
   await until(() => mounts.length === 1, "runtime did not mount");
   mounts[0].setSessionActive(true);
-  ctx.setInView(first.account, false);
+  ctx.setInView(first.search, false);
   assert.equal(ctx.launcher().hidden, false);
   const replacement = addVisibleHeader(ctx.document);
   first.header.remove();
   await until(
     () =>
-      replacement.account.previousElementSibling ===
+      replacement.search.parentElement.nextElementSibling ===
       headerLauncher(ctx.document),
     "header launcher did not rebind",
   );
   assert.equal(ctx.launcher().hidden, true);
   ctx.intersections[0].callback([
-    { target: first.account, isIntersecting: false },
+    { target: first.search, isIntersecting: false },
   ]);
   assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(replacement.account, false);
+  ctx.setInView(replacement.search, false);
   assert.equal(ctx.launcher().hidden, false);
   assert.equal(mounts.length, 1);
 });

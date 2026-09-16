@@ -558,7 +558,8 @@ test("typed and tile sends show their local row before a session exists without 
       );
       assert.equal(ctx.input(), input);
       assert.equal(input.value, "Keep my room description");
-      assert.equal(input.disabled, true);
+      assert.equal(input.readOnly, true);
+      assert.equal(input.disabled, false);
       ctx.update({
         pending: false,
         optimisticMessage: null,
@@ -573,7 +574,7 @@ test("typed and tile sends show their local row before a session exists without 
         },
       });
       accept();
-      await until(() => !input.disabled, "The confirmed send did not settle");
+      await until(() => !input.readOnly, "The confirmed send did not settle");
       assert.equal(
         ctx.container.querySelectorAll(".roman-message-user").length,
         1,
@@ -618,7 +619,7 @@ test("an unconfirmed first message returns to retryable home without losing its 
   reject(new ctx.window.Error("Connection lost. Please retry."));
   await until(
     () =>
-      !!ctx.container.querySelector(".roman-welcome") && !ctx.input().disabled,
+      !!ctx.container.querySelector(".roman-welcome") && !ctx.input().readOnly,
     "Failed send did not return to home",
   );
   assert.equal(ctx.input().value, "My measurements");
@@ -657,7 +658,7 @@ test("each welcome tile starts a normal text conversation without clearing the c
       tiles[index].click();
       tiles[(index + 1) % tiles.length].click();
       await until(
-        () => tiles.every((tile) => tile.disabled) && input.disabled,
+        () => tiles.every((tile) => tile.disabled) && input.readOnly,
         "Tile submission did not lock every text action",
       );
       assert.deepEqual(ctx.calls, [starter]);
@@ -676,7 +677,7 @@ test("each welcome tile starts a normal text conversation without clearing the c
       await until(
         () =>
           !ctx.container.querySelector(".roman-welcome") &&
-          !ctx.input().disabled,
+          !ctx.input().readOnly,
         "Accepted tile did not become the normal conversation",
       );
       assert.equal(
@@ -722,13 +723,13 @@ test("welcome and composer share a same-tick submission guard", async (t) => {
           : "My typed question",
       ]);
       await until(
-        () => ctx.input().disabled,
+        () => ctx.input().readOnly,
         "Submission did not lock the composer",
       );
       accept();
       await until(
         () =>
-          !ctx.input().disabled &&
+          !ctx.input().readOnly &&
           (first === "tile" || ctx.input().value === ""),
         "Submission did not finish",
       );
@@ -847,7 +848,7 @@ test("accepted submissions clear the draft and same-tick repeats cannot send twi
     new window.Event("submit", { bubbles: true, cancelable: true }),
   );
   await until(
-    () => input().disabled,
+    () => input().readOnly,
     "Local pending state did not lock the composer",
   );
   assert.deepEqual(calls, ["I need a roman blind"]);
@@ -855,7 +856,7 @@ test("accepted submissions clear the draft and same-tick repeats cannot send twi
   assert.equal(input().value, "  I need a roman blind  ");
   accept();
   await until(
-    () => !input().disabled,
+    () => !input().readOnly,
     "Accepted send did not release the composer",
   );
   assert.equal(input().value, "");
@@ -875,11 +876,92 @@ test("failed submissions preserve the draft and display an actionable error", as
   );
   assert.equal(input().value, "Keep these measurements");
   assert.equal(input().disabled, false);
+  assert.equal(input().getRootNode().activeElement, input());
   assert.deepEqual(calls, ["Keep these measurements"]);
   assert.match(
     container.querySelector('[role="alert"]').textContent,
     /Connection lost/,
   );
+});
+
+test("Enter and Send retain composer focus through submission and the model reply", async (t) => {
+  for (const action of ["Enter", "Send"])
+    await t.test(action, async (t) => {
+      let accept;
+      const accepted = new Promise((resolve) => {
+        accept = resolve;
+      });
+      const ctx = await setup(t, { onSend: () => accepted });
+      await ctx.type("400 by 500 mm");
+      const input = ctx.input();
+      const root = input.getRootNode();
+      input.focus();
+      if (action === "Enter") {
+        input.dispatchEvent(
+          new ctx.window.KeyboardEvent("keydown", {
+            key: "Enter",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      } else {
+        const send = ctx.container.querySelector('button[type="submit"]');
+        send.focus();
+        send.click();
+      }
+      await until(() => input.readOnly, "Send did not become pending");
+      assert.equal(root.activeElement, input);
+      assert.equal(input.disabled, false);
+      assert.equal(input.value, "400 by 500 mm");
+      ctx.update({
+        conversation: { ...activeConversation([]), busy: true },
+      });
+      accept();
+      await until(() => input.value === "", "Accepted draft was not cleared");
+      assert.equal(input.readOnly, true);
+      assert.equal(root.activeElement, input);
+      ctx.update({ conversation: activeConversation([]) });
+      await until(() => !input.readOnly, "Reply did not release text entry");
+      assert.equal(root.activeElement, input);
+      await ctx.type("That's correct");
+      assert.equal(root.activeElement, input);
+      assert.deepEqual(ctx.calls, ["400 by 500 mm"]);
+    });
+});
+
+test("a late send completion never takes focus back after the customer moves away", async (t) => {
+  for (const destination of ["storefront", "voice"])
+    await t.test(destination, async (t) => {
+      let accept;
+      const accepted = new Promise((resolve) => {
+        accept = resolve;
+      });
+      const ctx = await setup(t, { onSend: () => accepted });
+      await ctx.type("Help me measure");
+      ctx.container.querySelector('button[type="submit"]').click();
+      await until(() => ctx.input().readOnly, "Send did not become pending");
+      let target;
+      if (destination === "voice") {
+        ctx.update({ voice: { status: "active", muted: false, error: null } });
+        await until(
+          () => !!ctx.container.querySelector('[aria-label="End voice"]'),
+          "Voice controls did not appear",
+        );
+        target = ctx.container.querySelector('[aria-label="End voice"]');
+      } else {
+        target = ctx.window.document.createElement("button");
+        ctx.window.document.body.append(target);
+      }
+      target.focus();
+      accept();
+      await until(() => ctx.input().value === "", "Send did not complete");
+      assert.equal(target.getRootNode().activeElement, target);
+      assert.equal(
+        ctx.input().disabled,
+        destination === "voice",
+        "Only voice ownership should disable the text input",
+      );
+    });
 });
 
 test("Enter sends, while Shift+Enter and composition Enter do not submit", async (t) => {
@@ -930,7 +1012,7 @@ test("retrying a connection clears the duplicated local send error without resen
   assert.equal(ctx.input().value, "Keep this draft");
 });
 
-test("restoration and backend work disable the composer without inventing a new session", async (t) => {
+test("restoration disables the composer and backend work keeps it read-only without inventing a new session", async (t) => {
   const { container, update, input, calls } = await setup(t, {
     state: { restoring: true },
   });
@@ -952,7 +1034,8 @@ test("restoration and backend work disable the composer without inventing a new 
     () => container.querySelector('[role="log"]'),
     "Restored history was not displayed",
   );
-  assert.equal(input().disabled, true);
+  assert.equal(input().disabled, false);
+  assert.equal(input().readOnly, true);
   assert.match(container.textContent, /Roman is thinking/);
   assert.deepEqual(calls, []);
 });
@@ -2453,7 +2536,11 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     () => !ctx.container.querySelector(".roman-question"),
     "Locally selected voice answer kept waiting for the server",
   );
-  assert.equal(ctx.container.querySelector(".roman-message-user .roman-message-text").textContent, "Full blackout");
+  assert.equal(
+    ctx.container.querySelector(".roman-message-user .roman-message-text")
+      .textContent,
+    "Full blackout",
+  );
   assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
   accept();
   await until(

@@ -43,15 +43,29 @@
   }
   :host([data-roman-header-launcher]) {
     display: inline-flex;
+    flex-shrink: 0;
   }
   .roman-header-button {
+    --fill: #fff;
+    margin-left: 12px;
     gap: 6px;
     padding: 0 12px 0 16px;
     color: #4e0e0e;
-    background: #fff;
+    background:
+      linear-gradient(var(--fill) 0 0) padding-box,
+      linear-gradient(
+          110deg,
+          #4e0e0e 20%,
+          #b87967 35%,
+          #fff8e8 45% 55%,
+          #b87967 65%,
+          #4e0e0e 80%
+        )
+        100% 0 / 300% 100% border-box;
+    animation: roman-header-shine 3s linear infinite;
     font-size: 16px;
     line-height: 1;
-    border: 1px solid var(--color-button-secondary-border);
+    border: 2px solid transparent;
     border-radius: var(--button-radius);
   }
   .roman-header-button img {
@@ -59,10 +73,17 @@
     margin-bottom: 3px;
   }
   .roman-header-button[aria-expanded="true"] {
-    background: #4e0e0e;
+    --fill: #4e0e0e;
     color: #f7f5ef;
     img {
       filter: brightness(0) invert(1);
+    }
+  }
+  @keyframes roman-header-shine {
+    to {
+      background-position:
+        0 0,
+        -50% 0;
     }
   }
   .roman-panel {
@@ -89,6 +110,7 @@
   }
   .roman-progress {
     @apply h-full w-2/3 rounded-[999px] bg-roman-burgundy;
+    animation: roman-loading 1.2s ease-in-out infinite alternate;
   }
   .roman-loading-error {
     @apply mt-[24px] text-center text-[16px];
@@ -121,9 +143,6 @@
 }
 [hidden] {
   display: none !important;
-}
-.roman-progress {
-  animation: roman-loading 1.2s ease-in-out infinite alternate;
 }
 @keyframes roman-loading {
   from {

@@ -14,14 +14,14 @@ export function attachHeaderLauncher(
   (button.lastChild as HTMLImageElement).src = wordmarkUrl;
   button.onclick = onClick;
   shadow.append(style.cloneNode(true), button);
-  let account: HTMLElement | null = null;
+  let search: HTMLElement | null = null;
   let inView = false;
   let active = false;
   const update = () => {
     fallback.hidden = !active || inView;
   };
   const intersection = new IntersectionObserver((entries) => {
-    const entry = entries.find((entry) => entry.target === account);
+    const entry = entries.find((entry) => entry.target === search);
     if (entry) {
       inView = entry.isIntersecting;
       update();
@@ -29,7 +29,7 @@ export function attachHeaderLauncher(
   });
   const sync = () => {
     let next = document.querySelector<HTMLElement>(
-      'main-header .header__utilities > [data-testid="menu-account-link"]',
+      "main-header [data-testid=menu-search-input]",
     );
     if (
       next &&
@@ -37,15 +37,16 @@ export function attachHeaderLauncher(
         getComputedStyle(next).visibility === "hidden")
     )
       next = null;
-    if (next !== account) {
+    if (next !== search) {
       intersection.disconnect();
-      account = next;
-      inView = !!account;
-      if (account) intersection.observe(account);
+      search = next;
+      inView = !!search;
+      if (search) intersection.observe(search);
     }
-    if (account) {
-      if (account.previousElementSibling !== host) account.before(host);
-      button.style.height = `${account.offsetHeight}px`;
+    if (search) {
+      const field = search.parentElement!;
+      if (field.nextElementSibling !== host) field.after(host);
+      button.style.height = `${search.offsetHeight}px`;
     } else host.remove();
     update();
     button.ariaExpanded = fallback.ariaExpanded;
@@ -70,7 +71,7 @@ export function attachHeaderLauncher(
     dispose() {
       observer.disconnect();
       intersection.disconnect();
-      account = null;
+      search = null;
       window.removeEventListener("resize", sync);
       button.onclick = null;
       host.remove();

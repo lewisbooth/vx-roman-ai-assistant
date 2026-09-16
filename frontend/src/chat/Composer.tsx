@@ -10,6 +10,7 @@ import { StartVoiceButton } from "./VoiceControls";
 
 type ComposerProps = {
   busy: boolean;
+  disabled?: boolean;
   hidden?: boolean;
   error: string | null;
   onClearError: () => void;
@@ -19,6 +20,7 @@ type ComposerProps = {
 
 export function Composer({
   busy,
+  disabled = false,
   hidden = false,
   error,
   onClearError,
@@ -31,7 +33,7 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const submitting = useRef(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const pending = busy || sending;
+  const pending = busy || disabled || sending;
   const displayedError = error || sendError;
 
   useLayoutEffect(() => {
@@ -44,7 +46,10 @@ export function Composer({
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const text = message.trim();
-    if (!text || busy || submitting.current) return;
+    if (!text || busy || disabled || hidden || submitting.current) return;
+    // Focus during the user's submission, never after the network response: a
+    // later completion must not steal focus from another control or voice mode.
+    textarea.current?.focus({ preventScroll: true });
     submitting.current = true;
     setSending(true);
     setSendError(undefined);
@@ -109,7 +114,8 @@ export function Composer({
             rows={1}
             maxLength={MAX_MESSAGE_LENGTH}
             placeholder="Ask Roman anything..."
-            disabled={pending}
+            disabled={disabled || hidden}
+            readOnly={pending}
           />
           <button
             type="submit"

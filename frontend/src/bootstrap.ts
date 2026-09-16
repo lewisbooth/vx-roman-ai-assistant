@@ -24,6 +24,7 @@ let download:
 let loadingStartedAt: number | undefined;
 
 const visibilityKey = "roman:sidebar-open";
+const startError = "Roman could not start. Please retry.";
 let storageUnavailable = false;
 
 function savedState(value?: string, key = visibilityKey): string | null {
@@ -35,7 +36,7 @@ function savedState(value?: string, key = visibilityKey): string | null {
   } catch {
     storageUnavailable = true;
     console.warn(
-      "[Roman] Storage unavailable; sidebar state won't survive navigation.",
+      "[Roman] Storage unavailable; navigation will reset the sidebar.",
     );
     return null;
   }
@@ -47,7 +48,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
   if (download) {
     if (download.url !== url)
       return Promise.reject(
-        new Error("Roman was updated. Refresh the page to continue."),
+        new Error("Roman was updated. Refresh to continue."),
       );
     return download.promise;
   }
@@ -68,21 +69,18 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       } else resolve(window.RomanAssistant!);
     };
     const timeout = window.setTimeout(
-      () =>
-        finish(
-          new Error("Roman is taking too long to load. Please try again."),
-        ),
+      () => finish(new Error("Roman timed out. Please retry.")),
       15000,
     );
     script.onload = () =>
       finish(
         typeof window.RomanAssistant?.mountAssistant === "function"
           ? undefined
-          : new Error("Roman could not start. Please try again."),
+          : new Error(startError),
       );
     script.onerror = () =>
       finish(
-        new Error("Roman could not load. Check your connection and try again."),
+        new Error("Roman could not load. Check your connection and retry."),
       );
     try {
       document.head.append(script);
@@ -168,34 +166,30 @@ class RomanAssistant extends HTMLElement {
     panel.className = "roman-panel";
     // Static markup only. Theme-provided URLs are assigned as DOM properties.
     panel.innerHTML = `
-<img class="roman-texture" alt="" hidden>
-<div data-roman-content class="roman-content-scroll" hidden></div>
-<div data-roman-loading class="roman-loading">
-  <img class="roman-loading-logo" alt="Roman by SelectBlinds" width="178" height="75">
-  <div class="roman-progress-track" role="progressbar" aria-label="Loading Roman"><div class="roman-progress"></div></div>
-  <p class="roman-loading-error" role="alert" hidden></p>
-  <button data-roman-retry class="roman-retry" type="button" hidden>Retry</button>
+<img class=roman-texture alt="" hidden>
+<div data-roman-content class=roman-content-scroll hidden></div>
+<div data-roman-loading class=roman-loading>
+<img class=roman-loading-logo alt="Roman by SelectBlinds">
+<div class=roman-progress-track role=progressbar aria-label="Loading Roman"><div class=roman-progress></div></div>
+<p class=roman-loading-error role=alert hidden></p>
+<button data-roman-retry class=roman-retry type=button hidden>Retry</button>
 </div>
-<button class="roman-close" type="button" aria-label="Close assistant"><svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M15 5L5 15M5 5L15 15" stroke="#4e0e0e" stroke-width="1.67" stroke-linecap="round"/></svg></button>`;
-    const texture = panel.querySelector<HTMLImageElement>(".roman-texture")!;
+<button class=roman-close type=button aria-label="Close assistant"><svg width=20 height=20 viewBox="0 0 20 20" aria-hidden=true><path d="M15 5L5 15M5 5L15 15" stroke=#4e0e0e stroke-width=1.67 stroke-linecap=round /></svg></button>`;
+    const query = panel.querySelector.bind(panel);
+    const texture = query<HTMLImageElement>(".roman-texture")!;
     if (this.dataset.textureUrl) {
       texture.src = this.dataset.textureUrl;
       texture.hidden = false;
     }
-    const logo = panel.querySelector<HTMLImageElement>(".roman-loading-logo")!;
+    const logo = query<HTMLImageElement>(".roman-loading-logo")!;
     if (this.dataset.logoUrl) logo.src = this.dataset.logoUrl;
     this.#panel = panel;
-    this.#closeButton = panel.querySelector<HTMLButtonElement>(".roman-close")!;
-    this.#content = panel.querySelector<HTMLDivElement>(
-      "[data-roman-content]",
-    )!;
-    this.#loading = panel.querySelector<HTMLDivElement>(
-      "[data-roman-loading]",
-    )!;
-    this.#progress = panel.querySelector<HTMLDivElement>("[role=progressbar]")!;
-    this.#error = panel.querySelector<HTMLParagraphElement>("[role=alert]")!;
-    this.#retryButton =
-      panel.querySelector<HTMLButtonElement>("[data-roman-retry]")!;
+    this.#closeButton = query<HTMLButtonElement>(".roman-close")!;
+    this.#content = query<HTMLDivElement>("[data-roman-content]")!;
+    this.#loading = query<HTMLDivElement>("[data-roman-loading]")!;
+    this.#progress = query<HTMLDivElement>("[role=progressbar]")!;
+    this.#error = query<HTMLParagraphElement>("[role=alert]")!;
+    this.#retryButton = query<HTMLButtonElement>("[data-roman-retry]")!;
     this.#closeButton.addEventListener("click", () => this.#setOpen(false));
     this.#retryButton.addEventListener("click", () => void this.#start(true));
     panel.addEventListener("keydown", (event) => {
@@ -250,9 +244,7 @@ class RomanAssistant extends HTMLElement {
         !this.dataset.logoUrl ||
         (!import.meta.env.DEV && !this.dataset.scriptUrl)
       )
-        throw new Error(
-          "Roman's assets are not configured. Refresh the page and try again.",
-        );
+        throw new Error("Roman's assets are missing. Refresh and retry.");
       const module = await loadRuntime(this.dataset.scriptUrl || "", retry);
       if (!this.isConnected || generation !== this.#generation) return;
       const runtime = module.mountAssistant(
@@ -278,9 +270,7 @@ class RomanAssistant extends HTMLElement {
       this.#panel!.ariaBusy = "false";
       this.#progress!.hidden = true;
       this.#error!.textContent =
-        error instanceof Error
-          ? error.message
-          : "Roman could not start. Please try again.";
+        error instanceof Error ? error.message : startError;
       this.#error!.hidden = false;
       this.#retryButton!.hidden = false;
     }
