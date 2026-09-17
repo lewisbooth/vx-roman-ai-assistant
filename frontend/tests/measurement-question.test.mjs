@@ -150,6 +150,13 @@ test("measurement input has explicit units and guide instructions without steali
     ctx.container.querySelector(".roman-question-hint").textContent,
     /Reply aloud or enter your measurement/,
   );
+  assert.deepEqual(
+    [...ctx.container.querySelectorAll("button")].map((button) => ({
+      label: button.textContent,
+      type: button.type,
+    })),
+    [{ label: "Submit", type: "submit" }],
+  );
   assert.equal(
     ctx.container.querySelector(".roman-question").getAttribute("aria-busy"),
     "false",
@@ -157,7 +164,7 @@ test("measurement input has explicit units and guide instructions without steali
   assert.deepEqual(ctx.calls, []);
 });
 
-test("decimal submission uses the canonical answer and locks repeated submit/actions while pending", async (t) => {
+test("decimal submission uses the canonical answer and locks repeated submissions while pending", async (t) => {
   let finish;
   const ctx = setup(t, {
     onAnswer: () =>
@@ -242,24 +249,6 @@ test("submission failure retains the value and permits editing/retry without aut
     ctx.calls.map((call) => call[1]),
     ["Recess clearance: .5 in", "Recess clearance: .75 in"],
   );
-});
-
-test("change units and stop measuring use the same answer callback without requiring a number", async (t) => {
-  for (const action of ["Change units", "Stop measuring"])
-    await t.test(action, async (t) => {
-      const ctx = setup(t, { voice: true });
-      ctx.fill("12.25");
-      const button = [...ctx.container.querySelectorAll("button")].find(
-        (button) => button.textContent === action,
-      );
-      ctx.flush(() => button.click());
-      await until(() => !ctx.input().readOnly);
-      assert.deepEqual(
-        ctx.calls.map((call) => call[1]),
-        [action],
-      );
-      assert.equal(ctx.input().value, "12.25");
-    });
 });
 
 test("disabled and retired questions cannot submit; history retains guide instructions and units", (t) => {

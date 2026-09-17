@@ -2104,7 +2104,7 @@ test("measurement questions persist verified product context and resume through 
   const history = await restarted.getModelHistory(id);
   assert.deepEqual(history.at(-1), {
     role: "assistant",
-    text: `${selection.question}\nMeasurement input: ${JSON.stringify(selection.measurement)}\nAvailable controls: ["Change units","Stop measuring"]`,
+    text: `${selection.question}\nMeasurement input: ${JSON.stringify(selection.measurement)}`,
   });
   const next = await restarted.beginTurn(id, {
     requestId: randomUUID(),

@@ -1,8 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import {
   formatMeasurementAnswer,
-  MEASUREMENT_CHANGE_UNITS,
-  MEASUREMENT_STOP,
   type QuestionPart,
 } from "../../../shared/questions";
 
@@ -138,18 +136,6 @@ export function Question({
               </button>
             </div>
           </form>
-          <div className="roman-question-answers">
-            {[MEASUREMENT_CHANGE_UNITS, MEASUREMENT_STOP].map((value) => (
-              <button
-                key={value}
-                type="button"
-                disabled={disabled || pending}
-                onClick={() => void answer(value)}
-              >
-                {value}
-              </button>
-            ))}
-          </div>
         </>
       ) : (
         <div className="roman-question-answers">

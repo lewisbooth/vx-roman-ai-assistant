@@ -1,6 +1,8 @@
 import type { ConversationMessage } from "./conversation";
 import { parseProductPath, productPathSchema } from "./product-path";
 
+// Accepted for answers and durable receipts from already-open clients. New
+// measurement widgets leave changes and stopping to normal text or speech.
 export const MEASUREMENT_CHANGE_UNITS = "Change units";
 export const MEASUREMENT_STOP = "Stop measuring";
 
@@ -25,7 +27,7 @@ export interface VoiceAnswerInput extends QuestionAnswerReference {
 export interface QuestionSelection {
   question: string;
   answers: string[];
-  /** Numeric input and fixed flow controls instead of suggested answers. */
+  /** Numeric input instead of suggested answers. */
   measurement?: MeasurementQuestion;
 }
 
@@ -63,7 +65,7 @@ export const askMeasurementToolDefinition = {
   type: "function",
   name: "ask_measurement",
   description:
-    "Request one measurement using a numeric input, selected units and concise guide-grounded instructions beneath the reply's other widgets. First read this product's guides in this reply and establish units with ask_question (cm / mm / in), unless already explicit. Label the actual measurement, such as Width, Drop or Handle clearance; never invent a PDP field. Use only the current product and guide-supported instructions. Choose either this tool or ask_question once per reply. The widget owns the written question and instructions; voice says the instructions and question once. Typed or spoken answers also work. Change units and Stop measuring controls are supplied by the interface. A unit change restarts collection in the new units, without converting or reusing the old set. This only asks a question: it does not save, confirm or apply dimensions.",
+    "Request one measurement using a numeric input, selected units and concise guide-grounded instructions beneath the reply's other widgets. First read this product's guides in this reply and establish units with ask_question (cm / mm / in), unless already explicit. Label the actual measurement, such as Width, Drop or Handle clearance; never invent a PDP field. Use only the current product and guide-supported instructions. Choose either this tool or ask_question once per reply. This is the last action in a routine measuring reply: finish any necessary guide or product presentation first and include all instructions in this call. The widget owns the written question and instructions; voice says the instructions and question once. Typed or spoken answers also work, including requests to change units or stop measuring. A unit change restarts collection in the new units, without converting or reusing the old set. This only asks a question: it does not save, confirm or apply dimensions.",
   strict: true,
   parameters: {
     type: "object",

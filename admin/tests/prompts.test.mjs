@@ -497,7 +497,8 @@ test("measurement units, abandonment and product changes cannot carry partial va
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
       /Adapt to typed or spoken answers as well as widget submissions; the widgets are not a mandatory script/,
-      /Changing units through a typed or spoken answer \(including "actually cm" or a reading in a different unit\) or the "Change units" control means confirm the new unit, discard this run's partial measurement set and retake all required readings in that unit/,
+      /Changing units through a typed or spoken answer \(including "actually cm" or a reading in a different unit\) means discard this run's partial measurement set and retake all required readings in the new unit/,
+      /Use an explicitly supplied new unit without another confirmation turn; ask which unit only when unclear/,
       /never silently convert or mix old and new readings/,
       /"Stop measuring" or a changed topic abandons the current measuring run/,
       /do not continue asking for its next value/,
@@ -507,6 +508,10 @@ test("measurement units, abandonment and product changes cannot carry partial va
       /save those exact values with set_measurements and then call apply_measurements in the same reply/,
     ])
       assert.match(prompt, rule);
+    assert.doesNotMatch(
+      prompt,
+      /"Change units" control|Stop measuring controls are supplied/,
+    );
   }
 });
 
@@ -531,19 +536,77 @@ test("numeric and choice widgets share one answer request without duplicate writ
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /If ask_measurement succeeded, include its brief instructions followed by its exact question once/,
+    /application passes its exact instructions and question to Roman as the voice briefing without a separate final narration request/,
   );
   const live = romanVoicePrompt("marin");
   for (const rule of [
     /Allow only one answer request per reply across ask_question and ask_measurement/,
     /Speak that step's brief instructions and exact question once/,
     /do not add another question or insist on the widget when the customer answers aloud/,
-    /Delegate numeric answers, corrections, Change units and Stop measuring/,
+    /Delegate numeric answers, corrections, unit changes and requests to stop measuring/,
   ])
     assert.match(live, rule);
   assert.doesNotMatch(
     live,
     /free-form speech\/text for open-ended details or entering dimensions/,
+  );
+});
+
+test("numeric questions normally finish directly but preserve outcomes and instructions when narration is requested", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(
+      prompt,
+      /A validated ask_measurement normally finishes the reply directly/,
+    );
+    assert.match(
+      prompt,
+      /Finish necessary reads, checks and guide cards before calling it; an ordinary numeric question needs no extra prose/,
+    );
+    assert.match(
+      prompt,
+      /If the application requests another response to preserve an earlier action outcome or fit the voice briefing limit/,
+    );
+    assert.match(
+      prompt,
+      /preserves confirmed outcomes and all current-step instructions without duplicating the written question/,
+    );
+    assert.match(
+      prompt,
+      /This shortcut applies only to ask_measurement; ask_question still needs the final overview or action outcomes when relevant/,
+    );
+    assert.match(
+      prompt,
+      /One successful get_product_guides result for the unchanged product in this reply is sufficient/,
+    );
+    assert.match(prompt, /reuse those attachments instead of calling it again/);
+    assert.match(
+      prompt,
+      /A new reply or product change requires current guide provenance again/,
+    );
+    assert.match(
+      prompt,
+      /Earlier guide links, earlier assistant advice, prior tool results, catalog claims and model memory are not source evidence for this reply/,
+    );
+  }
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /A validated ask_measurement normally finishes the backend reply directly/,
+  );
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /If another response is requested, preserve any confirmed action outcomes and all current-step instructions concisely, then include the exact measurement question once/,
+  );
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /For other replies, return only a concise factual briefing after the requested work/,
+  );
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /If ask_question succeeded, include its displayed question exactly once after the factual overview/,
+  );
+  assert.doesNotMatch(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /If ask_measurement succeeded, include its brief instructions/,
   );
 });
 

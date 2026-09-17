@@ -739,7 +739,7 @@ test("voice backend requests retain tool policy without text greetings or presen
   assert.match(instructions, /one cart or form mutation is allowed per reply/);
   assert.doesNotMatch(instructions, /Every cart mutation requires/);
   assert.match(instructions, /save those exact values with set_measurements/);
-  assert.match(instructions, /Return only a concise factual briefing/);
+  assert.match(instructions, /return only a concise factual briefing/i);
   assert.doesNotMatch(
     instructions,
     /For a greeting or open-ended start in a new conversation, first call ask_question|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
@@ -1598,13 +1598,12 @@ const measurementCall = (
   callId = "measurement-1",
 ) => catalogCall(callId, "ask_measurement", args);
 
-test("text and voice measurement inputs retain guide provenance and instructions without saving or applying values", async () => {
+test("validated text and voice measurement inputs finish immediately with guide provenance and no writes", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
     env.streams.push(
       events(completed("", { output: [guideLookup()] })),
       events(completed("", { output: [measurementCall()] })),
-      events(completed("")),
     );
     const dispatched = [];
     const reply = await env.api.generateReply(
@@ -1633,24 +1632,213 @@ test("text and voice measurement inputs retain guide provenance and instructions
     );
     assert.equal(reply.text, "");
     assert.equal(env.calls.guideReads.length, 1);
-    const request = env.calls.requests.at(-1).input;
-    assert.equal(
-      request.tools.some((tool) =>
-        ["ask_question", "ask_measurement"].includes(tool.name),
-      ),
-      false,
-    );
-    const result = request.input.find(
-      (item) =>
-        item.call_id === "measurement-1" &&
-        item.type === "function_call_output",
-    );
-    assert.deepEqual(JSON.parse(result.output), {
-      question,
-      answers: [],
-      measurement,
-    });
+    assert.equal(env.calls.requests.length, 2);
+    assert.equal(env.streams.length, 0);
   }
+});
+
+test("terminal numeric replies preserve selected cards, visible text and completed usage", async () => {
+  const env = setup();
+  const usage = [];
+  const note = "Keep the selected mounting method.";
+  env.streams.push(
+    events(completed("", { output: [catalogCall("lookup")] })),
+    events(completed("", { output: [showCall([123])] })),
+    events(completed("", { output: [guideLookup()] })),
+    events(completed("", { output: [guideSelection()] })),
+    events(
+      completed("", {
+        output: [
+          { type: "message", content: [{ type: "output_text", text: note }] },
+          measurementCall(),
+        ],
+        usage: { input_tokens: 100, output_tokens: 40, total_tokens: 140 },
+      }),
+    ),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (callId, name) =>
+      name === "get_product_guides" ? guideResult() : catalogResult(123),
+    "text",
+    async (value) => usage.push(plain(value)),
+    guideOrigin,
+  );
+  assert.equal(env.calls.requests.length, 5);
+  assert.equal(reply.text, note);
+  assert.deepEqual(plain(reply.presentation), {
+    callId: "show-1",
+    productIds: [productGid(123)],
+  });
+  assert.deepEqual(plain(reply.guidePresentation), {
+    callId: "guides-show",
+    sourceCallId: "guides-lookup",
+    productPath: guidePath,
+    kinds: ["fitting", "measuring"],
+  });
+  assert.equal(
+    reply.questionPresentation.measurement.instructions,
+    measurementSelection.instructions,
+  );
+  assert.equal(usage.length, 10);
+  assert.equal(usage.at(-1).status, "completed");
+  assert.equal(usage.at(-1).totalTokens, 140);
+  assert.ok(
+    env.calls.requests.every(
+      ({ input }) =>
+        input.model === "gpt-5.6-terra" &&
+        input.service_tier === "fast" &&
+        input.reasoning.effort === "medium" &&
+        input.store === false,
+    ),
+  );
+});
+
+test("terminal voice numeric replies retain the current overview and speak the exact method/question once", async () => {
+  const env = setup();
+  const overview = "The manufacturer's allowance remains unchanged.";
+  const method = `${measurementSelection.instructions} ${measurementSelection.question}`;
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(
+      completed("", {
+        output: [
+          {
+            type: "message",
+            content: [
+              { type: "output_text", text: `${overview} ${method} ${method}` },
+            ],
+          },
+          measurementCall(),
+        ],
+      }),
+    ),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(),
+    "voice",
+    undefined,
+    guideOrigin,
+  );
+  assert.equal(reply.text, `${overview} ${method}`);
+  assert.equal(env.calls.requests.length, 2);
+});
+
+test("numeric voice replies keep a completion round when their overview would truncate critical instructions", async () => {
+  const env = setup();
+  const selection = {
+    ...measurementSelection,
+    instructions: "Measure from the labelled endpoints. ".repeat(16).trim(),
+    question: "Which reading did you take? ".repeat(9).trim(),
+  };
+  const finalText = `${selection.instructions} ${selection.question}`;
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(
+      completed("", {
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: "A necessary explanation. ".repeat(12),
+              },
+            ],
+          },
+          measurementCall(selection),
+        ],
+      }),
+    ),
+    events(completed(finalText)),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(),
+    "voice",
+    undefined,
+    guideOrigin,
+  );
+  assert.equal(reply.text, finalText);
+  assert.equal(
+    reply.questionPresentation.measurement.instructions,
+    selection.instructions,
+  );
+  assert.equal(env.calls.requests.length, 3);
+});
+
+test("numeric questions do not skip the outcome briefing after a measurement draft write", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(
+      completed("", {
+        output: [
+          catalogCall("save", "set_measurements", {
+            productPath: guidePath,
+            width: 500,
+            height: 600,
+            unit: "mm",
+            kind: "window",
+            mount: "unknown",
+          }),
+        ],
+      }),
+    ),
+    events(completed("", { output: [measurementCall()] })),
+    events(
+      completed(
+        "Your window notes were saved. The remaining reading is separate.",
+      ),
+    ),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (callId, name) =>
+      name === "get_product_guides" ? guideResult() : { status: "saved" },
+    "voice",
+    undefined,
+    guideOrigin,
+  );
+  assert.equal(env.calls.requests.length, 4);
+  assert.match(reply.text, /window notes were saved/);
+  assert.ok(reply.questionPresentation);
+});
+
+test("a terminal measurement completion still obeys cancellation after usage is recorded", async () => {
+  const env = setup();
+  const controller = new AbortController();
+  let completions = 0;
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(completed("", { output: [measurementCall()] })),
+  );
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => {},
+      controller.signal,
+      async () => guideResult(),
+      "text",
+      async (value) => {
+        if (value.status === "completed" && ++completions === 2)
+          controller.abort(new Error("Stopped before question publication"));
+      },
+      guideOrigin,
+    ),
+    /Stopped before question publication/,
+  );
+  assert.equal(env.calls.requests.length, 2);
+  assert.equal(completions, 2);
 });
 
 test("measurement inputs reject absent or wrong-product guide evidence and cannot bypass the gate through ask_question", async () => {
@@ -1752,7 +1940,7 @@ test("navigation retires measurement evidence until the destination product guid
           ],
         }),
       ),
-      events(completed("Continue measuring.")),
+      ...(!refreshed ? [events(completed("Continue measuring."))] : []),
     );
     const reply = await env.api.generateReply(
       [],
@@ -2995,11 +3183,6 @@ test("startup resume exposes only guide reads and the matching saved question pr
           output: [numeric ? measurementCall() : questionCall()],
         }),
       ),
-      events(
-        completed(
-          "Unneeded extra question that must not replace the saved question.",
-        ),
-      ),
     );
     const reply = await env.api.generateReply(
       [],
@@ -3022,6 +3205,8 @@ test("startup resume exposes only guide reads and the matching saved question pr
     );
     assert.equal(reply.questionPresentation.question, saved.question);
     assert.equal(env.calls.guideReads.length, numeric ? 1 : 0);
+    assert.equal(env.calls.requests.length, numeric ? 2 : 1);
+    assert.equal(env.streams.length, 0);
     if (numeric) {
       assert.equal(reply.questionPresentation.sourceCallId, "guides-lookup");
       assert.equal(
@@ -3141,7 +3326,6 @@ test("runner forwards durable startup scope and suppresses stale committed resul
     };
     env.streams.push(
       events(completed("", { output: [questionCall()] })),
-      events(completed("")),
     );
     const reply = await env.api.runVoiceDelegation(
       "resume",
@@ -3160,6 +3344,7 @@ test("runner forwards durable startup scope and suppresses stale committed resul
       ["get_product_guides", "ask_question"],
     );
     assert.equal(!!reply, finished);
+    assert.equal(env.calls.requests.length, 1);
   }
 });
 
@@ -3253,7 +3438,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
   );
   assert.match(
     env.calls.requests[0].input.instructions,
-    /Return only a concise factual briefing/,
+    /return only a concise factual briefing/i,
   );
   assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");

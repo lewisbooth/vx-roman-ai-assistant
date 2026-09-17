@@ -28,8 +28,6 @@ import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import {
   isQuestionAnswer,
   latestQuestion,
-  MEASUREMENT_CHANGE_UNITS,
-  MEASUREMENT_STOP,
   parseQuestionAnswerReference,
   parseQuestionPart,
   parseQuestionSelection,
@@ -610,7 +608,7 @@ function modelHistory(
                   {
                     role: "assistant" as const,
                     text: part.measurement
-                      ? `${part.question}\nMeasurement input: ${JSON.stringify(part.measurement)}\nAvailable controls: ${JSON.stringify([MEASUREMENT_CHANGE_UNITS, MEASUREMENT_STOP])}`
+                      ? `${part.question}\nMeasurement input: ${JSON.stringify(part.measurement)}`
                       : `${part.question}\nSuggested answers: ${JSON.stringify(part.answers)}`,
                   },
                 ]
