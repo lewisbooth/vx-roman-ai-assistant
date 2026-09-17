@@ -74,7 +74,7 @@ test("question selection is bounded, normalized and plain text with distinct ans
   );
   assert.match(
     askQuestionToolDefinition.description,
-    /Only end a written text reply with a direct question when neither answer-request tool succeeds/,
+    /the application supplies fallback choices without another written question/,
   );
   assert.match(
     askQuestionToolDefinition.description,

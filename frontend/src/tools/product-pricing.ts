@@ -16,7 +16,7 @@ type PricingElement = HTMLElement & {
 const displayedAmount =
   /^(?:[+\-−]\s*)?(?:(?:[A-Z]{0,3}\p{Sc}|[A-Z]{3})\s*(?:\d+(?:[.,]\d{1,2})?|\d{1,3}(?:[., ]\d{3})+(?:[.,]\d{1,2})?)|(?:\d+(?:[.,]\d{1,2})?|\d{1,3}(?:[., ]\d{3})+(?:[.,]\d{1,2})?)\s*(?:[A-Z]{0,3}\p{Sc}|[A-Z]{3}))$/u;
 
-function displayedPrice(element: Element): string | null {
+export function displayedPrice(element: Element): string | null {
   if (element.querySelector(".text-error,[role=alert]")) return null;
   const sales = [...element.querySelectorAll(".sale-price")].filter(
     controlVisible,

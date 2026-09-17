@@ -17,6 +17,9 @@ export interface ProductConfigurationControl {
   options: ProductConfigurationChoice[];
   /** A native dependency on an option in this same configuration snapshot. */
   parent?: { controlId: string; optionId: string };
+  /** Optional paid protection needs a separate, explicit customer decision. */
+  purpose?: "measurement_guarantee";
+  description?: string;
 }
 export interface ProductMeasurements {
   unit: "mm" | "cm" | "in" | null;
@@ -66,7 +69,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "get_product_configuration",
     description:
-      "Read supported native customization choices, their parent-option dependencies, current measurements and the settled displayed configuredPrice on the currently open product. Navigate to the verified product first. Read again after every change to discover newly revealed or enabled choices. Resolve them using established context or a suitable default; ask a short follow-up when a meaningful preference remains unknown. A preselected default alone does not establish customer intent. Only returned available options can be changed; hidden/disabled choices may need the customer's product-page steps. Parent IDs belong to this snapshot only. An option's priceLabel is its native displayed charge: mention it when offering that choice, without confusing it with the total. configuredPrice is the current displayed product price, not a catalog starting price or cart total; null or missing means unknown. Never invent missing prices. The configurationId is short-lived and single-use. Unsupported custom widgets, insurance, quantity and purchase controls are excluded. Measurements must use the confirmed set_measurements/apply_measurements flow, never configure_product.",
+      "Read supported native customization choices, their parent-option dependencies, current measurements and the settled displayed configuredPrice on the currently open product. Navigate to the verified product first. Read again after every change to discover newly revealed or enabled choices. Resolve ordinary choices using established context or a suitable default; ask when a meaningful preference remains unknown. A measurement_guarantee control is different: always offer its actual description, conditions and priceLabel during configuration unless the customer already decided for this product and unchanged guarantee fee and terms. It requires an explicit customer choice, never a default or inferred opt-in. Only returned available options can be changed. Hidden/disabled choices may need product-page steps. Parent IDs belong to this snapshot only. priceLabel is an option surcharge. configuredPrice is the displayed product quote, excluding the separate measurement guarantee, not a catalog price or cart total; null or missing means unknown. Never invent prices or add these amounts yourself. The configurationId is short-lived and single-use. Unsupported custom widgets, cart-level insurance, quantity and purchase controls are excluded. Measurements use set_measurements/apply_measurements, never configure_product.",
     strict: true,
     parameters: {
       type: "object",
@@ -79,7 +82,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "configure_product",
     description:
-      "Apply one available customization choice requested by the customer or unambiguously established by their intent and the measuring method, using IDs from the latest get_product_configuration result. For example, outside-recess fitting can map to Exact, and a full width including brackets to Bracket to Bracket. Combine the relevant guide with actual PDP choices; the guide need not use the PDP's exact labels. Read again after every change, including newly exposed choices, before continuing. Ask only when the intended option is unclear. Never invent IDs, choose arbitrary defaults, infer physical suitability, change dimensions or allowances, enable unavailable controls, or retry an uncertain change. This waits for the native update; it does not enter measurements, purchase, add to cart or select insurance.",
+      "Apply one available customization choice requested by the customer or unambiguously established by their intent and measuring method, using IDs from the latest get_product_configuration result. Outside-recess fitting can map to Exact, and full width including brackets to Bracket to Bracket. Combine relevant guide meaning with actual PDP choices. Exception: measurement_guarantee choices require the customer's explicit answer to its current fee and conditions; defaults, dimension confirmation and approval to add a blind are not consent to this paid option. Apply the explicit yes or no even if that option is already selected, so the native theme records the decision. Respect a decline. Read again after every change, including newly exposed choices. Never invent IDs, choose arbitrary preferences, infer physical suitability, change dimensions or allowances, enable unavailable controls, or retry uncertainty. This waits for the native update; it does not enter measurements, purchase, add to cart or change cart-level insurance.",
     strict: true,
     parameters: {
       type: "object",
@@ -230,7 +233,26 @@ export function parseProductConfigurationResult(
         "kind",
         "options",
         ...(control.parent !== undefined ? ["parent"] : []),
+        ...(control.purpose !== undefined ? ["purpose"] : []),
+        ...(control.description !== undefined ? ["description"] : []),
       ]);
+      let guarantee:
+        | Pick<ProductConfigurationControl, "purpose" | "description">
+        | undefined;
+      if (control.purpose !== undefined || control.description !== undefined) {
+        if (
+          control.purpose !== "measurement_guarantee" ||
+          control.kind !== "radio" ||
+          control.parent !== undefined ||
+          !Array.isArray(control.options) ||
+          control.options.length !== 2
+        )
+          throw new Error("Invalid measurement guarantee control.");
+        guarantee = {
+          purpose: "measurement_guarantee",
+          description: text(control.description, 1200),
+        };
+      }
       let parent: ProductConfigurationControl["parent"];
       if (control.parent !== undefined) {
         const dependency = object(control.parent);
@@ -285,6 +307,7 @@ export function parseProductConfigurationResult(
         kind: control.kind as ProductConfigurationControl["kind"],
         options,
         ...(parent ? { parent } : {}),
+        ...guarantee,
       };
     },
   );

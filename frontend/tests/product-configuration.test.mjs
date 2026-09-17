@@ -109,6 +109,271 @@ function selection(read, control = 0, option = 1) {
   };
 }
 
+function guaranteeControls(ctx) {
+  const { window, form } = ctx;
+  form.querySelector("product-level-insurance").remove();
+  form.insertAdjacentHTML(
+    "beforeend",
+    `<input type="hidden" name="properties[ProductLevelInsurance]" value="false" data-product-level-insurance>
+    <product-level-insurance variantid="123456" data-is-insurance-auto-applied="false">
+      <div slot="heading"><p>Guarantee a Perfect Fit</p></div>
+      <div slot="options">
+        <label data-product-level-insurance-toggle data-value="false" active><input type="radio" name="product_level_insurance_toggle_123456" value="false" data-product-insurance><span class="body-md-semibold">Don't insure measurements</span></label>
+        <label data-product-level-insurance-toggle data-value="true"><input type="radio" name="product_level_insurance_toggle_123456" value="true" data-product-insurance><span class="body-md-semibold">Insure measurements</span><span class="body-sm">A replacement of the same blind costs no more, unless your new measurements are larger.</span><span class="body-sm whitespace-nowrap">+£12.00</span></label>
+      </div>
+    </product-level-insurance>`,
+  );
+  const component = form.querySelector("product-level-insurance"),
+    hidden = form.querySelector("[data-product-level-insurance]"),
+    pricing = form.parentElement,
+    inputs = [...component.querySelectorAll("input")],
+    toggles = [...component.querySelectorAll("label")],
+    clicks = [];
+  window.customElements.define(
+    "product-level-insurance",
+    class extends window.HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML =
+          '<slot name="heading"></slot><slot name="options"></slot>';
+      }
+    },
+  );
+  Object.assign(component, {
+    _insuranceOption: hidden,
+    _isInsuranceAutoApplied: false,
+    variantId: "123456",
+    cartHasInsurance: "false",
+  });
+  Object.assign(pricing, {
+    _productLevelInsuranceOption: hidden,
+    _isInsuranceAutoApplied: false,
+    productLevelInsuranceVariantId: "123456",
+    _insuranceInputChangedByUser: false,
+  });
+  // These are the two independently owned native click handlers. A direct
+  // checked assignment plus change event cannot update their hidden state.
+  toggles.forEach((toggle) =>
+    toggle.addEventListener("click", () => {
+      clicks.push(toggle.dataset.value);
+      toggles.forEach((label) =>
+        label.toggleAttribute("active", label === toggle),
+      );
+      hidden.value = toggle.dataset.value;
+      pricing._insuranceInputChangedByUser = true;
+    }),
+  );
+  return { component, hidden, pricing, inputs, toggles, clicks };
+}
+
+test("measurement guarantee exposes exact terms and separate charge, then records explicit native yes and no without a purchase", async (t) => {
+  const ctx = setup(t),
+    guarantee = guaranteeControls(ctx),
+    read = ctx.read(),
+    control = read.controls.find(
+      (item) => item.purpose === "measurement_guarantee",
+    );
+  assert.equal(control.label, "Guarantee a Perfect Fit");
+  assert.match(control.description, /unless your new measurements are larger/);
+  assert.deepEqual(
+    Array.from(control.options, (option) => [
+      option.label,
+      option.selected,
+      option.priceLabel,
+    ]),
+    [
+      ["Don't insure measurements", true, undefined],
+      ["Insure measurements", false, "+£12.00"],
+    ],
+  );
+  assert.equal(read.configuredPrice, null);
+  const call = {
+    productPath,
+    configurationId: read.configurationId,
+    controlId: control.id,
+    optionId: "o1",
+  };
+  assert.equal((await ctx.configure(call)).status, "applied");
+  assert.equal(guarantee.hidden.value, "true");
+  assert.equal(guarantee.inputs[1].checked, true);
+  assert.equal(guarantee.pricing._insuranceInputChangedByUser, true);
+  assert.deepEqual(guarantee.clicks, ["true"]);
+  assert.equal((await ctx.configure(call)).status, "unsupported");
+  const next = ctx.read();
+  assert.equal(
+    (
+      await ctx.configure({
+        ...call,
+        configurationId: next.configurationId,
+        optionId: "o0",
+      })
+    ).status,
+    "applied",
+  );
+  assert.equal(guarantee.hidden.value, "false");
+  assert.deepEqual(guarantee.clicks, ["true", "false"]);
+});
+
+test("explicit no still clicks the preselected default so pricing cannot treat it as an untouched choice", async (t) => {
+  const ctx = setup(t),
+    guarantee = guaranteeControls(ctx),
+    read = ctx.read(),
+    control = read.controls.find(
+      (item) => item.purpose === "measurement_guarantee",
+    );
+  assert.equal(
+    guarantee.inputs[0].checked,
+    false,
+    "Initial theme radio has no checked attribute",
+  );
+  assert.equal(
+    (
+      await ctx.configure({
+        productPath,
+        configurationId: read.configurationId,
+        controlId: control.id,
+        optionId: "o0",
+      })
+    ).status,
+    "applied",
+  );
+  assert.deepEqual(guarantee.clicks, ["false"]);
+  assert.equal(guarantee.pricing._insuranceInputChangedByUser, true);
+  assert.equal(guarantee.inputs[0].checked, true);
+});
+
+test("unverified guarantee markup is omitted without hiding ordinary product choices", async (t) => {
+  for (const scenario of [
+    "auto-applied",
+    "insured-slot",
+    "component-owner",
+    "pricing-owner",
+    "variant",
+    "hidden-name",
+    "duplicate",
+    "no-terms",
+    "long-terms",
+    "no-price",
+    "ambiguous-price",
+    "disabled",
+    "screen-disabled",
+    "hidden",
+    "wrong-label",
+    "wrong-radio",
+    "checked-disagreement",
+    "active-disagreement",
+    "uninitialized",
+  ]) {
+    await t.test(scenario, (t) => {
+      const ctx = setup(t),
+        g = guaranteeControls(ctx);
+      if (scenario === "auto-applied")
+        g.component._isInsuranceAutoApplied = true;
+      if (scenario === "insured-slot") g.component.cartHasInsurance = "true";
+      if (scenario === "component-owner")
+        g.component._insuranceOption =
+          ctx.window.document.createElement("input");
+      if (scenario === "pricing-owner")
+        g.pricing._productLevelInsuranceOption =
+          ctx.window.document.createElement("input");
+      if (scenario === "variant")
+        g.pricing.productLevelInsuranceVariantId = "654321";
+      if (scenario === "hidden-name") g.hidden.name = "properties[Different]";
+      if (scenario === "duplicate")
+        ctx.form.append(g.component.cloneNode(true));
+      if (scenario === "no-terms")
+        g.component.querySelector(".body-sm:not(.whitespace-nowrap)").remove();
+      if (scenario === "long-terms")
+        g.component.querySelector(
+          ".body-sm:not(.whitespace-nowrap)",
+        ).textContent = "x".repeat(1201);
+      if (scenario === "no-price")
+        g.component.querySelector(".whitespace-nowrap").remove();
+      if (scenario === "ambiguous-price")
+        g.component.querySelector(".whitespace-nowrap").textContent =
+          "+£12.00 +£10.00";
+      if (scenario === "disabled") g.inputs[1].disabled = true;
+      if (scenario === "screen-disabled")
+        g.inputs[1].setAttribute("data-screen-disabled", "");
+      if (scenario === "hidden") g.component.hidden = true;
+      if (scenario === "wrong-label") g.toggles[1].dataset.value = "false";
+      if (scenario === "wrong-radio") g.inputs[1].name = "another_field";
+      if (scenario === "checked-disagreement") g.inputs[1].checked = true;
+      if (scenario === "active-disagreement")
+        g.toggles[1].setAttribute("active", "");
+      if (scenario === "uninitialized") g.component.shadowRoot.innerHTML = "";
+      const read = ctx.read();
+      assert.equal(read.status, "available");
+      assert.equal(read.controls[0].label, "Fitting");
+      assert.equal(
+        read.controls.some(
+          (control) => control.purpose === "measurement_guarantee",
+        ),
+        false,
+      );
+      assert.deepEqual(g.clicks, []);
+    });
+  }
+});
+
+test("guarantee terms changing invalidates its capability before a click", async (t) => {
+  const ctx = setup(t),
+    g = guaranteeControls(ctx),
+    read = ctx.read(),
+    control = read.controls.find(
+      (item) => item.purpose === "measurement_guarantee",
+    );
+  g.component.querySelector(".body-sm:not(.whitespace-nowrap)").textContent =
+    "Different cover terms.";
+  const result = await ctx.configure({
+    productPath,
+    configurationId: read.configurationId,
+    controlId: control.id,
+    optionId: "o1",
+  });
+  assert.equal(result.status, "unsupported");
+  assert.deepEqual(g.clicks, []);
+});
+
+test("unconfirmed theme guarantee changes are uncertain and never replayed", async (t) => {
+  for (const scenario of [
+    "hidden-reset",
+    "owner-lost",
+    "choice-flag-lost",
+    "abort",
+    "page-change",
+  ]) {
+    await t.test(scenario, async (t) => {
+      const ctx = setup(t),
+        g = guaranteeControls(ctx),
+        read = ctx.read(),
+        control = read.controls.find(
+          (item) => item.purpose === "measurement_guarantee",
+        ),
+        call = {
+          productPath,
+          configurationId: read.configurationId,
+          controlId: control.id,
+          optionId: "o1",
+        },
+        controller = new ctx.window.AbortController();
+      const pending = ctx.tools.configureProduct(call, controller.signal);
+      assert.deepEqual(g.clicks, ["true"]);
+      if (scenario === "hidden-reset") g.hidden.value = "false";
+      if (scenario === "owner-lost") g.component._insuranceOption = null;
+      if (scenario === "choice-flag-lost")
+        g.pricing._insuranceInputChangedByUser = false;
+      if (scenario === "abort") controller.abort();
+      if (scenario === "page-change")
+        ctx.window.history.pushState({}, "", "/products/another");
+      ctx.fire(250);
+      assert.equal((await pending).status, "uncertain");
+      assert.equal((await ctx.configure(call)).status, "unsupported");
+      assert.deepEqual(g.clicks, ["true"]);
+    });
+  }
+});
+
 test("discovery projects native feature choices only, with truthful hidden and disabled availability", (t) => {
   const ctx = setup(t),
     result = ctx.read();

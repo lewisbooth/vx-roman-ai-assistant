@@ -564,7 +564,7 @@ test("confirmed sample additions persist as distinct notifications and bind the 
   );
 });
 
-test("configuration hierarchy and displayed prices survive claimed results, persistence and model history", async () => {
+test("configuration hierarchy, guarantee terms and prices survive claimed results, persistence and model history", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
@@ -602,6 +602,29 @@ test("configuration hierarchy and displayed prices survive claimed results, pers
           },
         ],
       },
+      {
+        id: "c2",
+        label: "Guarantee a Perfect Fit",
+        kind: "radio",
+        purpose: "measurement_guarantee",
+        description:
+          "If your blind doesn’t fit, you can order a replacement of the same blind for no additional charge, unless your new measurements are larger.",
+        options: [
+          {
+            id: "o0",
+            label: "Don’t insure measurements",
+            selected: true,
+            available: true,
+          },
+          {
+            id: "o1",
+            label: "Insure measurements",
+            selected: false,
+            available: true,
+            priceLabel: "+£12.00",
+          },
+        ],
+      },
     ],
     measurements: { unit: "cm", width: 40, height: 50, availableUnits: ["cm"] },
     configuredPrice: "£65.89",
@@ -609,6 +632,7 @@ test("configuration hierarchy and displayed prices survive claimed results, pers
   };
   const historical = structuredClone(current);
   historical.configurationId = randomUUID();
+  historical.controls.pop();
   delete historical.configuredPrice;
   delete historical.controls[1].parent;
   delete historical.controls[1].options[1].priceLabel;
@@ -647,8 +671,11 @@ test("configuration hierarchy and displayed prices survive claimed results, pers
         JSON.parse(message.text.slice(message.text.indexOf("{"))).outcome,
     );
   assert.deepEqual(outcomes, [current, historical]);
+  assert.equal(outcomes[0].configuredPrice, "£65.89");
+  assert.equal(outcomes[0].controls[2].options[1].priceLabel, "+£12.00");
   assert.equal(Object.hasOwn(outcomes[1], "configuredPrice"), false);
   assert.equal(Object.hasOwn(outcomes[1].controls[1], "parent"), false);
+  assert.equal(outcomes[1].controls.some((control) => control.purpose), false);
 });
 
 test("cart completion and its inline addition commit atomically", async () => {

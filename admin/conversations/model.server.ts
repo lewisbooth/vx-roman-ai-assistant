@@ -45,6 +45,7 @@ import {
   parseProductGuidesResult,
 } from "../../shared/product-guides";
 import { ROMAN_TEXT_PROMPT } from "../prompts/text.server";
+import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
 import { readProductGuideFiles } from "../guides/files.server";
 import { createGuideContext } from "../guides/context.server";
 import type { GuideSession } from "../guides/session.server";
@@ -482,13 +483,26 @@ export async function generateReply(
           : accumulated + text;
       if (!answer.trim() && !questionPresentation)
         throw new Error("The model returned an empty reply.");
+      // A completed reply always leaves an easy way forward, without a repair
+      // model request. Specific model questions and numeric inputs take priority.
+      // These are new customer intents, never inferred consent or replayed work.
+      const nextQuestion = questionPresentation ?? {
+        callId: `next-actions-${randomUUID()}`,
+        question: "What would you like to do next?",
+        answers: [...ROMAN_WELCOME_QUESTION.answers],
+      };
       return {
-        text: answer,
+        text:
+          mode === "voice" &&
+          !questionPresentation &&
+          !answer.includes(nextQuestion.question)
+            ? `${answer.trimEnd()} ${nextQuestion.question}`
+            : answer,
         model: completed.model,
         serviceTier: completed.service_tier ?? undefined,
         ...(presentation ? { presentation } : {}),
         ...(guidePresentation ? { guidePresentation } : {}),
-        ...(questionPresentation ? { questionPresentation } : {}),
+        questionPresentation: nextQuestion,
         ...(cachedGuideSource ? { cachedGuideSource } : {}),
       };
     }
@@ -568,7 +582,7 @@ export async function generateReply(
             error:
               call.name === "ask_measurement"
                 ? "No measurement input was shown. First read this product's current guides, then request one supported measurement with its explicit units and instructions. Do not claim an input was shown or invent measuring advice."
-                : "No question was selected. Ask one short plain-text question with one to four distinct short answers. Do not claim answer buttons were shown; ask the question naturally in your reply instead.",
+                : "No question was selected. Do not claim those answer buttons were shown. Finish with the concise outcome; the application supplies safe fallback choices.",
           };
         }
         if (

@@ -83,6 +83,15 @@ const secondInput = {
 };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const plain = (value) => JSON.parse(JSON.stringify(value));
+const nextActionQuestion = "What would you like to do next?";
+function assertNextActions(reply) {
+  const { callId, ...selection } = plain(reply.questionPresentation ?? {});
+  assert.match(callId, /^next-actions-[0-9a-f-]{36}$/);
+  assert.deepEqual(selection, {
+    question: nextActionQuestion,
+    answers: ["Help me measure", "Explore products", "Find my style"],
+  });
+}
 const allowedToolNames = (request) =>
   request.tool_choice === "none"
     ? []
@@ -952,8 +961,11 @@ test("voice briefings retain the final outcome while text replies retain prelimi
         );
         assert.deepEqual(executions, ["get_cart", "clear_cart"]);
         assert.equal(env.calls.requests.length, 3);
-        assert.equal(reply.text, mode === "voice" ? final : accumulated);
-        if (mode === "voice") assert.equal(reply.text.slice(0, 1000), final);
+        const voiceFinal = `${final} ${nextActionQuestion}`;
+        assert.equal(reply.text, mode === "voice" ? voiceFinal : accumulated);
+        assertNextActions(reply);
+        if (mode === "voice")
+          assert.equal(reply.text.slice(0, 1000), voiceFinal);
         else assert.equal(partials.at(-1), accumulated);
       });
     }
@@ -2510,7 +2522,7 @@ test("measurement inputs reject absent or wrong-product guide evidence and canno
       undefined,
       guideOrigin,
     );
-    assert.equal(reply.questionPresentation, undefined);
+    assertNextActions(reply);
     const output = env.calls.requests
       .at(-1)
       .input.input.find(
@@ -2610,7 +2622,7 @@ test("navigation retires measurement evidence until the destination product guid
         reply.questionPresentation.sourceCallId,
         "destination-guides",
       );
-    } else assert.equal(reply.questionPresentation, undefined);
+    } else assertNextActions(reply);
   }
 });
 
@@ -2666,7 +2678,7 @@ test("invalid questions consume the single attempt without rendering an invalid 
       () => {},
       new AbortController().signal,
     );
-    assert.equal(reply.questionPresentation, undefined);
+    assertNextActions(reply);
     assert.match(
       env.calls.requests[1].input.input.find(
         (item) => item.type === "function_call_output",
@@ -3566,7 +3578,11 @@ test("partial guide reads attach and present only readable documents in text and
         assert.equal(env.calls.finishes.length, 1);
         const { result } = env.calls.finishes[0];
         assert.equal(result.status, "complete");
-        assert.equal(result.text, finalText);
+        assert.equal(
+          result.text,
+          mode === "voice" ? `${finalText} ${nextActionQuestion}` : finalText,
+        );
+        assertNextActions(result);
         assert.equal(result.error, undefined);
         if (selectedKind === "measuring") {
           assert.deepEqual(selectionOutput, {
@@ -4360,7 +4376,11 @@ test("voice delegation forwards canonical caption history to Terra without a fab
     firstInput.requestId,
     new AbortController().signal,
   );
-  assert.equal(reply.text, "These are verified blackout rollers.");
+  assert.equal(
+    reply.text,
+    `These are verified blackout rollers. ${nextActionQuestion}`,
+  );
+  assertNextActions(reply);
   assert.deepEqual(plain(env.calls.begins), [
     {
       id: "voice",
@@ -4643,7 +4663,11 @@ test("a corrected voice request silently retires its search while the replacemen
     secondInput.requestId,
     new AbortController().signal,
   );
-  assert.equal(replacement.text, "Here is the corrected blackout result.");
+  assert.equal(
+    replacement.text,
+    `Here is the corrected blackout result. ${nextActionQuestion}`,
+  );
+  assertNextActions(replacement);
   assert.equal(env.calls.browserTools.length, 1);
   assert.equal(env.calls.finishes.at(-1).result.status, "complete");
   assert.equal((await env.api.readConversation("voice")).busy, false);
@@ -4827,7 +4851,11 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
         await flush();
         assert.equal(env.calls.finishes.length, 1);
         assert.equal(env.calls.finishes[0].result.status, "complete");
-        assert.equal(env.calls.finishes[0].result.text, finalText);
+        assert.equal(
+          env.calls.finishes[0].result.text,
+          mode === "voice" ? `${finalText} ${nextActionQuestion}` : finalText,
+        );
+        assertNextActions(env.calls.finishes[0].result);
         assert.ok(
           env.calls.browserTools.every(
             (args) => args[3] === "apply_measurements",

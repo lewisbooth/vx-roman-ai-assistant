@@ -8,6 +8,7 @@ const bundle = await build({
   stdin: {
     contents: `
       export { ROMAN_TEXT_PROMPT } from './admin/prompts/text.server';
+      export { ROMAN_UPSELL_GUIDANCE } from './admin/prompts/knowledge-base/upsell';
       export { ROMAN_PREAMBLE, ROMAN_WELCOME_INTRO, ROMAN_WELCOME_QUESTION } from './admin/prompts/shared.server';
       export { ROMAN_VOICE_BRIEFING_PROMPT, ROMAN_VOICE_OPENING_PROMPTS, romanVoicePrompt } from './admin/prompts/voice.server';
       export { productGuidesToolDefinition, showGuidesToolDefinition } from './shared/product-guides';
@@ -26,6 +27,7 @@ runInNewContext(bundle.outputFiles[0].text, {
 });
 const {
   ROMAN_TEXT_PROMPT,
+  ROMAN_UPSELL_GUIDANCE,
   ROMAN_PREAMBLE,
   ROMAN_WELCOME_INTRO,
   ROMAN_WELCOME_QUESTION,
@@ -64,6 +66,7 @@ test("the generic welcome offers canonical quick answers without repeating text 
     ROMAN_TEXT_PROMPT,
     /widget owns the welcome's final question; do not also write it/,
   );
+  assert.match(ROMAN_TEXT_PROMPT, /If the question tool fails, write only that introduction and let the application supply fallback choices; do not add another question/);
   assert.match(
     ROMAN_TEXT_PROMPT,
     /specific request[\s\S]*do not offer the generic welcome menu/,
@@ -151,7 +154,7 @@ test("both backend modes use concise card recommendations and optional answer ch
       prompt,
       /ask_question[\s\S]*one to four distinct answers; prefer two or three/,
     );
-    assert.match(prompt, /Do not add an unnecessary question/);
+    assert.match(prompt, /Do not force an unrelated choice or repeat something the customer already answered/);
     assert.match(prompt, /Free-text and spoken answers are equally valid/);
     assert.match(
       prompt,
@@ -167,7 +170,7 @@ test("both backend modes use concise card recommendations and optional answer ch
     );
     assert.match(
       prompt,
-      /Only end a written text reply with a direct question when you do not call either answer-request tool/,
+      /Leave the written question to the answer widget, including an application-supplied fallback; do not add a second question in the prose/,
     );
     assert.match(
       prompt,
@@ -844,6 +847,24 @@ test("resumed numeric steps retain their input type and require current guide an
   );
 });
 
+test("sample outcomes continue contextually without replaying an addition or resetting saved work", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /After a confirmed sample addition or already_in_cart, continue any next work the customer already requested/,
+      /otherwise call ask_question with two or three useful next actions from the current context/,
+      /such as Find more products, Measure another window or View cart/,
+      /Do not stop at the sample acknowledgment, repeat its add action or force a full-product configuration review/,
+      /Preserve the current product, preferences and measurement drafts/,
+      /a next-step menu does not reset the conversation or erase saved values/,
+      /already_in_cart means the requested sample was already there, so do not claim another addition/,
+      /handed_off, uncertain, timeout or a lost result mean a change may still complete[\s\S]*never automatically repeat the write/,
+    ])
+      assert.match(prompt, rule);
+  }
+  assert.match(romanVoicePrompt("marin"), /After either confirmed sample outcome, continue the requested next work or say the backend's contextual next-action question once instead of stopping at the acknowledgment/);
+  assert.match(romanVoicePrompt("marin"), /Preserve preferences and measurement drafts without a generic welcome or redundant configuration recap/);
+});
+
 test("configuration followups use real paged choices and retain final review before a full-product addition", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
@@ -922,7 +943,7 @@ test("new dependent options use context and sensible defaults but surface meanin
       /Preserve established choices, avoid an unrelated full option wizard and do not question unchanged defaults again on every turn/,
     ])
       assert.match(prompt, rule);
-    assert.doesNotMatch(prompt, /Smartview|14 Channel|No Remote/);
+    assert.doesNotMatch(prompt, /14 Channel|No Remote/);
   }
   assert.match(romanVoicePrompt("marin"), /Delegate inspection of newly revealed or enabled dependent choices before final review/);
   assert.match(romanVoicePrompt("marin"), /resolve them from established context or retain a sensible compatible default; it asks only when a meaningful decision remains unresolved, not for every default/);
@@ -949,6 +970,92 @@ test("configuration reviews may quote only the current verified theme price", ()
   }
   assert.match(romanVoicePrompt("marin"), /Briefly state the current configuredPrice quote as returned when the backend supplies it; omit null, stale or unavailable prices/);
   assert.match(romanVoicePrompt("marin"), /Catalog prices are starting prices, not made-to-measure quotes, and must not replace the configured price/);
+});
+
+test("measurement guarantees require their own informed answer before full-product review", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /control with purpose measurement_guarantee is an explicit-consent exception to sensible defaults/,
+      /always offer an available guarantee before the final full-product review or addition unless the customer already explicitly accepted or declined it for this product at its current guarantee fee and material terms/,
+      /Use its returned description and the actual native yes\/no choices, including the accepting option's priceLabel/,
+      /briefly explain the guarantee fee and material conditions once, then call ask_question with two clear choices/,
+      /Preserve returned conditions such as same-blind replacement and charges for larger measurements when stated/,
+      /If the guarantee fee or material terms are unavailable, say what is missing rather than inventing them or enabling it automatically/,
+      /A native preselection, a dimensions confirmation or a generic final-add agreement is not consent/,
+      /already selected without an explicit answer, make that state clear and ask whether to keep or remove it/,
+      /Only an explicit answer authorizes configure_product using the fresh returned control and option IDs/,
+      /For a new explicit yes\/no answer, call configure_product even if that option is already selected: the native action records the customer decision and prevents a default from overriding it/,
+      /do not ask again unless the product, guarantee fee or material terms change/,
+      /Changes only to blind configuration or configuredPrice do not reopen that answer/,
+      /accepting it does not authorize adding the full product/,
+      /This fresh read needs no extra customer question unless an available guarantee lacks an explicit answer for this product and its current guarantee fee and material terms/,
+    ])
+      assert.match(prompt, rule);
+    assert.doesNotMatch(prompt, /12\.00/);
+  }
+  for (const rule of [
+    /Delegate an available measurement guarantee before final product review so the backend explains its current native guarantee fee and material terms and obtains an explicit answer/,
+    /Neither native preselection nor dimensions\/final-add agreement is guarantee consent/,
+    /Delegate that answer for the native update even when the option is already selected/,
+    /Say the backend's brief conditions and exact question once, without adding an approval/,
+    /or repeat an unchanged guarantee decision/,
+  ])
+    assert.match(romanVoicePrompt("marin"), rule);
+});
+
+test("guarantee costs remain separate from the configured price and never interrupt sample requests", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /configuredPrice excludes this guarantee's separate cart line: quote the current base product price and any accepted guarantee surcharge separately, without summing them/);
+    assert.match(prompt, /Do not interrupt a requested sample addition with a guarantee offer/);
+    assert.match(prompt, /After a confirmed sample addition or already_in_cart, continue any next work the customer already requested/);
+  }
+  assert.match(romanVoicePrompt("marin"), /Do not interrupt a sample request with an upsell/);
+  assert.match(romanVoicePrompt("marin"), /The guarantee charge stays separate from the base product price/);
+});
+
+test("one shared business knowledge prompt supplies grounded upsells and guarantees to both backend modes", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.equal(prompt.split(ROMAN_UPSELL_GUIDANCE).length - 1, 1);
+    assert.equal(prompt.split("## Measurement guarantee").length - 1, 1);
+    for (const name of ["TotalShade", "BlockScreen", "Complete Blackout", "Electric Smartview", "ClickFIT", "Click2Shade", "Twist2Go", "Stick2Fit", "Stick On"])
+      assert.ok(prompt.includes(name));
+  }
+  for (const rule of [
+    /one useful upgrade or alternative when it serves the customer's stated goals, fitting constraints, style and budget/,
+    /Respect a decline and do not re-offer it unless the customer changes the relevant need or asks to revisit it/,
+    /Do not move an agreed product outside their budget or replace it without their choice/,
+    /names are search leads, not proof of availability, performance or suitability/,
+    /Verify alternatives through the current store's catalog, options and charges through the current native PDP controls, and measuring\/fitting compatibility through the matching original guide/,
+    /never enable paid extras from a default or inferred preference/,
+    /do not interrupt a sample-only request, an unresolved measuring step or a final add already approved just to make an unrelated offer/,
+    /do not restart discovery or force an upsell at every turn/,
+  ])
+    assert.match(ROMAN_UPSELL_GUIDANCE, rule);
+  assert.match(romanVoicePrompt("marin"), /Let the backend choose relevant upgrades from verified store options and the customer's needs, budget and declines/);
+  assert.doesNotMatch(romanVoicePrompt("marin"), /Candidate ranges and options to investigate/);
+});
+
+test("substantive completions invite one natural next step without inventing measurements or repeating approvals", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /Finish a completed substantive response with one natural next step through ask_question, or ask_measurement when the next step needs a supported numeric reading/,
+      /especially after a completed flow or confirmed action/,
+      /Prefer contextual next steps; when none remain, offer Help me measure, Explore products and Find my style without a new greeting or resetting the current product, preferences or saved measurements/,
+      /For a request to stop measuring or finish the current topic, end that workflow; passive original capability choices may remain without restarting work/,
+      /Genuinely closed sessions and brief live backchannels need no new menu/,
+      /Do not invent numeric choices, measuring tasks or extra approval steps just to add a widget/,
+      /For open-ended details, free-form typed or spoken answers remain welcome; offer broad examples or Not sure when useful rather than inventing specifics/,
+      /Contextual next actions or the original capability choices can follow an open-ended explanation, within the same one-question limit/,
+      /Across ask_question and ask_measurement, make at most one answer request per reply/,
+      /Neither tool replaces the existing confirmation and approval rules/,
+    ])
+      assert.match(prompt, rule);
+  }
+  assert.match(ROMAN_TEXT_PROMPT, /Follow every completed substantive response with the shared next-step question policy/);
+  assert.match(ROMAN_TEXT_PROMPT, /If a widget cannot be presented, keep the response concise and let the application supply its fallback choices; do not add another written question/);
+  assert.match(romanVoicePrompt("marin"), /For a completed substantive request, delegate the next useful question with the work, then say its displayed question once/);
+  assert.match(romanVoicePrompt("marin"), /Do not turn brief backchannels or ordinary listening into menus/);
+  assert.match(romanVoicePrompt("marin"), /Stopping measuring or the current topic ends that workflow; passive original capability choices may remain without restarting it/);
 });
 
 test("guide interpretation prioritizes full instructions and treats clearance as a physical check, not a product input", () => {

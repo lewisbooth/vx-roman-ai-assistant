@@ -85,14 +85,16 @@ function setup(scripts) {
     records,
     requests,
     controller,
-    run: (onUsage = record) =>
+    run: (onUsage = record, options = {}) =>
       module.exports.generateReply(
         [{ role: "user", text: "Private synthetic test request." }],
         () => {},
         controller.signal,
-        async () => ({ products: [], messages: [] }),
-        "text",
+        options.execute ?? (async () => ({ products: [], messages: [] })),
+        options.mode ?? "text",
         onUsage,
+        options.origin,
+        options.resumeQuestion,
       ),
   };
 }
@@ -258,4 +260,187 @@ test("an attempt persistence failure prevents the provider request", async () =>
     /Database unavailable/,
   );
   assert.equal(app.requests.length, 0);
+});
+
+test("ordinary text and voice replies receive next-action choices without another provider round", async () => {
+  const replies = [];
+  for (const mode of ["text", "voice"]) {
+    const app = setup([events(terminal())]);
+    const reply = plain(await app.run(undefined, { mode }));
+    replies.push(reply);
+    assert.equal(app.requests.length, 1);
+    assert.deepEqual(
+      app.records.map((usage) => usage.status),
+      ["pending", "completed"],
+    );
+    assert.equal(app.records.at(-1).totalTokens, 15);
+    assert.match(
+      reply.questionPresentation.callId,
+      /^next-actions-[0-9a-f-]{36}$/,
+    );
+    assert.deepEqual(reply.questionPresentation.answers, [
+      "Help me measure",
+      "Explore products",
+      "Find my style",
+    ]);
+    assert.equal(
+      reply.questionPresentation.question,
+      "What would you like to do next?",
+    );
+    assert.equal(
+      reply.text,
+      mode === "text"
+        ? "Synthetic reply."
+        : "Synthetic reply. What would you like to do next?",
+    );
+    assert.equal(reply.model, "gpt-5.6-luna-observed");
+    assert.equal(reply.serviceTier, "priority");
+  }
+  assert.notEqual(
+    replies[0].questionPresentation.callId,
+    replies[1].questionPresentation.callId,
+  );
+});
+
+test("a model-selected follow-up remains authoritative instead of becoming a generic menu", async () => {
+  const question = {
+    question: "Which room are you measuring?",
+    answers: ["Kitchen", "Bedroom"],
+  };
+  for (const mode of ["text", "voice"]) {
+    const overview =
+      mode === "text"
+        ? "Let's start with your room."
+        : `Let's start with your room. ${question.question}`;
+    const app = setup([
+      events(
+        terminal("completed", tokens(20, 5), [
+          {
+            type: "function_call",
+            name: "ask_question",
+            call_id: "chosen-question",
+            arguments: JSON.stringify(question),
+          },
+        ]),
+      ),
+      events(
+        terminal("completed", tokens(25, 7), [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: overview }],
+          },
+        ]),
+      ),
+    ]);
+    const reply = plain(await app.run(undefined, { mode }));
+    assert.deepEqual(reply.questionPresentation, {
+      callId: "chosen-question",
+      ...question,
+    });
+    assert.equal(reply.text, overview);
+    assert.equal(app.requests.length, 2);
+    assert.doesNotMatch(
+      JSON.stringify(reply),
+      /next-actions-|What would you like to do next/,
+    );
+  }
+});
+
+test("failed, cancelled and empty replies cannot turn into successful next-action menus", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    for (const outcome of ["failed", "incomplete", "empty", "cancelled"]) {
+      await t.test(`${mode}: ${outcome}`, async () => {
+        const app = setup([
+          events(
+            outcome === "empty"
+              ? terminal("completed", tokens(10, 0), [])
+              : terminal(outcome === "cancelled" ? "completed" : outcome),
+          ),
+        ]);
+        let reply;
+        await assert.rejects(
+          async () => {
+            reply = await app.run(
+              async (usage) => {
+                app.records.push(plain(usage));
+                if (outcome === "cancelled" && usage.status === "completed")
+                  app.controller.abort();
+              },
+              { mode },
+            );
+          },
+          outcome === "cancelled"
+            ? { name: "AbortError" }
+            : outcome === "empty"
+              ? /empty reply/
+              : /did not complete/,
+        );
+        assert.equal(reply, undefined);
+        assert.equal(app.requests.length, 1);
+        assert.equal(app.records.length, 2);
+        assert.equal(
+          app.records.at(-1).status,
+          outcome === "empty" || outcome === "cancelled"
+            ? "completed"
+            : outcome,
+        );
+      });
+    }
+  }
+});
+
+test("saved-question resume failure retains its neutral limitation without inventing another question", async () => {
+  const resumeQuestion = {
+    type: "question",
+    version: 1,
+    invocationId: "saved-question",
+    question: "Which room are you measuring?",
+    answers: ["Kitchen", "Bedroom"],
+  };
+  const app = setup([events(terminal())]);
+  const reply = plain(
+    await app.run(undefined, { mode: "voice", resumeQuestion }),
+  );
+  assert.match(reply.text, /saved question could not be safely restored/);
+  assert.equal(reply.questionPresentation, undefined);
+  assert.doesNotMatch(reply.text, /What would you like to do next/);
+  assert.equal(app.requests.length, 1);
+  assert.equal(app.records.at(-1).totalTokens, 15);
+});
+
+test("unreadable guide recovery keeps its safe choices rather than general measuring actions", async () => {
+  const app = setup([
+    events(
+      terminal("completed", tokens(20, 5), [
+        {
+          type: "function_call",
+          name: "get_product_guides",
+          call_id: "unavailable-guide",
+          arguments: JSON.stringify({
+            productPath: "/products/blind",
+            kinds: ["measuring"],
+          }),
+        },
+      ]),
+    ),
+  ]);
+  const reply = plain(
+    await app.run(undefined, {
+      mode: "voice",
+      origin: "https://shop.example",
+      execute: async () => ({
+        status: "unavailable",
+        productPath: "/products/blind",
+        guides: [],
+      }),
+    }),
+  );
+  assert.match(reply.text, /couldn't read the product's official guides/);
+  assert.match(reply.questionPresentation.callId, /^guide-recovery-/);
+  assert.deepEqual(reply.questionPresentation.answers, [
+    "Explore other colours",
+    "Find another product",
+  ]);
+  assert.equal(app.requests.length, 1);
+  assert.equal(app.records.at(-1).totalTokens, 25);
 });

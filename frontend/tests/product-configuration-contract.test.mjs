@@ -146,3 +146,58 @@ test("quote labels are bounded plain display values with unknown distinct from z
   };
   assert.throws(() => parse("get_product_configuration", unavailable));
 });
+
+function withGuarantee() {
+  const input = snapshot();
+  input.controls.push({
+    id: "c3",
+    label: "Guarantee a Perfect Fit",
+    kind: "radio",
+    purpose: "measurement_guarantee",
+    description:
+      "Order a replacement of the same blind at no additional charge unless the new measurements are larger.",
+    options: [
+      {
+        id: "o0",
+        label: "Don't insure measurements",
+        selected: true,
+        available: true,
+      },
+      {
+        id: "o1",
+        label: "Insure measurements",
+        selected: false,
+        available: true,
+        priceLabel: "+ £12.00",
+      },
+    ],
+  });
+  return input;
+}
+
+test("the explicit guarantee purpose preserves native terms and separate fee without changing the product quote", () => {
+  const input = withGuarantee();
+  assert.deepEqual(parse("get_product_configuration", input), input);
+  assert.equal(
+    parse("get_product_configuration", input).configuredPrice,
+    "£65.89",
+  );
+});
+
+test("guarantee metadata is a bounded, paired contract, not a generic insurance capability", () => {
+  for (const change of [
+    (c) => delete c.description,
+    (c) => delete c.purpose,
+    (c) => (c.purpose = "cart_insurance"),
+    (c) => (c.description = "x".repeat(1201)),
+    (c) => (c.description = "Terms\nprivate"),
+    (c) => (c.kind = "checkbox"),
+    (c) => (c.parent = { controlId: "c0", optionId: "o0" }),
+    (c) => c.options.pop(),
+    (c) => (c.confirmed = true),
+  ]) {
+    const input = withGuarantee();
+    change(input.controls[3]);
+    assert.throws(() => parse("get_product_configuration", input));
+  }
+});

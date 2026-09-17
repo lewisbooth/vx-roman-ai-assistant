@@ -9,6 +9,12 @@ import {
 import { readProductMeasurements } from "./measurements";
 import { isSampleAvailable } from "./product-sample";
 import {
+  measurementGuaranteeSelected,
+  readMeasurementGuarantee,
+  selectMeasurementGuarantee,
+  type MeasurementGuarantee,
+} from "./product-measurement-guarantee";
+import {
   readConfiguredProductPrice,
   readProductOptionPrice,
   settleProductPrice,
@@ -21,7 +27,12 @@ import {
 } from "./product-controls";
 
 type NativeControl = HTMLInputElement | HTMLSelectElement;
-type Choice = { control: NativeControl; value: string; checked?: boolean };
+type Choice = {
+  control: NativeControl;
+  value: string;
+  checked?: boolean;
+  guarantee?: MeasurementGuarantee;
+};
 type Inspection = {
   form: HTMLFormElement;
   controls: ProductConfigurationControl[];
@@ -249,8 +260,39 @@ function inspect(productPath: string): Inspection {
     resolved.add(index);
   };
   controls.forEach((_, index) => resolveParent(index));
+  let guarantee: MeasurementGuarantee | undefined;
+  try {
+    guarantee = readMeasurementGuarantee(form);
+  } catch {
+    // An unsupported guarantee never hides the product's ordinary choices.
+  }
+  if (guarantee && controls.length < 24) {
+    controls.push({
+      id: `c${controls.length}`,
+      label: guarantee.title,
+      kind: "radio",
+      purpose: "measurement_guarantee",
+      description: guarantee.description,
+      options: guarantee.options.map((option, index) => ({
+        id: `o${index}`,
+        label: option.label,
+        selected: option.selected,
+        available: true,
+        ...(option.priceLabel ? { priceLabel: option.priceLabel } : {}),
+      })),
+    });
+    choices.push(
+      guarantee.options.map(({ input }) => ({
+        control: input,
+        value: input.value,
+        checked: true,
+        guarantee,
+      })),
+    );
+  }
   const elements = [
     ...form.querySelectorAll("input:not([type=hidden]),select"),
+    ...(guarantee?.elements ?? []),
   ];
   if (elements.length > 200) throw new Error(unavailable);
   const measurements = readProductMeasurements(form);
@@ -263,6 +305,7 @@ function inspect(productPath: string): Inspection {
     control.options.forEach((option, optionIndex) => {
       if (!option.available) return;
       const choice = choices[index][optionIndex];
+      if (choice.guarantee) return;
       if (
         choice.control instanceof HTMLInputElement &&
         choice.control.type === "checkbox" &&
@@ -283,6 +326,7 @@ function inspect(productPath: string): Inspection {
     controls,
     measurements,
     configuredPrice,
+    guarantee?.fingerprint,
     elements.map((element) => {
       const control = element as NativeControl;
       return [
@@ -342,7 +386,7 @@ export function createProductConfigurationTools() {
           configuredPrice: current.configuredPrice,
           actions,
           message:
-            "These are supported native product choices. Unavailable choices need the theme's required steps. Measurements use the confirmed measurement tool; purchases and insurance are separate.",
+            "These are supported native product choices. Unavailable choices need the theme's required steps. A measurement guarantee needs the customer's explicit yes or no; its charge is separate from configuredPrice. Measurements use the confirmed measurement tool; purchases are separate.",
         });
       } catch {
         snapshot = null;
@@ -432,10 +476,20 @@ export function createProductConfigurationTools() {
         choice.control.name === controlName &&
         choice.control.getAttribute("data-feature-option") === featureOption &&
         choice.control.value === choice.value &&
+        (!choice.guarantee ||
+          measurementGuaranteeSelected(
+            choice.guarantee,
+            choice.control as HTMLInputElement,
+          )) &&
         (!(choice.control instanceof HTMLInputElement) ||
           choice.control.checked === choice.checked);
       try {
-        if (!option.selected) {
+        if (choice.guarantee) {
+          selectMeasurementGuarantee(
+            choice.guarantee,
+            choice.control as HTMLInputElement,
+          );
+        } else if (!option.selected) {
           if (choice.control instanceof HTMLInputElement)
             choice.control.checked = choice.checked!;
           else choice.control.value = choice.value;
