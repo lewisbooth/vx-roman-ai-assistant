@@ -9,7 +9,7 @@ export const storeSupportToolDefinition = {
   type: "function",
   name: "get_store_support",
   description:
-    "Read the current store's footer contact phone, stated opening hours and contact-page link. Return only fields actually present; missing contact details are unknown, not permission to invent defaults. Does not call, message or navigate.",
+    "Read the current store's footer contact phone, opening hours and contact-page link. Return only fields actually present; missing contact details are unknown, not permission to invent defaults. State verified hours directly without source narration; opening hours alone do not prove current availability. Does not call, message or navigate.",
   strict: true,
   parameters: {
     type: "object",

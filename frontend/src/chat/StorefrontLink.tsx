@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { parseProductGuideUrl } from "../../../shared/product-guides";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { GuideLink } from "./GuideLink";
+import { readStoreSupport } from "../tools/store-support";
 
 export function StorefrontLink({
   url,
@@ -22,8 +23,8 @@ export function StorefrontLink({
       </GuideLink>
     );
   } catch {
-    // Only verified guide locations may leave the storefront. Ordinary pages
-    // retain in-place navigation; arbitrary external links remain plain text.
+    // Ordinary pages retain in-place navigation. Only verified guide locations
+    // and the native footer's exact support destination may leave the storefront.
   }
   let href: string | undefined;
   try {
@@ -35,6 +36,22 @@ export function StorefrontLink({
       !target.password
     )
       href = target.href;
+    else if (
+      target.protocol === "https:" &&
+      !target.username &&
+      !target.password &&
+      readStoreSupport().contactUrl === target.href
+    )
+      return (
+        <a
+          href={target.href}
+          className={className}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {children}
+        </a>
+      );
   } catch {
     /* Invalid remote links render as text, never as an executable URL. */
   }

@@ -80,7 +80,7 @@ export function Question({
     );
   return (
     <section
-      className="roman-question"
+      className="roman-action-panel roman-question"
       aria-labelledby={id}
       aria-busy={pending}
     >
@@ -109,7 +109,7 @@ export function Question({
             <label htmlFor={`${id}-measurement`}>
               {measurement.label} ({measurement.unit})
             </label>
-            <div className="roman-measurement-entry roman-question-answers">
+            <div className="roman-action-buttons roman-measurement-entry">
               <div className="roman-measurement-field">
                 <input
                   id={`${id}-measurement`}
@@ -138,7 +138,7 @@ export function Question({
           </form>
         </>
       ) : (
-        <div className="roman-question-answers">
+        <div className="roman-action-buttons">
           {part.answers.map((value) => (
             <button
               key={value}

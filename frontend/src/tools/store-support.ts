@@ -74,10 +74,7 @@ function readBlock(block: Element, copy: Element): StoreSupportResult {
 }
 
 /** The contact block is the source; newsletter inputs and legal footer text are not. */
-export async function getStoreSupport(
-  signal: AbortSignal,
-): Promise<StoreSupportResult> {
-  signal.throwIfAborted();
+export function readStoreSupport(): StoreSupportResult {
   const roots = document.querySelectorAll("footer#main-footer");
   const footers = roots.length
     ? roots
@@ -124,9 +121,15 @@ export async function getStoreSupport(
       ![...blocks].some((other) => other !== block && other.contains(block)),
   );
   if (distinct.length !== 1) return { status: "unavailable" };
-  signal.throwIfAborted();
   return parseStoreSupportResult(
     readBlock(distinct[0], distinct[0]),
     window.location.origin,
   );
+}
+
+export async function getStoreSupport(
+  signal: AbortSignal,
+): Promise<StoreSupportResult> {
+  signal.throwIfAborted();
+  return readStoreSupport();
 }

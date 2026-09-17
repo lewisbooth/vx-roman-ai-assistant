@@ -434,53 +434,104 @@ test("malformed or foreign guide records never become active chat links", async 
   assert.match(ctx.container.textContent, /product guides are unavailable/);
 });
 
-test("cart approval stays actionable during voice and is also available in the closed-sidebar dock", async (t) => {
-  const choices = [];
-  const approval = {
-    invocationId: "cart-one",
-    title: "Remove this item?",
-    details: ["Kitchen blind", "Remove quantity 2."],
-  };
-  const ctx = await setup(t, {
-    state: {
-      approval,
-      conversation: {
-        id: "chat",
-        status: "active",
-        messages: [],
-        busy: true,
-        tools: [],
-      },
-      voice: { status: "active", muted: false, error: null },
-    },
-    onApproval: (...args) => choices.push(args),
-  });
-  const panel = ctx.container.querySelector(".roman-tool-approval");
-  const dock = ctx.voiceDock.querySelector(".roman-tool-approval");
-  assert.match(panel.textContent, /Kitchen blind.*quantity 2/);
-  assert.ok(dock);
-  assert.equal(
-    panel.getAttribute("aria-labelledby"),
-    panel.querySelector("h2").id,
-  );
-  assert.notEqual(panel.querySelector("h2").id, dock.querySelector("h2").id);
-  const approve = [...dock.querySelectorAll("button")].find(
-    (button) => button.textContent === "Approve",
-  );
-  assert.equal(approve.disabled, false);
-  approve.click();
-  assert.deepEqual(choices, [["cart-one", true]]);
-  ctx.update({
-    approval: { ...approval, unavailable: "Review the new product." },
-  });
-  await until(
-    () =>
-      ctx.container.querySelector(".roman-tool-approval button:last-child")
-        .disabled,
-    "Unavailable action was still approvable",
-  );
-  ctx.container.querySelector(".roman-tool-approval button").click();
-  assert.deepEqual(choices.at(-1), ["cart-one", false]);
+test("cart approvals share the question panel in both locations without changing shopper decisions", async (t) => {
+  for (const title of [
+    "Empty your cart?",
+    "Remove this item?",
+    "Change this quantity?",
+  ])
+    await t.test(title, async (t) => {
+      const choices = [];
+      const approval = {
+        invocationId: "cart-one",
+        title,
+        details: ["Kitchen blind", "Current quantity 2."],
+      };
+      const ctx = await setup(t, {
+        state: {
+          approval,
+          conversation: {
+            id: "chat",
+            status: "active",
+            messages: [],
+            busy: true,
+            tools: [],
+          },
+          voice: { status: "active", muted: false, error: null },
+        },
+        onApproval: (...args) => choices.push(args),
+      });
+      const panel = ctx.container.querySelector(".roman-tool-approval");
+      const dock = ctx.voiceDock.querySelector(".roman-tool-approval");
+      for (const review of [panel, dock]) {
+        assert.ok(review.classList.contains("roman-action-panel"));
+        assert.equal(review.querySelector("h2").textContent, title);
+        assert.equal(
+          review.getAttribute("aria-labelledby"),
+          review.querySelector("h2").id,
+        );
+        assert.match(review.textContent, /Kitchen blind.*quantity 2/);
+        assert.equal(
+          review
+            .querySelector(".roman-approval-details")
+            .getAttribute("aria-live"),
+          "polite",
+        );
+        assert.deepEqual(
+          [...review.querySelectorAll(".roman-action-buttons button")].map(
+            (button) => [button.textContent, button.type, button.disabled],
+          ),
+          [
+            ["Cancel", "button", false],
+            ["Approve", "button", false],
+          ],
+        );
+        assert.equal(review.getAttribute("role"), null);
+      }
+      assert.notEqual(
+        panel.querySelector("h2").id,
+        dock.querySelector("h2").id,
+      );
+      const approve = dock.querySelector("button:last-child");
+      approve.focus();
+      assert.equal(dock.getRootNode().activeElement, approve);
+      approve.click();
+      assert.deepEqual(choices, [["cart-one", true]]);
+      ctx.update({
+        approval: {
+          ...approval,
+          unavailable: "The cart changed. Ask Roman to prepare a new review.",
+        },
+      });
+      await until(
+        () =>
+          [panel, dock].every(
+            (review) => review.querySelector("button:last-child").disabled,
+          ),
+        "Unavailable action was still approvable",
+      );
+      for (const review of [panel, dock]) {
+        assert.match(
+          review.querySelector('[role="status"]').textContent,
+          /cart changed/,
+        );
+        review.querySelector("button:last-child").click();
+      }
+      assert.equal(
+        choices.length,
+        1,
+        "Unavailable approvals must not be submitted",
+      );
+      panel.querySelector("button").click();
+      assert.deepEqual(choices.at(-1), ["cart-one", false]);
+      ctx.update({ approval: null });
+      await until(
+        () =>
+          !ctx.container.querySelector(".roman-tool-approval") &&
+          !ctx.voiceDock.querySelector(".roman-tool-approval"),
+        "Completed approval remained mounted",
+      );
+    });
 });
 
 test("welcome uses original asset paths, actionable tiles and one hidden developer tools panel", async (t) => {
@@ -2217,6 +2268,11 @@ test("easy answers render once beneath all cards with a labelled literal questio
   const parts = ctx.container.querySelector(".roman-message-parts");
   const widget = ctx.container.querySelector(".roman-question");
   assert.ok(widget, "Question widget must be visible");
+  assert.ok(widget.classList.contains("roman-action-panel"));
+  assert.equal(
+    widget.querySelectorAll(".roman-action-buttons button").length,
+    row.parts[0].answers.length,
+  );
   assert.ok(
     ctx.container
       .querySelector(".roman-timeline")

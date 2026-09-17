@@ -8,7 +8,7 @@ export const catalogToolDefinitions = [
     type: "function",
     name: "search_products",
     description:
-      "Search this store's current product catalog. Use before claiming the store carries a product or recommending specific products. Include relevant customer needs. Results are not a fitted-product quote or proof of suitability.",
+      "Search this store's current product catalog for candidates matching known customer needs. Inspect each candidate's returned description before recommending it; use lookup_catalog for a shortlist or get_product for one when needed details are missing. Search rank, titles and images alone are not product evidence. Verify known fitting constraints through relevant store guidance before recommending candidates, not after the customer chooses. Results are not a fitted-product quote or proof of suitability.",
     strict: true,
     parameters: {
       type: "object",
@@ -21,7 +21,7 @@ export const catalogToolDefinitions = [
     type: "function",
     name: "get_product",
     description:
-      "Get current details for a product or variant ID returned by this store's catalog. Read available details before making product-specific fitting or material claims; missing details are unknown.",
+      "Get current catalog details for one product or variant ID returned by this store. Use to investigate a candidate or a specific product question when search details are insufficient. Inspect the returned description; the compact result does not expose every option or specification, and missing details remain unknown. Use native configuration for current options and verified store guidance for fitting compatibility. Reuse a sufficient detail read rather than repeating it.",
     strict: true,
     parameters: {
       type: "object",
@@ -34,7 +34,7 @@ export const catalogToolDefinitions = [
     type: "function",
     name: "lookup_catalog",
     description:
-      "Refresh current details for up to ten product or variant IDs already seen in this conversation. Use to compare previous recommendations. Missing products must not be recommended as available.",
+      "Read current catalog details for up to ten product or variant IDs already returned by this store. Batch a shortlist in one call to investigate relevant features before recommending products when search details are insufficient, or refresh earlier recommendations. Compare actual returned descriptions, not just titles; a lookup cannot verify facts it does not return. Missing products must not be recommended as available. Do not repeat a sufficient current-turn read.",
     strict: true,
     parameters: {
       type: "object",

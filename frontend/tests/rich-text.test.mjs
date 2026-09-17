@@ -344,6 +344,72 @@ test("validated Shopify CDN PDFs open separately while other external URLs stay 
   }
 });
 
+test("the current footer's exact external support link opens separately without granting other external links access", (t) => {
+  const { window, container, calls, render } = setup(t);
+  const url = "https://help.blinds-2go.ie/hc/en-gb/requests/new";
+  const footer = window.document.createElement("footer");
+  footer.id = "main-footer";
+  footer.innerHTML = `<section><p class="text-footer-link-list-heading">Contact us</p>
+    <div class="text-footer-caption"><p>01 969 7247</p><p>9am - 5:30pm 7 days a week</p></div>
+    <a href="${url}">Contact us</a></section>`;
+  window.document.body.append(footer);
+  render(
+    `Call **01 969 7247**, 9am–5:30pm, 7 days a week.\n\n[Contact page](${url})`,
+  );
+  const link = container.querySelector("a");
+  assert.equal(link.href, url);
+  assert.equal(link.target, "_blank");
+  assert.equal(link.rel, "noopener noreferrer");
+  const click = new window.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  link.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, false);
+  assert.deepEqual(calls, []);
+  assert.equal(container.querySelectorAll("a").length, 1);
+  assert.equal(container.querySelector(".roman-guide-card"), null);
+  for (const rejected of [
+    "https://help.blinds-2go.ie/hc/en-gb/other",
+    "https://help.blinds-2go.ie.evil.example/hc/en-gb/requests/new",
+    url + "?redirect=https://evil.example",
+    url + "#form",
+    url.replace("https://", "http://"),
+    url.replace("https://", "https://user:secret@"),
+  ]) {
+    render(`[Contact](${rejected})`);
+    assert.equal(container.querySelector("a"), null, rejected);
+  }
+  render("[Store contact](/pages/contact)");
+  const internal = container.querySelector("a");
+  internal.dispatchEvent(
+    new window.MouseEvent("click", { bubbles: true, cancelable: true }),
+  );
+  assert.deepEqual(calls, [
+    "https://hd-dev-single.myshopify.com/pages/contact",
+  ]);
+});
+
+test("missing, hidden or ambiguous footer contact details keep an external contact label inert", (t) => {
+  const { window, container, render } = setup(t);
+  const url = "https://help.example.test/contact";
+  const footer = window.document.createElement("footer");
+  window.document.body.append(footer);
+  for (const markup of [
+    "",
+    `<section hidden><h3>Contact us</h3><a href="${url}">Contact us</a></section>`,
+    `<section><h3>Contact us</h3><a href="${url}">Contact us</a><a href="https://other.example.test/contact">Contact us</a></section>`,
+    `<section><h3>Contact us</h3><a href="${url}?token=secret">Contact us</a></section>`,
+  ]) {
+    footer.innerHTML = markup;
+    render("Plain text");
+    render(`[Contact the store](${url})`);
+    assert.equal(container.querySelector("a"), null);
+    assert.equal(container.textContent, "Contact the store");
+  }
+});
+
 test("pending links hold their unfinished caption and URL without hiding completed prose or links", (t) => {
   const { container, render } = setup(t);
   const prefix = "[Chosen product](/products/roman).\nHere is the source. ";

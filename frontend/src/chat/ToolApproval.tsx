@@ -14,7 +14,7 @@ export function ToolApproval({
   const titleId = useId();
   return (
     <section
-      className={`roman-tool-approval${dock ? " roman-approval-dock" : ""}`}
+      className={`roman-action-panel roman-tool-approval${dock ? " roman-approval-dock" : ""}`}
       aria-labelledby={titleId}
     >
       <h2 id={titleId}>{approval.title}</h2>
@@ -24,7 +24,7 @@ export function ToolApproval({
         ))}
         {approval.unavailable && <p role="status">{approval.unavailable}</p>}
       </div>
-      <div className="roman-approval-actions">
+      <div className="roman-action-buttons roman-approval-actions">
         <button
           type="button"
           onClick={() =>

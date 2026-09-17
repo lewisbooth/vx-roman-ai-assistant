@@ -336,8 +336,8 @@
     }
   }
 
-  .roman-question {
-    @apply mt-[16px] rounded-[14px] border-2 border-solid border-transparent bg-[#f7f5ef] p-[14px] text-[#4e0e0e];
+  .roman-action-panel {
+    @apply rounded-[14px] border-2 border-solid border-transparent bg-[#f7f5ef] p-[14px] text-[#4e0e0e];
     position: relative;
     isolation: isolate;
     box-shadow: 0 6px 18px #4e0e0e26;
@@ -356,10 +356,10 @@
     background-size:
       100% 100%,
       300% 100%;
-    animation: roman-question-shine 3s linear infinite;
+    animation: roman-action-shine 3s linear infinite;
   }
 
-  .roman-question::after {
+  .roman-action-panel::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -369,10 +369,10 @@
     box-shadow:
       0 0 5px 1px #b8796766,
       0 0 16px 2px #4e0e0e1f;
-    animation: roman-question-glow 3s ease-in-out infinite;
+    animation: roman-action-glow 3s ease-in-out infinite;
   }
 
-  @keyframes roman-question-glow {
+  @keyframes roman-action-glow {
     0%,
     100% {
       opacity: 0.55;
@@ -382,7 +382,7 @@
     }
   }
 
-  @keyframes roman-question-shine {
+  @keyframes roman-action-shine {
     from {
       background-position:
         0 0,
@@ -395,11 +395,15 @@
     }
   }
 
-  .roman-question-answers {
+  .roman-question {
+    @apply mt-[16px];
+  }
+
+  .roman-action-buttons {
     @apply mt-[12px] flex flex-wrap gap-[8px];
   }
 
-  .roman-question-answers button {
+  .roman-action-buttons button {
     @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#4e0e0e66] bg-white px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#4e0e0e] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
     transition:
@@ -409,20 +413,20 @@
   }
 
   @media (hover: hover) {
-    .roman-question-answers button:not(:disabled):hover {
+    .roman-action-buttons button:not(:disabled):hover {
       background-color: #4e0e0e;
       border-color: #4e0e0e;
       color: #f7f5ef;
     }
   }
 
-  .roman-question-answers button:not(:disabled):active {
+  .roman-action-buttons button:not(:disabled):active {
     background-color: #351010;
     border-color: #351010;
     color: #f7f5ef;
   }
 
-  .roman-question-answers button:focus-visible {
+  .roman-action-buttons button:focus-visible {
     outline: 2px solid #4e0e0e;
     outline-offset: 3px;
   }
@@ -470,13 +474,13 @@
   }
 
   @media (forced-colors: active) {
-    .roman-question {
+    .roman-action-panel {
       animation: none;
       border-color: CanvasText;
       background: Canvas;
       color: CanvasText;
     }
-    .roman-question::after {
+    .roman-action-panel::after {
       display: none;
     }
     .roman-question-hint,
@@ -609,7 +613,7 @@
   }
 
   .roman-tool-approval {
-    @apply mx-[16px] my-[8px] shrink-0 rounded-[14px] border border-solid border-[#d1cbc0] bg-[#f7f5ef] p-[14px] text-[14px] leading-[1.4] text-[#402b2b];
+    @apply mx-[16px] my-[8px] shrink-0 text-[15px] leading-[1.5];
   }
 
   .roman-tool-approval h2 {
@@ -625,27 +629,16 @@
   }
 
   .roman-approval-actions {
-    @apply mt-[10px] flex justify-end gap-[8px];
-  }
-
-  .roman-approval-actions button {
-    @apply min-h-[40px] cursor-pointer rounded-full border border-solid border-[#d1cbc0] bg-white px-[16px] text-[14px] text-[#402b2b] disabled:cursor-default disabled:opacity-50;
-    font: inherit;
+    @apply justify-end;
   }
 
   .roman-approval-actions button:last-child {
     @apply border-[#4e0e0e] bg-[#4e0e0e] text-white;
   }
 
-  .roman-approval-actions button:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 3px;
-  }
-
   .roman-approval-dock {
     @apply fixed bottom-[165px] left-[16px] z-[2147483647] m-0 w-[340px] max-w-[calc(100vw-32px)] font-serif;
     pointer-events: auto;
-    box-shadow: 0 2px 12px #0002;
   }
 
   .roman-composer form {
