@@ -427,20 +427,26 @@ export async function heartbeatVoiceSession(
   });
 }
 
-export async function closeVoiceSession(
-  conversationId: string,
-  voiceId: string,
-  clientId: string,
-  outcome: { status: "closed" | "failed"; error?: string } = {
-    status: "closed",
-  },
-): Promise<VoiceSession> {
+type VoiceCloseOutcome = { status: "closed" | "failed"; error?: string };
+
+function validateCloseOutcome(outcome: VoiceCloseOutcome) {
   if (
     !["closed", "failed"].includes(outcome.status) ||
     (outcome.error !== undefined &&
       (typeof outcome.error !== "string" || outcome.error.length > 500))
   )
     throw new ConversationError(400, "Invalid voice session outcome.");
+}
+
+export async function closeVoiceSession(
+  conversationId: string,
+  voiceId: string,
+  clientId: string,
+  outcome: VoiceCloseOutcome = {
+    status: "closed",
+  },
+): Promise<VoiceSession> {
+  validateCloseOutcome(outcome);
   return voiceTransaction(async (transaction) => {
     await requireConversation(transaction, conversationId);
     const session = await requireSession(
@@ -456,7 +462,7 @@ export async function closeVoiceSession(
 async function closeSession(
   transaction: Prisma.TransactionClient,
   session: VoiceSession,
-  outcome: { status: "closed" | "failed"; error?: string },
+  outcome: VoiceCloseOutcome,
   closedAt = new Date(),
 ): Promise<VoiceSession> {
   if (!activeStatuses.includes(session.status)) return session;
@@ -498,9 +504,11 @@ export async function cancelVoiceSession(
   conversationId: string,
   voiceId: string,
   clientId: string,
+  outcome: VoiceCloseOutcome = { status: "closed" },
 ): Promise<VoiceSession | null> {
   requireUuid(voiceId);
   requireUuid(clientId);
+  validateCloseOutcome(outcome);
   return voiceTransaction(async (transaction) => {
     const conversation = await requireConversation(transaction, conversationId);
     const existing = await transaction.voiceSession.findUnique({
@@ -515,7 +523,7 @@ export async function cancelVoiceSession(
           404,
           "This voice session could not be found.",
         );
-      return closeSession(transaction, existing, { status: "closed" });
+      return closeSession(transaction, existing, outcome);
     }
     requireActiveConversation(conversation.status);
     if (
@@ -531,7 +539,8 @@ export async function cancelVoiceSession(
         id: voiceId,
         conversationId,
         clientId,
-        status: "closed",
+        status: outcome.status,
+        error: outcome.error ?? null,
         createdAt: now,
         closedAt: now,
         leaseExpiresAt: now,

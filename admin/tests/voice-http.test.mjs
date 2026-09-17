@@ -197,7 +197,11 @@ test("heartbeat and stop authenticate independently and retain conversation/clie
     const response = await run(env, route);
     assert.equal(response.status, 200);
     assert.equal(env.calls.authorize.length, 1);
-    assert.deepEqual(env.calls[route], [[ID, VOICE_ID, CLIENT_ID]]);
+    assert.deepEqual(env.calls[route], [
+      route === "stop"
+        ? [ID, VOICE_ID, CLIENT_ID, null]
+        : [ID, VOICE_ID, CLIENT_ID],
+    ]);
     assert.deepEqual(
       await response.json(),
       route !== "stop" ? { ok: true } : SNAPSHOT,
@@ -420,7 +424,7 @@ test("voice requests require valid JSON objects and an application/json content 
   }
 });
 
-test("heartbeat and stop require a voice UUID and exactly the client UUID", async () => {
+test("voice lifecycle routes require owned UUIDs and reject unrelated body fields", async () => {
   for (const route of ["ready", "heartbeat", "stop"]) {
     for (const voiceId of [undefined, "not-a-uuid", "live_provider_id"]) {
       const env = setup();
@@ -444,6 +448,49 @@ test("heartbeat and stop require a voice UUID and exactly the client UUID", asyn
       assert.equal(env.calls[route].length, 0);
     }
   }
+});
+
+test("only stop accepts the categorical connection-lost reason, never client error text", async () => {
+  const env = setup();
+  const response = await run(
+    env,
+    "stop",
+    request("stop", {
+      body: { clientId: CLIENT_ID, reason: "connection_lost" },
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(env.calls.stop, [
+    [ID, VOICE_ID, CLIENT_ID, "connection_lost"],
+  ]);
+  assert.deepEqual(env.calls.order, ["stop", "read"]);
+  for (const route of ["ready", "heartbeat"])
+    assert.equal(
+      (
+        await run(
+          env,
+          route,
+          request(route, {
+            body: { clientId: CLIENT_ID, reason: "connection_lost" },
+          }),
+        )
+      ).status,
+      400,
+    );
+  for (const body of [
+    { clientId: CLIENT_ID, reason: "PRIVATE_ERROR" },
+    { clientId: CLIENT_ID, reason: null },
+    { clientId: CLIENT_ID, reason: false },
+    { clientId: CLIENT_ID, reason: { type: "connection_lost" } },
+    { clientId: CLIENT_ID, reason: "connection_lost", error: "PRIVATE_ERROR" },
+    { reason: "connection_lost" },
+  ]) {
+    const rejected = await run(env, "stop", request("stop", { body }));
+    assert.equal(rejected.status, 400);
+    assert.doesNotMatch(await rejected.text(), /PRIVATE_ERROR/);
+  }
+  assert.equal(env.calls.stop.length, 1);
+  assert.deepEqual(env.logs, []);
 });
 
 test("ownership conflicts retain their status and stop cannot read after rejection", async () => {

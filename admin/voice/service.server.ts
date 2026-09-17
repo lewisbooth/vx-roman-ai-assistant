@@ -531,6 +531,7 @@ export async function stopVoice(
   conversationId: string,
   voiceId: string,
   clientId: string,
+  reason?: "connection_lost",
 ) {
   const owner = owners.get(conversationId);
   if (owner?.voiceId === voiceId) {
@@ -539,8 +540,18 @@ export async function stopVoice(
         404,
         "This voice session could not be found.",
       );
+    if (reason === "connection_lost" && !owner.stopping)
+      owner.error ??= disconnected;
     await closeOwner(owner);
-  } else await cancelVoiceSession(conversationId, voiceId, clientId);
+  } else
+    await cancelVoiceSession(
+      conversationId,
+      voiceId,
+      clientId,
+      reason === "connection_lost"
+        ? { status: "failed", error: disconnected }
+        : undefined,
+    );
 }
 
 export async function stopConversationVoice(conversationId: string) {

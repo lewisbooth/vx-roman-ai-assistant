@@ -58,6 +58,26 @@ export function voiceClientInput(value: Record<string, unknown>): {
   return { clientId: value.clientId };
 }
 
+export function voiceStopInput(value: Record<string, unknown>): {
+  clientId: string;
+  reason?: "connection_lost";
+} {
+  if (
+    Object.keys(value).some((key) => !["clientId", "reason"].includes(key)) ||
+    ("reason" in value && value.reason !== "connection_lost")
+  )
+    throw new ConversationError(
+      400,
+      "Send a clientId UUID and an optional connection_lost stop reason.",
+    );
+  return {
+    ...voiceClientInput({ clientId: value.clientId }),
+    ...(value.reason === "connection_lost"
+      ? { reason: "connection_lost" as const }
+      : {}),
+  };
+}
+
 export function voiceSessionId(value: string | undefined): string {
   if (!value || !UUID_PATTERN.test(value)) {
     throw new ConversationError(400, "Send a valid voice session ID.");

@@ -1025,7 +1025,7 @@ export function createConversationClient(
       .catch(() => undefined);
   }
 
-  async function stopVoice() {
+  async function stopVoice(reason?: "connection_lost") {
     if (disposed) return;
     if (voiceStop) return voiceStop;
     const previous = state.conversation?.voice;
@@ -1050,7 +1050,10 @@ export function createConversationClient(
     });
     const stopping = (async () => {
       try {
-        await api(`/voice/${id}/stop`, { clientId: ownerClientId });
+        await api(`/voice/${id}/stop`, {
+          clientId: ownerClientId,
+          ...(reason ? { reason } : {}),
+        });
         if (!current()) return;
         if (voiceId === id) voiceId = undefined;
         const terminal = state.conversation?.voice;
@@ -1202,7 +1205,7 @@ export function createConversationClient(
 
   function failVoice(message: string) {
     const failureEpoch = epoch;
-    const stopping = stopVoice();
+    const stopping = stopVoice("connection_lost");
     const failureVoiceEpoch = voiceEpoch;
     void stopping
       .then(() => {

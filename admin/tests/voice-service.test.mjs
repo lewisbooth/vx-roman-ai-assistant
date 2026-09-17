@@ -221,7 +221,12 @@ function setup() {
         captionSequences.set(key, captionSequences.size);
       return { sequence: captionSequences.get(key) };
     },
-    cancel: async (conversationId, voiceId, clientId) => {
+    cancel: async (
+      conversationId,
+      voiceId,
+      clientId,
+      outcome = { status: "closed" },
+    ) => {
       calls.cancel.push([conversationId, voiceId, clientId]);
       order.push("cancel-persisted");
       const row = rows.get(voiceId) ?? {
@@ -231,7 +236,8 @@ function setup() {
       };
       if (row.conversationId !== conversationId || row.clientId !== clientId)
         throw new api.ConversationError(404, "Not owned");
-      row.status = "closed";
+      if (!["closed", "failed"].includes(row.status))
+        Object.assign(row, outcome);
       rows.set(voiceId, row);
       return row;
     },
@@ -239,7 +245,10 @@ function setup() {
       calls.close.push([conversationId, voiceId, clientId, outcome]);
       order.push("failure-persisted");
       const row = rows.get(voiceId);
-      Object.assign(row, outcome);
+      if (row.conversationId !== conversationId || row.clientId !== clientId)
+        throw new api.ConversationError(404, "Not owned");
+      if (!["closed", "failed"].includes(row.status))
+        Object.assign(row, outcome);
       return row;
     },
     state: async (conversationId) =>
@@ -866,6 +875,102 @@ test("stop drains trusted final captions before marking voice terminal", async (
     "caption-saved",
     "cancel-persisted",
   ]);
+});
+
+test("connection loss drains final captions then persists a canonical failure without replay", async () => {
+  const state = setup();
+  await state.start();
+  const gate = deferred();
+  state.mock.beforeCaption = () => gate.promise;
+  state.mock.onProviderClose = (record) =>
+    record.options.onEvent(transcript({ text: " final response" }));
+  const stop = () =>
+    state.api.stopVoice(
+      state.conversationId,
+      state.input.requestId,
+      state.input.clientId,
+      "connection_lost",
+    );
+  const stopping = stop();
+  await flush();
+  assert.equal(state.calls.close.length, 0);
+  gate.resolve();
+  await stopping;
+  assert.equal(state.calls.caption.length, 1);
+  assert.equal(state.rows.get(state.input.requestId).status, "failed");
+  assert.equal(
+    state.rows.get(state.input.requestId).error,
+    "Voice disconnected. Start voice again to reconnect.",
+  );
+  assert.deepEqual(state.order, [
+    "delegate-cancelled",
+    "provider-close",
+    "caption-saved",
+    "failure-persisted",
+  ]);
+  await stop();
+  await state.stop();
+  assert.equal(state.providers[0].closeCount, 1);
+  assert.equal(state.calls.delegate.length, 0);
+  assert.equal(state.rows.get(state.input.requestId).status, "failed");
+  assert.equal(state.timers.size, 0);
+});
+
+test("a late connection-loss report does not relabel an already deliberate shutdown", async () => {
+  const state = setup();
+  await state.start();
+  const gate = deferred();
+  state.mock.onProviderClose = () => gate.promise;
+  const deliberate = state.stop();
+  await flush();
+  const failure = state.api.stopVoice(
+    state.conversationId,
+    state.input.requestId,
+    state.input.clientId,
+    "connection_lost",
+  );
+  gate.resolve();
+  await Promise.all([deliberate, failure]);
+  assert.equal(state.rows.get(state.input.requestId).status, "closed");
+  assert.equal(state.rows.get(state.input.requestId).error, undefined);
+  assert.equal(state.providers[0].closeCount, 1);
+});
+
+test("connection-loss reports retain ownership and stop-before-start semantics", async () => {
+  const state = setup();
+  await state.start();
+  await assert.rejects(
+    state.api.stopVoice(
+      state.conversationId,
+      state.input.requestId,
+      randomUUID(),
+      "connection_lost",
+    ),
+    { status: 404 },
+  );
+  assert.equal(state.providers[0].closed, false);
+  await state.stop();
+  const future = { ...state.input, requestId: randomUUID() };
+  await state.api.stopVoice(
+    state.conversationId,
+    future.requestId,
+    future.clientId,
+    "connection_lost",
+  );
+  assert.equal(state.rows.get(future.requestId).status, "failed");
+  await assert.rejects(state.api.startVoice(state.conversationId, future), {
+    status: 409,
+  });
+  assert.equal(state.providers.length, 1);
+  await assert.rejects(
+    state.api.stopVoice(
+      state.conversationId,
+      future.requestId,
+      randomUUID(),
+      "connection_lost",
+    ),
+    { status: 404 },
+  );
 });
 
 test("captions alone never trigger actions and repeated delegation events run only once", async () => {

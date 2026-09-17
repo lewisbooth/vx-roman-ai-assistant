@@ -97,7 +97,7 @@
     border: 0;
   }
   .roman-content-scroll {
-    @apply relative h-full overflow-y-auto;
+    @apply relative h-full overflow-clip;
   }
   .roman-loading {
     @apply absolute inset-0 flex flex-col items-center justify-center px-[24px] pb-[56px];

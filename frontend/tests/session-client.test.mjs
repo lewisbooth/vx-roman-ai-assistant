@@ -2565,6 +2565,7 @@ test("voice starts explicitly, polls while idle, heartbeats, and drains before t
   assert.equal(ctx.media.tracks[0].enabled, false);
   assert.equal(ctx.client.getSnapshot().voice.muted, true);
   const stopping = ctx.client.stopVoice();
+  assert.deepEqual(ctx.calls[4].body, { clientId: voice.clientId });
   assert.equal(ctx.media.tracks[0].stopped, true);
   assert.equal(ctx.client.getSnapshot().voice.status, "stopping");
   await assert.rejects(
@@ -2690,6 +2691,54 @@ test("page exit immediately stops media and sends a keepalive stop without rejoi
   );
   assert.equal(ctx.media.calls.microphone, 1);
   assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+});
+
+test("transient voice disconnect keeps the active session and performs no stop or restart request", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  await activeVoice(ctx);
+  ctx.client.setVoiceMuted(true);
+  const peer = ctx.media.peers[0];
+  peer.connectionState = "disconnected";
+  peer.onconnectionstatechange();
+  assert.ok([...ctx.timers.values()].some((timer) => timer.ms === 10_000));
+  assert.equal(ctx.calls.length, 3);
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  peer.connectionState = "connected";
+  peer.onconnectionstatechange();
+  assert.ok(![...ctx.timers.values()].some((timer) => timer.ms === 10_000));
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.calls.length, 3);
+});
+
+test("terminal browser failure reports connection loss instead of a deliberate voice stop", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const warnings = [];
+  ctx.window.console.warn = (...args) => warnings.push(args);
+  const voice = await activeVoice(ctx);
+  ctx.media.peers[0].channel.onclose();
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.match(ctx.calls[3].url, new RegExp(`/voice/${voice.id}/stop$`));
+  assert.deepEqual(ctx.calls[3].body, {
+    clientId: voice.clientId,
+    reason: "connection_lost",
+  });
+  ctx.respond(3, {
+    ...empty,
+    revision: 2,
+    voice: { ...voice, status: "failed", error: "Voice disconnected." },
+  });
+  await until(
+    () => ctx.client.getSnapshot().voice.status === "error",
+    "Browser failure did not settle",
+  );
+  assert.match(ctx.client.getSnapshot().voice.error, /disconnected/);
+  assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.media.peers.length, 1);
+  assert.equal(warnings[0][1].reason, "data_channel_closed");
+  assert.equal(ctx.timers.size, 0);
 });
 
 test("server voice failure tears down an active connection while retaining the transcript", async (t) => {

@@ -20,6 +20,16 @@ function setup(t, options) {
   const { window } = dom;
   const media = voiceMedia(window, options);
   const errors = [];
+  const warnings = [];
+  window.console.warn = (...args) => warnings.push(args);
+  const timers = new Map();
+  let nextTimer = 0;
+  window.setTimeout = (callback, ms) => {
+    const id = ++nextTimer;
+    timers.set(id, { callback, ms });
+    return id;
+  };
+  window.clearTimeout = (id) => timers.delete(id);
   window.eval(`${bundle.outputFiles[0].text}\nwindow.Voice = Voice;`);
   const connection = window.Voice.createVoiceConnection((message) =>
     errors.push(message),
@@ -28,7 +38,7 @@ function setup(t, options) {
     connection.close();
     window.close();
   });
-  return { window, media, errors, connection };
+  return { window, media, errors, warnings, timers, connection };
 }
 
 test("voice requests audio only on prepare, and waits for started, peer and playback before becoming ready", async (t) => {
@@ -160,18 +170,91 @@ test("blocked audio playback closes microphone and reports an actionable error",
   assert.equal(errors.length, 1);
 });
 
-test("a peer disconnect stops microphone and playback rather than reconnecting", async (t) => {
-  const { connection, media, errors } = setup(t);
+test("a transient disconnect preserves the same muted session and clears its bounded recovery timer", async (t) => {
+  const { connection, media, errors, warnings, timers } = setup(t);
+  await connection.prepare();
+  const connecting = connection.connect("answer", async () => {});
+  media.connect();
+  await connecting;
+  connection.setMuted(true);
+  media.peers[0].connectionState = "disconnected";
+  media.peers[0].onconnectionstatechange();
+  assert.equal(timers.size, 1);
+  const [id, timer] = [...timers][0];
+  assert.equal(timer.ms, 10_000);
+  media.peers[0].onconnectionstatechange();
+  assert.equal(timers.size, 1);
+  assert.equal(timers.get(id), timer);
+  assert.equal(media.tracks[0].stopped, false);
+  media.peers[0].connectionState = "connected";
+  media.peers[0].onconnectionstatechange();
+  assert.equal(timers.size, 0);
+  assert.equal(media.tracks[0].enabled, false);
+  assert.equal(media.peers.length, 1);
+  assert.equal(media.calls.microphone, 1);
+  assert.equal(media.calls.play, 1);
+  assert.equal(media.calls.pause, 0);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+});
+
+test("a persistent disconnect expires without a new session or replay and records only transport diagnostics", async (t) => {
+  const { connection, media, errors, warnings, timers } = setup(t);
   await connection.prepare();
   const connecting = connection.connect("answer", async () => {});
   media.connect();
   await connecting;
   media.peers[0].connectionState = "disconnected";
   media.peers[0].onconnectionstatechange();
+  const [id, timer] = [...timers][0];
+  // Moving back to connecting must not extend the recovery deadline.
+  media.peers[0].connectionState = "connecting";
+  media.peers[0].onconnectionstatechange();
+  timers.delete(id);
+  timer.callback();
   assert.equal(media.tracks[0].stopped, true);
   assert.equal(media.calls.pause, 1);
   assert.equal(media.calls.microphone, 1);
   assert.match(errors[0], /disconnected/);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][1].reason, "peer_disconnect_timeout");
+  assert.equal(warnings[0][1].connectionState, "connecting");
+  assert.deepEqual(Object.keys(warnings[0][1]).sort(), [
+    "connectionState",
+    "dataChannelState",
+    "elapsedMs",
+    "iceConnectionState",
+    "ready",
+    "reason",
+    "signalingState",
+  ]);
+  timer.callback();
+  assert.equal(errors.length, 1);
+});
+
+test("terminal failures and deliberate close cancel an in-progress recovery", async (t) => {
+  for (const reason of ["failed", "closed", "channel", "stop"]) {
+    const { connection, media, errors, timers } = setup(t);
+    await connection.prepare();
+    const connecting = connection.connect("answer", async () => {});
+    media.connect();
+    await connecting;
+    media.peers[0].connectionState = "disconnected";
+    media.peers[0].onconnectionstatechange();
+    const timer = [...timers.values()][0];
+    if (reason === "channel") media.peers[0].channel.onclose();
+    else if (reason === "stop") connection.close();
+    else {
+      media.peers[0].connectionState = reason;
+      media.peers[0].onconnectionstatechange();
+    }
+    assert.equal(timers.size, 0);
+    timer.callback();
+    assert.equal(media.tracks[0].stopped, true);
+    assert.equal(media.calls.pause, 1);
+    assert.equal(media.calls.microphone, 1);
+    assert.equal(errors.length, reason === "stop" ? 0 : 1);
+  }
 });
 
 test("removing the microphone ends voice without opening another device", async (t) => {

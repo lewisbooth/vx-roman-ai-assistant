@@ -119,6 +119,77 @@ async function journey() {
   });
 }
 
+test("connection-loss cancellation persists one disconnected event and preserves first terminal outcome", async () => {
+  for (const failureFirst of [true, false]) {
+    const session = await startVoice();
+    await voice.activateVoiceSession(
+      id,
+      session.id,
+      clientId,
+      "provider-stop-test",
+    );
+    await voice.markVoiceStarted(id, session.id, clientId);
+    const failed = {
+      status: "failed",
+      error: "Voice disconnected. Start voice again to reconnect.",
+    };
+    const first = await voice.cancelVoiceSession(
+      id,
+      session.id,
+      clientId,
+      failureFirst ? failed : undefined,
+    );
+    await voice.cancelVoiceSession(id, session.id, clientId, failed);
+    await voice.cancelVoiceSession(id, session.id, clientId);
+    const stored = await database.voiceSession.findUniqueOrThrow({
+      where: { id: session.id },
+    });
+    assert.equal(stored.status, failureFirst ? "failed" : "closed");
+    assert.equal(stored.error, failureFirst ? failed.error : null);
+    assert.deepEqual(stored.closedAt, first.closedAt);
+    const events = (await load().conversation.getSnapshot(id)).messages
+      .flatMap((message) => message.parts)
+      .filter(
+        (part) => part.type === "voice_event" && part.voiceId === session.id,
+      );
+    assert.deepEqual(
+      events.map((part) => part.event),
+      ["started", failureFirst ? "disconnected" : "ended"],
+    );
+    await assert.rejects(
+      voice.cancelVoiceSession(id, session.id, randomUUID(), failed),
+      { status: 404 },
+    );
+  }
+});
+
+test("connection loss before startup creates an owned failed tombstone without fictitious lifecycle events", async () => {
+  const voiceId = randomUUID();
+  const failed = {
+    status: "failed",
+    error: "Voice disconnected. Start voice again to reconnect.",
+  };
+  await voice.cancelVoiceSession(id, voiceId, clientId, failed);
+  const reserved = await voice.reserveVoiceSession(id, { voiceId, clientId });
+  assert.equal(reserved.created, false);
+  assert.equal(reserved.session.status, "failed");
+  await voice.cancelVoiceSession(id, voiceId, clientId);
+  assert.equal(
+    (await database.voiceSession.findUniqueOrThrow({ where: { id: voiceId } }))
+      .status,
+    "failed",
+  );
+  assert.ok(
+    (await conversation.getSnapshot(id)).messages.every((message) =>
+      message.parts.every((part) => part.type !== "voice_event"),
+    ),
+  );
+  await assert.rejects(
+    voice.cancelVoiceSession(id, voiceId, randomUUID(), failed),
+    { status: 404 },
+  );
+});
+
 test("cancelled voice search stays silent and no longer separates continuous captions on reload", async () => {
   const session = await startVoice();
   await caption(session, "Hm", 0, "assistant");

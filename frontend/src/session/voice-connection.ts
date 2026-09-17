@@ -14,6 +14,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
   let notifyTransportReady: (() => Promise<void>) | undefined;
   let ready = false;
   let timer: number | undefined;
+  let disconnectTimer: number | undefined;
   let resolveReady: (() => void) | undefined;
   let rejectReady: ((error: Error) => void) | undefined;
   const beganAt = performance.now();
@@ -39,6 +40,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
     closed = true;
     reportTiming("stopped");
     window.clearTimeout(timer);
+    window.clearTimeout(disconnectTimer);
     stream?.getTracks().forEach((track) => {
       track.onended = null;
       track.stop();
@@ -62,8 +64,18 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
     rejectReady?.(new Error("Voice was stopped."));
   }
 
-  function fail(message: string) {
+  function fail(message: string, reason: string) {
     if (closed) return;
+    // Categorical diagnostics only: never SDP, audio, captions or credentials.
+    console.warn("[Roman] Voice connection failed.", {
+      reason,
+      connectionState: peer?.connectionState,
+      iceConnectionState: peer?.iceConnectionState,
+      signalingState: peer?.signalingState,
+      dataChannelState: channel?.readyState,
+      ready,
+      elapsedMs: Math.round(performance.now() - beganAt),
+    });
     reportTiming("failed");
     rejectReady?.(new Error(message));
     close();
@@ -99,6 +111,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
             error instanceof Error
               ? error.message
               : "Roman could not begin voice. Please try again.",
+            "opening_failed",
           );
         });
     }
@@ -146,6 +159,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
           .catch(() => {
             fail(
               "Your browser blocked Roman's audio. Stop voice and start it again.",
+              "playback_failed",
             );
           });
         trackAttached = true;
@@ -154,13 +168,34 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       peer.onconnectionstatechange = () => {
         if (closed || !peer) return;
         connected = peer.connectionState === "connected";
-        if (["failed", "disconnected", "closed"].includes(peer.connectionState))
-          fail("Voice disconnected. Start voice again when you are ready.");
-        else checkReady();
+        if (connected) {
+          window.clearTimeout(disconnectTimer);
+          disconnectTimer = undefined;
+        } else if (peer.connectionState === "disconnected") {
+          // ICE can recover on the same peer. Bound that wait without opening
+          // another model session or replaying any storefront action.
+          disconnectTimer ??= window.setTimeout(() => {
+            disconnectTimer = undefined;
+            if (!closed && !connected)
+              fail(
+                "Voice disconnected. Start voice again when you are ready.",
+                "peer_disconnect_timeout",
+              );
+          }, 10_000);
+        } else if (["failed", "closed"].includes(peer.connectionState)) {
+          fail(
+            "Voice disconnected. Start voice again when you are ready.",
+            `peer_${peer.connectionState}`,
+          );
+        }
+        checkReady();
       };
       for (const track of stream.getAudioTracks()) {
         track.onended = () =>
-          fail("Your microphone disconnected. Start voice again to reconnect.");
+          fail(
+            "Your microphone disconnected. Start voice again to reconnect.",
+            "microphone_ended",
+          );
         peer.addTrack(track, stream);
       }
       channel = peer.createDataChannel("oai-events");
@@ -182,15 +217,22 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
         } else if (data.type === "session.closed" || data.type === "error") {
           fail(
             "Roman's voice session ended. You can continue in text or start voice again.",
+            data.type === "error" ? "provider_error" : "provider_closed",
           );
         }
       };
       channel.onclose = () => {
         if (ready)
-          fail("Voice disconnected. Start voice again when you are ready.");
+          fail(
+            "Voice disconnected. Start voice again when you are ready.",
+            "data_channel_closed",
+          );
       };
       channel.onerror = () =>
-        fail("Roman could not connect voice. Please try again.");
+        fail(
+          "Roman could not connect voice. Please try again.",
+          "data_channel_error",
+        );
       const offer = await peer.createOffer();
       if (closed) throw new Error("Voice was stopped.");
       await peer.setLocalDescription(offer);
@@ -210,7 +252,8 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
         resolveReady = resolve;
         rejectReady = reject;
         timer = window.setTimeout(
-          () => fail("Voice did not connect. Please try again."),
+          () =>
+            fail("Voice did not connect. Please try again.", "startup_timeout"),
           20_000,
         );
       });
