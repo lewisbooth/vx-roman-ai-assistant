@@ -64,7 +64,7 @@ const lineKeySchema = { type: "string", pattern: lineKeyPattern.source };
 const definitions = [
   [
     "get_cart",
-    "Read this shopper's current cart, including exact line keys and quantities. Refresh before choosing a line to remove or change; historical cart contents may be stale.",
+    "Read this shopper's current cart, including exact line keys and quantities. Refresh before choosing a line to remove or change; historical cart contents may be stale. Reading does not request that Roman show the cart; display or navigate to it only when the shopper explicitly asks to view it.",
     {},
   ],
   [

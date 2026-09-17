@@ -1837,6 +1837,33 @@ test("a completed reply atomically presents one ordered subset of current-turn c
   );
 });
 
+test("eight selected products persist and restore as one ordered carousel", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show eight roller blinds.",
+  });
+  const productIds = Array.from(
+    { length: 8 },
+    (_, index) => `gid://shopify/Product/${8 - index}`,
+  );
+  await completedCatalog(id, turn.assistantId, productIds);
+  await repository.finishTurn(id, turn.assistantId, {
+    text: "Here are eight options.",
+    status: "complete",
+    presentation: { callId: randomUUID(), productIds },
+  });
+  const restored = await loadRepository().getSnapshot(id);
+  const cards = restored.messages[1].parts.find(
+    (part) => part.type === "products",
+  );
+  assert.deepEqual(cards.productIds, productIds);
+  assert.equal(restored.messages[1].status, "complete");
+});
+
 test("questions persist after product and guide widgets, survive reload and keep short answers meaningful", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
@@ -2021,7 +2048,7 @@ test("invalid or ungrounded presentations cannot partially complete a reply", as
     text: "Show recommendations.",
   });
   const available = Array.from(
-    { length: 7 },
+    { length: 9 },
     (_, index) => `gid://shopify/Product/${index + 1}`,
   );
   await completedCatalog(id, turn.assistantId, available);

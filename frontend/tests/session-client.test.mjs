@@ -1221,6 +1221,42 @@ const recommendations = {
   ],
 };
 
+test("carousel snapshots accept eight products and reject nine", async (t) => {
+  for (const count of [8, 9]) {
+    await t.test(`${count} products`, async (t) => {
+      const saved = JSON.parse(JSON.stringify(recommendations));
+      const products = saved.messages[1].parts.find(
+        (part) => part.type === "products",
+      );
+      products.productIds = Array.from(
+        { length: count },
+        (_, index) => `gid://shopify/Product/${index + 1}`,
+      );
+      const ctx = setup(t, { saved: access });
+      if (count === 8) await resume(ctx, saved);
+      else {
+        ctx.respond(0, { ...access, conversation: saved });
+        await until(
+          () => !!ctx.client.getSnapshot().error,
+          "Oversized carousel was accepted",
+        );
+      }
+      const state = ctx.client.getSnapshot();
+      if (count === 8) {
+        assert.equal(state.error, null);
+        assert.equal(
+          state.conversation.messages[1].parts.find(
+            (part) => part.type === "products",
+          ).productIds.length,
+          8,
+        );
+      } else {
+        assert.match(state.error, /invalid session response/i);
+      }
+    });
+  }
+});
+
 test("a streamed reply completes with a carousel and question through the real response validator", async (t) => {
   const streaming = {
     ...pending,

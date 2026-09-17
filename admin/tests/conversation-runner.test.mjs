@@ -4500,6 +4500,29 @@ test("explicit product presentation selects only the requested ordered subset wi
   );
 });
 
+test("a fullscreen carousel accepts eight current-turn products in their selected order", async () => {
+  const env = setup();
+  const ids = [8, 3, 1, 5, 2, 6, 7, 4];
+  env.streams.push(
+    events(completed("", { output: [catalogCall("catalog-1")] })),
+    events(completed("", { output: [showCall(ids)] })),
+    events(completed("Here are the matching roller blinds.")),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => catalogResult(...ids, 9, 10),
+  );
+  assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
+  assert.equal(
+    allowedTools(env.calls.requests[0].input).find(
+      (tool) => tool.name === "show_products",
+    ).parameters.properties.productIds.maxItems,
+    8,
+  );
+});
+
 test("missing question after a carousel preserves the product decision in text and voice without another model call", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
@@ -4799,7 +4822,7 @@ test("invalid selections cannot present duplicate, variant, unknown or historica
     ["variant", { productIds: ["gid://shopify/ProductVariant/123"] }],
     ["unknown", { productIds: [productGid(999)] }],
     ["empty", { productIds: [] }],
-    ["too many", { productIds: [1, 2, 3, 4, 5, 6, 7].map(productGid) }],
+    ["too many", { productIds: [1, 2, 3, 4, 5, 6, 7, 8, 9].map(productGid) }],
     ["extra fields", { productIds: [productGid(123)], title: "Forged" }],
     ["invalid JSON", "not JSON"],
   ]) {
@@ -4823,7 +4846,7 @@ test("invalid selections cannot present duplicate, variant, unknown or historica
         ],
         () => {},
         new AbortController().signal,
-        async () => catalogResult(123, 1, 2, 3, 4, 5, 6, 7),
+        async () => catalogResult(123, 1, 2, 3, 4, 5, 6, 7, 8, 9),
       );
       assert.equal(reply.presentation, undefined);
       const result = env.calls.requests[2].input.input.find(

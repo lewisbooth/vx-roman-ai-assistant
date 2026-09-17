@@ -1,6 +1,7 @@
 import {
   MAX_MESSAGE_LENGTH,
   MAX_CONVERSATION_MESSAGES,
+  MAX_PRODUCT_CARDS,
   CONVERSATION_STORAGE_KEY,
   type ConversationBootstrap,
   type ConversationCredential,
@@ -299,7 +300,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
                 typeof part.invocationId === "string" &&
                 UUID.test(part.invocationId) &&
                 Array.isArray(part.productIds) &&
-                part.productIds.length <= 10 &&
+                part.productIds.length <= MAX_PRODUCT_CARDS &&
                 part.productIds.every(
                   (id) =>
                     typeof id === "string" &&

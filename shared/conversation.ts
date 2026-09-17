@@ -31,6 +31,9 @@ export interface ProductListPart {
   voiceReply?: { voiceId: string; afterSequence: number };
 }
 
+/** Maximum verified products in one customer-facing carousel. */
+export const MAX_PRODUCT_CARDS = 8;
+
 export interface PageViewPart {
   type: "page_view";
   version: 1;

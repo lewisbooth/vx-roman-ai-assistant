@@ -1,4 +1,5 @@
 import type { ProductGuideKind } from "../../shared/product-guides";
+import { MAX_PRODUCT_CARDS } from "../../shared/conversation";
 import type { QuestionSelection } from "../../shared/questions";
 import type {
   BoundLibrarySource,
@@ -45,7 +46,7 @@ export const showProductsDefinition = {
   type: "function",
   name: "show_products",
   description:
-    "Display up to six selected products in a horizontally scrolling carousel inside this chat. Use for recommendations or whenever the customer asks to see a carousel or product cards, including showing earlier products again. First search or refresh the requested products with a catalog tool in this reply, then pass their returned IDs in display order. Call once per reply. Avoid unsolicited carousels during routine price checks or measurement clarification; an explicit request to show products takes precedence. Catalog lookups alone do not display cards.",
+    "Display up to eight selected products in Roman's large, horizontally scrolling carousel. Use for recommendations, collection browsing or whenever the customer asks to see a carousel or product cards, including showing earlier products again. These cards replace the storefront's collection pages in Roman. First search or refresh the requested products with a catalog tool in this reply, then pass their returned IDs in display order. Call once per reply. Avoid unsolicited carousels during routine price checks or measurement clarification; an explicit request to show products takes precedence. Catalog lookups alone do not display cards.",
   strict: true,
   parameters: {
     type: "object",
@@ -54,7 +55,7 @@ export const showProductsDefinition = {
         type: "array",
         items: { type: "string", pattern: productId.source, maxLength: 100 },
         minItems: 1,
-        maxItems: 6,
+        maxItems: MAX_PRODUCT_CARDS,
       },
     },
     required: ["productIds"],
@@ -70,12 +71,14 @@ export function parseProductSelection(input: unknown): string[] {
     Object.keys(value).length !== 1 ||
     !Array.isArray(value.productIds) ||
     value.productIds.length < 1 ||
-    value.productIds.length > 6 ||
+    value.productIds.length > MAX_PRODUCT_CARDS ||
     new Set(value.productIds).size !== value.productIds.length ||
     !value.productIds.every(
       (id) => typeof id === "string" && id.length <= 100 && productId.test(id),
     )
   )
-    throw new Error("Select one to six distinct Shopify Product IDs.");
+    throw new Error(
+      `Select one to ${MAX_PRODUCT_CARDS} distinct Shopify Product IDs.`,
+    );
   return [...value.productIds];
 }

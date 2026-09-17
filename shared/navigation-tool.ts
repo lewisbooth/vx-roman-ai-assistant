@@ -93,7 +93,7 @@ export const navigationToolDefinition = {
   type: "function",
   name: "navigate",
   description:
-    "Open a verified public storefront page or the cart view when asked, or the PDP for the customer's clearly chosen product or one deliberately selected, verified recommendation. Do not navigate just because a catalog search returned one result. Respect requests to stay in chat. Use a catalog/conversation path. This tool cannot visit account, checkout, app/API, cart-action or cart-permalink URLs. Redirects and unsafe theme swaps require the customer to open a normal link; never retry them automatically.",
+    "Synchronize a verified public storefront page behind Roman's fullscreen interface. Open the PDP for the customer's clearly chosen product or one deliberately selected, verified recommendation so Roman can display it and control its native configuration. Do not navigate just because a catalog search returned one result. Use search and show_products for collection browsing instead of a collection page. Open the cart only when the customer explicitly asks to view it, never automatically after adding a product or sample. Respect requests to keep comparing or decline product navigation. Use a catalog/conversation path. This tool cannot visit account, checkout, app/API, cart-action or cart-permalink URLs. Redirects and unsafe theme swaps require the customer to open a normal link; never retry them automatically.",
   strict: true,
   parameters: {
     type: "object",

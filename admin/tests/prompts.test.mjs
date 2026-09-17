@@ -411,6 +411,40 @@ test("a selected sole recommendation opens its verified PDP before a follow-up i
   assert.match(live, /Respect a request to stay in chat or keep comparing/);
 });
 
+test("all advisor channels keep browsing and configuration inside Roman and only show a requested cart", () => {
+  for (const prompt of [
+    ROMAN_TEXT_PROMPT,
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    romanVoicePrompt("marin"),
+  ]) {
+    assert.match(prompt, /customer shops inside Roman's fullscreen experience/);
+    assert.match(
+      prompt,
+      /Use large product carousels for browsing and collections, not navigation to a collection or search-results page/,
+    );
+    assert.match(
+      prompt,
+      /chosen product stays visible while you help measure and configure it/,
+    );
+    assert.match(
+      prompt,
+      /synchronize the real Shopify product controls in the background/,
+    );
+    assert.match(
+      prompt,
+      /Show or navigate to the cart only when the customer explicitly asks to view it/,
+    );
+    assert.match(
+      prompt,
+      /Adding a product or sample, reading the cart for an action, and offering View cart as a quick answer do not request a cart display/,
+    );
+    assert.match(
+      prompt,
+      /If an unsupported action genuinely requires the storefront, explain that limitation/,
+    );
+  }
+});
+
 test("Live keeps functional requirements distinct from a chosen colour when presenting backend results", () => {
   const live = romanVoicePrompt("marin");
   assert.match(
