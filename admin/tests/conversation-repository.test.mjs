@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
     contents: `export * from "./admin/conversations/repository.server.ts";
-      export {saveLibraryDiscovery, bindLibrarySource, clearLibrarySession} from "./admin/guides/library.server.ts";
+      export {saveLibraryDiscovery, bindLibrarySource, clearLibrarySession, readLibraryGuides} from "./admin/guides/library.server.ts";
       export {latestProductPage} from "./admin/guides/product-page.server.ts";`,
     resolveDir: process.cwd(),
   },
@@ -2916,16 +2916,31 @@ const libraryResult = () => ({
   diagramNotice:
     "Diagrams and videos were not interpreted; do not infer instructions that depend on them.",
 });
-async function libraryTurn() {
+async function libraryTurn(voice = false) {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
   );
   await repository.appendJourney(id, pageView({ path: guidePath }));
-  const turn = await repository.beginTurn(id, {
-    requestId: randomUUID(),
-    text: "Help with this bay.",
-  });
+  const voiceId = voice ? randomUUID() : undefined;
+  if (voiceId)
+    await database.voiceSession.create({
+      data: {
+        id: voiceId,
+        conversationId: id,
+        clientId: randomUUID(),
+        status: "active",
+        leaseExpiresAt: new Date(Date.now() + 45_000),
+      },
+    });
+  const turn = await repository.beginTurn(
+    id,
+    {
+      requestId: randomUUID(),
+      text: voiceId ? "" : "Help with this bay.",
+    },
+    voiceId,
+  );
   const sourceCallId = randomUUID();
   const tool = await repository.createToolInvocation(id, turn.assistantId, {
     providerCallId: sourceCallId,
@@ -2966,8 +2981,141 @@ async function libraryTurn() {
         "Measure this straight section using the established method.",
     },
   };
-  return { id, turn, tool, claim, outcome, inventory, bound, question };
+  return {
+    id,
+    turn,
+    tool,
+    claim,
+    outcome,
+    inventory,
+    bound,
+    question,
+    voiceId,
+  };
 }
+
+async function readLibraryPdf(value) {
+  const fetcher = global.fetch;
+  global.fetch = async () =>
+    new Response("%PDF-1.7\nSynthetic bay measuring guide\n%%EOF", {
+      headers: { "content-type": "application/pdf" },
+    });
+  try {
+    const read = await repository.readLibraryGuides(
+      value.id,
+      origin,
+      {
+        discoveryId: value.inventory.discoveryId,
+        guideIds: [value.outcome.guides[0].id],
+        refresh: false,
+      },
+      new AbortController().signal,
+    );
+    assert.equal(read.status, "ready");
+  } finally {
+    global.fetch = fetcher;
+  }
+}
+
+test("selected library PDF cards persist in text and voice without exposing cache receipts or attaching to a product", async () => {
+  for (const voice of [false, true]) {
+    const value = await libraryTurn(voice);
+    await readLibraryPdf(value);
+    const selection = {
+      callId: randomUUID(),
+      discoveryId: value.inventory.discoveryId,
+      guideId: value.outcome.guides[0].id,
+    };
+    await repository.finishTurn(value.id, value.turn.assistantId, {
+      status: "complete",
+      text: "Let's walk through the measuring guide.",
+      voiceId: value.voiceId,
+      libraryGuidePresentation: selection,
+    });
+    repository.clearLibrarySession(value.id);
+    const snapshot = await repository.getSnapshot(value.id);
+    const parts = snapshot.messages.flatMap((message) => message.parts);
+    const part = parts.find((part) => part.type === "guides");
+    assert.equal(part.version, 2);
+    assert.equal(part.libraryPagePath, "/pages/measuring-blinds");
+    assert.deepEqual(part.guides, [
+      { kind: "measuring", url: value.outcome.guides[0].url },
+    ]);
+    assert.equal(part.productPath, undefined);
+    assert.equal(part.voiceReply?.voiceId, value.voiceId);
+    assert.equal(
+      parts.some(
+        (part) => part.type === "text" && part.text.includes("walk through"),
+      ),
+      !voice,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(part),
+      /discoveryId|sourceAssistantId|expiresAt|file_data|base64/,
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: {
+          conversationId: value.id,
+          name: "show_library_guide",
+          status: "complete",
+        },
+      }),
+      1,
+    );
+  }
+});
+
+test("library presentation rejects unread, foreign, evicted and failed-source PDFs atomically", async () => {
+  for (const scenario of ["unread", "foreign", "evicted", "failed-source"]) {
+    const value = await libraryTurn();
+    if (scenario !== "unread") await readLibraryPdf(value);
+    const selection = {
+      callId: randomUUID(),
+      discoveryId: value.inventory.discoveryId,
+      guideId: value.outcome.guides[0].id,
+    };
+    if (scenario === "foreign") {
+      const other = await libraryTurn();
+      await readLibraryPdf(other);
+      selection.discoveryId = other.inventory.discoveryId;
+    }
+    if (scenario === "evicted") repository.clearLibrarySession(value.id);
+    if (scenario === "failed-source")
+      await database.toolInvocation.update({
+        where: { id: value.tool.id },
+        data: { status: "failed", error: "Discovery failed" },
+      });
+    await assert.rejects(
+      repository.finishTurn(value.id, value.turn.assistantId, {
+        status: "complete",
+        text: "A guide was selected.",
+        libraryGuidePresentation: selection,
+      }),
+      undefined,
+      scenario,
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: {
+          assistantId: value.turn.assistantId,
+          name: "show_library_guide",
+        },
+      }),
+      0,
+      scenario,
+    );
+    assert.equal(
+      (
+        await database.conversationMessage.findUniqueOrThrow({
+          where: { id: value.turn.assistantId },
+        })
+      ).status,
+      "pending",
+      scenario,
+    );
+  }
+});
 
 test("verified library HTML supports a product-bound numeric question without exposing source receipts", async () => {
   const value = await libraryTurn();

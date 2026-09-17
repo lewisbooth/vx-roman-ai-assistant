@@ -1,6 +1,13 @@
 import type { ProductGuideKind } from "../../shared/product-guides";
 import type { QuestionSelection } from "../../shared/questions";
-import type { BoundLibrarySource } from "../guides/library.server";
+import type {
+  BoundLibrarySource,
+  LibraryGuideSelection,
+} from "../guides/library.server";
+
+export interface LibraryGuidePresentation extends LibraryGuideSelection {
+  callId: string;
+}
 
 export interface QuestionPresentation extends QuestionSelection {
   callId: string;

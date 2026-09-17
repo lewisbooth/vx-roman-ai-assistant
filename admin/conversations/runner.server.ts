@@ -25,6 +25,7 @@ import {
   readBoundLibrarySource,
   saveLibraryDiscovery,
   readLibraryGuides,
+  selectLibraryGuide,
   bindLibrarySource,
   clearLibrarySession,
 } from "../guides/library.server";
@@ -239,8 +240,9 @@ async function completeTurn(
             sourceAssistantId: assistantId,
           });
         },
-        read: (selection, readSignal) =>
-          readLibraryGuides(id, origin, selection, readSignal),
+        read: (selection, readSignal, attachedUrls) =>
+          readLibraryGuides(id, origin, selection, readSignal, attachedUrls),
+        present: (selection) => selectLibraryGuide(id, origin, selection),
         bind: async (source, productPath) => {
           signal.throwIfAborted();
           const snapshot = await getSnapshot(id);

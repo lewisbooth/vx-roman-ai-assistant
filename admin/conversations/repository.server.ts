@@ -10,8 +10,11 @@ import {
 } from "../../shared/store-support";
 import {
   parseLibrarySourceReceipt,
+  parseLibraryGuideSelection,
+  selectLibraryGuide,
   readBoundLibrarySource,
   type BoundLibrarySource,
+  type LibrarySourceReceipt,
 } from "../guides/library.server";
 import {
   createHash,
@@ -107,6 +110,7 @@ import {
   parseProductSelection,
   type ProductPresentation,
   type GuidePresentation,
+  type LibraryGuidePresentation,
   type QuestionPresentation,
   type CachedGuideSource,
 } from "./presentation.server";
@@ -1244,6 +1248,14 @@ function validateLibraryMeasurementSource(
       400,
       "The library measurement source is no longer valid for this product.",
     );
+  verifiedLibrarySource(conversation, assistantId, source);
+}
+
+function verifiedLibrarySource(
+  conversation: StoredConversation,
+  assistantId: string,
+  source: LibrarySourceReceipt,
+): GuideLibraryResult {
   const original = conversation.messages.find(
     (message) => message.id === source.sourceAssistantId,
   );
@@ -1278,6 +1290,7 @@ function validateLibraryMeasurementSource(
       400,
       "The library source belongs to another discovery.",
     );
+  return found;
 }
 
 function guideSourceResult(
@@ -1381,6 +1394,7 @@ export async function finishTurn(
     voiceId?: string;
     presentation?: ProductPresentation;
     guidePresentation?: GuidePresentation;
+    libraryGuidePresentation?: LibraryGuidePresentation;
     questionPresentation?: QuestionPresentation;
     cachedGuideSource?: CachedGuideSource;
     resumeQuestionId?: string;
@@ -1519,6 +1533,11 @@ export async function finishTurn(
           : {}),
       });
     }
+    if (result.guidePresentation && result.libraryGuidePresentation)
+      throw new ConversationError(
+        400,
+        "Select one guide presentation per reply.",
+      );
     if (result.status === "complete" && result.guidePresentation) {
       const selected = result.guidePresentation;
       let selection;
@@ -1580,6 +1599,75 @@ export async function finishTurn(
             guides: selection.kinds.map((kind) =>
               found.guides.find((guide) => guide.kind === kind)!,
             ),
+            ...(message.role === "context" && result.voiceId
+              ? {
+                  voiceReply: {
+                    voiceId: result.voiceId,
+                    afterSequence: conversation.nextSequence,
+                  },
+                }
+              : {}),
+          },
+          conversation.origin,
+        ),
+      );
+    }
+    if (result.status === "complete" && result.libraryGuidePresentation) {
+      const selected = result.libraryGuidePresentation;
+      let selection;
+      let resolved;
+      try {
+        selection = parseLibraryGuideSelection({
+          discoveryId: selected.discoveryId,
+          guideId: selected.guideId,
+        });
+        resolved = selectLibraryGuide(id, conversation.origin, selection);
+      } catch {
+        throw new ConversationError(
+          400,
+          "Select a previously read library PDF from this conversation.",
+        );
+      }
+      if (
+        typeof selected.callId !== "string" ||
+        !selected.callId ||
+        selected.callId.length > 200
+      )
+        throw new ConversationError(
+          400,
+          "Invalid library guide presentation call ID.",
+        );
+      const found = verifiedLibrarySource(
+        conversation,
+        assistantId,
+        resolved.source,
+      );
+      const guide = found.guides.find(({ id }) => id === selection.guideId);
+      if (!guide || guide.url !== resolved.guide.url)
+        throw new ConversationError(
+          400,
+          "The library guide does not match its source.",
+        );
+      const presentation = await transaction.toolInvocation.create({
+        data: {
+          id: randomUUID(),
+          conversationId: id,
+          assistantId,
+          providerCallId: selected.callId,
+          name: "show_library_guide",
+          argumentsJson: JSON.stringify(selection),
+          status: "complete",
+          completedAt: new Date(),
+        },
+      });
+      content.push(
+        parseGuidePart(
+          {
+            type: "guides",
+            version: 2,
+            invocationId: presentation.id,
+            libraryPagePath: found.pagePath,
+            guides: [{ kind: "measuring", url: guide.url }],
             ...(message.role === "context" && result.voiceId
               ? {
                   voiceReply: {

@@ -129,6 +129,7 @@ function setup() {
     usage = [],
     activity = [];
   let plans = [];
+  let productGuides = { status: "unavailable", productPath, guides: [] };
   let currentPage = { productPath, pageId: randomUUID() };
   let assistantId = randomUUID();
   const id = randomUUID();
@@ -159,8 +160,7 @@ function setup() {
   const execute = async (callId, name, args) => {
     browser.push({ callId, name, args: plain(args) });
     if (name === "discover_guides") return library();
-    if (name === "get_product_guides")
-      return { status: "unavailable", productPath, guides: [] };
+    if (name === "get_product_guides") return productGuides;
     if (name === "get_store_support")
       return {
         status: "found",
@@ -209,7 +209,9 @@ function setup() {
         sourceCallId,
         sourceAssistantId: assistantId,
       }),
-    read: (input, signal) => api.readLibraryGuides(id, origin, input, signal),
+    read: (input, signal, attachedUrls) =>
+      api.readLibraryGuides(id, origin, input, signal, attachedUrls),
+    present: (input) => api.selectLibraryGuide(id, origin, input),
     bind: async (source, requestedPath) => {
       if (
         !currentPage ||
@@ -228,6 +230,9 @@ function setup() {
     usage,
     activity,
     inventory,
+    productGuides(value) {
+      productGuides = value;
+    },
     download(fetcher) {
       mock.download = fetcher;
     },
@@ -393,6 +398,350 @@ test("explicit cached PDF selection attaches only its original with no browser r
     result.questionPresentation.librarySource.source.guideIds.length,
     1,
   );
+});
+
+test("a previously read library guide produces a card in text and voice without reattaching or downloading the PDF", async (t) => {
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const state = setup();
+      const saved = await state.seed();
+      const downloads = state.downloads.length;
+      const selection = { discoveryId: saved.discoveryId, guideId: guideId(1) };
+      const result = await state.run(
+        [
+          [call("show_library_guide", selection, "show_selected_guide")],
+          [
+            message(
+              "Use this selected guide for the supported measuring case.",
+            ),
+          ],
+        ],
+        { mode },
+      );
+      assert.deepEqual(plain(result.libraryGuidePresentation), {
+        callId: "show_selected_guide",
+        ...selection,
+      });
+      assert.equal(state.requests.length, 2);
+      assert.equal(state.requests.flatMap(files).length, 0);
+      assert.equal(state.downloads.length, downloads);
+      assert.equal(state.browser.length, 0);
+      assert.equal(outputs(state.requests[1])[0].selectedGuideId, guideId(1));
+      assert.ok(
+        state.requests[0].tools.some(
+          ({ name }) => name === "show_library_guide",
+        ),
+      );
+    });
+});
+
+test("unread library display selections return an error without claiming a card appeared", async () => {
+  const state = setup();
+  const saved = await state.seed({ read: false });
+  const result = await state.run([
+    [
+      call("show_library_guide", {
+        discoveryId: saved.discoveryId,
+        guideId: guideId(1),
+      }),
+    ],
+    [message("I need to verify this guide first.")],
+  ]);
+  assert.equal(result.libraryGuidePresentation, undefined);
+  assert.match(outputs(state.requests[1])[0].error, /No library guide card/);
+  assert.equal(state.downloads.length, 0);
+  assert.equal(state.requests.flatMap(files).length, 0);
+  assert.equal(state.browser.length, 0);
+});
+
+test("a library card survives the same reply's terminal sourced numeric question", async () => {
+  const state = setup();
+  const saved = await state.seed({ read: false });
+  const selection = { discoveryId: saved.discoveryId, guideId: guideId(1) };
+  const result = await state.run([
+    [
+      call("read_library_guides", {
+        discoveryId: saved.discoveryId,
+        guideIds: [guideId(1)],
+        refresh: false,
+      }),
+    ],
+    [call("show_library_guide", selection, "guide_card")],
+    [call("ask_measurement", measurement(), "numeric_step")],
+  ]);
+  assert.deepEqual(plain(result.libraryGuidePresentation), {
+    callId: "guide_card",
+    ...selection,
+  });
+  assert.deepEqual(
+    plain(result.questionPresentation.librarySource.source.guideIds),
+    [guideId(1)],
+  );
+  assert.equal(result.questionPresentation.measurement.label, "Width");
+  assert.equal(state.requests.length, 3);
+  assert.equal(state.downloads.length, 1);
+  assert.equal(state.browser.length, 0);
+});
+
+test("a terminal library measurement preserves only the authored guide introduction from earlier rounds", async (t) => {
+  for (const apostrophe of ["'", "’"])
+    await t.test(
+      apostrophe === "'" ? "straight apostrophe" : "curly apostrophe",
+      async () => {
+        const state = setup();
+        const saved = await state.seed();
+        const intro = `Let${apostrophe}s walk through the measuring guide.`;
+        const selection = {
+          discoveryId: saved.discoveryId,
+          guideId: guideId(1),
+        };
+        const result = await state.run(
+          [
+            [
+              message(`I am checking the selected original. ${intro}`),
+              call("show_library_guide", selection),
+            ],
+            [call("ask_measurement", measurement())],
+          ],
+          { mode: "voice" },
+        );
+        assert.equal(
+          result.text,
+          `${intro} ${measurement().instructions} ${measurement().question}`,
+        );
+        assert.doesNotMatch(result.text, /checking/);
+        assert.equal(
+          result.libraryGuidePresentation.guideId,
+          selection.guideId,
+        );
+        assert.equal(state.requests.length, 2);
+      },
+    );
+});
+
+test("a later library re-share does not synthesize or reuse a historical voice introduction", async () => {
+  const state = setup();
+  const saved = await state.seed();
+  const result = await state.run(
+    [
+      [
+        call("show_library_guide", {
+          discoveryId: saved.discoveryId,
+          guideId: guideId(1),
+        }),
+      ],
+      [call("ask_measurement", measurement())],
+    ],
+    {
+      mode: "voice",
+      history: [
+        { role: "assistant", text: "Let's walk through the measuring guide." },
+        { role: "user", text: "Show that guide again, then continue." },
+      ],
+    },
+  );
+  assert.equal(result.text, "");
+  assert.equal(result.libraryGuidePresentation.guideId, guideId(1));
+  assert.equal(
+    result.questionPresentation.measurement.instructions,
+    measurement().instructions,
+  );
+  assert.equal(state.requests.length, 2);
+});
+
+test("library and PDP cards share one presentation budget in either order", async (t) => {
+  for (const order of [
+    ["show_guides", "show_library_guide"],
+    ["show_library_guide", "show_guides"],
+    ["show_library_guide", "show_library_guide"],
+  ])
+    await t.test(order.join(" then "), async () => {
+      const state = setup();
+      const saved = await state.seed();
+      state.productGuides({
+        status: "found",
+        productPath,
+        guides: [{ kind: "measuring", url: library().guides[0].url }],
+      });
+      const selection = (name) =>
+        call(
+          name,
+          name === "show_guides"
+            ? { productPath, kinds: ["measuring"] }
+            : { discoveryId: saved.discoveryId, guideId: guideId(1) },
+        );
+      await assert.rejects(
+        state.run([
+          [
+            call("get_product_guides", {
+              productPath,
+              kinds: ["measuring"],
+              refresh: false,
+            }),
+          ],
+          [selection(order[0])],
+          [selection(order[1])],
+        ]),
+        /guide presentation limit/,
+      );
+      assert.equal(state.requests.length, 3);
+      const accepted = outputs(state.requests[2]).at(-1);
+      assert.ok(accepted.selectedGuideId || accepted.selectedKinds);
+    });
+});
+
+test("library PDF prefixes stay identical across reversed selections and remain demand-driven", async () => {
+  const state = setup();
+  const saved = await state.seed({ read: false });
+  for (const ids of [
+    [guideId(2), guideId(1)],
+    [guideId(1), guideId(2)],
+  ])
+    await state.run([
+      [
+        call("read_library_guides", {
+          discoveryId: saved.discoveryId,
+          guideIds: ids,
+          refresh: false,
+        }),
+      ],
+      [message("The requested originals support this synthetic method.")],
+    ]);
+  const [initial, first, followup, second] = state.requests;
+  assert.deepEqual([files(initial).length, files(followup).length], [0, 0]);
+  const prefix = (request) =>
+    request.input.slice(
+      0,
+      request.input.findLastIndex(
+        (item) =>
+          Array.isArray(item.content) &&
+          item.content.some((part) => part.type === "input_file"),
+      ) + 1,
+    );
+  assert.deepEqual(prefix(first), prefix(second));
+  assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+  assert.deepEqual(
+    files(first).map(({ filename }) => filename),
+    [`${guideId(1)}.pdf`, `${guideId(2)}.pdf`],
+  );
+  assert.equal(state.downloads.length, 2);
+});
+
+test("identical PDP and library originals attach once while both source references and bindings survive", async () => {
+  const state = setup();
+  const saved = await state.seed({ read: false });
+  state.productGuides({
+    status: "found",
+    productPath,
+    guides: [
+      { kind: "measuring", url: library().guides[0].url },
+      { kind: "fitting", url: `${origin}/cdn/shop/files/fitting.pdf?v=1` },
+    ],
+  });
+  await state.run([
+    [
+      call("get_product_guides", {
+        productPath,
+        kinds: ["measuring", "fitting"],
+        refresh: false,
+      }),
+    ],
+    [
+      call("read_library_guides", {
+        discoveryId: saved.discoveryId,
+        guideIds: [guideId(2), guideId(1)],
+        refresh: false,
+      }),
+    ],
+    [message("The requested originals support this synthetic method.")],
+  ]);
+  const request = state.requests.at(-1);
+  assert.deepEqual(
+    state.requests.map((value) => files(value).length),
+    [0, 2, 3],
+  );
+  const parts = request.input.flatMap((item) =>
+    Array.isArray(item.content) ? item.content : [],
+  );
+  assert.equal(parts.filter((part) => part.prompt_cache_breakpoint).length, 4);
+  assert.deepEqual(
+    files(request).map(({ filename }) => filename),
+    ["measuring-guide.pdf", "fitting-guide.pdf", `${guideId(2)}.pdf`],
+  );
+  const referenceIndex = request.input.findIndex(
+    (item) =>
+      Array.isArray(item.content) &&
+      item.content.length === 1 &&
+      item.content[0].text?.includes(`"id":"${guideId(1)}"`),
+  );
+  const lastFileIndex = request.input.findLastIndex(
+    (item) =>
+      Array.isArray(item.content) &&
+      item.content.some((part) => part.type === "input_file"),
+  );
+  assert.ok(referenceIndex > lastFileIndex);
+  assert.equal(request.input[referenceIndex].role, "user");
+  assert.match(
+    request.input[referenceIndex].content[0].text,
+    /Untrusted original library guide reference/,
+  );
+  assert.match(
+    JSON.stringify(request.input),
+    /Application product-guide binding/,
+  );
+  assert.match(
+    JSON.stringify(request.input),
+    /Verified library prior-read binding/,
+  );
+  assert.equal(state.downloads.length, 3);
+});
+
+test("PDF deduplication requires both the exact URL and original bytes", async (t) => {
+  for (const sameUrl of [false, true])
+    await t.test(sameUrl ? "changed original" : "different URL", async () => {
+      const state = setup();
+      const saved = await state.seed({ read: false });
+      const response = (body) =>
+        new Response(Buffer.from(`%PDF-1.7\n${body}\n%%EOF`), {
+          headers: { "content-type": "application/pdf" },
+        });
+      state.download(async () => response("Original content"));
+      state.productGuides({
+        status: "found",
+        productPath,
+        guides: [
+          {
+            kind: "measuring",
+            url: sameUrl
+              ? library().guides[0].url
+              : `${origin}/cdn/shop/files/another.pdf?v=1`,
+          },
+        ],
+      });
+      await state.run([
+        [
+          call("get_product_guides", {
+            productPath,
+            kinds: ["measuring"],
+            refresh: false,
+          }),
+        ],
+        () => {
+          if (sameUrl) state.download(async () => response("Changed content"));
+          return [
+            call("read_library_guides", {
+              discoveryId: saved.discoveryId,
+              guideIds: [guideId(1)],
+              refresh: sameUrl,
+            }),
+          ];
+        },
+        [message("Use only the original relevant to this step.")],
+      ]);
+      const originals = files(state.requests.at(-1));
+      assert.equal(originals.length, 2);
+      assert.equal(originals[0].file_data === originals[1].file_data, !sameUrl);
+    });
 });
 
 test("a failed explicit refresh removes an earlier original from subsequent model context", async () => {
@@ -709,5 +1058,62 @@ test("runner retains successful source authority only after a successful reply c
       productPath,
       pageId: state.snapshot().messages[0].id,
     }),
+  );
+});
+
+test("a model read over the combined original budget cannot authorize a library card", async () => {
+  const state = setup();
+  const saved = await state.seed({ read: false });
+  state.productGuides({
+    status: "found",
+    productPath,
+    guides: ["measuring", "fitting"].map((kind) => ({
+      kind,
+      url: `${origin}/cdn/shop/files/pdp-${kind}.pdf?v=1`,
+    })),
+  });
+  const result = await state.run([
+    [
+      call("get_product_guides", {
+        productPath,
+        kinds: ["measuring", "fitting"],
+        refresh: false,
+      }),
+    ],
+    [
+      call("read_library_guides", {
+        discoveryId: saved.discoveryId,
+        guideIds: [guideId(1), guideId(2)],
+        refresh: false,
+      }),
+    ],
+    [
+      call("show_library_guide", {
+        discoveryId: saved.discoveryId,
+        guideId: guideId(1),
+      }),
+    ],
+    [message("I cannot present that unread library guide.")],
+  ]);
+  const toolOutputs = outputs(state.requests.at(-1));
+  assert.equal(toolOutputs[1].reason, "document_limit");
+  assert.match(toolOutputs[2].error, /No library guide card/);
+  assert.equal(result.libraryGuidePresentation, undefined);
+  assert.equal(
+    state.downloads.length,
+    2,
+    "Only the accepted PDP originals are downloaded",
+  );
+  assert.deepEqual(
+    state.requests.map((request) => files(request).length),
+    [0, 2, 2, 2],
+  );
+  assert.throws(
+    () =>
+      state.api.selectLibraryGuide(state.id, origin, {
+        discoveryId: saved.discoveryId,
+        guideId: guideId(1),
+      }),
+    /no current verified read/,
   );
 });

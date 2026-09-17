@@ -720,8 +720,47 @@ test("first guide sharing has a brief introduction before its card and first que
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Retain the one short guide-sharing introduction when a matched guide is first displayed, without repeating it at later steps/,
+    /Retain the one short guide-sharing introduction when the flow's first matched guide is displayed, without repeating it at later steps or when switching library sources/,
   );
+});
+
+test("library guide sharing waits for a matching family and does not restart the flow on every source or reply", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /Resolve an unknown blind family or source match first; do not introduce or link a provisional guide while that choice is unresolved/);
+    assert.match(prompt, /On later steps, give only the next useful explanation or question; do not repeat the introduction or unchanged guide link/);
+    assert.match(prompt, /A changed relevant source may be linked once without restarting the introduction; show an unchanged link again only if the customer requests it/);
+    assert.match(prompt, /A new reply, source lookup or voice restart does not restart this introduction/);
+    assert.doesNotMatch(prompt, /For a library source, share its verified page\/PDF Markdown link with/);
+  }
+  const live = romanVoicePrompt("marin");
+  assert.match(live, /Once the blind family and applicable source are established, start the flow/);
+  assert.match(live, /This applies to PDP and library sources alike: do not introduce a provisional guide while the blind family is unresolved/);
+  assert.match(live, /A source change or voice restart does not restart the introduction/);
+});
+
+test("library cards are canonical in both modes and source-link fallback stays neutral", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /After reading and matching a selected library PDF, call show_library_guide with its discovery and guide IDs/);
+    assert.match(prompt, /do not duplicate a successful card with a Markdown link/);
+    assert.doesNotMatch(prompt, /A library source uses its neutral Markdown link in place of a card/);
+  }
+  assert.match(ROMAN_TEXT_PROMPT, /Only when the customer specifically requests the source link and a card is unavailable/);
+  assert.match(ROMAN_TEXT_PROMPT, /put \[Measuring guide\]\(URL\) on its own paragraph, copying the verified URL exactly/);
+  assert.match(ROMAN_TEXT_PROMPT, /Never print a raw guide URL, use an "Open\/read\/load\/fetch\.\.\." link label or narrate document access/);
+  assert.match(ROMAN_TEXT_PROMPT, /the link is an optional reference, not a step the customer must complete/);
+  assert.match(romanVoicePrompt("marin"), /Do not tell the customer to open or read the guide as a routine step, or narrate loading or fetching it/);
+  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Do not add instructions to open or read a guide; the customer can continue without opening it/);
+  assert.match(romanVoicePrompt("marin"), /the backend uses show_library_guide so the same source remains visible beside the voice transcript/);
+});
+
+test("an unresolved product choice keeps the active flow and offers the displayed products instead of generic capabilities", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /If the next unresolved step is choosing a product, call ask_question with the displayed products as answer choices/);
+    assert.match(prompt, /For three products, offer those three choices and A different blind/);
+    assert.match(prompt, /Keep the current measuring, fitting or shopping goal; do not replace this pending decision with the generic capability menu/);
+    assert.match(prompt, /If the customer already chose a product, continue its actual next step instead of asking them to choose again/);
+    assert.match(prompt, /Resolve a meaningful pending product, fit or configuration decision before suggesting a new task/);
+  }
 });
 
 test("guided measuring checks relevant guide conditions before requesting dimensions in both backend modes", () => {

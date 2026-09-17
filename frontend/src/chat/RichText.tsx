@@ -2,6 +2,7 @@ import { memo, useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { StorefrontLink } from "./StorefrontLink";
+import { bufferIncompleteMarkdownLinks } from "./streaming-markdown";
 
 const allowedElements = [
   "p",
@@ -95,9 +96,11 @@ const remarkPlugins = [remarkProseParagraphs];
 export const RichText = memo(function RichText({
   text,
   navigation,
+  pending = false,
 }: {
   text: string;
   navigation: StorefrontNavigation;
+  pending?: boolean;
 }) {
   // Keep link components stable while streamed text updates, preserving focus.
   const components = useMemo<Components>(
@@ -122,7 +125,7 @@ export const RichText = memo(function RichText({
         allowedElements={allowedElements}
         components={components}
       >
-        {text}
+        {pending ? bufferIncompleteMarkdownLinks(text) : text}
       </Markdown>
     </div>
   );

@@ -1078,6 +1078,52 @@ const questionPart = {
   answers: ["Blackout", "Daytime privacy", "A softer look"],
 };
 
+test("library guide cards survive authenticated snapshot restoration with their voice association", async (t) => {
+  const part = {
+    type: "guides",
+    version: 2,
+    invocationId,
+    libraryPagePath: "/pages/measuring-blinds",
+    guides: [
+      {
+        kind: "measuring",
+        url: "https://cdn.shopify.com/s/files/1/0123/4567/files/bay.pdf?v=123",
+      },
+    ],
+    voiceReply: {
+      voiceId: "22222222-2222-4222-8222-222222222222",
+      afterSequence: 3,
+    },
+  };
+  const snapshot = {
+    ...complete,
+    messages: [{ ...complete.messages[1], parts: [part] }],
+  };
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, snapshot);
+  const restored = ctx.client.getSnapshot().conversation;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(restored.messages[0].parts[0])),
+    part,
+  );
+  ctx.client.clearError();
+  ctx.respond(2, {
+    ...snapshot,
+    revision: 3,
+    messages: [
+      {
+        ...snapshot.messages[0],
+        parts: [{ ...part, libraryPagePath: "/pages/not-a-library" }],
+      },
+    ],
+  });
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Invalid library provenance was accepted",
+  );
+  assert.equal(ctx.client.getSnapshot().conversation, restored);
+});
+
 test("confirmed navigation notifications survive response validation and unsafe destinations are rejected", async (t) => {
   const part = {
     type: "navigation",

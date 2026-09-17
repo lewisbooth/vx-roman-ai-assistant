@@ -95,6 +95,7 @@ export function Timeline({
                     key={index}
                     text={part.text}
                     navigation={navigation}
+                    pending={message.status === "pending"}
                   />
                 ) : (
                   <p key={index} className="roman-message-text">

@@ -14,6 +14,7 @@ import { parseProductPath } from "../../shared/product-path";
 import { readGuideFile, type FailureReason } from "./files.server";
 
 export const LIBRARY_SESSION_TTL_MS = 30 * 60_000;
+export const MAX_GUIDE_DOCUMENTS = 3;
 const maxEntries = 16;
 const maxBytes = 32 * 1024 * 1024;
 const uuid =
@@ -42,6 +43,43 @@ export const readLibraryGuidesToolDefinition = {
     additionalProperties: false,
   },
 } as const;
+
+export const showLibraryGuideToolDefinition = {
+  type: "function",
+  name: "show_library_guide",
+  description:
+    "Show a PDF guide card in the chat after selecting and reading the library guide that matches the customer's blind type and measuring case. Use its discovery ID and guide ID, never a URL. Readable does not mean suitable: first assess its contents. Show the selected guide once when starting its flow, when changing to a relevant new source, or when the customer asks to see it again. Do not repeat unchanged cards on each step. Shares the one-guide-presentation budget with show_guides.",
+  strict: true,
+  parameters: {
+    type: "object",
+    properties: {
+      discoveryId: { type: "string", pattern: uuid.source },
+      guideId: { type: "string", pattern: guideId.source },
+    },
+    required: ["discoveryId", "guideId"],
+    additionalProperties: false,
+  },
+} as const;
+
+export interface LibraryGuideSelection {
+  discoveryId: string;
+  guideId: string;
+}
+
+export function parseLibraryGuideSelection(
+  input: unknown,
+): LibraryGuideSelection {
+  const value = object(input);
+  if (
+    Object.keys(value).length !== 2 ||
+    typeof value.discoveryId !== "string" ||
+    !uuid.test(value.discoveryId) ||
+    typeof value.guideId !== "string" ||
+    !guideId.test(value.guideId)
+  )
+    throw new Error("Select one previously read library guide by its IDs.");
+  return { discoveryId: value.discoveryId, guideId: value.guideId };
+}
 
 export function parseLibraryReadCall(input: unknown): {
   discoveryId: string;
@@ -109,7 +147,7 @@ export type LibraryReadResult =
     }
   | {
       status: "unavailable";
-      reason: FailureReason | "discovery_unavailable";
+      reason: FailureReason | "discovery_unavailable" | "document_limit";
       unavailable?: Unavailable[];
     };
 
@@ -289,6 +327,30 @@ export function clearLibrarySession(conversationId: string): void {
     if (entry.conversationId === conversationId) entries.delete(id);
 }
 
+/** Resolves a display choice without attaching, downloading or rereading a PDF. */
+export function selectLibraryGuide(
+  conversationId: string,
+  origin: string,
+  input: LibraryGuideSelection,
+) {
+  scope(conversationId, origin);
+  expire();
+  const selection = parseLibraryGuideSelection(input);
+  const entry = entries.get(selection.discoveryId);
+  const guide = entry?.discovery.guides.find(
+    ({ id }) => id === selection.guideId,
+  );
+  if (
+    !entry ||
+    !guide ||
+    entry.conversationId !== conversationId ||
+    entry.origin !== origin ||
+    !entry.readIds.has(guide.id)
+  )
+    throw new Error("The selected library PDF has no current verified read.");
+  return { guide: { ...guide }, source: receipt(entry, [guide.id]) };
+}
+
 function sourceEntry(
   conversationId: string,
   origin: string,
@@ -400,6 +462,7 @@ export async function readLibraryGuides(
   origin: string,
   input: { discoveryId: string; guideIds: string[]; refresh: boolean },
   signal: AbortSignal,
+  attachedUrls: ReadonlySet<string> = new Set(),
 ): Promise<LibraryReadResult> {
   signal.throwIfAborted();
   scope(conversationId, origin);
@@ -417,6 +480,13 @@ export async function readLibraryGuides(
   );
   if (selected.some((guide) => !guide))
     throw new Error("Select only guides from this discovery.");
+  // Resolve the budget against verified source URLs before downloads, refresh
+  // invalidation or read authority: rejected attachments have not been read.
+  if (
+    new Set([...attachedUrls, ...selected.map((guide) => guide!.url)]).size >
+    MAX_GUIDE_DOCUMENTS
+  )
+    return { status: "unavailable", reason: "document_limit" };
   const guides: GuideLibraryResult["guides"] = [];
   const files: ResponseInputFile[] = [];
   const unavailable: Unavailable[] = [];

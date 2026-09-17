@@ -31,6 +31,7 @@ const bundle = await build({
                  export const readBoundLibrarySource=()=>undefined;
                  export const saveLibraryDiscovery=()=>{throw Error('Unexpected library discovery')};
                  export const readLibraryGuides=()=>{throw Error('Unexpected library read')};
+                 export const selectLibraryGuide=()=>{throw Error('Unexpected library presentation')};
                  export const bindLibrarySource=()=>{throw Error('Unexpected library binding')};
                  export const clearLibrarySession=(id)=>mock.libraryClears.push(id);`
             : path.includes("usage")

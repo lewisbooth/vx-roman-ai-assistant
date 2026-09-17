@@ -255,6 +255,37 @@ test("inspection retains original question choices as literal read-only history 
   assert.match(rows[1].textContent, /Full blackout/);
 });
 
+test("inspection identifies a saved library source separately from product-linked guides", (t) => {
+  const { render, container } = setupView(t);
+  const url = "https://cdn.shopify.com/s/files/1/0123/4567/files/bay.pdf?v=123";
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [
+      {
+        id: "library",
+        role: "assistant",
+        status: "complete",
+        createdAt: NOW,
+        parts: [
+          {
+            type: "guides",
+            version: 2,
+            invocationId: ID,
+            libraryPagePath: "/pages/measuring-blinds",
+            guides: [{ kind: "measuring", url }],
+            voiceReply: { voiceId: ID, afterSequence: 2 },
+          },
+        ],
+      },
+    ],
+  });
+  assert.match(container.textContent, /Library guide/);
+  assert.doesNotMatch(container.textContent, /Product guides/);
+  assert.equal(container.querySelector("a").href, url);
+  assert.equal(container.querySelector("a").target, "_blank");
+  assert.equal(container.querySelector("a").rel, "noopener noreferrer");
+});
+
 test("inspection keeps measurement instructions, unit and product as read-only history after the answer", (t) => {
   const { render, container } = setupView(t);
   const instructions = "Measure the top width. <img src=x onerror=alert(1)>";
@@ -432,10 +463,7 @@ test("inspection identifies confirmed sample additions without calling them prod
   );
   assert.doesNotMatch(container.textContent, /^Added to cart:/);
   assert.equal(container.querySelector("img"), null);
-  assert.equal(
-    container.querySelector("a").href,
-    `${ORIGIN}/products/shade`,
-  );
+  assert.equal(container.querySelector("a").href, `${ORIGIN}/products/shade`);
 });
 
 test("inspection retains saved timeline order and safely renders text, voice, visits and widget references", (t) => {

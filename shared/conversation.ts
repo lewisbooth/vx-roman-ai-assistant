@@ -39,15 +39,19 @@ export interface PageViewPart {
   occurredAt: string;
 }
 
-export interface GuidePart {
+export type GuidePart = {
   type: "guides";
-  version: 1;
   invocationId: string;
-  productPath: string;
   guides: ProductGuide[];
   /** Display association only; it does not assert that the shopper heard it. */
   voiceReply?: { voiceId: string; afterSequence: number };
-}
+} & (
+  | { version: 1; productPath: string }
+  | {
+      version: 2;
+      libraryPagePath: "/pages/measuring-blinds" | "/pages/measuring-curtains";
+    }
+);
 
 export interface CartAddedPart {
   type: "cart_added";

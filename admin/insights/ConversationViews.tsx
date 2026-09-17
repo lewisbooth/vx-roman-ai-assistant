@@ -364,13 +364,16 @@ function InspectedGuides({
   } catch {
     return (
       <p className="text-sm text-gray-600">
-        These saved product guides are unavailable.
+        These saved {part.version === 2 ? "library" : "product"} guides are
+        unavailable.
       </p>
     );
   }
   return (
     <div>
-      <p className="text-sm font-semibold">Product guides</p>
+      <p className="text-sm font-semibold">
+        {part.version === 2 ? "Library guide" : "Product guides"}
+      </p>
       <ul className="list-inside list-disc text-sm">
         {guides.map((guide) => (
           <li key={guide.kind}>

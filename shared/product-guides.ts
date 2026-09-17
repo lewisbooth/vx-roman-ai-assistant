@@ -229,21 +229,39 @@ export function parseGuidePart(
     "type",
     "version",
     "invocationId",
-    "productPath",
+    ...(value.version === 2 ? ["libraryPagePath"] : ["productPath"]),
     "guides",
     ...(value.voiceReply !== undefined ? ["voiceReply"] : []),
   ]);
   if (
     value.type !== "guides" ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     typeof value.invocationId !== "string" ||
     !uuidPattern.test(value.invocationId)
   )
-    throw new Error("Invalid saved product guide part.");
-  const result = parseProductGuidesResult(
-    { status: "found", productPath: value.productPath, guides: value.guides },
-    storefrontOrigin,
-  );
+    throw new Error("Invalid saved guide part.");
+  const guides = parseGuides(value.guides, storefrontOrigin);
+  if (!guides.length) throw new Error("A saved guide part must contain a PDF.");
+  let source:
+    | { version: 1; productPath: string }
+    | {
+        version: 2;
+        libraryPagePath:
+          "/pages/measuring-blinds" | "/pages/measuring-curtains";
+      };
+  if (value.version === 2) {
+    if (
+      (value.libraryPagePath !== "/pages/measuring-blinds" &&
+        value.libraryPagePath !== "/pages/measuring-curtains") ||
+      guides.length !== 1 ||
+      guides[0].kind !== "measuring"
+    )
+      throw new Error(
+        "A library guide must be one measuring PDF from a supported library page.",
+      );
+    source = { version: 2, libraryPagePath: value.libraryPagePath };
+  } else
+    source = { version: 1, productPath: parseProductPath(value.productPath) };
   let voiceReply: GuidePart["voiceReply"];
   if (value.voiceReply !== undefined) {
     const voice = object(value.voiceReply);
@@ -260,10 +278,9 @@ export function parseGuidePart(
   }
   return {
     type: "guides",
-    version: 1,
+    ...source,
     invocationId: value.invocationId,
-    productPath: result.productPath,
-    guides: result.guides,
+    guides,
     ...(voiceReply ? { voiceReply } : {}),
   };
 }

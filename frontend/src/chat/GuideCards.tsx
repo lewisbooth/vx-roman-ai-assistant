@@ -3,6 +3,7 @@ import {
   parseGuidePart,
   PRODUCT_GUIDE_LABELS,
 } from "../../../shared/product-guides";
+import { GuideLink } from "./GuideLink";
 
 export function GuideCards({ part }: { part: GuidePart }) {
   let guides: GuidePart["guides"];
@@ -11,37 +12,22 @@ export function GuideCards({ part }: { part: GuidePart }) {
   } catch {
     return (
       <p className="roman-products-status">
-        These product guides are unavailable.
+        These {part.version === 2 ? "library" : "product"} guides are
+        unavailable.
       </p>
     );
   }
   return (
     <div className="roman-guides">
-      <ul className="roman-guide-list" aria-label="Product guides">
+      <ul
+        className="roman-guide-list"
+        aria-label={part.version === 2 ? "Library guide" : "Product guides"}
+      >
         {guides.map((guide) => (
           <li key={guide.kind}>
-            <a
-              className="roman-guide-card"
-              href={guide.url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="24"
-                height="24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                aria-hidden="true"
-              >
-                <path d="M7 3h7l4 4v14H7zM14 3v5h4M10 12h5M10 16h5" />
-              </svg>
-              <span>{PRODUCT_GUIDE_LABELS[guide.kind]}</span>
-              <span className="roman-guide-format">
-                PDF · opens in a new tab
-              </span>
-            </a>
+            <GuideLink url={guide.url}>
+              {PRODUCT_GUIDE_LABELS[guide.kind]}
+            </GuideLink>
           </li>
         ))}
       </ul>

@@ -3086,6 +3086,35 @@ test("terminal voice numeric replies retain the confirmed guide introduction wit
   }
 });
 
+test("showing an existing PDP card again does not synthesize another voice introduction", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(completed("", { output: [guideSelection()] })),
+    events(completed("", { output: [measurementCall()] })),
+  );
+  const reply = await env.api.generateReply(
+    [
+      { role: "assistant", text: "Let's walk through the measuring guide." },
+      { role: "user", text: "Show that guide again, then continue." },
+    ],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(),
+    "voice",
+    undefined,
+    guideOrigin,
+  );
+  assert.equal(reply.text, "");
+  assert.equal(reply.guidePresentation.productPath, guidePath);
+  assert.equal(
+    reply.questionPresentation.measurement.instructions,
+    measurementSelection.instructions,
+  );
+  assert.equal(env.calls.requests.length, 3);
+  assert.equal(env.streams.length, 0);
+});
+
 test("numeric voice replies keep a completion round when their overview would truncate critical instructions", async () => {
   const env = setup();
   const selection = {
@@ -4454,9 +4483,14 @@ test("explicit product presentation selects only the requested ordered subset wi
   const acknowledged = env.calls.requests[2].input.input.find(
     (item) => item.type === "function_call_output" && item.call_id === "show-1",
   );
-  assert.deepEqual(JSON.parse(acknowledged.output), {
-    selectedProductIds: [productGid(456), productGid(123)],
-  });
+  assert.deepEqual(JSON.parse(acknowledged.output).selectedProductIds, [
+    productGid(456),
+    productGid(123),
+  ]);
+  assert.match(
+    JSON.parse(acknowledged.output).instruction,
+    /next unresolved decision/,
+  );
   assert.equal(
     allowedTools(env.calls.requests[2].input).some(
       (tool) => tool.name === "show_products",
@@ -4464,6 +4498,184 @@ test("explicit product presentation selects only the requested ordered subset wi
     false,
     "A successful selection consumes the one presentation attempt",
   );
+});
+
+test("missing question after a carousel preserves the product decision in text and voice without another model call", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [catalogCall("catalog-1")] })),
+      events(completed("", { output: [showCall([456, 123, 789])] })),
+      events(completed("Choose the product before we continue measuring.")),
+    );
+    const reply = await env.api.generateReply(
+      [{ role: "user", text: "Let's continue measuring this window." }],
+      () => {},
+      new AbortController().signal,
+      async () => catalogResult(123, 456, 789, 999),
+      mode,
+    );
+    assert.deepEqual(plain(reply.questionPresentation).answers, [
+      "Shade 456",
+      "Shade 123",
+      "Shade 789",
+      "A different blind",
+    ]);
+    assert.equal(
+      reply.questionPresentation.question,
+      "Which of these products would you like to continue with?",
+    );
+    assert.equal(env.calls.requests.length, 3);
+    assert.equal(
+      reply.text.includes(reply.questionPresentation.question),
+      mode === "voice",
+    );
+    assert.doesNotMatch(
+      JSON.stringify(reply.questionPresentation),
+      /Shade 999|Help me measure|Explore products/,
+    );
+  }
+});
+
+test("carousel fallback never truncates ambiguous titles or omits displayed options to fit the answer limit", async () => {
+  for (const titles of [
+    ["Shade one", "Shade two", "Shade three", "Shade four"],
+    ["Same name", "same name"],
+    ["Long title ".repeat(10), "Another shade"],
+    ["<Unsafe title>", "Another shade"],
+    ["A different blind", "Another shade"],
+  ]) {
+    const env = setup();
+    const ids = titles.map((_, index) => index + 1);
+    const result = catalogResult(...ids);
+    result.products.forEach((product, index) => {
+      product.title = titles[index];
+    });
+    env.streams.push(
+      events(completed("", { output: [catalogCall("catalog-1")] })),
+      events(completed("", { output: [showCall(ids)] })),
+      events(completed("These are the available choices.")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => result,
+    );
+    assert.deepEqual(plain(reply.questionPresentation).answers, [
+      "Help me choose",
+      "A different blind",
+    ]);
+    assert.equal(
+      reply.questionPresentation.question,
+      "Which of these products would you like to continue with?",
+    );
+    assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
+  }
+});
+
+test("the exact generic menus cannot replace a pending carousel choice but contextual questions remain unchanged", async () => {
+  const welcome = {
+    question: "Where would you like to start?",
+    answers: ["Help me measure", "Explore products", "Find my style"],
+  };
+  const nextActions = {
+    ...welcome,
+    question: "What would you like to do next?",
+  };
+  for (const selection of [
+    welcome,
+    nextActions,
+    {
+      question: "Which part would you like help with?",
+      answers: [...welcome.answers],
+    },
+  ]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [catalogCall("catalog-1")] })),
+      events(completed("", { output: [showCall([456, 123, 789])] })),
+      events(completed("", { output: [questionCall(selection)] })),
+      events(completed("Here are the options for your current window.")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => catalogResult(123, 456, 789),
+    );
+    const expected =
+      selection === welcome || selection === nextActions
+        ? {
+            question:
+              "Which of these products would you like to continue with?",
+            answers: [
+              "Shade 456",
+              "Shade 123",
+              "Shade 789",
+              "A different blind",
+            ],
+          }
+        : selection;
+    assert.deepEqual(plain(reply.questionPresentation), {
+      callId: "question-1",
+      ...expected,
+    });
+    const acknowledged = env.calls.requests[3].input.input.find(
+      (item) =>
+        item.type === "function_call_output" && item.call_id === "question-1",
+    );
+    assert.deepEqual(
+      JSON.parse(acknowledged.output),
+      expected,
+      "The model receives the actual displayed question for its final voice/text overview",
+    );
+    assert.equal(env.calls.requests.length, 4);
+  }
+});
+
+test("an explicit question or a completed product selection takes precedence over carousel fallback", async () => {
+  for (const next of ["question", "navigate", "single"]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [catalogCall("catalog-1")] })),
+      events(
+        completed("", {
+          output: [showCall(next === "single" ? [123] : [123, 456])],
+        }),
+      ),
+    );
+    if (next !== "single")
+      env.streams.push(
+        events(
+          completed("", {
+            output: [
+              next === "question"
+                ? questionCall()
+                : catalogCall("open-chosen", "navigate", {
+                    path: "/products/shade-123",
+                  }),
+            ],
+          }),
+        ),
+      );
+    env.streams.push(events(completed("Here is the useful next step.")));
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (_id, name, args) =>
+        name === "navigate"
+          ? { status: "navigated", path: args.path }
+          : catalogResult(123, 456),
+    );
+    if (next === "question") {
+      assert.deepEqual(plain(reply.questionPresentation), {
+        callId: "question-1",
+        ...questionSelection,
+      });
+    } else assertNextActions(reply);
+  }
 });
 
 test("an explicit follow-up can show refreshed recommendations after text or an earlier carousel", async (t) => {

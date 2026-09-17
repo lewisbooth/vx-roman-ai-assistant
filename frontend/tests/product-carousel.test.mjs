@@ -15,6 +15,7 @@ const bundle = await build({
       export function mount(container, navigate) {
         const root = createRoot(container);
         return {
+          flush: flushSync,
           render(count = 6) { flushSync(() => root.render(<ProductCarousel>
             <ul className="roman-product-list">{Array.from({length: count}, (_, index) => <li key={index}>
               <StorefrontLink url={'/products/blind-' + index} navigation={{navigate}} className="roman-product-card">
@@ -198,6 +199,7 @@ function setup(
     pointer,
     click,
     dispose,
+    flush: view.flush,
     render: view.render,
     frame: () => container.querySelector(".roman-product-carousel"),
     button: (label) =>
@@ -209,7 +211,7 @@ function setup(
   };
 }
 
-test("overflow cues and accessible directional controls follow scrolling, resize and content changes", async (t) => {
+test("overflow cues and accessible directional controls follow scrolling, resize and content changes", (t) => {
   const ctx = setup(t);
   assert.equal(ctx.frame().dataset.left, "false");
   assert.equal(ctx.frame().dataset.right, "true");
@@ -217,14 +219,15 @@ test("overflow cues and accessible directional controls follow scrolling, resize
   assert.equal(ctx.button("Next").disabled, false);
   assert.equal(ctx.carousel.tabIndex, 0);
   assert.equal(ctx.observers[0].targets.length, 2);
-  ctx.button("Next").click();
-  await delay(0);
+  ctx.flush(() => ctx.button("Next").click());
   assert.equal(ctx.carousel.scrollLeft, 240);
   assert.equal(ctx.frame().dataset.left, "true");
   assert.equal(ctx.frame().dataset.right, "true");
-  ctx.carousel.scrollLeft = 600;
-  ctx.carousel.dispatchEvent(new ctx.window.Event("scroll"));
-  await delay(0);
+  // Native listeners schedule React state; commit it before inspecting the DOM.
+  ctx.flush(() => {
+    ctx.carousel.scrollLeft = 600;
+    ctx.carousel.dispatchEvent(new ctx.window.Event("scroll"));
+  });
   assert.equal(ctx.frame().dataset.right, "false");
   assert.equal(ctx.button("Next").disabled, true);
   ctx.sizes.content = 250;
@@ -233,8 +236,7 @@ test("overflow cues and accessible directional controls follow scrolling, resize
   assert.equal(ctx.button("Next"), null);
   assert.equal(ctx.frame().dataset.left, "false");
   ctx.sizes.content = 900;
-  ctx.resize();
-  await delay(0);
+  ctx.flush(() => ctx.resize());
   assert.equal(ctx.frame().dataset.right, "true");
 });
 
@@ -359,14 +361,13 @@ test("a carousel with no overflow does not convert product clicks to drags", asy
   await delay(0);
 });
 
-test("button scrolling stays smooth and missing ResizeObserver retains the resize fallback", async (t) => {
+test("button scrolling stays smooth and missing ResizeObserver retains the resize fallback", (t) => {
   const ctx = setup(t, { reduced: true, observer: false });
   ctx.button("Next").click();
   assert.equal(ctx.scrolling[0].behavior, "smooth");
   ctx.sizes.width = 900;
   ctx.carousel.scrollLeft = 0;
-  ctx.resize();
-  await delay(0);
+  ctx.flush(() => ctx.resize());
   assert.equal(ctx.button("Next"), null);
 });
 

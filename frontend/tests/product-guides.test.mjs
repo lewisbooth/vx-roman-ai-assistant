@@ -621,3 +621,45 @@ test("browser results and durable guide parts reject unknown/private fields and 
   ])
     assert.throws(() => api.parseGuidePart({ ...part, ...change }, origin));
 });
+
+test("library guide parts preserve one verified measuring PDF without pretending it is a PDP source", (t) => {
+  const { api } = setup(t);
+  const part = {
+    type: "guides",
+    version: 2,
+    invocationId: id,
+    libraryPagePath: "/pages/measuring-blinds",
+    guides: [{ kind: "measuring", url: shopifyMeasuring }],
+    voiceReply: { voiceId: id, afterSequence: 5 },
+  };
+  for (const libraryPagePath of [
+    "/pages/measuring-blinds",
+    "/pages/measuring-curtains",
+  ]) {
+    const value = { ...part, libraryPagePath };
+    assert.deepEqual(plain(api.parseGuidePart(value, origin)), value);
+  }
+  for (const change of [
+    { version: 1 },
+    { version: 3 },
+    { productPath },
+    { libraryPagePath: "/pages/measuring-blinds?source=private" },
+    { libraryPagePath: "/pages/other-library" },
+    { libraryPagePath: `${origin}/pages/measuring-blinds` },
+    { libraryPagePath: "/pages/%6deasuring-blinds" },
+    { guides: [] },
+    { guides: [{ kind: "fitting", url: fitting }] },
+    { guides },
+    { guides: [{ kind: "measuring", url: "https://evil.example/guide.pdf" }] },
+    {
+      guides: [{ kind: "measuring", url: shopifyMeasuring, title: "invented" }],
+    },
+    { voiceReply: { voiceId: id, afterSequence: -1 } },
+    { voiceReply: { voiceId: id, afterSequence: 5, heard: true } },
+  ])
+    assert.throws(() => api.parseGuidePart({ ...part, ...change }, origin));
+  assert.equal(
+    Object.hasOwn(api.parseGuidePart(part, origin), "productPath"),
+    false,
+  );
+});

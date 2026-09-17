@@ -11,11 +11,12 @@ const bundle = await build({
       import { flushSync } from 'react-dom';
       import { RichText } from './frontend/src/chat/RichText';
       import { Timeline } from './frontend/src/chat/Timeline';
+      export { bufferIncompleteMarkdownLinks } from './frontend/src/chat/streaming-markdown';
       export function mount(container, navigation) {
         const root = createRoot(container);
         return {
-          render(text) {
-            flushSync(() => root.render(<RichText text={text} navigation={navigation} />));
+          render(text, pending = false) {
+            flushSync(() => root.render(<RichText text={text} navigation={navigation} pending={pending} />));
           },
           timeline(messages) {
             flushSync(() => root.render(<Timeline messages={messages} navigation={navigation}
@@ -292,6 +293,13 @@ test("store-linked PDF guides in Markdown open separately without replacing the 
   );
   assert.equal(link.target, "_blank");
   assert.equal(link.rel, "noopener noreferrer");
+  assert.equal(link.className, "roman-guide-card");
+  assert.equal(link.parentElement.tagName, "P");
+  assert.equal(link.querySelector("div, p"), null);
+  assert.equal(
+    link.querySelector(".roman-guide-format").textContent,
+    "PDF · opens in a new tab",
+  );
   const click = new window.MouseEvent("click", {
     bubbles: true,
     cancelable: true,
@@ -304,6 +312,184 @@ test("store-linked PDF guides in Markdown open separately without replacing the 
     "[Foreign guide](https://foreign.example/cdn/shop/files/measuring.pdf)",
   );
   assert.equal(container.querySelector("a"), null);
+});
+
+test("validated Shopify CDN PDFs open separately while other external URLs stay plain text", (t) => {
+  const { window, container, calls, render } = setup(t);
+  const url =
+    "https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=5729100873718235920";
+  render(`[Measuring guide](${url})`);
+  const link = container.querySelector("a");
+  assert.equal(link.href, url);
+  assert.equal(link.target, "_blank");
+  assert.equal(link.rel, "noopener noreferrer");
+  const click = new window.MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+  });
+  link.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, false);
+  assert.deepEqual(calls, []);
+  for (const rejected of [
+    "https://cdn.shopify.com/other.pdf",
+    "https://cdn.shopify.com/s/files/1/0123/4567/files/guide.html",
+    "https://cdn.shopify.com/s/files/1/0123/4567/files/guide.pdf?redirect=https://evil.example",
+    "https://cdn.shopify.com.evil.example/s/files/1/0123/4567/files/guide.pdf",
+    "https://name:secret@cdn.shopify.com/s/files/1/0123/4567/files/guide.pdf",
+    "https://foreign.example/guide.pdf",
+  ]) {
+    render(`[Guide](${rejected})`);
+    assert.equal(container.querySelector("a"), null, rejected);
+    assert.equal(container.textContent, "Guide");
+  }
+});
+
+test("pending links hold their unfinished caption and URL without hiding completed prose or links", (t) => {
+  const { container, render } = setup(t);
+  const prefix = "[Chosen product](/products/roman).\nHere is the source. ";
+  render(prefix, true);
+  const existing = container.querySelector("a");
+  existing.focus();
+  for (const suffix of [
+    "[",
+    "[Open the angled-bay",
+    "[Open the angled-bay guide](",
+    "[Open the angled-bay guide](https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123",
+  ]) {
+    render(`${prefix}${suffix}`, true);
+    assert.equal(container.textContent, "Chosen product.\nHere is the source.");
+    assert.equal(container.querySelectorAll("a").length, 1);
+    assert.equal(container.querySelector("a"), existing);
+    assert.equal(container.getRootNode().activeElement, existing);
+    assert.doesNotMatch(container.textContent, /Open|https:|cdn\.shopify/);
+  }
+  render(
+    `${prefix}[Measuring guide](https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123)`,
+    true,
+  );
+  assert.equal(container.querySelectorAll("a").length, 2);
+  assert.equal(
+    container.querySelectorAll("a")[1].querySelector("span").textContent,
+    "Measuring guide",
+  );
+  assert.equal(container.querySelectorAll("a")[1].target, "_blank");
+});
+
+test("a persisted library PDF uses the same card after text completion or voice snapshot restoration", (t) => {
+  const { container, timeline } = setup(t);
+  const part = Object.freeze({
+    type: "guides",
+    version: 2,
+    invocationId: "11111111-1111-4111-8111-111111111111",
+    libraryPagePath: "/pages/measuring-blinds",
+    guides: [
+      {
+        kind: "measuring",
+        url: "https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123",
+      },
+    ],
+    voiceReply: {
+      voiceId: "22222222-2222-4222-8222-222222222222",
+      afterSequence: 3,
+    },
+  });
+  for (const status of ["pending", "complete"]) {
+    timeline([
+      {
+        id: "library",
+        role: "assistant",
+        status,
+        createdAt: "2026-09-17T10:00:00.000Z",
+        parts: [part],
+      },
+    ]);
+    const card = container.querySelector(
+      '[aria-label="Library guide"] .roman-guide-card',
+    );
+    assert.ok(card);
+    assert.equal(card.href, part.guides[0].url);
+    assert.equal(card.target, "_blank");
+    assert.equal(card.rel, "noopener noreferrer");
+    assert.equal(card.querySelector("span").textContent, "Measuring guide");
+  }
+  assert.equal(part.voiceReply.afterSequence, 3);
+  assert.equal(Object.hasOwn(part, "productPath"), false);
+});
+
+test("buffering handles nested and angle destinations and optional titles until the actual link closes", (t) => {
+  const { window } = setup(t);
+  const buffer = window.RomanRichTextTest.bufferIncompleteMarkdownLinks;
+  for (const tail of [
+    "[Guide](/products/shade_(wide)",
+    "[Guide](<https://example.com/guide(a).pdf",
+    "[Guide](<https://example.com/guide(a).pdf>",
+    '[Guide](/products/shade "Measuring (wide)',
+    '[Guide](/products/shade "Measuring (wide)"',
+    "[The **measuring** [guide]](/products/shade",
+  ])
+    assert.equal(buffer(`Keep this prose. ${tail}`), "Keep this prose. ", tail);
+  for (const text of [
+    "[Guide](/products/shade_(wide))",
+    "[Guide](<https://example.com/guide(a).pdf>)",
+    '[Guide](/products/shade "Measuring (wide)")',
+    "[Guide](/products/shade\\(wide\\))",
+  ])
+    assert.equal(buffer(text), text);
+});
+
+test("paired ordinary brackets, bare URLs, code and escaped link examples remain untouched", (t) => {
+  const { window } = setup(t);
+  const buffer = window.RomanRichTextTest.bufferIncompleteMarkdownLinks;
+  for (const text of [
+    "Measure [width] and [drop] in cm.",
+    "Read https://example.com/measuring.pdf for details.",
+    "Use https://example.com/products?filter[width",
+    "\\[literal](https://example.com/incomplete",
+    "`[code](https://example.com/incomplete`",
+    "``[code](https://example.com/incomplete``",
+    "`[unfinished code](https://example.com/incomplete",
+    "```text\n[code](https://example.com/incomplete\n```",
+    "~~~text\n[code](https://example.com/incomplete\n~~~",
+    "    [code](https://example.com/incomplete",
+    "[ordinary text\n\nA separate complete paragraph.",
+    "[Malformed link](url invalid prose\n\nKeep the next paragraph.",
+  ])
+    assert.equal(buffer(text), text);
+  assert.equal(
+    buffer("Keep [width]"),
+    "Keep [width]",
+    "Closing an ordinary bracket releases the text immediately",
+  );
+});
+
+test("only pending assistant display is buffered; finished and failed text and stored parts stay exact", (t) => {
+  const { container, timeline } = setup(t);
+  const text = "Keep this. [Unfinished guide](https://example.com/source";
+  const part = Object.freeze({ type: "text", text });
+  function message(role, status) {
+    return {
+      id: "reply",
+      role,
+      status,
+      createdAt: "2026-09-17T10:00:00.000Z",
+      parts: [part],
+    };
+  }
+  timeline([message("assistant", "pending")]);
+  assert.equal(
+    container.querySelector(".roman-rich-text").textContent,
+    "Keep this.",
+  );
+  for (const status of ["complete", "failed"]) {
+    timeline([message("assistant", status)]);
+    assert.equal(container.querySelector(".roman-rich-text").textContent, text);
+  }
+  timeline([message("user", "pending")]);
+  assert.equal(
+    container.querySelector(".roman-message-text").textContent,
+    text,
+  );
+  assert.equal(part.text, text);
 });
 
 test("authored prose returns create separate paragraphs without splitting naturally wrapped text", (t) => {
