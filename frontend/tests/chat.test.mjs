@@ -2826,6 +2826,63 @@ test("tool progress names the running work and progress-only updates preserve th
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
 
+for (const voice of [false, true]) {
+  test(`${voice ? "voice" : "text"} progress names only the guides currently being read and yields to browser actions`, async (t) => {
+    const ctx = await setup(t, {
+      state: {
+        voice: { status: voice ? "active" : "idle", muted: false, error: null },
+        conversation: { ...activeConversation([]), busy: true },
+      },
+    });
+    const activity = () => ctx.container.querySelector(".roman-reply-activity");
+    for (const [readingGuides, label] of [
+      [["measuring"], "Roman is reading the measuring guide…"],
+      [["fitting"], "Roman is reading the fitting guide…"],
+      [
+        ["fitting", "measuring"],
+        "Roman is reading the measuring and fitting guides…",
+      ],
+    ]) {
+      ctx.update({
+        conversation: { ...activeConversation([]), busy: true, readingGuides },
+      });
+      await until(
+        () => activity()?.textContent === label,
+        "Guide reading label did not update",
+      );
+      assert.equal(activity().getAttribute("role"), "status");
+    }
+    ctx.update({
+      conversation: {
+        ...activeConversation([]),
+        busy: true,
+        readingGuides: ["measuring"],
+        tools: [
+          { id: "current", name: "navigate", status: "running", arguments: {} },
+        ],
+      },
+    });
+    await until(
+      () => activity()?.textContent === "Opening the page…",
+      "Browser action did not take precedence",
+    );
+    ctx.update({ conversation: { ...activeConversation([]), busy: true } });
+    await until(
+      () => activity()?.textContent === "Roman is thinking…",
+      "Completed reading stayed visible",
+    );
+    ctx.update({
+      conversation: { ...activeConversation([]), readingGuides: ["measuring"] },
+    });
+    await until(
+      () => !activity(),
+      "Idle work displayed an obsolete reading marker",
+    );
+    assert.deepEqual(ctx.calls, []);
+    assert.deepEqual(ctx.startVoiceCalls, []);
+  });
+}
+
 test("idle voice is quiet while delegated model and browser work show progress", async (t) => {
   const ctx = await setup(t, {
     state: {

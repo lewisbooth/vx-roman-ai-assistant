@@ -440,7 +440,8 @@ export async function startVoice(
     owner.controller.signal.throwIfAborted();
     lease(owner, reserved.session.leaseExpiresAt);
     const initial = await getSnapshot(conversationId);
-    owner.resumeQuestionId = latestQuestion(initial.messages)?.invocationId;
+    const pendingQuestion = latestQuestion(initial.messages);
+    owner.resumeQuestionId = pendingQuestion?.invocationId;
     owner.lastPage = initial.messages
       .flatMap((message) => message.parts)
       .filter((part) => part.type === "page_view" || part.type === "navigation")
@@ -449,6 +450,7 @@ export async function startVoice(
       sdp: input.sdp,
       voice,
       history: await getModelHistory(conversationId),
+      pendingQuestion,
       signal: owner.controller.signal,
       onEvent: (event) => receive(owner, event),
     });

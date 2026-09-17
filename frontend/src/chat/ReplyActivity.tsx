@@ -43,11 +43,16 @@ function activityLabel(state: ConversationClientState, ending: boolean) {
   const writing = pending?.some((message) =>
     message.parts.some((part) => part.type === "text" && part.text.trim()),
   );
+  const reading = conversation?.busy ? conversation.readingGuides : undefined;
   return tool
     ? toolLabels[tool.name]
-    : writing
-      ? "Roman is replying…"
-      : "Roman is thinking…";
+    : reading?.length
+      ? reading.length === 2
+        ? "Roman is reading the measuring and fitting guides…"
+        : `Roman is reading the ${reading[0]} guide…`
+      : writing
+        ? "Roman is replying…"
+        : "Roman is thinking…";
 }
 
 /** Transient feedback for actual work; an open voice connection can be idle. */

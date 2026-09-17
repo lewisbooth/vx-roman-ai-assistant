@@ -317,6 +317,109 @@ test("unchanged polls retain state identity and notifications while later partia
   );
 });
 
+for (const role of ["assistant", "context"]) {
+  test(`${role} guide activity advances without a durable revision and clears without stale replay`, async (t) => {
+    const ctx = setup(t, { saved: access });
+    const working = {
+      ...pending,
+      messages: role === "context" ? [pending.messages[0]] : pending.messages,
+    };
+    await resume(ctx, working);
+    ctx.tick();
+    ctx.respond(ctx.calls.length - 1, {
+      ...working,
+      streamRevision: 1,
+      readingGuides: ["measuring"],
+    });
+    await until(
+      () => ctx.client.getSnapshot().conversation.readingGuides?.length === 1,
+      "Reading activity was not applied",
+    );
+    const reading = ctx.client.getSnapshot();
+    ctx.tick();
+    assert.match(ctx.calls.at(-1).url, /revision=1&streamRevision=1$/);
+    ctx.respond(ctx.calls.length - 1, {
+      id: conversationId,
+      revision: 1,
+      streamRevision: 1,
+      unchanged: true,
+    });
+    await until(() => ctx.timers.size === 1, "Unchanged read did not settle");
+    assert.equal(ctx.client.getSnapshot(), reading);
+    ctx.tick();
+    ctx.respond(ctx.calls.length - 1, { ...working, streamRevision: 2 });
+    await until(
+      () => !ctx.client.getSnapshot().conversation.readingGuides,
+      "Finished guide reading remained sticky",
+    );
+    const cleared = ctx.client.getSnapshot();
+    ctx.tick();
+    ctx.respond(ctx.calls.length - 1, {
+      ...working,
+      streamRevision: 1,
+      readingGuides: ["fitting"],
+    });
+    await until(() => ctx.timers.size === 1, "Stale read did not settle");
+    assert.equal(ctx.client.getSnapshot(), cleared);
+    ctx.tick();
+    ctx.respond(ctx.calls.length - 1, complete);
+    await until(
+      () => !ctx.client.getSnapshot().conversation.busy,
+      "Reply did not complete",
+    );
+    assert.equal(
+      ctx.client.getSnapshot().conversation.readingGuides,
+      undefined,
+    );
+    assert.equal(ctx.client.getSnapshot().error, null);
+  });
+}
+
+for (const [name, invalid] of Object.entries({
+  empty: [],
+  duplicate: ["measuring", "measuring"],
+  unknown: ["installation"],
+  oversized: ["measuring", "fitting", "measuring"],
+  string: "measuring",
+  null: null,
+})) {
+  test(`malformed guide activity ${name} is rejected without replacing the last snapshot`, async (t) => {
+    const ctx = setup(t, { saved: access });
+    await resume(ctx, pending);
+    const previous = ctx.client.getSnapshot().conversation;
+    ctx.tick();
+    ctx.respond(ctx.calls.length - 1, {
+      ...pending,
+      streamRevision: 1,
+      readingGuides: invalid,
+    });
+    await until(
+      () => !!ctx.client.getSnapshot().error,
+      "Invalid guide activity was accepted",
+    );
+    assert.match(
+      ctx.client.getSnapshot().error,
+      /invalid conversation response/,
+    );
+    assert.equal(ctx.client.getSnapshot().conversation, previous);
+  });
+}
+
+test("idle snapshots cannot claim guide-reading work", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, pending);
+  ctx.tick();
+  ctx.respond(ctx.calls.length - 1, {
+    ...complete,
+    readingGuides: ["fitting"],
+  });
+  await until(
+    () => !!ctx.client.getSnapshot().error,
+    "Idle reading state was accepted",
+  );
+  assert.equal(ctx.client.getSnapshot().conversation.busy, true);
+});
+
 test("stale unchanged responses cannot override a newer durable mutation", async (t) => {
   const ctx = setup(t, { saved: access });
   await resume(ctx, pending);

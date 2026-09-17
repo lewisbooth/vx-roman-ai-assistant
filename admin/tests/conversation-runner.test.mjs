@@ -72,7 +72,7 @@ const guideOrigin = "https://hd-dev-single.myshopify.com";
 const syntheticGuideFile = (kind) => ({
   type: "input_file",
   filename: `${kind}-guide.pdf`,
-  file_data: "data:application/pdf;base64,c3ludGhldGljLWd1aWRl",
+  file_data: "data:application/pdf;base64,JVBERi0xLjcKc3ludGhldGljLWd1aWRlCiUlRU9G",
   detail: "high",
 });
 const secondInput = {
@@ -81,6 +81,21 @@ const secondInput = {
 };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const plain = (value) => JSON.parse(JSON.stringify(value));
+const allowedToolNames = (request) =>
+  request.tool_choice === "none"
+    ? []
+    : request.tool_choice.tools.map(({ name }) => name);
+const allowedTools = (request) =>
+  request.tools.filter(({ name }) => allowedToolNames(request).includes(name));
+const guideFiles = (request) =>
+  request.input
+    .filter((item) => item.role === "user" && Array.isArray(item.content))
+    .flatMap((item) => item.content)
+    .filter((part) => part.type === "input_file");
+const cachedGuideFile = (kind) => ({
+  ...syntheticGuideFile(kind),
+  prompt_cache_breakpoint: { mode: "explicit" },
+});
 
 function deferred() {
   let resolve;
@@ -678,7 +693,7 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   assert.equal(input.stream, true);
   assert.equal(input.max_output_tokens, 1600);
   assert.deepEqual(
-    input.tools.map((tool) => tool.name),
+    allowedTools(input).map((tool) => tool.name),
     ["ask_question"],
     "only the local question tool is available without a browser executor",
   );
@@ -703,7 +718,7 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   assert.doesNotMatch(input.instructions, /Every cart mutation requires/);
   assert.doesNotMatch(input.instructions, /visualize blinds in your room/);
   assert.deepEqual(
-    plain(input.input),
+    plain(input.input.slice(1)),
     history.map(({ role, text }) => ({ role, content: text })),
   );
   assert.deepEqual(plain(env.mock.clients), [
@@ -1003,7 +1018,7 @@ test("model cart changes have no confirmation argument and cannot automatically 
     ["get_cart", "clear_cart"],
   );
   for (const call of executions) assert.equal("confirmed" in call.args, false);
-  const remaining = env.calls.requests[2].input.tools.map((tool) => tool.name);
+  const remaining = allowedTools(env.calls.requests[2].input).map((tool) => tool.name);
   assert.ok(remaining.includes("get_cart"));
   assert.ok(remaining.includes("get_measurements"));
   assert.ok(!remaining.includes("clear_cart"));
@@ -1061,7 +1076,7 @@ test("an addition without UI approval still consumes the one-mutation allowance 
         args: { productPath: "/products/shade" },
       },
     ]);
-    const tools = env.calls.requests[1].input.tools.map((tool) => tool.name);
+    const tools = allowedTools(env.calls.requests[1].input).map((tool) => tool.name);
     assert.ok(tools.includes("get_cart"));
     for (const name of [
       "add_to_cart",
@@ -1135,7 +1150,7 @@ test("measurement application never unlocks a cart add in the same text or voice
           mode,
         );
         assert.deepEqual(executions, ["apply_measurements"]);
-        const tools = env.calls.requests[1].input.tools.map(
+        const tools = allowedTools(env.calls.requests[1].input).map(
           (tool) => tool.name,
         );
         assert.equal(
@@ -1221,7 +1236,7 @@ test("an applied measurement can read configuration and ask a final-review quest
     ]);
     assert.equal(reply.questionPresentation.question, "Ready to add it?");
     assert.ok(
-      !env.calls.requests[1].input.tools.some(
+      !allowedTools(env.calls.requests[1].input).some(
         (tool) => tool.name === "add_to_cart",
       ),
     );
@@ -1285,7 +1300,7 @@ test("an accepted final review refreshes configuration before adding in the next
     );
     assert.deepEqual(executions, ["get_product_configuration", "add_to_cart"]);
     assert.ok(
-      env.calls.requests[1].input.tools.some(
+      allowedTools(env.calls.requests[1].input).some(
         (tool) => tool.name === "add_to_cart",
       ),
     );
@@ -1403,7 +1418,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
     assert.equal(input.store, false);
     assert.equal(input.parallel_tool_calls, false);
     assert.deepEqual(
-      input.tools.map(({ name }) => name),
+      allowedTools(input).map(({ name }) => name),
       [
         "search_products",
         "get_product",
@@ -1489,10 +1504,18 @@ test("catalog call budget leaves only presentation after four lookups and reject
     assert.equal(executions, 4);
     assert.equal(env.calls.requests.length, 5);
     assert.deepEqual(
-      env.calls.requests[4].input.tools.map((tool) => tool.name),
+      allowedTools(env.calls.requests[4].input).map((tool) => tool.name),
       ["show_products", "show_guides", "ask_question", "ask_measurement"],
     );
-    assert.equal(env.calls.requests[4].input.tool_choice, "auto");
+    assert.equal(env.calls.requests[4].input.tool_choice.type, "allowed_tools");
+    assert.equal(env.calls.requests[4].input.tool_choice.mode, "auto");
+    assert.ok(
+      env.calls.requests.every(
+        ({ input }) =>
+          JSON.stringify(input.tools) ===
+          JSON.stringify(env.calls.requests[0].input.tools),
+      ),
+    );
   }
 });
 
@@ -1534,7 +1557,7 @@ test("invalid or failed catalog calls return a safe error to the model without f
     assert.equal(reply.text, "I could not check that catalog.");
     assert.equal(reply.presentation, undefined);
     assert.ok(
-      env.calls.requests[1].input.tools.some(
+      allowedTools(env.calls.requests[1].input).some(
         (tool) => tool.name === "show_products",
       ),
       "Failed catalog calls do not hide the carousel capability",
@@ -1571,8 +1594,11 @@ const guideResult = (kinds = ["measuring", "fitting"]) => ({
     url: `${guideOrigin}/cdn/shop/files/${kind}.pdf?v=123`,
   })),
 });
-const guideLookup = (callId = "guides-lookup") =>
-  catalogCall(callId, "get_product_guides", { productPath: guidePath });
+const guideLookup = (
+  callId = "guides-lookup",
+  kinds = ["measuring", "fitting"],
+) =>
+  catalogCall(callId, "get_product_guides", { productPath: guidePath, kinds });
 const guideSelection = (
   args = { productPath: guidePath, kinds: ["fitting", "measuring"] },
   callId = "guides-show",
@@ -1727,6 +1753,73 @@ test("terminal voice numeric replies retain the current overview and speak the e
   );
   assert.equal(reply.text, `${overview} ${method}`);
   assert.equal(env.calls.requests.length, 2);
+});
+
+test("terminal voice numeric replies retain the confirmed guide introduction without earlier progress or duplicate speech", async () => {
+  for (const kinds of [["measuring"], ["fitting"], ["fitting", "measuring"]]) {
+    for (const repeated of [false, true]) {
+      const env = setup();
+      const intro =
+        kinds.length === 2
+          ? "Let's walk through the measuring and fitting guides."
+          : `Let's walk through the ${kinds[0]} guide.`;
+      env.streams.push(
+        events(completed("", { output: [guideLookup("lookup", kinds)] })),
+        events(
+          completed("", {
+            output: [
+              {
+                type: "message",
+                content: [
+                  {
+                    type: "output_text",
+                    text: `Checking the guide now. ${intro}`,
+                  },
+                ],
+              },
+              guideSelection({ productPath: guidePath, kinds }),
+            ],
+          }),
+        ),
+        events(
+          completed("", {
+            output: [
+              ...(repeated
+                ? [
+                    {
+                      type: "message",
+                      content: [{ type: "output_text", text: intro }],
+                    },
+                  ]
+                : []),
+              measurementCall(),
+            ],
+          }),
+        ),
+      );
+      const reply = await env.api.generateReply(
+        [],
+        () => {},
+        new AbortController().signal,
+        async () => guideResult(),
+        "voice",
+        undefined,
+        guideOrigin,
+      );
+      assert.equal(
+        reply.text,
+        `${intro} ${measurementSelection.instructions} ${measurementSelection.question}`,
+      );
+      assert.doesNotMatch(reply.text, /Checking/);
+      assert.equal(reply.guidePresentation.productPath, guidePath);
+      assert.equal(
+        reply.questionPresentation.measurement.instructions,
+        measurementSelection.instructions,
+      );
+      assert.equal(env.calls.requests.length, 3);
+      assert.equal(env.streams.length, 0);
+    }
+  }
 });
 
 test("numeric voice replies keep a completion round when their overview would truncate critical instructions", async () => {
@@ -1923,6 +2016,7 @@ test("navigation retires measurement evidence until the destination product guid
                 output: [
                   catalogCall("destination-guides", "get_product_guides", {
                     productPath: destination,
+                    kinds: ["measuring", "fitting"],
                   }),
                 ],
               }),
@@ -1992,10 +2086,10 @@ test("questions work without catalog matches or a browser executor, including qu
       ...questionSelection,
     });
     assert.deepEqual(
-      env.calls.requests[0].input.tools.map((tool) => tool.name),
+      allowedTools(env.calls.requests[0].input).map((tool) => tool.name),
       ["ask_question"],
     );
-    assert.equal(env.calls.requests[1].input.tools, undefined);
+    assert.equal(env.calls.requests[1].input.tool_choice, "none");
     assert.equal(env.calls.browserTools.length, 0);
     assert.deepEqual(
       JSON.parse(
@@ -2031,7 +2125,7 @@ test("invalid questions consume the single attempt without rendering an invalid 
       ).output,
       /No question was selected/,
     );
-    assert.equal(env.calls.requests[1].input.tools, undefined);
+    assert.equal(env.calls.requests[1].input.tool_choice, "none");
   }
 });
 
@@ -2094,14 +2188,14 @@ test("guide lookup alone creates no widget and an explicit selection has only cu
         item.type === "function_call_output" &&
         item.call_id === "guides-lookup",
     ).output;
-    assert.equal(documentOutput[0].type, "input_text");
-    const documentMetadata = JSON.parse(documentOutput[0].text);
+    assert.equal(typeof documentOutput, "string");
+    const documentMetadata = JSON.parse(documentOutput);
     assert.equal(documentMetadata.documentStatus, "ready");
     assert.deepEqual(documentMetadata.guides, guideResult().guides);
-    assert.match(documentMetadata.sourcePolicy, /untrusted reference data/);
-    assert.deepEqual(documentOutput.slice(1), [
-      syntheticGuideFile("measuring"),
-      syntheticGuideFile("fitting"),
+    assert.match(documentMetadata.sourcePolicy, /untrusted evidence/);
+    assert.deepEqual(guideFiles(env.calls.requests[1].input), [
+      cachedGuideFile("measuring"),
+      cachedGuideFile("fitting"),
     ]);
     assert.equal(env.calls.guideReads[0][1], guideOrigin);
     assert.doesNotMatch(
@@ -2131,7 +2225,7 @@ test("guide lookup alone creates no widget and an explicit selection has only cu
         selectedKinds: ["fitting", "measuring"],
       });
       assert.equal(
-        env.calls.requests[2].input.tools.some(
+        allowedTools(env.calls.requests[2].input).some(
           (tool) => tool.name === "show_guides",
         ),
         false,
@@ -2253,18 +2347,272 @@ test("guide files attach once per URL while refreshed lookup metadata stays curr
   );
   assert.equal(env.calls.guideReads.length, 2);
   assert.equal(
-    outputs
-      .flatMap((item) => item.output)
-      .filter((part) => part.type === "input_file").length,
+    guideFiles(env.calls.requests[2].input).length,
     1,
   );
   assert.equal(outputs[1].call_id, "guides-refreshed");
-  assert.equal(outputs[1].output.length, 1);
-  assert.equal(JSON.parse(outputs[1].output[0].text).documentStatus, "ready");
+  assert.equal(typeof outputs[1].output, "string");
+  assert.equal(JSON.parse(outputs[1].output).documentStatus, "ready");
   assert.doesNotMatch(
     JSON.stringify(reply),
     /file_data|input_file|application\/pdf/,
   );
+});
+
+test("original guide prefixes and scoped cache keys survive different history and provider call IDs", async () => {
+  const env = setup();
+  const history = [{ role: "user", text: "A new measurement request." }];
+  for (const callId of ["first-source", "new-source"]) {
+    env.streams.push(
+      events(completed("", { output: [guideLookup(callId)] })),
+      events(completed("Supported instructions.")),
+    );
+    await env.api.generateReply(
+      history,
+      () => {},
+      new AbortController().signal,
+      async () => guideResult(),
+      "text",
+      undefined,
+      guideOrigin,
+    );
+    history.push(
+      { role: "assistant", text: "A changing answer." },
+      { role: "user", text: "A later reading." },
+    );
+  }
+  const first = env.calls.requests[1].input;
+  const second = env.calls.requests[3].input;
+  assert.deepEqual(first.input.slice(0, 3), second.input.slice(0, 3));
+  assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+  assert.match(first.prompt_cache_key, /^[a-f0-9]{64}$/);
+  assert.deepEqual(first.prompt_cache_options, {
+    mode: "explicit",
+    ttl: "30m",
+  });
+  assert.notDeepEqual(first.input.slice(3), second.input.slice(3));
+  assert.equal(first.input[0].role, "developer");
+  assert.deepEqual(first.input[0].content[0].prompt_cache_breakpoint, {
+    mode: "explicit",
+  });
+  assert.ok(first.input.slice(1, 3).every((item) => item.role === "user"));
+  assert.equal(guideFiles(first).length, 2);
+  assert.ok(
+    first.input
+      .filter((item) => item.type === "function_call_output")
+      .every(
+        (item) =>
+          typeof item.output === "string" && !item.output.includes("file_data"),
+      ),
+  );
+  assert.deepEqual(first.tools, second.tools);
+  assert.ok(
+    env.calls.requests.every(
+      ({ input }) =>
+        input.model === "gpt-5.6-terra" &&
+        input.service_tier === "fast" &&
+        input.reasoning.effort === "medium" &&
+        input.store === false,
+    ),
+  );
+});
+
+test("changed PDF versions, bytes and authenticated origins cannot reuse the old original-guide prefix", async () => {
+  const results = [];
+  for (const change of ["none", "version", "bytes", "origin"]) {
+    const env = setup();
+    const source = guideResult(["measuring"]);
+    const origin =
+      change === "origin" ? "https://another-shop.myshopify.com" : guideOrigin;
+    source.guides[0].url = source.guides[0].url.replace(guideOrigin, origin);
+    if (change === "version") source.guides[0].url += "4";
+    if (change === "bytes")
+      env.mock.readGuides = async (value) => ({
+        status: "ready",
+        sources: value.guides,
+        files: [
+          {
+            ...syntheticGuideFile("measuring"),
+            file_data:
+              "data:application/pdf;base64,JVBERi0xLjcKY2hhbmdlZAolJUVPRg==",
+          },
+        ],
+      });
+    env.streams.push(
+      events(completed("", { output: [guideLookup("source", ["measuring"])] })),
+      events(completed("Supported instructions.")),
+    );
+    await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => source,
+      "text",
+      undefined,
+      origin,
+    );
+    results.push(env.calls.requests[1].input);
+  }
+  for (let index = 1; index < results.length; index++)
+    assert.notDeepEqual(
+      results[0].input.slice(0, 2),
+      results[index].input.slice(0, 2),
+    );
+  assert.equal(results[0].prompt_cache_key, results[1].prompt_cache_key);
+  assert.equal(results[0].prompt_cache_key, results[2].prompt_cache_key);
+  assert.notEqual(results[0].prompt_cache_key, results[3].prompt_cache_key);
+});
+
+test("only requested guide kinds are read and a later companion preserves the first document prefix", async () => {
+  const env = setup();
+  const stages = [];
+  const browser = [];
+  env.streams.push(
+    events(completed("", { output: [guideLookup("measure", ["measuring"])] })),
+    events(completed("", { output: [guideLookup("fit", ["fitting"])] })),
+    events(completed("Relevant guidance.")),
+  );
+  await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (...args) => {
+      browser.push(plain(args));
+      return guideResult();
+    },
+    "voice",
+    undefined,
+    guideOrigin,
+    undefined,
+    (kinds) => stages.push(kinds ? [...kinds] : undefined),
+  );
+  assert.deepEqual(
+    env.calls.guideReads.map(([value]) =>
+      plain(value.guides.map(({ kind }) => kind)),
+    ),
+    [["measuring"], ["fitting"]],
+  );
+  assert.deepEqual(browser, [
+    ["measure", "get_product_guides", { productPath: guidePath }],
+    ["fit", "get_product_guides", { productPath: guidePath }],
+  ]);
+  const first = env.calls.requests[1].input;
+  const second = env.calls.requests[2].input;
+  assert.equal(guideFiles(first).length, 1);
+  assert.equal(guideFiles(second).length, 2);
+  assert.deepEqual(first.input.slice(0, 2), second.input.slice(0, 2));
+  assert.equal(first.prompt_cache_key, second.prompt_cache_key);
+  assert.deepEqual(
+    stages.filter(
+      (value, index) =>
+        !index || JSON.stringify(value) !== JSON.stringify(stages[index - 1]),
+    ),
+    [undefined, ["measuring"], undefined, ["fitting"]],
+  );
+  const metadata = JSON.parse(
+    first.input.find((item) => item.type === "function_call_output").output,
+  );
+  assert.deepEqual(
+    metadata.guides.map(({ kind }) => kind),
+    ["measuring"],
+  );
+  assert.equal(metadata.unavailableGuides, undefined);
+});
+
+test("failed selected-guide reading clears activity and cannot send a PDF context to another request", async () => {
+  const env = setup();
+  const stages = [];
+  env.mock.readGuides = async () => ({
+    status: "unavailable",
+    reason: "not_found",
+  });
+  env.streams.push(
+    events(completed("", { output: [guideLookup("measure", ["measuring"])] })),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(),
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    (kinds) => stages.push(kinds ? [...kinds] : undefined),
+  );
+  assert.deepEqual(stages, [undefined, ["measuring"], undefined]);
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(guideFiles(env.calls.requests[0].input).length, 0);
+  assert.equal(reply.questionPresentation, undefined);
+  assert.match(reply.text, /couldn't read/);
+});
+
+test("a failed reread removes the old same-URL guide from the prefix, selection and reading activity", async () => {
+  const env = setup();
+  let reads = 0;
+  const stages = [];
+  env.mock.readGuides = async (value) => {
+    const sources =
+      ++reads === 1
+        ? value.guides
+        : value.guides.filter(({ kind }) => kind === "measuring");
+    return {
+      status: "ready",
+      sources,
+      files: sources.map(({ kind }) => syntheticGuideFile(kind)),
+      ...(reads === 2
+        ? { unavailable: [{ kind: "fitting", reason: "not_found" }] }
+        : {}),
+    };
+  };
+  env.streams.push(
+    events(completed("", { output: [guideLookup("first")] })),
+    events(completed("", { output: [guideLookup("reread")] })),
+    events(
+      completed("", {
+        output: [
+          guideSelection({ productPath: guidePath, kinds: ["fitting"] }),
+        ],
+      }),
+    ),
+    events(completed("The fitting guide could not be read.")),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(),
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    (kinds) => stages.push(kinds ? [...kinds] : undefined),
+  );
+  assert.equal(guideFiles(env.calls.requests[1].input).length, 2);
+  assert.deepEqual(
+    guideFiles(env.calls.requests[2].input).map(({ filename }) => filename),
+    ["measuring-guide.pdf"],
+  );
+  assert.deepEqual(stages.at(-1), ["measuring"]);
+  const metadata = JSON.parse(
+    env.calls.requests[2].input.input.find(
+      (item) =>
+        item.type === "function_call_output" && item.call_id === "reread",
+    ).output,
+  );
+  assert.equal(metadata.documentStatus, "partial");
+  assert.deepEqual(metadata.unavailableGuides, [
+    { kind: "fitting", reason: "not_found" },
+  ]);
+  const selection = env.calls.requests[3].input.input.find(
+    (item) =>
+      item.type === "function_call_output" && item.call_id === "guides-show",
+  );
+  assert.match(
+    JSON.parse(selection.output).error,
+    /No guide cards were selected/,
+  );
+  assert.equal(reply.guidePresentation, undefined);
 });
 
 test("a third distinct guide stops the reply before another download or model request", async () => {
@@ -2436,13 +2784,10 @@ test("successive guidance replies each read and attach their current product doc
   );
   assert.equal(env.calls.guideReads.length, 2);
   for (const index of [1, 3]) {
-    const files = env.calls.requests[index].input.input
-      .filter((item) => item.type === "function_call_output")
-      .flatMap((item) => item.output)
-      .filter((part) => part.type === "input_file");
+    const files = guideFiles(env.calls.requests[index].input);
     assert.deepEqual(files, [
-      syntheticGuideFile("measuring"),
-      syntheticGuideFile("fitting"),
+      cachedGuideFile("measuring"),
+      cachedGuideFile("fitting"),
     ]);
   }
   assert.equal(
@@ -2601,14 +2946,14 @@ test("partial guide reads attach and present only readable documents in text and
             item.type === "function_call_output" &&
             item.call_id === "guides-lookup",
         ).output;
-        assert.equal(documentOutput[0].type, "input_text");
-        const metadata = JSON.parse(documentOutput[0].text);
+        assert.equal(typeof documentOutput, "string");
+        const metadata = JSON.parse(documentOutput);
         assert.equal(metadata.status, "found");
         assert.equal(metadata.documentStatus, "partial");
         assert.deepEqual(metadata.guides, readableGuides);
         assert.deepEqual(metadata.unavailableGuides, unavailable);
-        assert.deepEqual(documentOutput.slice(1), [
-          syntheticGuideFile("measuring"),
+        assert.deepEqual(guideFiles(env.calls.requests[1].input), [
+          cachedGuideFile("measuring"),
         ]);
         const selectionOutput = JSON.parse(
           env.calls.requests[2].input.input.find(
@@ -2673,7 +3018,7 @@ test("explicit product presentation selects only the requested ordered subset wi
     selectedProductIds: [productGid(456), productGid(123)],
   });
   assert.equal(
-    env.calls.requests[2].input.tools.some(
+    allowedTools(env.calls.requests[2].input).some(
       (tool) => tool.name === "show_products",
     ),
     false,
@@ -2767,7 +3112,7 @@ test("an explicit follow-up can show refreshed recommendations after text or an 
           execute,
         );
         assert.ok(
-          env.calls.requests[followupRound].input.tools.some(
+          allowedTools(env.calls.requests[followupRound].input).some(
             (tool) => tool.name === "show_products",
           ),
           "The model knows a carousel is supported before deciding to refresh the catalog",
@@ -2785,7 +3130,7 @@ test("an explicit follow-up can show refreshed recommendations after text or an 
           productIds: [productGid(456), productGid(123)],
         });
         assert.equal(
-          env.calls.requests[followupRound + 2].input.tools.some(
+          allowedTools(env.calls.requests[followupRound + 2].input).some(
             (tool) => tool.name === "show_products",
           ),
           false,
@@ -2835,7 +3180,7 @@ test("invalid selections cannot present duplicate, variant, unknown or historica
       );
       assert.deepEqual(Object.keys(JSON.parse(result.output)), ["error"]);
       assert.equal(
-        env.calls.requests[2].input.tools.some(
+        allowedTools(env.calls.requests[2].input).some(
           (tool) => tool.name === "show_products",
         ),
         false,
@@ -2923,18 +3268,18 @@ test("four browser calls and all three local presentations leave a final answer 
     { path: "/products/shade-123" },
   ]);
   assert.deepEqual(
-    env.calls.requests[4].input.tools.map((tool) => tool.name),
+    allowedTools(env.calls.requests[4].input).map((tool) => tool.name),
     ["show_products", "show_guides", "ask_question", "ask_measurement"],
   );
   assert.deepEqual(
-    env.calls.requests[5].input.tools.map((tool) => tool.name),
+    allowedTools(env.calls.requests[5].input).map((tool) => tool.name),
     ["show_guides", "ask_question", "ask_measurement"],
   );
   assert.deepEqual(
-    env.calls.requests[6].input.tools.map((tool) => tool.name),
+    allowedTools(env.calls.requests[6].input).map((tool) => tool.name),
     ["ask_question", "ask_measurement"],
   );
-  assert.equal(env.calls.requests[7].input.tools, undefined);
+  assert.equal(env.calls.requests[7].input.tool_choice, "none");
   assert.equal(reply.questionPresentation.question, "Which room?");
   assert.equal(reply.presentation.productIds[0], productGid(123));
   assert.equal(reply.guidePresentation.sourceCallId, "guides-lookup");
@@ -2965,7 +3310,7 @@ test("navigation success is passed to the model without creating product evidenc
   });
   assert.equal(reply.presentation, undefined);
   assert.equal(
-    env.calls.requests[1].input.tools.some(
+    allowedTools(env.calls.requests[1].input).some(
       (tool) => tool.name === "show_products",
     ),
     true,
@@ -3029,7 +3374,7 @@ test("product evidence does not survive into another model turn", async () => {
   );
   assert.equal(reply.presentation, undefined);
   assert.equal(
-    env.calls.requests[3].input.tools.some(
+    allowedTools(env.calls.requests[3].input).some(
       (tool) => tool.name === "show_products",
     ),
     true,
@@ -3195,7 +3540,7 @@ test("startup resume exposes only guide reads and the matching saved question pr
       saved,
     );
     assert.deepEqual(
-      env.calls.requests[0].input.tools.map((tool) => tool.name),
+      allowedTools(env.calls.requests[0].input).map((tool) => tool.name),
       ["get_product_guides", numeric ? "ask_measurement" : "ask_question"],
     );
     assert.equal(
@@ -3213,14 +3558,7 @@ test("startup resume exposes only guide reads and the matching saved question pr
         reply.questionPresentation.measurement.instructions,
         measurementSelection.instructions,
       );
-      assert.ok(
-        env.calls.requests[1].input.input.some(
-          (item) =>
-            item.type === "function_call_output" &&
-            Array.isArray(item.output) &&
-            item.output.some((part) => part.type === "input_file"),
-        ),
-      );
+      assert.equal(guideFiles(env.calls.requests[1].input).length, 2);
     }
   }
 });
@@ -3235,7 +3573,7 @@ test("startup resume rejects unsolicited actions, catalog reads and another prod
     ["search_products", {}],
     ["show_products", {}],
     ["ask_question", questionSelection],
-    ["get_product_guides", { productPath: "/products/another-blind" }],
+    ["get_product_guides", { productPath: "/products/another-blind", kinds: ["measuring"] }],
   ]) {
     const env = setup();
     let dispatched = 0;
@@ -3340,7 +3678,7 @@ test("runner forwards durable startup scope and suppresses stale committed resul
       saved.invocationId,
     );
     assert.deepEqual(
-      env.calls.requests[0].input.tools.map((tool) => tool.name),
+      allowedTools(env.calls.requests[0].input).map((tool) => tool.name),
       ["get_product_guides", "ask_question"],
     );
     assert.equal(!!reply, finished);
@@ -3429,7 +3767,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
     },
   ]);
   assert.deepEqual(
-    env.calls.requests[0].input.input,
+    env.calls.requests[0].input.input.slice(1),
     history.map(({ role, text }) => ({ role, content: text })),
   );
   assert.match(
@@ -3845,7 +4183,7 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
             draft,
           });
           assert.ok(
-            env.calls.requests[1].input.tools.some(
+            allowedTools(env.calls.requests[1].input).some(
               (tool) => tool.name === "apply_measurements",
             ),
             "Saving a draft does not consume the browser mutation allowance",

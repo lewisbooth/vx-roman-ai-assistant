@@ -11,7 +11,7 @@ import type {
   CartToolName,
 } from "./cart-tools";
 import type { ProductConfigurationToolName } from "./product-configuration";
-import type { ProductGuide } from "./product-guides";
+import type { ProductGuide, ProductGuideKind } from "./product-guides";
 import type { QuestionPart, QuestionAnswerReference } from "./questions";
 import type { NavigationPart } from "./navigation-tool";
 
@@ -129,9 +129,11 @@ export interface ConversationSnapshot {
   busy: boolean;
   tools: BrowserToolInvocation[];
   voice?: VoiceSessionSnapshot | null;
+  /** Current server work only; never stored in the conversation transcript. */
+  readingGuides?: ProductGuideKind[];
 }
 
-/** Durable state plus the current in-process text stream, scoped to one chat. */
+/** Durable state plus current text/activity changes, scoped to one chat. */
 export interface ConversationReadVersion {
   revision: number;
   streamRevision: number;

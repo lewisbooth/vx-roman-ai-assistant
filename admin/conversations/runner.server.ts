@@ -11,6 +11,7 @@ import { generateReply, TEXT_MODEL, type ModelReply } from "./model.server";
 import { recordModelUsage } from "../usage/repository.server";
 import { executeMeasurementTool } from "../measurements/service.server";
 import { latestQuestion, type QuestionPart } from "../../shared/questions";
+import type { ProductGuideKind } from "../../shared/product-guides";
 import {
   beginTurn,
   failPending,
@@ -25,6 +26,7 @@ interface ActiveTurn {
   assistantId: string | null;
   text: string;
   streamRevision: number;
+  readingGuides?: ProductGuideKind[];
   ready: Promise<void>;
   controller: AbortController;
   voiceId?: string;
@@ -49,32 +51,36 @@ export async function readConversation(
   await active.get(id)?.ready;
   const revision = await getReadRevision(id, !active.has(id));
   const current = active.get(id);
-  const streamRevision =
-    current && !current.voiceId ? current.streamRevision : 0;
+  const streamRevision = current?.streamRevision ?? 0;
   if (known?.revision === revision && known.streamRevision === streamRevision)
     return { id, revision, streamRevision, unchanged: true };
   const snapshot = await getSnapshot(id);
   const turn = active.get(id);
   let projectedStreamRevision = 0;
-  if (turn?.assistantId && !turn.voiceId) {
-    snapshot.messages = snapshot.messages.map((message) =>
-      message.id === turn.assistantId && message.status === "pending"
-        ? {
-            ...message,
-            parts: [
-              { type: "text", text: turn.text },
-              ...message.parts.filter((part) => part.type !== "text"),
-            ],
-          }
-        : message,
-    );
-    if (
-      snapshot.messages.some(
-        (message) =>
-          message.id === turn.assistantId && message.status === "pending",
-      )
-    )
-      projectedStreamRevision = turn.streamRevision;
+  if (
+    turn?.assistantId &&
+    (turn.voiceId
+      ? snapshot.busy
+      : snapshot.messages.some(
+          (message) =>
+            message.id === turn.assistantId && message.status === "pending",
+        ))
+  ) {
+    projectedStreamRevision = turn.streamRevision;
+    if (turn.readingGuides && !turn.controller.signal.aborted)
+      snapshot.readingGuides = [...turn.readingGuides];
+    if (!turn.voiceId)
+      snapshot.messages = snapshot.messages.map((message) =>
+        message.id === turn.assistantId && message.status === "pending"
+          ? {
+              ...message,
+              parts: [
+                { type: "text", text: turn.text },
+                ...message.parts.filter((part) => part.type !== "text"),
+              ],
+            }
+          : message,
+      );
   }
   return { ...snapshot, streamRevision: projectedStreamRevision };
 }
@@ -149,18 +155,27 @@ async function completeTurn(
   origin: string,
   turn: ActiveTurn,
 ): Promise<ModelReply | undefined> {
+  const signal = AbortSignal.any([
+    turn.controller.signal,
+    AbortSignal.timeout(90_000),
+  ]);
+  const setGuideReading = (kinds?: ProductGuideKind[]) => {
+    if (active.get(id) !== turn) return;
+    const next = kinds?.length ? kinds : undefined;
+    if (turn.readingGuides?.join(",") === next?.join(",")) return;
+    turn.readingGuides = next ? [...next] : undefined;
+    turn.streamRevision++;
+  };
+  const clearGuideReading = () => setGuideReading();
+  signal.addEventListener("abort", clearGuideReading, { once: true });
   try {
-    const signal = AbortSignal.any([
-      turn.controller.signal,
-      AbortSignal.timeout(90_000),
-    ]);
     const reply = await generateReply(
       history,
       (text) => {
         if (turn.controller.signal.aborted || active.get(id) !== turn) return;
         if (turn.text !== text) {
           turn.text = text;
-          turn.streamRevision++;
+          if (!turn.voiceId) turn.streamRevision++;
         }
       },
       signal,
@@ -172,6 +187,9 @@ async function completeTurn(
       (usage) => recordModelUsage(id, assistantId, usage),
       origin,
       turn.resumeQuestion,
+      (kinds) => {
+        if (!signal.aborted) setGuideReading(kinds);
+      },
     );
     signal.throwIfAborted();
     const finished = await finishTurn(id, assistantId, {
@@ -204,6 +222,8 @@ async function completeTurn(
       });
     }
   } finally {
+    clearGuideReading();
+    signal.removeEventListener("abort", clearGuideReading);
     if (active.get(id) === turn) active.delete(id);
   }
 }

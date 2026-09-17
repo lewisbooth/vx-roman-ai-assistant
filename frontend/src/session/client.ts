@@ -204,6 +204,16 @@ function snapshot(value: unknown): value is ConversationSnapshot {
     (value.status === "active" || value.status === "ended") &&
     Number.isSafeInteger(value.revision) &&
     Number(value.revision) >= 0 &&
+    (value.readingGuides === undefined ||
+      (value.status === "active" &&
+        value.busy &&
+        Array.isArray(value.readingGuides) &&
+        value.readingGuides.length >= 1 &&
+        value.readingGuides.length <= 2 &&
+        new Set(value.readingGuides).size === value.readingGuides.length &&
+        value.readingGuides.every(
+          (kind) => kind === "measuring" || kind === "fitting",
+        ))) &&
     voiceSnapshot(value.voice) &&
     Array.isArray(value.tools) &&
     value.tools.length <= 4 &&
