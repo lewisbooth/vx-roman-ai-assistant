@@ -383,6 +383,78 @@ test("readable but mismatched product guides are reported honestly in both backe
   );
 });
 
+test("guided measuring checks relevant guide conditions before requesting dimensions in both backend modes", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    const measuringPolicy = prompt
+      .split("## Measuring and fitting\n")[1]
+      .split("\n## Product guides")[0];
+    for (const condition of [
+      /read all relevant pages[\s\S]*diagrams, Top Tips, footnotes and exceptions/,
+      /handles or other obstructions/,
+      /recess depth\/clearance/,
+      /cassette or other upgrades/,
+      /uneven or partly tiled recesses/,
+      /special or no-drill mounting/,
+      /manufacturer's allowance policy/,
+      /not universal rules for every blind/,
+      /Resolve relevant unknown conditions before giving the final width\/drop method/,
+      /ask_question for one easy decision at a time/,
+      /Not sure option when useful/,
+      /Do not turn every possible exception into a questionnaire, repeat answered checks/,
+      /ask about an upgrade only if it changes the guidance/,
+      /Once those checks are resolved,[\s\S]*request width\/drop/,
+      /Do not substitute a familiar smallest-of-three method or a generic rule/,
+    ])
+      assert.match(measuringPolicy, condition);
+    assert.doesNotMatch(
+      prompt,
+      /\b(?:35|50|90)\s*(?:mm|cm|millimetres|centimetres)\b/i,
+    );
+    assert.match(
+      prompt,
+      /For that input-only configure\/fill request, ask only for missing or ambiguous width\/drop/,
+    );
+    assert.match(
+      prompt,
+      /this restriction does not suppress the guide-based fit checks when the customer asks how to measure/,
+    );
+  }
+});
+
+test("guide interpretation prioritizes full instructions and treats clearance as a physical check, not a product input", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT])
+    for (const condition of [
+      /full-size instruction page and its labelled diagrams over illustrative cover thumbnails or repeated preview text/,
+      /do not merge incompatible methods/,
+      /instructions themselves conflict[\s\S]*explain the uncertainty instead of choosing a method/,
+      /Physical fit checks matter even when the PDP has no field for them/,
+      /state the measurement endpoints, units and any upgrade-dependent difference/,
+      /Keep clearance checks separate from order dimensions/,
+      /do not label a clearance as rail\/headrail depth, save it as width\/drop, invent a depth input or apply an extra deduction/,
+      /unsure or the available space does not satisfy[\s\S]*resolve that concern before collecting order dimensions/,
+    ])
+      assert.match(prompt, condition);
+});
+
+test("Live preserves staged measuring checks and fit-critical briefing conditions", () => {
+  const live = romanVoicePrompt("marin");
+  for (const condition of [
+    /Keep the backend's staged fit checks before its request for width\/drop/,
+    /clearance endpoints, units, upgrade conditions, uneven-recess exceptions and manufacturer allowance instructions/,
+    /even if the PDP has no matching input/,
+    /Do not shorten them away, rename clearance as headrail depth or replace the backend's quick-answer question with an early request for dimensions/,
+  ])
+    assert.match(live, condition);
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /covering the current step only; retain every fit-critical condition, numerical threshold and exception needed for that step/,
+  );
+  assert.doesNotMatch(
+    live,
+    /\b(?:35|50|90)\s*(?:mm|cm|millimetres|centimetres)\b/i,
+  );
+});
+
 test("Live delegates every guidance follow-up and preserves backend source limitations", () => {
   const live = romanVoicePrompt("marin");
   assert.match(
