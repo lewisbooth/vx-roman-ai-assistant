@@ -10,7 +10,7 @@ import {
 } from "../../shared/product-guides";
 import type { ProductGuideFiles } from "./files.server";
 
-const schema = "roman-original-guides-v1";
+const schema = "roman-original-guides-v2";
 const dataPrefix = "data:application/pdf;base64,";
 const maxFileBytes = 4 * 1024 * 1024;
 const referencePolicy =
@@ -18,7 +18,8 @@ const referencePolicy =
 
 export interface GuideContext {
   input: ResponseInput;
-  key: string;
+  /** Validated current-product binding; place after the cached documents. */
+  productPath: string;
 }
 
 function pdfContent(file: ResponseInputFile, kind: string) {
@@ -46,7 +47,7 @@ function pdfContent(file: ResponseInputFile, kind: string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Original documents precede changing history; availability stays in tool results. */
+/** Document identity is stable across products; their binding stays outside the prefix. */
 export function createGuideContext(
   guides: Extract<ProductGuideFiles, { status: "ready" }>,
   storefrontOrigin: string,
@@ -87,11 +88,7 @@ export function createGuideContext(
     }
   }
   return {
-    // A stable routing hint, never authorization: exact source/version/hash
-    // metadata invalidates changed document prefixes without changing this key.
-    key: createHash("sha256")
-      .update(JSON.stringify([schema, storefrontOrigin, verified.productPath]))
-      .digest("hex"),
+    productPath: verified.productPath,
     input: [...unique.values()].map(({ kind, url, file, sha256, aliases }) => ({
       role: "user",
       content: [
@@ -100,7 +97,6 @@ export function createGuideContext(
           text: `${referencePolicy}\n${JSON.stringify({
             schema,
             storefrontOrigin,
-            productPath: verified.productPath,
             kind,
             url,
             sha256,

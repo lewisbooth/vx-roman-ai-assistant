@@ -797,16 +797,17 @@ test("consumed malformed events still fail closed with only type and field diagn
   }
 });
 
-test("beginConversation sends one cue and waits for its matching acknowledgment", async () => {
+test("beginConversation acknowledges one fresh opening instruction before its single cue", async () => {
   const app = setup();
   const provider = await app.connect();
   const socket = app.sockets[0];
   assert.equal(socket.sent.length, 0, "The service chooses when to begin");
   const opening = provider.beginConversation();
   assert.equal(socket.sent.length, 1);
-  assert.equal(socket.sent[0].type, "session.commentary.append");
+  assert.equal(socket.sent[0].type, "session.instructions.append");
   assert.equal(socket.sent[0].delegation_id, null);
-  assert.match(socket.sent[0].content, /initial opening instructions/);
+  assert.match(socket.sent[0].content, /Speak first using this exact welcome/);
+  assert.ok(socket.sent[0].content.length < 1200);
   assert.equal(provider.beginConversation(), opening);
   let done = false;
   void opening.then(() => {
@@ -821,14 +822,93 @@ test("beginConversation sends one cue and waits for its matching acknowledgment"
   assert.equal(socket.sent.length, 1);
   assert.equal(done, false);
   socket.ack(0);
+  await flush();
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[1].type, "session.commentary.append");
+  assert.equal(socket.sent[1].delegation_id, null);
+  assert.match(socket.sent[1].content, /initial opening instructions/);
+  assert.equal(done, false);
+  socket.event({
+    type: "session.instructions.appended",
+    event_id: "wrong-cue-ack",
+    client_event_id: socket.sent[1].event_id,
+  });
+  await flush();
+  assert.equal(done, false);
+  socket.ack(1);
   await opening;
   await provider.beginConversation();
   assert.equal(
     socket.sent.length,
-    1,
-    "Repeated startup cannot inject another cue",
+    2,
+    "Repeated startup cannot inject another instruction or cue",
   );
   assert.equal(app.timers.size, 0);
+});
+
+test("fresh resumed opening references the latest task and canonical pending state without copying the business prompt", async () => {
+  for (const pendingQuestion of [
+    undefined,
+    { question: "Which unit?", answers: ["mm", "cm", "in"] },
+    {
+      question: "What is the width?",
+      answers: [],
+      measurement: {
+        productPath: "/products/roller",
+        label: "Width",
+        unit: "mm",
+        instructions: "PRIVATE_GUIDE_INSTRUCTIONS",
+      },
+    },
+  ]) {
+    const app = setup();
+    const provider = await app.connect({
+      history: [
+        { role: "user", text: "Measure this product." },
+        { role: "assistant", text: "The fitting document did not match." },
+      ],
+      pendingQuestion,
+    });
+    const socket = app.sockets[0];
+    const opening = provider.beginConversation();
+    const instruction = socket.sent[0].content;
+    assert.match(
+      instruction,
+      /Keep all existing language, voice, advisor and delegation instructions/,
+    );
+    assert.match(
+      instruction,
+      /Continue the existing text or voice conversation without a greeting, introduction or welcome menu/,
+    );
+    assert.match(
+      instruction,
+      /latest customer request and confirmed Roman outcome in the supplied history/,
+    );
+    assert.ok(instruction.length < 1200);
+    assert.doesNotMatch(
+      instruction,
+      /Hi! I'm Roman|PRIVATE_GUIDE_INSTRUCTIONS|Measurement confirmation:|Action boundaries:/,
+    );
+    if (pendingQuestion) {
+      assert.match(
+        instruction,
+        /Current pending follow-up \(application state\)/,
+      );
+      assert.match(instruction, /existing read-only startup rules/);
+      assert.match(
+        instruction,
+        /Do not replay actions or advance the workflow/,
+      );
+    } else {
+      assert.match(instruction, /No follow-up is pending/);
+      assert.match(instruction, /do not restore a historical question/);
+    }
+    socket.ack();
+    await flush();
+    socket.ack();
+    await opening;
+    assert.equal(app.timers.size, 0);
+  }
 });
 
 test("initial instructions select the opening from full history before Live creation", async () => {
@@ -1050,13 +1130,22 @@ test("current numeric question metadata survives history truncation without expo
 });
 
 test("an opening acknowledgment failure or stop cannot retry the cue", async () => {
-  for (const mode of ["timeout", "stop"]) {
+  for (const mode of [
+    "instruction-timeout",
+    "instruction-stop",
+    "cue-timeout",
+    "cue-stop",
+  ]) {
     const app = setup();
     const provider = await app.connect();
     const socket = app.sockets[0];
     const opening = provider.beginConversation();
     const rejected = assert.rejects(opening, { code: "command_failed" });
-    if (mode === "timeout") app.fire(3000);
+    if (mode.startsWith("cue-")) {
+      socket.ack();
+      await flush();
+    }
+    if (mode.endsWith("timeout")) app.fire(3000);
     else app.controller.abort();
     socket.event(ended);
     await rejected;
@@ -1067,10 +1156,57 @@ test("an opening acknowledgment failure or stop cannot retry the cue", async () 
     assert.equal(
       socket.sent.filter((event) => event.type === "session.commentary.append")
         .length,
-      1,
+      mode.startsWith("cue-") ? 1 : 0,
     );
     assert.equal(app.timers.size, 0);
   }
+});
+
+test("speech during opening instruction delivery suppresses the later cue without losing captions", async () => {
+  for (const type of [
+    "session.input_transcript.delta",
+    "session.output_transcript.delta",
+  ]) {
+    const app = setup();
+    const provider = await app.connect();
+    const socket = app.sockets[0];
+    const opening = provider.beginConversation();
+    socket.event({
+      type,
+      event_id: "speech-before-instruction-ack",
+      delta: "Continue.",
+      start_ms: 100,
+      end_ms: 300,
+    });
+    socket.ack();
+    await opening;
+    await provider.beginConversation();
+    assert.deepEqual(
+      socket.sent.map((event) => event.type),
+      ["session.instructions.append"],
+    );
+    assert.equal(app.events.length, 1);
+    assert.equal(app.events[0].type, "transcript");
+    assert.equal(app.timers.size, 0);
+  }
+});
+
+test("stopping immediately after opening instruction acknowledgment cannot send a cue", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const opening = provider.beginConversation();
+  socket.ack();
+  app.controller.abort();
+  await opening;
+  socket.event(ended);
+  await provider.close();
+  await provider.beginConversation();
+  assert.deepEqual(
+    socket.sent.map((event) => event.type),
+    ["session.instructions.append", "session.close"],
+  );
+  assert.equal(app.timers.size, 0);
 });
 
 test("speech observed during startup suppresses the opening without suppressing captions", async () => {
@@ -1134,7 +1270,11 @@ test("nonempty reflected audio and blank captions cannot suppress the startup cu
   const provider = await creating;
   const opening = provider.beginConversation();
   assert.equal(socket.sent.length, 1);
-  assert.equal(socket.sent[0].type, "session.commentary.append");
+  assert.equal(socket.sent[0].type, "session.instructions.append");
+  socket.ack();
+  await flush();
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[1].type, "session.commentary.append");
   socket.ack();
   await opening;
   assert.deepEqual(app.logs, []);

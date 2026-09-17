@@ -3,8 +3,17 @@ import type { QuestionSelection } from "../../shared/questions";
 
 export interface QuestionPresentation extends QuestionSelection {
   callId: string;
-  /** Required for measurement inputs; supplied from this turn's guide read. */
+  /** Required for measurement inputs; supplied from verified original guides. */
   sourceCallId?: string;
+}
+
+/** Server-owned original-file cache receipt; never accepted from model arguments. */
+export interface CachedGuideSource {
+  sourceCallId: string;
+  sourceAssistantId: string;
+  productPath: string;
+  expiresAt: number;
+  kinds: ProductGuideKind[];
 }
 
 export interface ProductPresentation {

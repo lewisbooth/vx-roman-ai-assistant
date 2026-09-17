@@ -12,6 +12,14 @@ import { recordModelUsage } from "../usage/repository.server";
 import { executeMeasurementTool } from "../measurements/service.server";
 import { latestQuestion, type QuestionPart } from "../../shared/questions";
 import type { ProductGuideKind } from "../../shared/product-guides";
+import { latestProductPage } from "../guides/product-page.server";
+import {
+  readGuideSession,
+  saveGuideSession,
+  clearGuideSession,
+  GUIDE_SESSION_TTL_MS,
+} from "../guides/session.server";
+import type { GuideReuse } from "./model.server";
 import {
   beginTurn,
   failPending,
@@ -138,6 +146,7 @@ export async function startTurn(
       started.history,
       started.origin,
       turn,
+      started.snapshot,
     );
     return started.snapshot;
   } catch (error) {
@@ -154,6 +163,7 @@ async function completeTurn(
   history: Parameters<typeof generateReply>[0],
   origin: string,
   turn: ActiveTurn,
+  initial: ConversationSnapshot,
 ): Promise<ModelReply | undefined> {
   const signal = AbortSignal.any([
     turn.controller.signal,
@@ -168,6 +178,9 @@ async function completeTurn(
   };
   const clearGuideReading = () => setGuideReading();
   signal.addEventListener("abort", clearGuideReading, { once: true });
+  const initialPage = latestProductPage(initial.messages);
+  const cached = readGuideSession(id, origin, initialPage);
+  let readGuides: Parameters<GuideReuse["read"]>[0] | undefined;
   try {
     const reply = await generateReply(
       history,
@@ -190,6 +203,17 @@ async function completeTurn(
       (kinds) => {
         if (!signal.aborted) setGuideReading(kinds);
       },
+      {
+        cached,
+        read: (context) => {
+          if (!signal.aborted && active.get(id) === turn) readGuides = context;
+        },
+        clear: () => {
+          if (active.get(id) !== turn) return;
+          readGuides = undefined;
+          clearGuideSession(id);
+        },
+      },
     );
     signal.throwIfAborted();
     const finished = await finishTurn(id, assistantId, {
@@ -198,7 +222,36 @@ async function completeTurn(
       voiceId: turn.voiceId,
       resumeQuestionId: turn.resumeQuestion?.invocationId,
     });
-    if (finished) return reply;
+    if (finished) {
+      if (readGuides && !signal.aborted && active.get(id) === turn) {
+        const current = await getSnapshot(id);
+        const page = latestProductPage(current.messages);
+        const expiresAt =
+          cached?.productPath === readGuides.productPath &&
+          cached.pageId === page?.pageId
+            ? cached.expiresAt
+            : Date.now() + GUIDE_SESSION_TTL_MS;
+        // Navigation during this reply is a cache miss, never a new binding
+        // for older evidence. The next stable-PDP read can populate the cache.
+        if (
+          !signal.aborted &&
+          active.get(id) === turn &&
+          current.status === "active" &&
+          page?.productPath === readGuides.productPath &&
+          page.pageId === initialPage?.pageId &&
+          expiresAt > Date.now()
+        )
+          saveGuideSession(id, {
+            ...readGuides,
+            origin,
+            pageId: page.pageId,
+            sourceAssistantId: assistantId,
+            kinds: readGuides.sources.map(({ kind }) => kind),
+            expiresAt,
+          });
+      }
+      return reply;
+    }
   } catch (error) {
     if (turn.controller.signal.aborted) return;
     // Provider messages can include request data. Keep diagnostics categorical.
@@ -296,6 +349,7 @@ export async function runVoiceDelegation(
       started.history,
       started.origin,
       turn,
+      started.snapshot,
     );
   } finally {
     initialized();
@@ -319,6 +373,7 @@ export async function cancelVoiceDelegation(id: string, voiceId: string) {
 
 export async function endTurn(id: string): Promise<ConversationSnapshot> {
   ending.add(id);
+  clearGuideSession(id);
   try {
     const turn = active.get(id);
     turn?.controller.abort();

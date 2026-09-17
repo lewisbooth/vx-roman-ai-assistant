@@ -81,12 +81,14 @@ import {
   recoverVoiceSessions,
 } from "../voice/repository.server";
 import prisma from "../db.server";
+import { latestProductPage, productPagePath } from "../guides/product-page.server";
 import { ConversationError } from "./errors.server";
 import {
   parseProductSelection,
   type ProductPresentation,
   type GuidePresentation,
   type QuestionPresentation,
+  type CachedGuideSource,
 } from "./presentation.server";
 
 const processStartedAt = new Date();
@@ -1181,6 +1183,95 @@ export async function beginTurn(
   });
 }
 
+function guideSourceResult(
+  conversation: StoredConversation,
+  assistantId: string,
+  sourceCallId: string | undefined,
+  productPath: string,
+  cached?: CachedGuideSource,
+): ProductGuidesResult {
+  const eligible = (tool: StoredTool) =>
+    tool.providerCallId === sourceCallId &&
+    tool.name === "get_product_guides" &&
+    tool.status === "complete" &&
+    !tool.error &&
+    !!tool.resultJson;
+  let source = conversation.toolInvocations.find(
+    (tool) => tool.assistantId === assistantId && eligible(tool),
+  );
+  let cachedKinds: CachedGuideSource["kinds"] | undefined;
+  if (!source && cached) {
+    const original = conversation.messages.find(
+      (message) => message.id === cached.sourceAssistantId,
+    );
+    if (
+      cached.sourceCallId !== sourceCallId ||
+      cached.productPath !== productPath ||
+      !Number.isFinite(cached.expiresAt) ||
+      cached.expiresAt <= Date.now() ||
+      !Array.isArray(cached.kinds) ||
+      !cached.kinds.length ||
+      cached.kinds.length > 2 ||
+      new Set(cached.kinds).size !== cached.kinds.length ||
+      cached.kinds.some((kind) => kind !== "measuring" && kind !== "fitting") ||
+      !original ||
+      original.status !== "complete" ||
+      !["assistant", "context"].includes(original.role) ||
+      latestProductPage(conversationTimeline(conversation))?.productPath !==
+        productPath ||
+      conversation.messages.some(
+        (message) =>
+          message.sequence > original.sequence &&
+          message.role === "context" &&
+          message.status === "complete" &&
+          parts(message, conversation.origin).some(
+            (part) =>
+              (part.type === "page_view" || part.type === "navigation") &&
+              productPagePath(part.path) !== productPath,
+          ),
+      )
+    )
+      throw new ConversationError(
+        400,
+        "The cached guide source is no longer valid for this product.",
+      );
+    source = conversation.toolInvocations.find(
+      (tool) => tool.assistantId === cached.sourceAssistantId && eligible(tool),
+    );
+    cachedKinds = cached.kinds;
+  }
+  if (!source?.resultJson)
+    throw new ConversationError(
+      400,
+      "A verified product-guide source is required.",
+    );
+  const found = parseProductGuidesResult(
+    JSON.parse(source.resultJson),
+    conversation.origin,
+  );
+  if (
+    found.status !== "found" ||
+    found.productPath !== productPath ||
+    parseProductGuidesCall(JSON.parse(source.argumentsJson)).productPath !==
+      productPath ||
+    cachedKinds?.some(
+      (kind) => !found.guides.some((guide) => guide.kind === kind),
+    )
+  )
+    throw new ConversationError(
+      400,
+      "The guide source belongs to another product or guide kind.",
+    );
+  return cachedKinds
+    ? {
+        ...found,
+        guides: found.guides.filter((guide) =>
+          cachedKinds.includes(guide.kind),
+        ),
+      }
+    : found;
+}
+
 export async function finishTurn(
   id: string,
   assistantId: string,
@@ -1194,6 +1285,7 @@ export async function finishTurn(
     presentation?: ProductPresentation;
     guidePresentation?: GuidePresentation;
     questionPresentation?: QuestionPresentation;
+    cachedGuideSource?: CachedGuideSource;
     resumeQuestionId?: string;
   },
 ): Promise<boolean> {
@@ -1350,37 +1442,21 @@ export async function finishTurn(
         selected.sourceCallId.length > 200
       )
         throw new ConversationError(400, "Invalid guide presentation source.");
-      const source = conversation.toolInvocations.find(
-        (tool) =>
-          tool.providerCallId === selected.sourceCallId &&
-          tool.assistantId === assistantId &&
-          tool.name === "get_product_guides" &&
-          tool.status === "complete" &&
-          !tool.error,
+      const found = guideSourceResult(
+        conversation,
+        assistantId,
+        selected.sourceCallId,
+        selection.productPath,
+        result.cachedGuideSource,
       );
-      if (!source?.resultJson)
-        throw new ConversationError(
-          400,
-          "Guide cards require this reply's successful product-guide lookup.",
-        );
-      const found = parseProductGuidesResult(
-        JSON.parse(source.resultJson),
-        conversation.origin,
-      );
-      const sourcePath = parseProductGuidesCall(
-        JSON.parse(source.argumentsJson),
-      ).productPath;
       if (
-        found.status !== "found" ||
-        sourcePath !== selection.productPath ||
-        found.productPath !== selection.productPath ||
         selection.kinds.some(
           (kind) => !found.guides.some((guide) => guide.kind === kind),
         )
       )
         throw new ConversationError(
           400,
-          "Select only guide kinds returned for this product in this reply.",
+          "Select only verified guide kinds for this product.",
         );
       const presentation = await transaction.toolInvocation.create({
         data: {
@@ -1444,33 +1520,13 @@ export async function finishTurn(
           "Invalid question presentation call ID.",
         );
       if (selection.measurement) {
-        const source = conversation.toolInvocations.find(
-          (tool) =>
-            tool.providerCallId === selected.sourceCallId &&
-            tool.assistantId === assistantId &&
-            tool.name === "get_product_guides" &&
-            tool.status === "complete" &&
-            !tool.error,
+        guideSourceResult(
+          conversation,
+          assistantId,
+          selected.sourceCallId,
+          selection.measurement.productPath,
+          result.cachedGuideSource,
         );
-        if (!source?.resultJson)
-          throw new ConversationError(
-            400,
-            "Measurement questions require this reply's product-guide source.",
-          );
-        const found = parseProductGuidesResult(
-          JSON.parse(source.resultJson),
-          conversation.origin,
-        );
-        if (
-          found.status !== "found" ||
-          found.productPath !== selection.measurement.productPath ||
-          parseProductGuidesCall(JSON.parse(source.argumentsJson))
-            .productPath !== selection.measurement.productPath
-        )
-          throw new ConversationError(
-            400,
-            "The measurement question belongs to another product.",
-          );
       } else if (selected.sourceCallId !== undefined)
         throw new ConversationError(400, "Unexpected question source.");
       const presentation = await transaction.toolInvocation.create({

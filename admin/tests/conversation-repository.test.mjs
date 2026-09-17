@@ -2191,6 +2191,170 @@ test("measurement presentations reject missing, mismatched or historical guide p
   );
 });
 
+async function cachedGuideTurn() {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  await repository.appendJourney(id, pageView({ path: guidePath }));
+  const original = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Help me measure.",
+  });
+  const source = await guideLookup(id, original.assistantId);
+  await repository.finishTurn(id, original.assistantId, {
+    status: "complete",
+    text: "Use this product's original measuring guide.",
+  });
+  const current = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Continue with the next reading.",
+  });
+  const receipt = {
+    sourceCallId: source.sourceCallId,
+    sourceAssistantId: original.assistantId,
+    productPath: guidePath,
+    expiresAt: Date.now() + 30_000,
+    kinds: ["measuring"],
+  };
+  const question = {
+    callId: randomUUID(),
+    sourceCallId: source.sourceCallId,
+    question: "What is the width?",
+    answers: [],
+    measurement: {
+      productPath: guidePath,
+      label: "Width",
+      unit: "mm",
+      instructions: "Measure the width at the top.",
+    },
+  };
+  return { id, original, current, source, receipt, question };
+}
+
+test("an unexpired original-guide receipt supports later numeric input and cards without another lookup", async () => {
+  const { id, current, source, receipt, question } = await cachedGuideTurn();
+  await repository.appendJourney(
+    id,
+    pageView({
+      path: "/en-gb/collections/roman/products/verified-shade",
+    }),
+  );
+  const result = {
+    status: "complete",
+    text: "",
+    cachedGuideSource: receipt,
+    questionPresentation: question,
+    guidePresentation: guidePresentation(source.sourceCallId, ["measuring"]),
+  };
+  assert.equal(
+    await repository.finishTurn(id, current.assistantId, result),
+    true,
+  );
+  const state = await loadRepository().getSnapshot(id);
+  const saved = state.messages.find(
+    (message) => message.id === current.assistantId,
+  );
+  assert.deepEqual(
+    saved.parts.map((part) => part.type),
+    ["guides", "question"],
+  );
+  assert.deepEqual(saved.parts[0].guides, guideOutcome(["measuring"]).guides);
+  assert.deepEqual(saved.parts[1].measurement, question.measurement);
+  assert.equal(JSON.stringify(state).includes("expiresAt"), false);
+  assert.equal(
+    await database.toolInvocation.count({
+      where: { conversationId: id, name: "get_product_guides" },
+    }),
+    1,
+  );
+  assert.equal(
+    await repository.finishTurn(id, current.assistantId, result),
+    false,
+  );
+});
+
+test("historical original-guide receipts reject expired, foreign, changed-page and unread sources atomically", async () => {
+  for (const scenario of [
+    "missing",
+    "expired",
+    "wrong-call",
+    "wrong-assistant",
+    "wrong-product",
+    "empty-kinds",
+    "unread-fitting",
+    "failed-assistant",
+    "failed-source",
+    "foreign-conversation",
+    "away",
+    "away-return",
+    "no-current-page",
+  ]) {
+    const { id, original, current, source, receipt, question } =
+      await cachedGuideTurn();
+    let cachedGuideSource = receipt;
+    let guideSelection;
+    if (scenario === "missing") cachedGuideSource = undefined;
+    if (scenario === "expired") receipt.expiresAt = Date.now() - 1;
+    if (scenario === "wrong-call") receipt.sourceCallId = "another-call";
+    if (scenario === "wrong-assistant")
+      receipt.sourceAssistantId = randomUUID();
+    if (scenario === "wrong-product") receipt.productPath = "/products/another";
+    if (scenario === "empty-kinds") receipt.kinds = [];
+    if (scenario === "unread-fitting")
+      guideSelection = guidePresentation(source.sourceCallId, ["fitting"]);
+    if (scenario === "failed-assistant")
+      await database.conversationMessage.update({
+        where: { id: original.assistantId },
+        data: { status: "failed" },
+      });
+    if (scenario === "failed-source")
+      await database.toolInvocation.update({
+        where: { id: source.tool.id },
+        data: { status: "failed", error: "Unavailable" },
+      });
+    if (scenario === "foreign-conversation") {
+      const other = await cachedGuideTurn();
+      Object.assign(receipt, other.receipt);
+      question.sourceCallId = other.source.sourceCallId;
+    }
+    if (scenario === "away" || scenario === "away-return") {
+      await repository.appendJourney(
+        id,
+        pageView({ path: "/collections/roman" }),
+      );
+      if (scenario === "away-return")
+        await repository.appendJourney(id, pageView({ path: guidePath }));
+    }
+    if (scenario === "no-current-page")
+      await database.conversationMessage.deleteMany({
+        where: { conversationId: id, role: "context" },
+      });
+    await assert.rejects(
+      repository.finishTurn(id, current.assistantId, {
+        status: "complete",
+        text: "",
+        cachedGuideSource,
+        questionPresentation: question,
+        ...(guideSelection ? { guidePresentation: guideSelection } : {}),
+      }),
+      { status: 400 },
+      scenario,
+    );
+    assert.equal((await repository.getSnapshot(id)).busy, true, scenario);
+    assert.equal(
+      await database.toolInvocation.count({
+        where: {
+          assistantId: current.assistantId,
+          name: { in: ["show_guides", "ask_measurement"] },
+        },
+      }),
+      0,
+      scenario,
+    );
+  }
+});
+
 test("guide results are durable evidence and explicit selection is ordered, atomic and idempotent", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,

@@ -13,6 +13,7 @@ const bundle = await build({
     contents: `
       export * from "./admin/conversations/runner.server.ts";
       export * from "./admin/conversations/model.server.ts";
+      export { readGuideSession } from "./admin/guides/session.server.ts";
       export { ConversationError } from "./admin/conversations/errors.server.ts";
     `,
     resolveDir: process.cwd(),
@@ -72,7 +73,8 @@ const guideOrigin = "https://hd-dev-single.myshopify.com";
 const syntheticGuideFile = (kind) => ({
   type: "input_file",
   filename: `${kind}-guide.pdf`,
-  file_data: "data:application/pdf;base64,JVBERi0xLjcKc3ludGhldGljLWd1aWRlCiUlRU9G",
+  file_data:
+    "data:application/pdf;base64,JVBERi0xLjcKc3ludGhldGljLWd1aWRlCiUlRU9G",
   detail: "high",
 });
 const secondInput = {
@@ -222,7 +224,8 @@ function setup() {
       }
       if (row.messages.some((message) => message.status === "pending"))
         throw new api.ConversationError(409, "Wait for the current reply.");
-      const assistantId = `${id}-assistant-${row.messages.length + 1}`;
+      const assistantId =
+        mock.assistantId?.() ?? `${id}-assistant-${row.messages.length + 1}`;
       row.messages.push(
         {
           id: `${id}-user-${row.messages.length}`,
@@ -1018,7 +1021,9 @@ test("model cart changes have no confirmation argument and cannot automatically 
     ["get_cart", "clear_cart"],
   );
   for (const call of executions) assert.equal("confirmed" in call.args, false);
-  const remaining = allowedTools(env.calls.requests[2].input).map((tool) => tool.name);
+  const remaining = allowedTools(env.calls.requests[2].input).map(
+    (tool) => tool.name,
+  );
   assert.ok(remaining.includes("get_cart"));
   assert.ok(remaining.includes("get_measurements"));
   assert.ok(!remaining.includes("clear_cart"));
@@ -1076,7 +1081,9 @@ test("an addition without UI approval still consumes the one-mutation allowance 
         args: { productPath: "/products/shade" },
       },
     ]);
-    const tools = allowedTools(env.calls.requests[1].input).map((tool) => tool.name);
+    const tools = allowedTools(env.calls.requests[1].input).map(
+      (tool) => tool.name,
+    );
     assert.ok(tools.includes("get_cart"));
     for (const name of [
       "add_to_cart",
@@ -1661,6 +1668,246 @@ test("validated text and voice measurement inputs finish immediately with guide 
     assert.equal(env.calls.requests.length, 2);
     assert.equal(env.streams.length, 0);
   }
+});
+
+test("a continued measuring reply starts with cached original evidence and needs no lookup round", async () => {
+  const env = setup();
+  const id = "11111111-1111-4111-8111-111111111111";
+  const pageId = "22222222-2222-4222-8222-222222222222";
+  let count = 0;
+  env.mock.assistantId = () =>
+    `33333333-3333-4333-8333-${String(++count).padStart(12, "0")}`;
+  env.rows.set(id, {
+    status: "active",
+    revision: 0,
+    tools: [],
+    messages: [
+      {
+        id: pageId,
+        role: "context",
+        status: "complete",
+        text: "",
+        extraParts: [
+          {
+            type: "page_view",
+            version: 1,
+            path: guidePath,
+            title: "Shade",
+            occurredAt: "2026-09-17T10:00:00Z",
+          },
+        ],
+      },
+    ],
+  });
+  env.mock.executeTool = async () => guideResult();
+  env.streams.push(
+    events(
+      completed("", { output: [guideLookup("original-read", ["measuring"])] }),
+    ),
+    events(completed("", { output: [measurementCall()] })),
+  );
+  await env.api.startTurn(id, { ...firstInput, text: "Help me measure in mm" });
+  await flush();
+  assert.equal(env.calls.finishes.length, 1);
+  assert.deepEqual(env.logs, []);
+  const firstDocumentRequest = env.calls.requests[1].input;
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          measurementCall(
+            {
+              ...measurementSelection,
+              label: "Drop",
+              question: "What is the drop?",
+            },
+            "next-reading",
+          ),
+        ],
+      }),
+    ),
+  );
+  await env.api.startTurn(id, { ...secondInput, text: "400" });
+  await flush();
+  assert.deepEqual(env.logs, []);
+  assert.equal(
+    env.calls.requests.length,
+    3,
+    "follow-up uses one provider request, no guide-discovery request",
+  );
+  assert.equal(env.calls.browserTools.length, 1);
+  assert.equal(env.calls.guideReads.length, 1);
+  const continued = env.calls.requests[2].input;
+  assert.deepEqual(guideFiles(continued), guideFiles(firstDocumentRequest));
+  assert.equal(
+    continued.prompt_cache_key,
+    firstDocumentRequest.prompt_cache_key,
+  );
+  assert.equal(
+    env.calls.finishes[1].result.questionPresentation.sourceCallId,
+    "original-read",
+  );
+  assert.equal(
+    env.calls.finishes[1].result.cachedGuideSource.sourceAssistantId,
+    env.calls.finishes[0].assistantId,
+  );
+  assert.deepEqual(
+    [...env.calls.finishes[1].result.cachedGuideSource.kinds],
+    ["measuring"],
+  );
+
+  env.rows.get(id).messages.push({
+    id: "44444444-4444-4444-8444-444444444444",
+    role: "context",
+    status: "complete",
+    text: "",
+    extraParts: [
+      {
+        type: "page_view",
+        version: 1,
+        path: "/products/another-blind",
+        title: "Other",
+        occurredAt: "2026-09-17T10:01:00Z",
+      },
+    ],
+  });
+  env.streams.push(events(completed("Please choose the relevant guide.")));
+  await env.api.startTurn(id, {
+    requestId: "55555555-5555-4555-8555-555555555555",
+    text: "Help me with this product",
+  });
+  await flush();
+  assert.equal(
+    guideFiles(env.calls.requests[3].input).length,
+    0,
+    "changed product cannot inherit guide evidence",
+  );
+  assert.equal(env.calls.finishes[2].result.cachedGuideSource, undefined);
+});
+
+test("cached originals support voice numeric resume without rediscovery or another model round", async () => {
+  const env = setup();
+  const { question, ...measurement } = measurementSelection;
+  const resume = {
+    type: "question",
+    version: 1,
+    invocationId: "11111111-1111-4111-8111-111111111111",
+    question,
+    answers: [],
+    measurement,
+  };
+  const cached = {
+    origin: guideOrigin,
+    productPath: guidePath,
+    pageId: "22222222-2222-4222-8222-222222222222",
+    sourceAssistantId: "33333333-3333-4333-8333-333333333333",
+    sourceCallId: "previous-read",
+    expiresAt: Date.now() + 60_000,
+    kinds: ["measuring"],
+    sources: guideResult(["measuring"]).guides,
+    files: [syntheticGuideFile("measuring")],
+  };
+  env.streams.push(events(completed("", { output: [measurementCall()] })));
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => {
+      throw Error("Cached resume must not call storefront");
+    },
+    "voice",
+    undefined,
+    guideOrigin,
+    resume,
+    undefined,
+    {
+      cached,
+      read: () => {
+        throw Error("No new PDF read expected");
+      },
+      clear: () => {
+        throw Error("No navigation expected");
+      },
+    },
+  );
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(env.calls.guideReads.length, 0);
+  assert.equal(guideFiles(env.calls.requests[0].input).length, 1);
+  assert.equal(reply.questionPresentation.sourceCallId, "previous-read");
+  assert.equal(
+    reply.cachedGuideSource.sourceAssistantId,
+    cached.sourceAssistantId,
+  );
+});
+
+test("ending or leaving and returning during guide completion cannot populate a reusable source", async (t) => {
+  for (const change of ["end", "leave-return"])
+    await t.test(change, async () => {
+      const env = setup();
+      const id = "11111111-1111-4111-8111-111111111111";
+      const pageId = "22222222-2222-4222-8222-222222222222";
+      const returnedId = "44444444-4444-4444-8444-444444444444";
+      env.mock.assistantId = () => "33333333-3333-4333-8333-333333333333";
+      const page = (id, path) => ({
+        id,
+        role: "context",
+        status: "complete",
+        text: "",
+        extraParts: [
+          {
+            type: "page_view",
+            version: 1,
+            path,
+            title: "Synthetic page",
+            occurredAt: "2026-09-17T10:00:00Z",
+          },
+        ],
+      });
+      env.rows.set(id, {
+        status: "active",
+        revision: 0,
+        tools: [],
+        messages: [page(pageId, guidePath)],
+      });
+      env.mock.executeTool = async () => guideResult();
+      const gate = deferred();
+      if (change === "end")
+        env.mock.snapshot = async (id) => {
+          const value = env.snapshot(id);
+          await gate.promise;
+          return value;
+        };
+      else
+        env.mock.afterFinish = () =>
+          env.rows
+            .get(id)
+            .messages.push(
+              page("55555555-5555-4555-8555-555555555555", "/cart"),
+              page(returnedId, guidePath),
+            );
+      env.streams.push(
+        events(
+          completed("", { output: [guideLookup("source", ["measuring"])] }),
+        ),
+        events(completed("Guide checked.")),
+      );
+      await env.api.startTurn(id, firstInput);
+      await flush();
+      assert.equal(env.calls.finishes.length, 1);
+      if (change === "end") {
+        await env.api.endTurn(id);
+        gate.resolve();
+        await flush();
+      }
+      assert.equal(
+        env.api.readGuideSession(id, guideOrigin, {
+          productPath: guidePath,
+          pageId: change === "end" ? pageId : returnedId,
+        }),
+        undefined,
+      );
+      assert.deepEqual(env.logs, []);
+    });
 });
 
 test("terminal numeric replies preserve selected cards, visible text and completed usage", async () => {
@@ -2346,10 +2593,7 @@ test("guide files attach once per URL while refreshed lookup metadata stays curr
     (item) => item.type === "function_call_output",
   );
   assert.equal(env.calls.guideReads.length, 2);
-  assert.equal(
-    guideFiles(env.calls.requests[2].input).length,
-    1,
-  );
+  assert.equal(guideFiles(env.calls.requests[2].input).length, 1);
   assert.equal(outputs[1].call_id, "guides-refreshed");
   assert.equal(typeof outputs[1].output, "string");
   assert.equal(JSON.parse(outputs[1].output).documentStatus, "ready");
@@ -3573,7 +3817,10 @@ test("startup resume rejects unsolicited actions, catalog reads and another prod
     ["search_products", {}],
     ["show_products", {}],
     ["ask_question", questionSelection],
-    ["get_product_guides", { productPath: "/products/another-blind", kinds: ["measuring"] }],
+    [
+      "get_product_guides",
+      { productPath: "/products/another-blind", kinds: ["measuring"] },
+    ],
   ]) {
     const env = setup();
     let dispatched = 0;
@@ -3662,9 +3909,7 @@ test("runner forwards durable startup scope and suppresses stale committed resul
       await finish(...args);
       return finished;
     };
-    env.streams.push(
-      events(completed("", { output: [questionCall()] })),
-    );
+    env.streams.push(events(completed("", { output: [questionCall()] })));
     const reply = await env.api.runVoiceDelegation(
       "resume",
       VOICE_ID,

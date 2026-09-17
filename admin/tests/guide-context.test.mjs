@@ -50,7 +50,7 @@ test("original PDF references use stable user blocks and exact per-file breakpoi
   Object.freeze(source.files);
   Object.freeze(source);
   const context = createGuideContext(source, origin, productPath);
-  assert.match(context.key, /^[a-f0-9]{64}$/);
+  assert.equal(context.productPath, productPath);
   assert.equal(context.input.length, 2);
   assert.deepEqual(plain(source), before);
   for (const [index, message] of context.input.entries()) {
@@ -64,9 +64,8 @@ test("original PDF references use stable user blocks and exact per-file breakpoi
     );
     const metadata = JSON.parse(reference.text.split("\n")[1]);
     assert.deepEqual(metadata, {
-      schema: "roman-original-guides-v1",
+      schema: "roman-original-guides-v2",
       storefrontOrigin: origin,
-      productPath,
       ...source.sources[index],
       sha256: createHash("sha256")
         .update(bytes(source.sources[index].kind))
@@ -97,16 +96,16 @@ test("canonical ordering keeps a measuring-only prefix identical when fitting is
     origin,
     productPath,
   );
-  assert.equal(one.key, pair.key);
+  assert.equal(one.productPath, pair.productPath);
   assert.deepEqual(plain(one.input[0]), plain(pair.input[0]));
   assert.deepEqual(plain(reversed), plain(pair));
   const fitting = createGuideContext(ready(["fitting"]), origin, productPath);
   assert.equal(fitting.input.length, 1);
   assert.equal(fitting.input[0].content[1].filename, "fitting-guide.pdf");
-  assert.equal(fitting.key, pair.key);
+  assert.equal(fitting.productPath, pair.productPath);
 });
 
-test("URL versions and content changes invalidate the document prefix while retaining the scoped routing key", () => {
+test("URL versions and content changes invalidate the document prefix while retaining the current product binding", () => {
   const first = createGuideContext(ready(), origin, productPath);
   for (const change of ["version", "content", "url"]) {
     const source = ready();
@@ -120,25 +119,36 @@ test("URL versions and content changes invalidate the document prefix while reta
     if (change === "content")
       source.files[0].file_data = `data:application/pdf;base64,${Buffer.from("%PDF-1.7\nChanged original\n%%EOF").toString("base64")}`;
     const changed = createGuideContext(source, origin, productPath);
-    assert.equal(changed.key, first.key, change);
+    assert.equal(changed.productPath, first.productPath, change);
     assert.notDeepEqual(plain(changed.input[0]), plain(first.input[0]), change);
     assert.deepEqual(plain(changed.input[1]), plain(first.input[1]), change);
   }
 });
 
-test("authenticated origin and product scope partition document context even for the same public CDN PDF", () => {
+test("the same exact PDF shares a product-independent prefix while retaining separate validated product bindings", () => {
   const source = ready(["measuring"]);
   source.sources[0].url =
     "https://cdn.shopify.com/s/files/1/0893/6659/3817/files/Measuring-for-all-Roller-blinds.pdf?v=1744119133";
   const first = createGuideContext(source, origin, productPath);
-  for (const [nextOrigin, nextPath] of [
-    ["https://shop.blinds-2go.co.uk", productPath],
-    [origin, "/products/another-blind"],
-  ]) {
-    const next = createGuideContext(source, nextOrigin, nextPath);
-    assert.notEqual(next.key, first.key);
-    assert.notDeepEqual(plain(next.input), plain(first.input));
-  }
+  const next = createGuideContext(source, origin, "/products/another-blind");
+  assert.deepEqual(plain(next.input), plain(first.input));
+  assert.equal(first.productPath, productPath);
+  assert.equal(next.productPath, "/products/another-blind");
+  assert.doesNotMatch(
+    JSON.stringify(first.input),
+    /productPath|verified-blind|another-blind/,
+  );
+  assert.equal(
+    "key" in first,
+    false,
+    "The request owner controls store/mode routing with or without documents",
+  );
+  const otherStore = createGuideContext(
+    source,
+    "https://shop.blinds-2go.co.uk",
+    productPath,
+  );
+  assert.notDeepEqual(plain(otherStore.input), plain(first.input));
   assert.match(first.input[0].content[0].text, /v=1744119133/);
   assert.throws(() =>
     createGuideContext(ready(), "https://other-store.test", productPath),
