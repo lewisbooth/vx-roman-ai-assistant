@@ -8,6 +8,7 @@ import {
 } from "../../../shared/product-configuration";
 import { readProductMeasurements } from "./measurements";
 import { isSampleAvailable } from "./product-sample";
+import { settleProductPrice } from "./product-pricing";
 import {
   controlVisible,
   currentProductForm,
@@ -213,6 +214,7 @@ export function createProductConfigurationTools() {
     | (Inspection & { id: string; productPath: string; createdAt: number })
     | null = null;
   let disposed = false;
+  let pending: AbortController | undefined;
   return {
     getProductConfiguration(
       productPath: string,
@@ -226,6 +228,7 @@ export function createProductConfigurationTools() {
       const actions = { sampleAvailable: isSampleAvailable(productPath) };
       snapshot = null;
       try {
+        if (pending) throw new Error(unavailable);
         const current = inspect(productPath),
           id = crypto.randomUUID();
         snapshot = { ...current, id, productPath, createdAt: Date.now() };
@@ -252,13 +255,13 @@ export function createProductConfigurationTools() {
         };
       }
     },
-    configureProduct(
+    async configureProduct(
       input: Extract<
         ProductConfigurationCall,
         { name: "configure_product" }
       >["arguments"],
       signal: AbortSignal,
-    ): ConfigureProductResult {
+    ): Promise<ConfigureProductResult> {
       const call = parseProductConfigurationCall("configure_product", input);
       if (call.name !== "configure_product") throw new Error(unavailable);
       const saved = snapshot;
@@ -274,6 +277,7 @@ export function createProductConfigurationTools() {
       });
       if (
         disposed ||
+        pending ||
         !saved ||
         saved.id !== input.configurationId ||
         saved.productPath !== input.productPath ||
@@ -308,25 +312,55 @@ export function createProductConfigurationTools() {
       if (!choice || !option?.available)
         return result("unsupported", unavailable);
       signal.throwIfAborted();
-      if (option.selected)
-        return result(
-          "applied",
-          "That product option is already selected. Nothing was added to the cart.",
-        );
+      const controller = new AbortController();
+      pending = controller;
+      const controlName = choice.control.name;
+      const featureOption = choice.control.getAttribute("data-feature-option");
+      const abort = () => controller.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      const selected = () =>
+        !disposed &&
+        !signal.aborted &&
+        !controller.signal.aborted &&
+        isCurrentProduct(input.productPath) &&
+        saved.form.isConnected &&
+        choice.control.isConnected &&
+        choice.control.form === saved.form &&
+        choice.control.name === controlName &&
+        choice.control.getAttribute("data-feature-option") === featureOption &&
+        choice.control.value === choice.value &&
+        (!(choice.control instanceof HTMLInputElement) ||
+          choice.control.checked === choice.checked);
       try {
-        if (choice.control instanceof HTMLInputElement)
-          choice.control.checked = choice.checked!;
-        else choice.control.value = choice.value;
-        notifyProductControl(choice.control);
+        if (!option.selected) {
+          if (choice.control instanceof HTMLInputElement)
+            choice.control.checked = choice.checked!;
+          else choice.control.value = choice.value;
+          notifyProductControl(choice.control);
+        }
+        const price = selected()
+          ? await settleProductPrice(
+              saved.form,
+              input.productPath,
+              controller.signal,
+            )
+          : "uncertain";
+        const settled =
+          price !== "uncertain" && selected()
+            ? inspect(input.productPath)
+            : undefined;
         if (
-          signal.aborted ||
-          !isCurrentProduct(input.productPath) ||
-          !saved.form.isConnected ||
-          !choice.control.isConnected ||
-          choice.control.form !== saved.form ||
-          choice.control.value !== choice.value ||
-          (choice.control instanceof HTMLInputElement &&
-            choice.control.checked !== choice.checked)
+          price === "uncertain" ||
+          !selected() ||
+          settled?.form !== saved.form ||
+          !settled.choices.some((choices) =>
+            choices.some(
+              (candidate) =>
+                candidate.control === choice.control &&
+                candidate.value === choice.value &&
+                candidate.checked === choice.checked,
+            ),
+          )
         )
           return result(
             "uncertain",
@@ -334,17 +368,23 @@ export function createProductConfigurationTools() {
           );
         return result(
           "applied",
-          "The requested product option is selected. Wait for the theme's updated price. Nothing was added to the cart.",
+          price === "needs_configuration"
+            ? "The requested product option is selected. The theme still needs product configuration before pricing is ready; read its current choices before continuing. Nothing was added to the cart."
+            : "The requested product option is selected and the theme has finished updating. Read its current configuration before changing another choice. Nothing was added to the cart.",
         );
       } catch {
         return result(
           "uncertain",
           "The theme could not confirm this option. Review its product controls before repeating a change; nothing was added to the cart.",
         );
+      } finally {
+        signal.removeEventListener("abort", abort);
+        if (pending === controller) pending = undefined;
       }
     },
     dispose() {
       disposed = true;
+      pending?.abort();
       snapshot = null;
     },
   };

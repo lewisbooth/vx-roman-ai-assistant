@@ -51,7 +51,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "set_measurements",
     description:
-      "Save dimensions explicitly supplied by the customer for one verified product path. Width and height (drop) retain their exact units. Use kind window for unconfirmed notes and order for exact values the customer has confirmed for the chosen product inputs. Confirm width, drop and units together once; do not re-confirm an acknowledged pair or require a mounting answer. Preserve supplied mount, otherwise use unknown. For a configure/fill request, follow a successful save with apply_measurements; save-only requests stop here. Never convert, round, deduct allowances or infer a fit. Saving does not fill or submit the product form.",
+      "Save dimensions explicitly supplied by the customer for one verified product path. Width and height (drop) retain their exact units. Use kind window for unconfirmed notes and order for exact values the customer has confirmed for the chosen product inputs. Confirm width, drop and units together once; do not re-confirm an acknowledged pair or require a mounting answer. Preserve the established recess/exact intent, otherwise use unknown. For a configure/fill request, follow a successful save with apply_measurements; save-only requests stop here. Use configure_product separately for native choices established by the customer and measuring method. Never convert, round, deduct allowances or infer physical fitting suitability. Saving does not fill or submit the product form.",
     strict: true,
     parameters: {
       type: "object",

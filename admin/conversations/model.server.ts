@@ -23,7 +23,9 @@ import {
 import {
   isProductConfigurationTool,
   parseProductConfigurationCall,
+  parseProductConfigurationResult,
   productConfigurationToolDefinitions,
+  type ProductConfiguration,
   type ProductConfigurationResult,
 } from "../../shared/product-configuration";
 import {
@@ -62,6 +64,7 @@ import {
   type QuestionPresentation,
   type CachedGuideSource,
 } from "./presentation.server";
+import { MAX_TURN_TOOL_CALLS } from "./limits.server";
 
 export const TEXT_MODEL = "gpt-5.6-terra";
 export const TEXT_SERVICE_TIER = "fast";
@@ -179,7 +182,42 @@ export async function generateReply(
     content: text,
   }));
   let browserCalls = 0;
-  let storefrontMutationAttempted = false;
+  let cartMutationAttempted = false;
+  let formProductPath: string | undefined;
+  let formChangesBlocked = false;
+  let configurationAttempts = 0;
+  let measurementAttempted = false;
+  let configurationMode = false;
+  let currentConfiguration: ProductConfiguration | undefined;
+  const isConfigurationStep = (name: string) =>
+    isProductConfigurationTool(name) ||
+    name === "set_measurements" ||
+    name === "get_measurements" ||
+    name === "apply_measurements";
+  const withinToolBudget = (name: string) =>
+    browserCalls < 4 ||
+    (configurationMode &&
+      isConfigurationStep(name) &&
+      browserCalls < MAX_TURN_TOOL_CALLS);
+  const canMutate = (name: string) => {
+    if (isCartMutation(name))
+      return !cartMutationAttempted && !formProductPath && !formChangesBlocked;
+    if (name === "configure_product")
+      return (
+        !cartMutationAttempted &&
+        !formChangesBlocked &&
+        configurationAttempts < 3 &&
+        !!currentConfiguration
+      );
+    if (name === "apply_measurements")
+      return (
+        !cartMutationAttempted &&
+        !formChangesBlocked &&
+        !measurementAttempted &&
+        (configurationAttempts === 0 || !!currentConfiguration)
+      );
+    return true;
+  };
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
   let guidePresentationAttempted = false;
@@ -282,22 +320,14 @@ export async function generateReply(
       ]
     : [];
   let accumulated = "";
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < (configurationMode ? 16 : 8); round++) {
     signal.throwIfAborted();
     const tools = stableTools.filter(({ name }) => {
       if (name === "ask_question" || name === "ask_measurement")
         return !questionPresentationAttempted;
       if (name === "show_products") return !presentationAttempted;
       if (name === "show_guides") return !guidePresentationAttempted;
-      return (
-        browserCalls < 4 &&
-        !(
-          storefrontMutationAttempted &&
-          (isCartMutation(name) ||
-            name === "configure_product" ||
-            name === "apply_measurements")
-        )
-      );
+      return withinToolBudget(name) && canMutate(name);
     });
     const usageId = randomUUID();
     const attempt = responseUsage(usageId, "pending");
@@ -684,13 +714,15 @@ export async function generateReply(
         });
         continue;
       }
-      if (!execute || browserCalls >= 4)
+      if (!execute || !withinToolBudget(call.name))
         throw new Error(
           "Roman reached the storefront tool limit for this reply.",
         );
       browserCalls++;
       // Guide cards may refer to a previous product; a numeric input may not.
       if (call.name === "navigate") {
+        currentConfiguration = undefined;
+        if (formProductPath) formChangesBlocked = true;
         measurementProductPath = undefined;
         cachedGuideSource = undefined;
         guideReuse?.clear();
@@ -734,17 +766,58 @@ export async function generateReply(
                         call.name === "set_measurements"
                       ? parseMeasurementCall(call.name, argumentsValue)
                       : parseCatalogCall(call.name, argumentsValue);
+        if (!canMutate(parsed.name))
+          throw new Error(
+            "This storefront change is not available in this reply.",
+          );
+        if (isCartMutation(parsed.name)) cartMutationAttempted = true;
         if (
-          isCartMutation(parsed.name) ||
-          parsed.name === "apply_measurements" ||
-          parsed.name === "configure_product"
+          parsed.name === "configure_product" ||
+          parsed.name === "apply_measurements"
         ) {
-          if (storefrontMutationAttempted)
+          const args = parsed.arguments as {
+            productPath: string;
+            configurationId?: string;
+            controlId?: string;
+            optionId?: string;
+          };
+          if (formProductPath && formProductPath !== args.productPath)
             throw new Error(
-              "Only one cart or form mutation is allowed per reply.",
+              "Configuration changes must stay on the same product.",
             );
-          storefrontMutationAttempted = true;
+          if (parsed.name === "configure_product") {
+            const snapshot = currentConfiguration;
+            currentConfiguration = undefined;
+            const option = snapshot?.controls
+              .find(({ id }) => id === args.controlId)
+              ?.options.find(({ id }) => id === args.optionId);
+            if (
+              snapshot?.productPath !== args.productPath ||
+              snapshot?.configurationId !== args.configurationId ||
+              !option?.available
+            )
+              throw new Error(
+                "Read the available product choices before each change.",
+              );
+            configurationAttempts++;
+          } else {
+            if (
+              configurationAttempts &&
+              currentConfiguration?.productPath !== args.productPath
+            )
+              throw new Error(
+                "Read the changed product before applying measurements.",
+              );
+            measurementAttempted = true;
+            currentConfiguration = undefined;
+          }
+          formProductPath = args.productPath;
+          // Only a confirmed result unlocks the next different step. Failed or
+          // interrupted actions never grant permission to retry or continue.
+          formChangesBlocked = true;
         }
+        if (parsed.name === "get_product_configuration")
+          currentConfiguration = undefined;
         if (parsed.name === "get_product_guides")
           availableGuides.delete(
             parseProductGuidesCall(parsed.arguments).productPath,
@@ -753,11 +826,43 @@ export async function generateReply(
         onGuideReading?.(undefined);
         outcome = await execute(call.call_id, parsed.name, parsed.arguments);
         signal.throwIfAborted();
+        if (parsed.name === "get_product_configuration") {
+          const configuration = parseProductConfigurationResult(
+            "get_product_configuration",
+            outcome,
+          );
+          if (
+            !("productPath" in parsed.arguments) ||
+            configuration.productPath !== parsed.arguments.productPath
+          )
+            throw new Error("Configuration returned a different product.");
+          if (configuration.status === "available") {
+            currentConfiguration = configuration;
+            configurationMode = true;
+          }
+        }
+        if (
+          parsed.name === "configure_product" ||
+          parsed.name === "apply_measurements"
+        )
+          formChangesBlocked = !(
+            "status" in outcome &&
+            outcome.status === "applied" &&
+            "productPath" in outcome &&
+            outcome.productPath === formProductPath
+          );
         if ("products" in outcome)
           for (const product of outcome.products)
             availableProductIds.add(product.id);
       } catch {
         signal.throwIfAborted();
+        if (
+          call.name === "configure_product" ||
+          call.name === "apply_measurements"
+        ) {
+          formChangesBlocked = true;
+          currentConfiguration = undefined;
+        }
         outcome = {
           error:
             isCartMutation(call.name) ||
@@ -827,15 +932,28 @@ export async function generateReply(
           console.warn("[Roman] Product guides could not be read.", {
             reason: read.reason,
           });
-          // Do not ask the model to improvise instructions after a failed read.
-          // Replace any preliminary narration and omit unfinished widgets.
+          // Stop unsupported guidance without another paid request. Replace
+          // unfinished widgets with safe browsing intents, not new fit advice.
+          // A read-only startup resume cannot replace its saved question.
+          const recovery: QuestionPresentation | undefined = resumeQuestion
+            ? undefined
+            : {
+                callId: `guide-recovery-${randomUUID()}`,
+                question: "What would you like to do instead?",
+                answers: ["Explore other colours", "Find another product"],
+              };
+          const limitation =
+            "I couldn't read the product's official guides, so I can't verify suitability or give measuring or fitting instructions from them. The store can help confirm those details.";
           const text =
-            "I couldn't read the product's official guides, so I can't verify suitability or give measuring or fitting instructions. Please use the guides on the product page or contact the store before continuing.";
+            mode === "voice" && recovery
+              ? `${limitation} ${recovery.question}`
+              : limitation;
           onText(text);
           return {
             text,
             model: completed.model,
             serviceTier: completed.service_tier ?? undefined,
+            ...(recovery ? { questionPresentation: recovery } : {}),
           };
         }
         unavailableGuides = [

@@ -83,6 +83,7 @@ import {
 import prisma from "../db.server";
 import { latestProductPage, productPagePath } from "../guides/product-page.server";
 import { ConversationError } from "./errors.server";
+import { MAX_TURN_TOOL_CALLS } from "./limits.server";
 import {
   parseProductSelection,
   type ProductPresentation,
@@ -1862,7 +1863,7 @@ export async function createToolInvocation(
     if (
       conversation.toolInvocations.filter(
         (tool) => tool.assistantId === assistantId,
-      ).length >= 8
+      ).length >= MAX_TURN_TOOL_CALLS
     )
       throw new ConversationError(
         429,

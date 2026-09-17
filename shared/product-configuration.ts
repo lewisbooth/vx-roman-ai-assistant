@@ -73,7 +73,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "configure_product",
     description:
-      "Apply exactly one available customization choice explicitly requested by the customer, using IDs from the latest get_product_configuration result for the current product. Read again before another change. Never invent IDs, enable unavailable controls, infer fitting choices, or retry an uncertain change. This does not enter measurements, purchase, add to cart or select insurance. Wait for theme pricing before reporting a price.",
+      "Apply one available customization choice requested by the customer or unambiguously established by their intent and the measuring method, using IDs from the latest get_product_configuration result. For example, outside-recess fitting can map to Exact, and a full width including brackets to Bracket to Bracket. Combine the relevant guide with actual PDP choices; the guide need not use the PDP's exact labels. Read again after every change, including newly exposed choices, before continuing. Ask only when the intended option is unclear. Never invent IDs, choose arbitrary defaults, infer physical suitability, change dimensions or allowances, enable unavailable controls, or retry an uncertain change. This waits for the native update; it does not enter measurements, purchase, add to cart or select insurance.",
     strict: true,
     parameters: {
       type: "object",

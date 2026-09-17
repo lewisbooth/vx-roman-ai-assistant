@@ -12,6 +12,7 @@ import {
 import { parseProductPath } from "../../shared/product-path";
 import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
+import { MAX_TURN_TOOL_CALLS } from "../conversations/limits.server";
 
 const processStartedAt = new Date();
 const maxProductDrafts = 20;
@@ -245,7 +246,7 @@ export async function executeMeasurementTool(
     if (
       (await transaction.toolInvocation.count({
         where: { assistantId, conversationId },
-      })) >= 8
+      })) >= MAX_TURN_TOOL_CALLS
     )
       throw new ConversationError(
         429,

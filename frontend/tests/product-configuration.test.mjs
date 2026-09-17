@@ -36,6 +36,21 @@ function setup(t) {
     },
   );
   const { window } = dom;
+  const timers = new Map();
+  let timerId = 0;
+  window.setTimeout = (callback, ms) => {
+    const id = ++timerId;
+    timers.set(id, { callback, ms });
+    return id;
+  };
+  window.clearTimeout = (id) => timers.delete(id);
+  const fire = (ms) => {
+    for (const [id, timer] of [...timers])
+      if (timer.ms === ms) {
+        timers.delete(id);
+        timer.callback();
+      }
+  };
   window.customElements.define(
     "dynamic-pricing",
     class extends window.HTMLElement {
@@ -73,7 +88,14 @@ function setup(t) {
     form,
     tools,
     events,
+    timers,
+    fire,
     signal,
+    configure: async (call, requestSignal = signal) => {
+      const pending = tools.configureProduct(call, requestSignal);
+      fire(250);
+      return await pending;
+    },
     read: () => tools.getProductConfiguration(productPath, signal),
     ...window.Configuration,
   };
@@ -106,37 +128,34 @@ test("discovery projects native feature choices only, with truthful hidden and d
   assert.deepEqual(ctx.events, []);
 });
 
-test("one requested radio choice updates native state and events without a purchase, then cannot replay", (t) => {
+test("one requested radio choice updates native state and events without a purchase, then cannot replay", async (t) => {
   const ctx = setup(t),
     call = selection(ctx.read());
-  assert.equal(ctx.tools.configureProduct(call, ctx.signal).status, "applied");
+  assert.equal((await ctx.configure(call)).status, "applied");
   assert.equal(ctx.form.querySelector('[value="Recess##8"]').checked, false);
   assert.equal(ctx.form.querySelector('[value="Exact##7"]').checked, true);
   assert.deepEqual(
     ctx.events.map((event) => event[0]),
     ["input", "change"],
   );
-  assert.equal(
-    ctx.tools.configureProduct(call, ctx.signal).status,
-    "unsupported",
-  );
+  assert.equal((await ctx.configure(call)).status, "unsupported");
   assert.equal(ctx.events.length, 2);
 });
 
-test("supported native select and checkbox choices retain their exact theme values", (t) => {
+test("supported native select and checkbox choices retain their exact theme values", async (t) => {
   const ctx = setup(t);
   assert.equal(
-    ctx.tools.configureProduct(selection(ctx.read(), 1, 1), ctx.signal).status,
+    (await ctx.configure(selection(ctx.read(), 1, 1))).status,
     "applied",
   );
   assert.equal(ctx.form.querySelector("select").value, "Blackout##21");
   assert.equal(
-    ctx.tools.configureProduct(selection(ctx.read(), 2, 1), ctx.signal).status,
+    (await ctx.configure(selection(ctx.read(), 2, 1))).status,
     "applied",
   );
   assert.equal(ctx.form.querySelector('[type="checkbox"]').checked, true);
   assert.equal(
-    ctx.tools.configureProduct(selection(ctx.read(), 2, 0), ctx.signal).status,
+    (await ctx.configure(selection(ctx.read(), 2, 0))).status,
     "applied",
   );
   assert.equal(ctx.form.querySelector('[type="checkbox"]').checked, false);
@@ -149,13 +168,10 @@ test("unsupported choices are never enabled or mutated", async (t) => {
     [4, 0],
     [23, 31],
   ])
-    await t.test(`${control}:${option}`, (t) => {
+    await t.test(`${control}:${option}`, async (t) => {
       const ctx = setup(t),
         call = selection(ctx.read(), control, option);
-      assert.equal(
-        ctx.tools.configureProduct(call, ctx.signal).status,
-        "unsupported",
-      );
+      assert.equal((await ctx.configure(call)).status, "unsupported");
       assert.deepEqual(ctx.events, []);
     });
 });
@@ -170,7 +186,7 @@ test("page, input, DOM replacement, availability, expiry and newer read invalida
     "read",
     "dispose",
   ])
-    await t.test(change, (t) => {
+    await t.test(change, async (t) => {
       const ctx = setup(t),
         call = selection(ctx.read()),
         target = ctx.form.querySelector('[value="Exact##7"]');
@@ -186,24 +202,18 @@ test("page, input, DOM replacement, availability, expiry and newer read invalida
       }
       if (change === "read") ctx.read();
       if (change === "dispose") ctx.tools.dispose();
-      assert.equal(
-        ctx.tools.configureProduct(call, ctx.signal).status,
-        "unsupported",
-      );
+      assert.equal((await ctx.configure(call)).status, "unsupported");
       assert.deepEqual(ctx.events, []);
     });
 });
 
-test("an aborted attempt consumes its capability without dispatching, and cannot later replay", (t) => {
+test("an aborted attempt consumes its capability without dispatching, and cannot later replay", async (t) => {
   const ctx = setup(t),
     call = selection(ctx.read()),
     controller = new ctx.window.AbortController();
   controller.abort();
-  assert.throws(() => ctx.tools.configureProduct(call, controller.signal));
-  assert.equal(
-    ctx.tools.configureProduct(call, ctx.signal).status,
-    "unsupported",
-  );
+  await assert.rejects(ctx.configure(call, controller.signal));
+  assert.equal((await ctx.configure(call)).status, "unsupported");
   assert.deepEqual(ctx.events, []);
 });
 
@@ -215,7 +225,7 @@ test("theme correction, replacement, abort or synchronous event exception yields
     "exception",
     "page",
   ])
-    await t.test(failure, (t) => {
+    await t.test(failure, async (t) => {
       const ctx = setup(t),
         call = selection(ctx.read()),
         controller = new ctx.window.AbortController(),
@@ -230,14 +240,11 @@ test("theme correction, replacement, abort or synchronous event exception yields
         if (failure === "exception") throw new Error("synthetic theme failure");
       });
       assert.equal(
-        ctx.tools.configureProduct(call, controller.signal).status,
+        (await ctx.configure(call, controller.signal)).status,
         "uncertain",
       );
       const count = ctx.events.length;
-      assert.equal(
-        ctx.tools.configureProduct(call, ctx.signal).status,
-        "unsupported",
-      );
+      assert.equal((await ctx.configure(call)).status, "unsupported");
       assert.equal(ctx.events.length, count);
     });
 });
@@ -290,15 +297,16 @@ test("busy, duplicate or unregistered product forms expose no configuration capa
 
 test("initial price and invalid-configuration states allow an enabled corrective feature choice", async (t) => {
   for (const state of ["variant-loading", "blocking"])
-    await t.test(state, (t) => {
+    await t.test(state, async (t) => {
       const ctx = setup(t);
       ctx.form.classList.add(state);
       const read = ctx.read();
       assert.equal(read.status, "available");
-      assert.equal(
-        ctx.tools.configureProduct(selection(read), ctx.signal).status,
-        "applied",
-      );
+      if (state === "variant-loading")
+        ctx.form.addEventListener("change", () =>
+          ctx.form.classList.remove(state),
+        );
+      assert.equal((await ctx.configure(selection(read))).status, "applied");
     });
 });
 
@@ -332,4 +340,139 @@ test("recorded configuration actions are strict while older durable results reta
         actions,
       }),
     );
+});
+
+test("configuration waits for native pricing and dependent choices before a fresh sequential change", async (t) => {
+  const ctx = setup(t);
+  const call = selection(ctx.read());
+  ctx.form
+    .querySelector('[value="Exact##7"]')
+    .addEventListener("change", () => {
+      ctx.form.classList.add("loading", "variant-loading");
+    });
+  let finished = false;
+  const pending = ctx.tools.configureProduct(call, ctx.signal);
+  void pending.then(() => {
+    finished = true;
+  });
+  ctx.fire(250);
+  await Promise.resolve();
+  assert.equal(finished, false, "A selected radio is not a settled theme");
+  assert.equal(
+    ctx.read().status,
+    "unavailable",
+    "No capability is issued while the previous choice is settling",
+  );
+  assert.equal((await ctx.configure(call)).status, "unsupported");
+  assert.equal(ctx.events.length, 2);
+
+  ctx.form.insertAdjacentHTML(
+    "beforeend",
+    `<fieldset data-feature="9"><input type="radio" name="Width definition##9" value="Fabric Width##90" data-feature-option="9##90" checked><input type="radio" name="Width definition##9" value="Bracket to Bracket##91" data-feature-option="9##91"></fieldset>`,
+  );
+  ctx.form.classList.remove("loading", "variant-loading");
+  assert.equal((await pending).status, "applied");
+  const next = ctx.read();
+  const control = next.controls.find(
+    (entry) => entry.label === "Width definition",
+  );
+  assert.ok(control);
+  const option = control.options.find(
+    (entry) => entry.label === "Bracket to Bracket",
+  );
+  assert.equal(option.available, true);
+  assert.equal(
+    (
+      await ctx.configure({
+        productPath,
+        configurationId: next.configurationId,
+        controlId: control.id,
+        optionId: option.id,
+      })
+    ).status,
+    "applied",
+  );
+  assert.equal(
+    ctx.form.querySelector('[value="Bracket to Bracket##91"]').checked,
+    true,
+  );
+  assert.deepEqual(
+    ctx.events.map((event) => event[0]),
+    ["input", "change", "input", "change"],
+  );
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("an already selected choice still waits for pending theme dependencies without dispatching again", async (t) => {
+  const ctx = setup(t);
+  ctx.form.classList.add("variant-loading");
+  const call = selection(ctx.read(), 0, 0);
+  let finished = false;
+  const pending = ctx.tools.configureProduct(call, ctx.signal);
+  void pending.then(() => {
+    finished = true;
+  });
+  ctx.fire(250);
+  await Promise.resolve();
+  assert.equal(finished, false);
+  assert.deepEqual(ctx.events, []);
+  ctx.form.classList.remove("variant-loading");
+  assert.equal((await pending).status, "applied");
+  assert.deepEqual(ctx.events, []);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("pending pricing failure, lifecycle changes and late native corrections are uncertain and cannot replay", async (t) => {
+  for (const failure of [
+    "abort",
+    "dispose",
+    "navigation",
+    "pagehide",
+    "timeout",
+    "correction",
+    "replacement",
+    "form",
+    "identity",
+  ]) {
+    await t.test(failure, async (t) => {
+      const ctx = setup(t);
+      const controller = new ctx.window.AbortController();
+      const call = selection(ctx.read());
+      const target = ctx.form.querySelector('[value="Exact##7"]');
+      const pending = ctx.tools.configureProduct(call, controller.signal);
+      assert.equal(
+        target.checked,
+        true,
+        "The attempted mutation is already visible",
+      );
+      if (failure === "abort") controller.abort();
+      if (failure === "dispose") ctx.tools.dispose();
+      if (failure === "navigation") {
+        ctx.window.document.dispatchEvent(
+          new ctx.window.Event("roman:navigation"),
+        );
+        // Even returning to the same URL cannot undo a navigation cancellation.
+        ctx.window.history.replaceState({}, "", productPath);
+      }
+      if (failure === "pagehide")
+        ctx.window.dispatchEvent(new ctx.window.Event("pagehide"));
+      if (failure === "timeout") {
+        ctx.form.classList.add("variant-loading");
+        ctx.fire(15_000);
+      }
+      if (failure === "correction") target.checked = false;
+      if (failure === "replacement") target.replaceWith(target.cloneNode(true));
+      if (failure === "form") ctx.form.remove();
+      if (failure === "identity") target.removeAttribute("data-feature-option");
+      ctx.fire(250);
+      assert.equal((await pending).status, "uncertain");
+      assert.equal(ctx.timers.size, 0, "Settlement timers are cleaned up");
+      assert.equal((await ctx.configure(call)).status, "unsupported");
+      assert.equal(
+        ctx.events.length,
+        2,
+        "A consumed capability never redispatches native events",
+      );
+    });
+  }
 });

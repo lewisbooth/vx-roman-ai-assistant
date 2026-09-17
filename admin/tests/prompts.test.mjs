@@ -368,7 +368,7 @@ test("text and voice backend guidance require original PDF evidence and stop uns
     );
     assert.match(
       prompt,
-      /If lookup or download fails[\s\S]*do not add measuring steps, suitability claims or a measurement question/,
+      /If lookup or download fails[\s\S]*may supply safe non-guidance choices[\s\S]*do not add measuring steps, suitability claims or a measurement question/,
     );
     assert.match(
       prompt,
@@ -406,7 +406,7 @@ test("readable but mismatched product guides are reported honestly in both backe
     );
     assert.match(
       prompt,
-      /Missing, unreadable, ambiguous or unsupported evidence stops the measuring\/fitting workflow/,
+      /Missing, unreadable, ambiguous or unsupported evidence stops the affected measuring\/fitting guidance/,
     );
     assert.doesNotMatch(
       prompt,
@@ -443,7 +443,7 @@ test("guide mismatches affect only the current requested measuring or fitting st
     );
     assert.match(
       prompt,
-      /evidence stops the measuring\/fitting workflow only when that evidence is needed for the current step/,
+      /evidence stops the affected measuring\/fitting guidance only when that evidence is needed for the current step/,
     );
     assert.match(
       prompt,
@@ -474,6 +474,43 @@ test("guide mismatches affect only the current requested measuring or fitting st
   assert.doesNotMatch(
     ROMAN_VOICE_BRIEFING_PROMPT,
     /any failure or uncertainty first/,
+  );
+});
+
+test("blocked guide advice offers contextual safe actions without ending the chat or inventing support", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /briefly state the limitation, then call ask_question with two or three relevant next actions chosen from the customer's goal and verified context/,
+      /Preserve their chosen product, colour, blind type, door\/window and functional preferences when offering other colours or products/,
+      /do not reset to a generic welcome or claim alternatives are available without catalog evidence/,
+      /Offer a sample only when the current product's sample availability is verified; do not offer to add a sample already confirmed in the cart/,
+      /Offer measuring help only when a matching measuring guide supports the proposed step; a wrong fitting guide alone does not prohibit supported measuring/,
+      /These are contextual possibilities, not a fixed menu/,
+      /Do not add unsupported suitability claims, clearance values or measuring instructions, automatically retry a failed guide, or end the chat/,
+      /cannot call or contact them on the customer's behalf; do not present a fake contact action or claim working Roman tools are unavailable/,
+      /server returns a limitation and may supply safe non-guidance choices\. Preserve those choices/,
+    ])
+      assert.match(prompt, rule);
+  }
+  const live = romanVoicePrompt("marin");
+  assert.match(
+    live,
+    /For an ordinary customer request, speak the backend's brief limitation and contextual next-action question once/,
+  );
+  assert.match(
+    live,
+    /Offer only its verified safe alternatives, without adding unsupported guidance or pretending to contact support/,
+  );
+});
+
+test("a guide failure during read-only voice resume cannot replace the customer's saved question", () => {
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /During a read-only voice startup resume, explain the limitation without creating an alternative question or replacing the saved pending question; wait for fresh customer input before changing the task/,
+  );
+  assert.match(
+    ROMAN_VOICE_BRIEFING_PROMPT,
+    /If its guide evidence is unavailable or mismatched, explain the limitation without creating a replacement question; alternative actions require fresh customer input/,
   );
 });
 
@@ -652,7 +689,7 @@ test("measurement units, abandonment and product changes cannot carry partial va
       /On a product switch, verify the new product and its guide/,
       /do not reuse partial readings or apply values to the previous product/,
       /Resume measuring only when requested/,
-      /save those exact values with set_measurements and then call apply_measurements in the same reply/,
+      /save those exact values with set_measurements, resolve any already-established native choices[\s\S]*then call apply_measurements in the same reply/,
     ])
       assert.match(prompt, rule);
     assert.doesNotMatch(
@@ -810,15 +847,62 @@ test("resumed numeric steps retain their input type and require current guide an
 test("configuration followups use real paged choices and retain final review before a full-product addition", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
-      /After apply_measurements succeeds, read the actual configuration and offer further configuration when editable options are available/,
-      /use ask_question for one real option at a time with choices from that fresh read/,
-      /Skip unchanged choices the customer already selected/,
+      /After every successful option change or measurement application, call get_product_configuration again before the next change or final review/,
+      /use ask_question for one real option at a time with choices from the fresh read/,
+      /Skip already-selected matching choices/,
+      /After each completed configuration request, continue any meaningful pending measuring or option question/,
+      /Otherwise offer relevant next actions through ask_question using the final review below/,
+      /use a fresh get_product_configuration result from the matching current PDP after its last change/,
       /more than four choices exist, paginate the actual choices with "More options" within the four-answer limit rather than dropping choices or inventing replacements/,
-      /Use configure_product only for one explicit customer choice returned by that read/,
       /Do not choose recess, lining, or any other option by default/,
       /"Keep configuring" when editable options are available/,
       /This one question is the final review and add decision together/,
       /After the customer chooses Add product to cart[\s\S]*read the current configuration again and add that same product/,
+    ])
+      assert.match(prompt, rule);
+  }
+});
+
+test("established measuring semantics select native fitting and width meaning without another approval", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /Use configure_product for an exact available choice from that read when the customer selected it directly or their established intent and measurement meaning unambiguously determine it/,
+      /customer's stated plan, the matching guide's measurement method and returned PDP labels and any available explanations; the PDF need not name the theme's option/,
+      /outside-recess fitting onto a wooden batten maps to the available Exact choice without another question/,
+      /full blind width including brackets, select Exact, read the newly exposed controls, then choose the available Bracket to Bracket option rather than retaining a Fabric width default/,
+      /Resolve these established choices before applying dimensions when they change how the form interprets width\/drop/,
+      /only when the returned choices and their meaning are clear; do not invent an unavailable choice/,
+      /not physical compatibility or a new measuring method/,
+      /Do not calculate allowances, convert or alter the confirmed dimensions, choose arbitrary preferences, or bypass a known fitting concern/,
+      /apply_measurements changes dimensions and units only; use configure_product separately/,
+      /Ask only for genuinely unresolved choices/,
+    ])
+      assert.match(prompt, rule);
+    assert.doesNotMatch(prompt, /leave the theme's fitting option unchanged|Use configure_product only for one explicit customer choice|Only one cart or form mutation/);
+  }
+  for (const rule of [
+    /native option choices use configure_product separately/,
+    /Delegate established fitting and measurement-meaning choices without another question/,
+    /full width including brackets to Bracket to Bracket from returned PDP labels and any available explanations, even if the guide does not name that option/,
+    /reads again after each change, never invents choices, alters dimensions or infers physical compatibility/,
+    /After a completed configuration request, continue a meaningful pending step or delegate the fresh form summary with relevant next-step answers/,
+    /do not stop at "Exact selected" or claim unfinished work is complete/,
+  ])
+    assert.match(romanVoicePrompt("marin"), rule);
+});
+
+test("dependent configuration changes stay bounded, freshly verified and separate from cart writes", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /at most three distinct successful configure_product changes and one apply_measurements call for the same product in a reply/,
+      /After every successful option change or measurement application, call get_product_configuration again before the next change or final review; conditional controls may have changed/,
+      /do not ask for another approval of an unambiguous established setting/,
+      /Stop the action sequence on an uncertain or failed result, do not replay it/,
+      /If the budget is reached with work remaining, preserve the outstanding intent and say what remains rather than claiming configuration is complete/,
+      /Keep a cart mutation in a separate reply from measurement application or option changes/,
+      /After each completed configuration request, continue any meaningful pending measuring or option question/,
+      /"Add sample to cart" only when this read returns actions.sampleAvailable true/,
+      /Omit Add product when required dimensions or choices are still missing/,
     ])
       assert.match(prompt, rule);
   }

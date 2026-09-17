@@ -754,7 +754,7 @@ test("voice backend requests retain tool policy without text greetings or presen
     instructions,
     /remove_from_cart, set_cart_quantity or clear_cart[^\n]+these three actions still require/,
   );
-  assert.match(instructions, /one cart or form mutation is allowed per reply/);
+  assert.match(instructions, /cart[^\n]+separate/i);
   assert.doesNotMatch(instructions, /Every cart mutation requires/);
   assert.match(instructions, /save those exact values with set_measurements/);
   assert.match(instructions, /return only a concise factual briefing/i);
@@ -1250,6 +1250,293 @@ test("an applied measurement can read configuration and ask a final-review quest
   }
 });
 
+const configId = (n) =>
+  `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+function configuration(n, productPath = "/products/shade", available = true) {
+  return {
+    status: "available",
+    productPath,
+    configurationId: configId(n),
+    controls: [
+      {
+        id: "c0",
+        label: n === 1 ? "Fitting Option" : "Select your way of measuring",
+        kind: "radio",
+        options: [
+          {
+            id: "o0",
+            label: n === 1 ? "Exact" : "Bracket to Bracket",
+            selected: false,
+            available,
+          },
+        ],
+      },
+    ],
+    measurements: { width: 40, height: 50, unit: "cm", availableUnits: ["cm"] },
+    actions: { sampleAvailable: true },
+    message: "Current native options.",
+  };
+}
+const configRead = (n, path = "/products/shade") =>
+  catalogCall(`read-${n}`, "get_product_configuration", { productPath: path });
+const configWrite = (n, path = "/products/shade") =>
+  catalogCall(`choice-${n}`, "configure_product", {
+    productPath: path,
+    configurationId: configId(n),
+    controlId: "c0",
+    optionId: "o0",
+  });
+
+test("text and voice can apply Exact then newly exposed Bracket to Bracket, enter unchanged measurements and offer next steps", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    const draft = {
+      productPath: "/products/shade",
+      width: 40,
+      height: 50,
+      unit: "cm",
+      kind: "order",
+      mount: "exact",
+    };
+    const steps = [
+      configRead(1),
+      configWrite(1),
+      configRead(2),
+      configWrite(2),
+      configRead(3),
+      catalogCall("save", "set_measurements", draft),
+      catalogCall("apply", "apply_measurements", {
+        productPath: draft.productPath,
+      }),
+      configRead(4),
+      questionCall({
+        question: "What would you like to do next?",
+        answers: ["Keep configuring", "Add product to cart", "Add a sample"],
+      }),
+    ];
+    env.streams.push(
+      ...steps.map((call) => events(completed("", { output: [call] }))),
+      events(
+        completed(
+          "Exact and Bracket to Bracket are selected, with 40 cm width and 50 cm drop.",
+        ),
+      ),
+    );
+    const executed = [];
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (id, name, args) => {
+        executed.push({ id, name, args });
+        if (name === "get_product_configuration")
+          return configuration(Number(id.split("-")[1]));
+        if (name === "set_measurements")
+          return {
+            status: "saved",
+            draft: { ...draft, updatedAt: "2026-09-17T10:00:00.000Z" },
+          };
+        return {
+          status: "applied",
+          productPath: draft.productPath,
+          message: "Applied.",
+          ...(name === "apply_measurements"
+            ? { draftUpdatedAt: "2026-09-17T10:00:00.000Z" }
+            : {}),
+        };
+      },
+      mode,
+    );
+    assert.equal(executed.length, 8);
+    assert.deepEqual(
+      plain(executed.find(({ name }) => name === "set_measurements").args),
+      draft,
+    );
+    assert.deepEqual(plain(reply.questionPresentation.answers), [
+      "Keep configuring",
+      "Add product to cart",
+      "Add a sample",
+    ]);
+    for (const index of [2, 4, 7])
+      assert.ok(
+        !allowedToolNames(env.calls.requests[index].input).includes(
+          "configure_product",
+        ),
+        "A fresh read is required after each form change",
+      );
+    for (const index of [2, 3, 4, 5, 6, 7, 8, 9])
+      assert.ok(
+        !allowedToolNames(env.calls.requests[index].input).includes(
+          "add_to_cart",
+        ),
+        "Cart remains separate from configuration",
+      );
+    assert.ok(
+      !allowedToolNames(env.calls.requests[5].input).includes(
+        "search_products",
+      ),
+      "Extra calls are reserved for configuration",
+    );
+  }
+});
+
+test("configuration errors or a changed product block further form changes even after a fresh read", async (t) => {
+  for (const condition of [
+    "unsupported",
+    "uncertain",
+    "cancelled",
+    "throws",
+    "wrong-result-product",
+    "wrong-next-product",
+    "unavailable-option",
+    "stale-id",
+    "no-fresh-read",
+  ])
+    await t.test(condition, async () => {
+      const env = setup();
+      const other =
+        condition === "wrong-next-product"
+          ? "/products/other"
+          : "/products/shade";
+      const firstWrite =
+        condition === "stale-id" ? configWrite(9) : configWrite(1);
+      const steps = [configRead(1), firstWrite];
+      if (condition !== "no-fresh-read") steps.push(configRead(2, other));
+      steps.push(
+        configWrite(2, other),
+        catalogCall("apply", "apply_measurements", {
+          productPath: "/products/shade",
+        }),
+      );
+      env.streams.push(
+        ...steps.map((call) => events(completed("", { output: [call] }))),
+        events(completed("Please check the current options.")),
+      );
+      const writes = [];
+      await env.api.generateReply(
+        [],
+        () => {},
+        new AbortController().signal,
+        async (id, name, args) => {
+          if (name === "get_product_configuration")
+            return configuration(
+              Number(id.split("-")[1]),
+              args.productPath,
+              condition !== "unavailable-option",
+            );
+          writes.push(name);
+          if (condition === "throws") throw new Error("Disconnected.");
+          return {
+            status: ["unsupported", "uncertain", "cancelled"].includes(
+              condition,
+            )
+              ? condition
+              : "applied",
+            productPath:
+              condition === "wrong-result-product"
+                ? "/products/other"
+                : args.productPath,
+            message: "Result.",
+          };
+        },
+      );
+      assert.deepEqual(
+        writes,
+        ["unavailable-option", "stale-id"].includes(condition)
+          ? []
+          : ["configure_product"],
+      );
+    });
+});
+
+test("an invalid configuration request cannot fall through to a cart write", async () => {
+  for (const unavailable of [false, true]) {
+    const env = setup();
+    const steps = [
+      configRead(1),
+      configWrite(unavailable ? 1 : 9),
+      catalogCall("add", "add_to_cart", { productPath: "/products/shade" }),
+    ];
+    env.streams.push(
+      ...steps.map((call) => events(completed("", { output: [call] }))),
+      events(completed("Please review the options.")),
+    );
+    const executed = [];
+    await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (id, name) => {
+        executed.push(name);
+        return configuration(1, "/products/shade", !unavailable);
+      },
+    );
+    assert.deepEqual(executed, ["get_product_configuration"]);
+    assert.ok(
+      !allowedToolNames(env.calls.requests[2].input).includes("add_to_cart"),
+    );
+  }
+});
+
+test("configuration cap allows three choices and one measurement application, then still permits final read and question", async () => {
+  const env = setup();
+  const steps = [
+    configRead(1),
+    configWrite(1),
+    configRead(2),
+    configWrite(2),
+    configRead(3),
+    configWrite(3),
+    configRead(4),
+    catalogCall("apply", "apply_measurements", {
+      productPath: "/products/shade",
+    }),
+    configRead(5),
+    configWrite(5),
+    catalogCall("repeat-apply", "apply_measurements", {
+      productPath: "/products/shade",
+    }),
+    configRead(6),
+    questionCall({
+      question: "What next?",
+      answers: ["Keep configuring", "Review for basket"],
+    }),
+  ];
+  env.streams.push(
+    ...steps.map((call) => events(completed("", { output: [call] }))),
+    events(completed("Review the current choices.")),
+  );
+  const writes = [];
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (id, name, args) => {
+      if (name === "get_product_configuration")
+        return configuration(Number(id.split("-")[1]));
+      writes.push(name);
+      return {
+        status: "applied",
+        productPath: args.productPath,
+        message: "Applied.",
+      };
+    },
+  );
+  assert.deepEqual(writes, [
+    "configure_product",
+    "configure_product",
+    "configure_product",
+    "apply_measurements",
+  ]);
+  assert.equal(reply.questionPresentation.question, "What next?");
+  assert.deepEqual(allowedToolNames(env.calls.requests[12].input), [
+    "show_products",
+    "show_guides",
+    "ask_question",
+    "ask_measurement",
+  ]);
+});
+
 test("an accepted final review refreshes configuration before adding in the next text or voice reply", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
@@ -1441,7 +1728,6 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "set_cart_quantity",
         "clear_cart",
         "get_product_configuration",
-        "configure_product",
         "apply_measurements",
         "show_products",
         "show_guides",
@@ -1617,6 +1903,21 @@ const questionSelection = {
 };
 const questionCall = (args = questionSelection, callId = "question-1") =>
   catalogCall(callId, "ask_question", args);
+
+function assertGuideRecovery(reply, mode = "text") {
+  const recovery = plain(reply.questionPresentation);
+  assert.match(recovery.callId, /^guide-recovery-[0-9a-f-]{36}$/);
+  assert.deepEqual(recovery, {
+    callId: recovery.callId,
+    question: "What would you like to do instead?",
+    answers: ["Explore other colours", "Find another product"],
+  });
+  assert.equal(
+    reply.text.split(recovery.question).length - 1,
+    mode === "voice" ? 1 : 0,
+  );
+  assert.equal(reply.cachedGuideSource, undefined);
+}
 
 const measurementSelection = {
   question: "What is the width?",
@@ -2531,7 +2832,7 @@ test("guide presentation rejects invented URLs, source IDs, duplicate kinds and 
       if (entry.kinds?.length === 0 || entry.refresh) {
         assert.match(reply.text, /couldn't read the product's official guides/);
         assert.equal(env.calls.requests.length, entry.refresh ? 2 : 1);
-        assert.equal(reply.questionPresentation, undefined);
+        assertGuideRecovery(reply);
         return;
       }
       const output = env.calls.requests
@@ -2787,7 +3088,7 @@ test("failed selected-guide reading clears activity and cannot send a PDF contex
   assert.deepEqual(stages, [undefined, ["measuring"], undefined]);
   assert.equal(env.calls.requests.length, 1);
   assert.equal(guideFiles(env.calls.requests[0].input).length, 0);
-  assert.equal(reply.questionPresentation, undefined);
+  assertGuideRecovery(reply);
   assert.match(reply.text, /couldn't read/);
 });
 
@@ -2887,7 +3188,7 @@ test("a third distinct guide stops the reply before another download or model re
   assert.equal(reply.guidePresentation, undefined);
 });
 
-test("unavailable guide documents replace preliminary text and stop further questions or actions", async (t) => {
+test("unavailable guide documents replace preliminary advice with safe choices and stop queued actions without another model request", async (t) => {
   for (const scenario of [
     "missing",
     "unavailable",
@@ -2963,7 +3264,7 @@ test("unavailable guide documents replace preliminary text and stop further ques
         );
         assert.equal(reply.presentation, undefined);
         assert.equal(reply.guidePresentation, undefined);
-        assert.equal(reply.questionPresentation, undefined);
+        assertGuideRecovery(reply, mode);
         assert.equal(usage.length, 2);
         assert.equal(usage[1].status, "completed");
         assert.equal(usage[1].inputTokens, 20);
@@ -2974,7 +3275,7 @@ test("unavailable guide documents replace preliminary text and stop further ques
   }
 });
 
-test("failed guide reading discards a question already selected earlier in the reply", async () => {
+test("failed guide reading replaces an earlier selected question with safe browsing choices", async () => {
   const env = setup();
   env.streams.push(
     events(completed("", { output: [questionCall()] })),
@@ -2994,8 +3295,64 @@ test("failed guide reading discards a question already selected earlier in the r
     guideOrigin,
   );
   assert.equal(env.calls.requests.length, 2);
-  assert.equal(reply.questionPresentation, undefined);
+  assertGuideRecovery(reply);
+  assert.notEqual(reply.questionPresentation.callId, "question-1");
   assert.match(reply.text, /couldn't read the product's official guides/);
+});
+
+test("a failed guide read during read-only voice resume cannot replace the saved question", async () => {
+  const env = setup();
+  const { question, ...measurement } = measurementSelection;
+  const resume = {
+    type: "question",
+    version: 1,
+    invocationId: "11111111-1111-4111-8111-111111111111",
+    question,
+    answers: [],
+    measurement,
+  };
+  env.mock.readGuides = async () => ({
+    status: "unavailable",
+    reason: "not_found",
+  });
+  env.streams.push(events(completed("", { output: [guideLookup()] })));
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(),
+    "voice",
+    undefined,
+    guideOrigin,
+    resume,
+  );
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(reply.questionPresentation, undefined);
+  assert.doesNotMatch(reply.text, /What would you like to do instead/);
+  assert.match(reply.text, /couldn't read/);
+});
+
+test("cancellation during a failed PDF read does not return recovery choices", async () => {
+  const env = setup();
+  const controller = new AbortController();
+  env.mock.readGuides = async () => {
+    controller.abort();
+    return { status: "unavailable", reason: "network" };
+  };
+  env.streams.push(events(completed("", { output: [guideLookup()] })));
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => {},
+      controller.signal,
+      async () => guideResult(),
+      "text",
+      undefined,
+      guideOrigin,
+    ),
+    { name: "AbortError" },
+  );
+  assert.equal(env.calls.requests.length, 1);
 });
 
 test("successive guidance replies each read and attach their current product documents", async () => {

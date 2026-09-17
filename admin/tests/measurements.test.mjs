@@ -555,7 +555,7 @@ test("a failed outcome insert rolls back the draft and revision together", async
 test("model action count is bounded and validation fails before writes", async () => {
   const id = await conversation();
   const assistantId = await assistant(id);
-  for (let index = 0; index < 8; index++)
+  for (let index = 0; index < 12; index++)
     await api.executeMeasurementTool(
       id,
       assistantId,
@@ -567,7 +567,7 @@ test("model action count is bounded and validation fails before writes", async (
     api.executeMeasurementTool(
       id,
       assistantId,
-      "ninth",
+      "thirteenth",
       "set_measurements",
       input,
     ),

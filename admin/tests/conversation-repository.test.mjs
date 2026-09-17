@@ -2624,7 +2624,7 @@ test("invalid tool arguments and results cannot persist and lookups have a per-r
       { status: 400 },
     );
   }
-  for (let index = 1; index < 8; index++)
+  for (let index = 1; index < 12; index++)
     await repository.createToolInvocation(id, turn.assistantId, {
       ...input,
       providerCallId: randomUUID(),
@@ -2636,7 +2636,7 @@ test("invalid tool arguments and results cannot persist and lookups have a per-r
     }),
     { status: 429 },
   );
-  assert.equal((await repository.getSnapshot(id)).tools.length, 8);
+  assert.equal((await repository.getSnapshot(id)).tools.length, 12);
 });
 
 test("ending a chat and server recovery prevent late catalog writes without losing its transcript", async () => {
