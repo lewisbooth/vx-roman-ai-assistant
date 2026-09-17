@@ -19,13 +19,20 @@ const bundle = await build({
         build.onResolve(
           {
             filter:
-              /repository\.server$|model\.server$|browser-tools\.server$|measurements\/service\.server$/,
+              /repository\.server$|model\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/library\.server$/,
           },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
             ? "export const TEXT_MODEL='synthetic'; export const generateReply=(...args)=>mock.generate(...args);"
+            : path.endsWith("library.server")
+              ? `export const readLibraryInventory=(...args)=>{mock.libraryReads.push(args);return []};
+                 export const readBoundLibrarySource=()=>undefined;
+                 export const saveLibraryDiscovery=()=>{throw Error('Unexpected library discovery')};
+                 export const readLibraryGuides=()=>{throw Error('Unexpected library read')};
+                 export const bindLibrarySource=()=>{throw Error('Unexpected library binding')};
+                 export const clearLibrarySession=(id)=>mock.libraryClears.push(id);`
             : path.includes("usage")
               ? "export const recordModelUsage=async()=>{};"
               : path.endsWith("browser-tools.server")
@@ -62,6 +69,8 @@ function setup() {
   let next = 0;
   const mock = {
     rows,
+    libraryReads: [],
+    libraryClears: [],
     snapshot: async (id) => {
       const row = rows.get(id);
       return plain({
@@ -121,6 +130,7 @@ function setup() {
         text: args[1],
         signal: args[2],
         reading: args[8],
+        library: args[10],
         result,
       });
       return result.promise;
@@ -158,6 +168,8 @@ for (const voice of [false, true]) {
   test(`${voice ? "voice" : "text"} guide activity advances poll versions, clears and never exposes voice briefing text`, async () => {
     const ctx = setup();
     const { generation, done } = await ctx.start(voice);
+    assert.deepEqual(plain(generation.library.inventory), []);
+    assert.deepEqual(plain(ctx.mock.libraryReads), [["chat", "https://store.example"]]);
     const before = await ctx.api.readConversation("chat");
     assert.equal(before.streamRevision, 0);
     if (voice) generation.text("PRIVATE_UNSPOKEN_BRIEFING");
@@ -192,6 +204,7 @@ for (const voice of [false, true]) {
     assert.equal(final.busy, false);
     assert.equal(final.readingGuides, undefined);
     assert.equal(final.streamRevision, 0);
+    assert.deepEqual(ctx.mock.libraryClears, []);
     assert.ok(
       ctx.rows
         .get("chat")
@@ -211,6 +224,7 @@ test("provider failure clears reading activity and preserves the failed outcome"
   assert.equal(final.busy, false);
   assert.equal(final.messages[0].status, "failed");
   assert.doesNotMatch(JSON.stringify(ctx.logs), /PRIVATE_PROVIDER_FAILURE/);
+  assert.deepEqual(ctx.mock.libraryClears, ["chat"]);
 });
 
 test("cancel clears activity before persistence, and obsolete callbacks cannot affect a replacement", async () => {
@@ -226,12 +240,15 @@ test("cancel clears activity before persistence, and obsolete callbacks cannot a
   assert.equal(clearing.streamRevision, reading.streamRevision + 1);
   finish.resolve();
   await cancelled;
+  assert.deepEqual(ctx.mock.libraryClears, ["chat"]);
   ctx.mock.beforeFinish = undefined;
   const second = await ctx.start(true);
+  const cleanupAtReplacement = ctx.mock.libraryClears.length;
   second.generation.reading(["fitting"]);
   first.generation.reading(["measuring"]);
   first.generation.result.resolve({ text: "Stale", model: "synthetic" });
   await first.done;
+  assert.equal(ctx.mock.libraryClears.length, cleanupAtReplacement, "Obsolete generation cleanup cannot erase a replacement's library evidence");
   const replacement = await ctx.api.readConversation("chat");
   assert.deepEqual(plain(replacement.readingGuides), ["fitting"]);
   assert.equal(replacement.busy, true);

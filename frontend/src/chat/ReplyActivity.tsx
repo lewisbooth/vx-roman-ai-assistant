@@ -7,6 +7,8 @@ const toolLabels: Record<BrowserToolName, string> = {
   get_product: "Checking product details…",
   lookup_catalog: "Checking product details…",
   get_product_guides: "Finding measuring and fitting guides…",
+  discover_guides: "Finding the store's measuring guidance…",
+  get_store_support: "Finding the store's contact details…",
   navigate: "Opening the page…",
   get_cart: "Checking your cart…",
   add_to_cart: "Adding to your cart…",

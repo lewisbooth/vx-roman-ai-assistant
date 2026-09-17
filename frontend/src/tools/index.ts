@@ -8,6 +8,10 @@ import { addProductSample } from "./product-sample";
 import { createProductConfigurationTools } from "./product-configuration";
 import { parseProductConfigurationCall } from "../../../shared/product-configuration";
 import { getProductGuides } from "./product-guides";
+import { discoverGuides } from "./guide-library";
+import { getStoreSupport } from "./store-support";
+import { parseGuideLibraryCall } from "../../../shared/guide-library";
+import { parseStoreSupportCall } from "../../../shared/store-support";
 import { parseProductGuidesCall } from "../../../shared/product-guides";
 import {
   parseMeasurementCall,
@@ -15,6 +19,17 @@ import {
 } from "../../../shared/measurements";
 
 export const toolDefinitions = [
+  {
+    name: "discover_guides",
+    description:
+      "Read the store's general measuring library and discover its PDF guides.",
+    example: { library: "blinds" },
+  },
+  {
+    name: "get_store_support",
+    description: "Read contact details from this storefront's footer.",
+    example: {},
+  },
   {
     name: "search_products",
     description: "Search this store's live product catalogue.",
@@ -206,6 +221,8 @@ export function createAssistantTools(
               "get_product",
               "lookup_catalog",
               "get_product_guides",
+              "discover_guides",
+              "get_store_support",
               "get_cart",
               "add_to_cart",
               "add_sample_to_cart",
@@ -223,6 +240,13 @@ export function createAssistantTools(
               "Live Shopify tools run on the installed storefront. The local preview has no Shopify session.",
             );
           switch (name) {
+            case "discover_guides": {
+              const call = parseGuideLibraryCall(input);
+              return discoverGuides(call.library, request.signal);
+            }
+            case "get_store_support":
+              parseStoreSupportCall(input);
+              return getStoreSupport(request.signal);
             case "search_products": {
               const args = argumentsObject(input, ["query"]);
               return searchProducts(

@@ -1,10 +1,13 @@
 import type { ProductGuideKind } from "../../shared/product-guides";
 import type { QuestionSelection } from "../../shared/questions";
+import type { BoundLibrarySource } from "../guides/library.server";
 
 export interface QuestionPresentation extends QuestionSelection {
   callId: string;
   /** Required for measurement inputs; supplied from verified original guides. */
   sourceCallId?: string;
+  /** General guidance remains distinct from a product-owned PDF receipt. */
+  librarySource?: BoundLibrarySource;
 }
 
 /** Server-owned original-file cache receipt; never accepted from model arguments. */

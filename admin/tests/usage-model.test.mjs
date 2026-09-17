@@ -408,7 +408,7 @@ test("saved-question resume failure retains its neutral limitation without inven
   assert.equal(app.records.at(-1).totalTokens, 15);
 });
 
-test("unreadable guide recovery keeps its safe choices rather than general measuring actions", async () => {
+test("unreadable PDP guides preserve usage while the model chooses a supported next step", async () => {
   const app = setup([
     events(
       terminal("completed", tokens(20, 5), [
@@ -423,6 +423,20 @@ test("unreadable guide recovery keeps its safe choices rather than general measu
         },
       ]),
     ),
+    events(
+      terminal("completed", tokens(30, 7), [
+        {
+          type: "function_call",
+          name: "ask_question",
+          call_id: "supported-next-step",
+          arguments: JSON.stringify({
+            question: "Would you like another product?",
+            answers: ["Explore products", "Find my style"],
+          }),
+        },
+      ]),
+    ),
+    events(terminal("completed", tokens(25, 5))),
   ]);
   const reply = plain(
     await app.run(undefined, {
@@ -435,12 +449,23 @@ test("unreadable guide recovery keeps its safe choices rather than general measu
       }),
     }),
   );
-  assert.match(reply.text, /couldn't read the product's official guides/);
-  assert.match(reply.questionPresentation.callId, /^guide-recovery-/);
+  assert.equal(reply.questionPresentation.callId, "supported-next-step");
   assert.deepEqual(reply.questionPresentation.answers, [
-    "Explore other colours",
-    "Find another product",
+    "Explore products",
+    "Find my style",
   ]);
-  assert.equal(app.requests.length, 1);
-  assert.equal(app.records.at(-1).totalTokens, 25);
+  assert.equal(app.requests.length, 3);
+  assert.equal(
+    app.records
+      .filter((entry) => entry.status === "completed")
+      .reduce((sum, entry) => sum + entry.totalTokens, 0),
+    92,
+  );
+  const output = app.requests[1][0].input.find(
+    (entry) =>
+      entry.call_id === "unavailable-guide" &&
+      entry.type === "function_call_output",
+  );
+  assert.equal(JSON.parse(output.output).documentStatus, "unavailable");
+  assert.match(JSON.parse(output.output).instruction, /Try discover_guides/);
 });

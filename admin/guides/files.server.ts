@@ -2,12 +2,13 @@ import { Buffer } from "node:buffer";
 import type { ResponseInputFile } from "openai/resources/responses/responses";
 import {
   parseProductGuidesResult,
+  parseProductGuideUrl,
   type ProductGuide,
   type ProductGuideKind,
   type ProductGuidesResult,
 } from "../../shared/product-guides";
 
-type FailureReason =
+export type FailureReason =
   | "invalid_guides"
   | "no_guides"
   | "not_found"
@@ -142,6 +143,47 @@ async function download(url: string, signal: AbortSignal): Promise<Buffer> {
     requestSignal.removeEventListener("abort", cancelReader);
     cancelReader();
     reader?.releaseLock();
+  }
+}
+
+/** One validated original, shared by PDP and selected library-document reads. */
+export async function readGuideFile(
+  url: string,
+  storefrontOrigin: string,
+  signal: AbortSignal,
+  options: { refresh?: boolean; filename?: string } = {},
+): Promise<
+  | { status: "ready"; file: ResponseInputFile }
+  | { status: "unavailable"; reason: FailureReason }
+> {
+  signal.throwIfAborted();
+  let verified: string;
+  const filename = options.filename ?? "guide.pdf";
+  try {
+    verified = parseProductGuideUrl(url, storefrontOrigin);
+    if (!/^[a-zA-Z0-9_-]{1,100}\.pdf$/.test(filename)) throw new Error();
+  } catch {
+    return { status: "unavailable", reason: "invalid_guides" };
+  }
+  if (options.refresh) removeCached(verified);
+  try {
+    const bytes = await download(verified, signal);
+    signal.throwIfAborted();
+    return {
+      status: "ready",
+      file: {
+        type: "input_file",
+        filename,
+        file_data: `data:application/pdf;base64,${bytes.toString("base64")}`,
+        detail: "high",
+      },
+    };
+  } catch (error) {
+    signal.throwIfAborted();
+    return {
+      status: "unavailable",
+      reason: error instanceof GuideReadError ? error.reason : "network",
+    };
   }
 }
 

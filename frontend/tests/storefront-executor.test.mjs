@@ -12,6 +12,21 @@ const bundle = await build({
   platform: "browser",
 });
 const origin = "https://hd-dev-single.myshopify.com";
+const libraryResult = {
+  library: "blinds",
+  pagePath: "/pages/measuring-blinds",
+  title: "Measuring blinds",
+  sections: [
+    {
+      id: `s_${"a".repeat(24)}`,
+      title: "Roller blinds",
+      text: "Read the roller guide.",
+    },
+  ],
+  guides: [],
+  diagramNotice:
+    "Diagrams and videos were not interpreted; do not infer instructions that depend on them.",
+};
 const product = {
   id: "gid://shopify/Product/123",
   title: "Live shade",
@@ -397,6 +412,110 @@ test("guide results reject a different product, unsafe URL or unrequested fields
     );
   }
 });
+
+test("guide-library and support reads share the foreground queue without caching or catalog normalization", async () => {
+  const gate = deferred();
+  const support = {
+    status: "found",
+    phone: "01234 567890",
+    hours: "Monday to Friday, 9am to 5pm",
+  };
+  const { executor, calls } = setup(async (name) => {
+    if (name === "discover_guides") {
+      await gate.promise;
+      return libraryResult;
+    }
+    assert.equal(name, "get_store_support");
+    return support;
+  });
+  const reading = executor.execute("discover_guides", { library: "blinds" });
+  const contacting = executor.execute("get_store_support", {});
+  await flush();
+  assert.deepEqual(plain(calls), [["discover_guides", { library: "blinds" }]]);
+  gate.resolve();
+  assert.deepEqual(plain(await reading), libraryResult);
+  assert.deepEqual(plain(await contacting), support);
+  await executor.execute("discover_guides", { library: "blinds" });
+  await executor.execute("get_store_support", {});
+  assert.deepEqual(plain(calls), [
+    ["discover_guides", { library: "blinds" }],
+    ["get_store_support", {}],
+    ["discover_guides", { library: "blinds" }],
+    ["get_store_support", {}],
+  ]);
+});
+
+test("library and support dispatch validates requests and rejects mismatched or unsafe results", async () => {
+  const rejected = setup(async () =>
+    assert.fail("Invalid input reached the browser"),
+  );
+  assert.throws(() =>
+    rejected.executor.execute("discover_guides", { library: "other" }),
+  );
+  assert.throws(() =>
+    rejected.executor.execute("get_store_support", { shop: "other" }),
+  );
+  assert.equal(rejected.calls.length, 0);
+  for (const [name, args, result] of [
+    [
+      "discover_guides",
+      { library: "blinds" },
+      {
+        ...libraryResult,
+        library: "curtains",
+        pagePath: "/pages/measuring-curtains",
+      },
+    ],
+    [
+      "discover_guides",
+      { library: "blinds" },
+      { ...libraryResult, pagePath: "/pages/unrelated" },
+    ],
+    [
+      "get_store_support",
+      {},
+      { status: "found", contactUrl: "javascript:alert(1)" },
+    ],
+    ["get_store_support", {}, { status: "unavailable", phone: "01234 567890" }],
+  ]) {
+    const { executor } = setup(async () => result);
+    await assert.rejects(executor.execute(name, args));
+  }
+});
+
+for (const [name, args, result] of [
+  ["discover_guides", { library: "blinds" }, libraryResult],
+  ["get_store_support", {}, { status: "unavailable" }],
+]) {
+  test(`${name} rejects a result after its storefront origin changes`, async () => {
+    const gate = deferred();
+    const ctx = setup(() => gate.promise);
+    const reading = ctx.executor.execute(name, args);
+    await flush();
+    ctx.location.origin = "https://other.example";
+    gate.resolve(result);
+    await assert.rejects(reading, /storefront changed/);
+    assert.equal(ctx.calls.length, 1);
+  });
+
+  test(`${name} aborts without publishing or retrying its late result`, async () => {
+    const gate = deferred();
+    let browserSignal;
+    const ctx = setup((_name, _args, signal) => {
+      browserSignal = signal;
+      return gate.promise;
+    });
+    const controller = new AbortController();
+    const reading = ctx.executor.execute(name, args, controller.signal);
+    const rejected = assert.rejects(reading, /abort/i);
+    await flush();
+    controller.abort();
+    assert.equal(browserSignal.aborted, true);
+    gate.resolve(result);
+    await rejected;
+    assert.equal(ctx.calls.length, 1);
+  });
+}
 
 test("only validated automatic tools reach the shared browser tool owner without approval", async () => {
   const { executor, calls } = setup(async () => ({ products: [] }));

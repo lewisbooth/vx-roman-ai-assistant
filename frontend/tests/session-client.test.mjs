@@ -954,6 +954,69 @@ test("guide tools use the claimed read path without shopper approval or catalog 
   ctx.respond(3, complete);
 });
 
+for (const [name, args, result] of [
+  [
+    "discover_guides",
+    { library: "curtains" },
+    {
+      library: "curtains",
+      pagePath: "/pages/measuring-curtains",
+      title: "Measuring curtains",
+      sections: [
+        {
+          id: `s_${"b".repeat(24)}`,
+          title: "Curtains",
+          text: "Read the guide.",
+        },
+      ],
+      guides: [],
+      diagramNotice:
+        "Diagrams and videos were not interpreted; do not infer instructions that depend on them.",
+    },
+  ],
+  ["get_store_support", {}, { status: "unavailable" }],
+]) {
+  test(`${name} uses one claimed read without approval or catalog parsing`, async (t) => {
+    const pending = {
+      ...needsTool,
+      tools: [{ ...needsTool.tools[0], name, arguments: args }],
+    };
+    const executions = [];
+    const ctx = setup(t, {
+      saved: access,
+      executor: {
+        execute: async (...call) => {
+          executions.push(call);
+          return result;
+        },
+        prepareApproval: () =>
+          assert.fail("Read-only context needs no approval"),
+        executeApproved: () =>
+          assert.fail("Read-only context has no approval path"),
+      },
+    });
+    await resume(ctx, pending);
+    await until(() => ctx.calls.length === 3, "Context read was not claimed");
+    assert.equal("confirmed" in ctx.calls[2].body, false);
+    assert.equal(ctx.client.getSnapshot().approval, null);
+    assert.equal(
+      executions.length,
+      0,
+      "Execution must wait for its one-use claim",
+    );
+    ctx.respond(2, { claimed: true });
+    await until(
+      () => ctx.calls.length === 4,
+      "Context result was not submitted",
+    );
+    assert.equal(executions.length, 1);
+    assert.equal(executions[0][0], name);
+    assert.deepEqual(JSON.parse(JSON.stringify(executions[0][1])), args);
+    assert.deepEqual(ctx.calls[3].body.result, result);
+    ctx.respond(3, complete);
+  });
+}
+
 test("restored guide widgets validate their store origin and reject unsafe later snapshots", async (t) => {
   const part = {
     type: "guides",

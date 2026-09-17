@@ -84,7 +84,9 @@ export type BrowserToolName =
   | ProductConfigurationToolName
   | "navigate"
   | "apply_measurements"
-  | "get_product_guides";
+  | "get_product_guides"
+  | "discover_guides"
+  | "get_store_support";
 
 export interface BrowserToolInvocation {
   id: string;

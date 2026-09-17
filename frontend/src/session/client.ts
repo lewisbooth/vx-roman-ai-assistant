@@ -11,6 +11,8 @@ import {
   type ToolClaim,
 } from "../../../shared/conversation";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
+import { parseGuideLibraryCall } from "../../../shared/guide-library";
+import { parseStoreSupportCall } from "../../../shared/store-support";
 import {
   isProductConfigurationTool,
   parseProductConfigurationCall,
@@ -234,6 +236,10 @@ function snapshot(value: unknown): value is ConversationSnapshot {
           parseApplyMeasurementsCommand(tool.arguments);
         else if (tool.name === "get_product_guides")
           parseProductGuidesCall(tool.arguments);
+        else if (tool.name === "discover_guides")
+          parseGuideLibraryCall(tool.arguments);
+        else if (tool.name === "get_store_support")
+          parseStoreSupportCall(tool.arguments);
         else if (isProductConfigurationTool(name))
           parseProductConfigurationCall(name, tool.arguments);
         else parseCatalogCall(String(tool.name), tool.arguments);
@@ -885,12 +891,10 @@ export function createConversationClient(
                 )
               : tool.name === "navigate"
                 ? await executor!.execute("navigate", tool.arguments, signal)
-                : tool.name === "get_product_guides"
-                  ? await executor!.execute(
-                      "get_product_guides",
-                      tool.arguments,
-                      signal,
-                    )
+                : tool.name === "get_product_guides" ||
+                    tool.name === "discover_guides" ||
+                    tool.name === "get_store_support"
+                  ? await executor!.execute(tool.name, tool.arguments, signal)
                   : tool.name === "get_cart" ||
                       tool.name === "add_to_cart" ||
                       tool.name === "add_sample_to_cart"

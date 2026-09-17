@@ -22,6 +22,16 @@ import {
   type ProductGuidesResult,
 } from "../../../shared/product-guides";
 import {
+  parseGuideLibraryCall,
+  parseGuideLibraryResult,
+  type GuideLibraryResult,
+} from "../../../shared/guide-library";
+import {
+  parseStoreSupportCall,
+  parseStoreSupportResult,
+  type StoreSupportResult,
+} from "../../../shared/store-support";
+import {
   parseCartCall,
   parseCartResult,
   requiresCartConfirmation,
@@ -57,7 +67,9 @@ export type BrowserToolResult =
   | CartToolResult
   | ProductConfigurationResult
   | ApplyMeasurementsResult
-  | ProductGuidesResult;
+  | ProductGuidesResult
+  | GuideLibraryResult
+  | StoreSupportResult;
 export type PreparedToolApproval = ToolApprovalReview;
 
 const DISPLAY_CACHE_MS = 60_000;
@@ -296,10 +308,10 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<ProductConfigurationResult>;
   function execute(
-    name: "get_product_guides",
+    name: "get_product_guides" | "discover_guides" | "get_store_support",
     input: unknown,
     signal?: AbortSignal,
-  ): Promise<ProductGuidesResult>;
+  ): Promise<ProductGuidesResult | GuideLibraryResult | StoreSupportResult>;
   function execute(
     name: "apply_measurements",
     input: unknown,
@@ -310,6 +322,37 @@ export function createStorefrontExecutor(
     input: unknown,
     signal?: AbortSignal,
   ): Promise<BrowserToolResult> {
+    if (name === "discover_guides") {
+      const call = parseGuideLibraryCall(input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          const raw = await tools.execute(name, call, signal);
+          requireCurrentStore();
+          signal.throwIfAborted();
+          const result = parseGuideLibraryResult(raw, storefrontOrigin);
+          if (result.library !== call.library)
+            throw new Error(
+              "The storefront returned a different guide library.",
+            );
+          return result;
+        },
+        signal,
+      );
+    }
+    if (name === "get_store_support") {
+      const call = parseStoreSupportCall(input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          const raw = await tools.execute(name, call, signal);
+          requireCurrentStore();
+          signal.throwIfAborted();
+          return parseStoreSupportResult(raw, storefrontOrigin);
+        },
+        signal,
+      );
+    }
     if (name === "apply_measurements") {
       const command = parseApplyMeasurementsCommand(input);
       return enqueue(

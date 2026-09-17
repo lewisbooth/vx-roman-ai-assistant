@@ -1,4 +1,19 @@
 import {
+  parseGuideLibraryCall,
+  parseGuideLibraryResult,
+  type GuideLibraryResult,
+} from "../../shared/guide-library";
+import {
+  parseStoreSupportCall,
+  parseStoreSupportResult,
+  type StoreSupportResult,
+} from "../../shared/store-support";
+import {
+  parseLibrarySourceReceipt,
+  readBoundLibrarySource,
+  type BoundLibrarySource,
+} from "../guides/library.server";
+import {
   createHash,
   randomBytes,
   randomUUID,
@@ -233,6 +248,10 @@ function storedBrowserCall(
     return { name, arguments: parseNavigationCall(input) };
   if (name === "get_product_guides")
     return { name, arguments: parseProductGuidesCall(input) };
+  if (name === "discover_guides")
+    return { name, arguments: parseGuideLibraryCall(input) };
+  if (name === "get_store_support")
+    return { name, arguments: parseStoreSupportCall(input) };
   if (name === "apply_measurements")
     return { name, arguments: { ...parseApplyMeasurementsCommand(input) } };
   if (isProductConfigurationTool(name))
@@ -1037,6 +1056,8 @@ export async function getBrowserToolContext(id: string, invocationId: string) {
       "get_product_configuration",
       "configure_product",
       "get_product_guides",
+      "discover_guides",
+      "get_store_support",
     ].includes(tool.name)
   )
     throw new ConversationError(400, "This invocation is not a browser tool.");
@@ -1193,6 +1214,70 @@ export async function beginTurn(
       origin: updated.origin,
     };
   });
+}
+
+function validateLibraryMeasurementSource(
+  conversation: StoredConversation,
+  assistantId: string,
+  sourceCallId: string | undefined,
+  productPath: string,
+  bound: BoundLibrarySource,
+): void {
+  const source = parseLibrarySourceReceipt(bound.source);
+  const page = latestProductPage(conversationTimeline(conversation));
+  const cached = readBoundLibrarySource(
+    conversation.id,
+    conversation.origin,
+    page,
+  );
+  if (
+    Object.keys(bound).length !== 3 ||
+    !page ||
+    bound.productPath !== productPath ||
+    page.productPath !== productPath ||
+    page.pageId !== bound.pageId ||
+    sourceCallId !== source.sourceCallId ||
+    !cached ||
+    JSON.stringify(cached) !== JSON.stringify(bound)
+  )
+    throw new ConversationError(
+      400,
+      "The library measurement source is no longer valid for this product.",
+    );
+  const original = conversation.messages.find(
+    (message) => message.id === source.sourceAssistantId,
+  );
+  const tool = conversation.toolInvocations.find(
+    (entry) =>
+      entry.assistantId === source.sourceAssistantId &&
+      entry.providerCallId === source.sourceCallId &&
+      entry.name === "discover_guides" &&
+      entry.status === "complete" &&
+      !entry.error &&
+      entry.resultJson,
+  );
+  if (
+    !tool?.resultJson ||
+    !original ||
+    (original.id !== assistantId && original.status !== "complete") ||
+    !["assistant", "context"].includes(original.role)
+  )
+    throw new ConversationError(400, "A verified library source is required.");
+  const found = parseGuideLibraryResult(
+    JSON.parse(tool.resultJson),
+    conversation.origin,
+  );
+  if (
+    found.library !== source.library ||
+    found.pagePath !== source.pagePath ||
+    parseGuideLibraryCall(JSON.parse(tool.argumentsJson)).library !==
+      source.library ||
+    source.guideIds.some((id) => !found.guides.some((guide) => guide.id === id))
+  )
+    throw new ConversationError(
+      400,
+      "The library source belongs to another discovery.",
+    );
 }
 
 function guideSourceResult(
@@ -1532,14 +1617,26 @@ export async function finishTurn(
           "Invalid question presentation call ID.",
         );
       if (selection.measurement) {
-        guideSourceResult(
-          conversation,
-          assistantId,
-          selected.sourceCallId,
-          selection.measurement.productPath,
-          result.cachedGuideSource,
-        );
-      } else if (selected.sourceCallId !== undefined)
+        if (selected.librarySource)
+          validateLibraryMeasurementSource(
+            conversation,
+            assistantId,
+            selected.sourceCallId,
+            selection.measurement.productPath,
+            selected.librarySource,
+          );
+        else
+          guideSourceResult(
+            conversation,
+            assistantId,
+            selected.sourceCallId,
+            selection.measurement.productPath,
+            result.cachedGuideSource,
+          );
+      } else if (
+        selected.sourceCallId !== undefined ||
+        selected.librarySource !== undefined
+      )
         throw new ConversationError(400, "Unexpected question source.");
       const presentation = await transaction.toolInvocation.create({
         data: {
@@ -1551,7 +1648,12 @@ export async function finishTurn(
           argumentsJson: JSON.stringify({
             ...selection,
             ...(selection.measurement
-              ? { sourceCallId: selected.sourceCallId }
+              ? {
+                  sourceCallId: selected.sourceCallId,
+                  ...(selected.librarySource
+                    ? { librarySource: selected.librarySource }
+                    : {}),
+                }
               : {}),
           }),
           status: "complete",
@@ -2008,7 +2110,12 @@ export async function completeToolInvocation(
   result: {
     productIds: string[];
     error?: string;
-    outcome?: StoredActionResult | ProductGuidesResult | NavigationResult;
+    outcome?:
+      | StoredActionResult
+      | ProductGuidesResult
+      | NavigationResult
+      | GuideLibraryResult
+      | StoreSupportResult;
   },
 ): Promise<void> {
   validateClaim(claim);
@@ -2037,28 +2144,45 @@ export async function completeToolInvocation(
       tool.name === "navigate" ||
       tool.name === "apply_measurements" ||
       tool.name === "get_product_guides" ||
+      tool.name === "discover_guides" ||
+      tool.name === "get_store_support" ||
       isProductConfigurationTool(tool.name);
     const outcome = persistsOutcome
       ? result.outcome === undefined
         ? isStorefrontMutation(tool.name) && error
           ? interruptedActionResult(tool, true)
           : undefined
-        : tool.name === "get_product_guides"
-          ? parseProductGuidesResult(result.outcome, conversation.origin)
-          : tool.name === "navigate"
-            ? parseNavigationResult(result.outcome)
-            : storedActionResult(tool, result.outcome)
+        : tool.name === "discover_guides"
+          ? parseGuideLibraryResult(result.outcome, conversation.origin)
+          : tool.name === "get_store_support"
+            ? parseStoreSupportResult(result.outcome, conversation.origin)
+            : tool.name === "get_product_guides"
+              ? parseProductGuidesResult(result.outcome, conversation.origin)
+              : tool.name === "navigate"
+                ? parseNavigationResult(result.outcome)
+                : storedActionResult(tool, result.outcome)
       : undefined;
     if (
       tool.name === "get_product_guides" &&
       outcome &&
-      "guides" in outcome &&
+      "productPath" in outcome &&
       outcome.productPath !==
         parseProductGuidesCall(JSON.parse(tool.argumentsJson)).productPath
     )
       throw new ConversationError(
         400,
         "The guide links belong to another product.",
+      );
+    if (
+      tool.name === "discover_guides" &&
+      outcome &&
+      "library" in outcome &&
+      outcome.library !==
+        parseGuideLibraryCall(JSON.parse(tool.argumentsJson)).library
+    )
+      throw new ConversationError(
+        400,
+        "The guide library belongs to another page.",
       );
     if (
       (result.outcome !== undefined && !persistsOutcome) ||

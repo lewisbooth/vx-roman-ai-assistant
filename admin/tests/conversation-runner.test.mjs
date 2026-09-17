@@ -29,14 +29,19 @@ const bundle = await build({
         build.onResolve(
           {
             filter:
-              /repository\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/files\.server$|^openai$/,
+              /repository\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/(?:files|library)\.server$|^openai$/,
           },
-          (args) => ({
-            path: args.path,
-            namespace: "stub",
-          }),
+          (args) => {
+            if (
+              args.path.endsWith("guides/library.server") &&
+              !args.importer.endsWith("runner.server.ts")
+            )
+              return;
+            return { path: args.path, namespace: "stub" };
+          },
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
+          resolveDir: process.cwd(),
           contents:
             args.path === "openai"
               ? `export default class OpenAI {
@@ -49,11 +54,16 @@ const bundle = await build({
                 ? `export const requestBrowserTool=(...args)=>mock.browserTool(...args);`
                 : args.path.includes("measurements")
                   ? `export const executeMeasurementTool=(...args)=>mock.measurementTool(...args);`
-                  : args.path.includes("guides")
-                    ? `export const readProductGuideFiles=(...args)=>mock.guideFiles(...args);`
-                    : args.path.includes("usage")
-                      ? `export const recordModelUsage=(...args)=>mock.usage(...args);`
-                      : `export const beginTurn=(...args)=>mock.begin(...args);
+                  : args.path.endsWith("guides/library.server")
+                    ? `export * from "./admin/guides/library.server.ts";
+                      export const readLibraryInventory=(...args)=>mock.libraryInventory(...args);
+                      export const readBoundLibrarySource=(...args)=>mock.libraryBound(...args);`
+                    : args.path.includes("guides")
+                      ? `export const readProductGuideFiles=(...args)=>mock.guideFiles(...args);
+                       export const readGuideFile=(...args)=>mock.guideFile(...args);`
+                      : args.path.includes("usage")
+                        ? `export const recordModelUsage=(...args)=>mock.usage(...args);`
+                        : `export const beginTurn=(...args)=>mock.begin(...args);
              export const failPending=(...args)=>mock.recover(...args);
              export const finishTurn=(...args)=>mock.finish(...args);
              export const getSnapshot=(...args)=>mock.snapshot(...args);
@@ -162,6 +172,7 @@ function setup() {
     ends: [],
     usage: [],
     guideReads: [],
+    fileReads: [],
   };
   const ensure = (id) => {
     if (!rows.has(id))
@@ -196,6 +207,18 @@ function setup() {
     guideFiles: async (...args) => {
       calls.guideReads.push(args);
       return mock.readGuides(...args);
+    },
+    libraryInventory: () => [],
+    libraryBound: () => undefined,
+    guideFile: async (...args) => {
+      calls.fileReads.push(args);
+      return {
+        status: "ready",
+        file: {
+          ...syntheticGuideFile("library"),
+          filename: args[3]?.filename ?? "library.pdf",
+        },
+      };
     },
     readGuides: async (result) =>
       result.status === "found"
@@ -1731,6 +1754,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "lookup_catalog",
         "navigate",
         "get_product_guides",
+        "get_store_support",
         "set_measurements",
         "get_measurements",
         "get_cart",
@@ -1927,21 +1951,6 @@ const questionSelection = {
 const questionCall = (args = questionSelection, callId = "question-1") =>
   catalogCall(callId, "ask_question", args);
 
-function assertGuideRecovery(reply, mode = "text") {
-  const recovery = plain(reply.questionPresentation);
-  assert.match(recovery.callId, /^guide-recovery-[0-9a-f-]{36}$/);
-  assert.deepEqual(recovery, {
-    callId: recovery.callId,
-    question: "What would you like to do instead?",
-    answers: ["Explore other colours", "Find another product"],
-  });
-  assert.equal(
-    reply.text.split(recovery.question).length - 1,
-    mode === "voice" ? 1 : 0,
-  );
-  assert.equal(reply.cachedGuideSource, undefined);
-}
-
 const measurementSelection = {
   question: "What is the width?",
   instructions:
@@ -1954,6 +1963,283 @@ const measurementCall = (
   args = measurementSelection,
   callId = "measurement-1",
 ) => catalogCall(callId, "ask_measurement", args);
+
+function libraryContext() {
+  const source = {
+    sourceCallId: "library-discovery",
+    sourceAssistantId: "33333333-3333-4333-8333-333333333333",
+    library: "blinds",
+    pagePath: "/pages/measuring-blinds",
+    expiresAt: Date.now() + 60_000,
+    guideIds: [],
+  };
+  const section = "s_" + "a".repeat(24);
+  const result = {
+    library: "blinds",
+    pagePath: source.pagePath,
+    title: "Measuring blinds",
+    sections: [
+      {
+        id: section,
+        title: "Bay windows",
+        text: "FULL_LIBRARY_SECTIONS_NOT_REPEATED_IN_ROUTINE_CONTEXT",
+      },
+    ],
+    guides: ["a", "b", "c"].map((letter) => ({
+      id: "g_" + letter.repeat(24),
+      title: "Guide " + letter,
+      section,
+      url: guideOrigin + "/cdn/shop/files/bay-" + letter + ".pdf?v=1",
+    })),
+    diagramNotice:
+      "Diagrams and videos were not interpreted; do not infer instructions that depend on them.",
+  };
+  const inventory = {
+    discoveryId: "44444444-4444-4444-8444-444444444444",
+    library: source.library,
+    pagePath: source.pagePath,
+    title: result.title,
+    guides: result.guides.map(({ id, title, section }) => ({
+      id,
+      title,
+      section,
+    })),
+    source,
+  };
+  const reads = [],
+    discoveries = [],
+    bindings = [];
+  const bind = async (receipt, productPath = guidePath) => {
+    bindings.push({ receipt, productPath });
+    return {
+      source: receipt,
+      productPath,
+      pageId: "22222222-2222-4222-8222-222222222222",
+    };
+  };
+  const reuse = {
+    inventory: [],
+    discover: (callId, discovery) => {
+      discoveries.push({ callId, discovery });
+      return inventory;
+    },
+    read: async (call, signal) => {
+      signal.throwIfAborted();
+      reads.push(plain(call));
+      assert.equal(call.discoveryId, inventory.discoveryId);
+      const guides = call.guideIds.map((id) => {
+        const guide = result.guides.find((guide) => guide.id === id);
+        assert.ok(guide, "Only discovered IDs can reach the library reader");
+        return guide;
+      });
+      const files = guides.map(({ id }) => syntheticGuideFile(id));
+      return {
+        status: "ready",
+        guides,
+        files,
+        source: { ...source, guideIds: [...call.guideIds] },
+        input: files.map((file) => ({
+          role: "user",
+          content: [
+            { type: "input_text", text: "Selected original library reference" },
+            { ...file, prompt_cache_breakpoint: { mode: "explicit" } },
+          ],
+        })),
+      };
+    },
+    bind,
+  };
+  return { result, source, inventory, reuse, reads, discoveries, bindings };
+}
+
+test("newly authored Finish for now choices are rejected and leave the original capabilities", async () => {
+  for (const answer of [
+    "Finish for now",
+    "  FINISH   FOR NOW!  ",
+    "Finish for now.",
+  ]) {
+    const env = setup();
+    env.streams.push(
+      events(
+        completed("", {
+          output: [questionCall({ question: "What next?", answers: [answer] })],
+        }),
+      ),
+      events(completed("I'm here to help with your next window.")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+    );
+    assertNextActions(reply);
+    const outcome = env.calls.requests[1].input.input.find(
+      (item) => item.type === "function_call_output",
+    );
+    assert.match(JSON.parse(outcome.output).error, /No question was selected/);
+    assert.equal(env.calls.browserTools.length, 0);
+    assert.ok(
+      !allowedToolNames(env.calls.requests[0].input).includes("finish_for_now"),
+    );
+  }
+});
+
+test("a customer stop acknowledgment retains passive capabilities without closing or taking action", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    const acknowledgment = "Of course. I'm here whenever you're ready.";
+    env.streams.push(events(completed(acknowledgment)));
+    const reply = await env.api.generateReply(
+      [{ role: "user", text: "Finish for now" }],
+      () => {},
+      new AbortController().signal,
+      () => assert.fail("Stopping is not a storefront action"),
+      mode,
+    );
+    assertNextActions(reply);
+    assert.equal(env.calls.requests.length, 1);
+    assert.deepEqual(env.calls.ends, []);
+    assert.equal(
+      reply.text,
+      mode === "voice"
+        ? acknowledgment + " " + nextActionQuestion
+        : acknowledgment,
+    );
+  }
+});
+
+test("cached library authority supports the next numeric step without reattaching PDFs or a read round", async () => {
+  const env = setup();
+  const library = libraryContext();
+  const source = { ...library.source, guideIds: [library.result.guides[0].id] };
+  library.reuse.inventory = [{ ...library.inventory, source }];
+  library.reuse.bound = await library.reuse.bind(source);
+  env.streams.push(events(completed("", { output: [measurementCall()] })));
+  const reply = await env.api.generateReply(
+    [
+      {
+        role: "assistant",
+        text: "The established guide method is wall to wall at the top, without deductions.",
+      },
+    ],
+    () => {},
+    new AbortController().signal,
+    () => assert.fail("Routine grounded reading needs no browser lookup"),
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    undefined,
+    undefined,
+    library.reuse,
+  );
+  assert.equal(env.calls.requests.length, 1);
+  assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
+  assert.deepEqual(library.reads, []);
+  assert.deepEqual(library.discoveries, []);
+  const request = JSON.stringify(env.calls.requests[0].input.input);
+  assert.match(
+    request,
+    /Untrusted general measuring-library inventory.*no document contents/,
+  );
+  assert.doesNotMatch(request, /FULL_LIBRARY_SECTIONS|file_data/);
+  assert.equal(reply.questionPresentation.measurement.label, "Width");
+  assert.deepEqual(
+    plain(reply.questionPresentation.librarySource.source.guideIds),
+    source.guideIds,
+  );
+});
+
+test("failed PDP rereading drops old PDFs then discovers and attaches only the selected library originals", async () => {
+  const env = setup();
+  const library = libraryContext();
+  const selected = library.result.guides.slice(0, 2).map(({ id }) => id);
+  let reads = 0;
+  env.mock.readGuides = async (result) =>
+    ++reads === 1
+      ? {
+          status: "ready",
+          sources: result.guides,
+          files: result.guides.map(({ kind }) => syntheticGuideFile(kind)),
+        }
+      : { status: "unavailable", reason: "not_found" };
+  env.streams.push(
+    events(
+      completed("", { output: [guideLookup("first-pdp", ["measuring"])] }),
+    ),
+    events(
+      completed("", { output: [guideLookup("failed-pdp", ["measuring"])] }),
+    ),
+    events(
+      completed("", {
+        output: [
+          catalogCall("library-discovery", "discover_guides", {
+            library: "blinds",
+          }),
+        ],
+      }),
+    ),
+    events(
+      completed("", {
+        output: [
+          catalogCall("selected-library-pdfs", "read_library_guides", {
+            discoveryId: library.inventory.discoveryId,
+            guideIds: selected,
+            refresh: false,
+          }),
+        ],
+      }),
+    ),
+    events(completed("", { output: [measurementCall()] })),
+  );
+  const dispatched = [];
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (id, name, args) => {
+      dispatched.push({ id, name, args });
+      return name === "discover_guides"
+        ? library.result
+        : guideResult(["measuring"]);
+    },
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    undefined,
+    undefined,
+    library.reuse,
+  );
+  assert.deepEqual(
+    dispatched.map(({ name }) => name),
+    ["get_product_guides", "get_product_guides", "discover_guides"],
+  );
+  assert.equal(guideFiles(env.calls.requests[1].input).length, 1);
+  assert.deepEqual(guideFiles(env.calls.requests[2].input), []);
+  assert.deepEqual(
+    guideFiles(env.calls.requests[3].input),
+    [],
+    "Discovery must not eagerly attach PDFs",
+  );
+  assert.deepEqual(library.reads, [
+    {
+      discoveryId: library.inventory.discoveryId,
+      guideIds: selected,
+      refresh: false,
+    },
+  ]);
+  assert.deepEqual(
+    guideFiles(env.calls.requests[4].input).map(({ filename }) => filename),
+    selected.map((id) => id + "-guide.pdf"),
+  );
+  assert.equal(env.calls.requests.length, 5);
+  assert.deepEqual(
+    plain(reply.questionPresentation.librarySource.source.guideIds),
+    selected,
+  );
+  assert.equal(reply.cachedGuideSource, undefined);
+});
 
 test("validated text and voice measurement inputs finish immediately with guide provenance and no writes", async () => {
   for (const mode of ["text", "voice"]) {
@@ -3318,12 +3604,6 @@ test("guide presentation rejects invented URLs, source IDs, duplicate kinds and 
         guideOrigin,
       );
       assert.equal(reply.guidePresentation, undefined);
-      if (entry.kinds?.length === 0 || entry.refresh) {
-        assert.match(reply.text, /couldn't read the product's official guides/);
-        assert.equal(env.calls.requests.length, entry.refresh ? 2 : 1);
-        assertGuideRecovery(reply);
-        return;
-      }
       const output = env.calls.requests
         .at(-1)
         .input.input.find(
@@ -3553,7 +3833,7 @@ test("only requested guide kinds are read and a later companion preserves the fi
   assert.equal(metadata.unavailableGuides, undefined);
 });
 
-test("failed selected-guide reading clears activity and cannot send a PDF context to another request", async () => {
+test("failed selected-guide reading clears activity and continues without stale PDF context", async () => {
   const env = setup();
   const stages = [];
   env.mock.readGuides = async () => ({
@@ -3562,6 +3842,9 @@ test("failed selected-guide reading clears activity and cannot send a PDF contex
   });
   env.streams.push(
     events(completed("", { output: [guideLookup("measure", ["measuring"])] })),
+    events(
+      completed("I couldn't read that guide. We can explore other options."),
+    ),
   );
   const reply = await env.api.generateReply(
     [],
@@ -3575,10 +3858,19 @@ test("failed selected-guide reading clears activity and cannot send a PDF contex
     (kinds) => stages.push(kinds ? [...kinds] : undefined),
   );
   assert.deepEqual(stages, [undefined, ["measuring"], undefined]);
-  assert.equal(env.calls.requests.length, 1);
-  assert.equal(guideFiles(env.calls.requests[0].input).length, 0);
-  assertGuideRecovery(reply);
-  assert.match(reply.text, /couldn't read/);
+  assert.equal(env.calls.requests.length, 2);
+  for (const { input } of env.calls.requests)
+    assert.deepEqual(guideFiles(input), []);
+  const result = JSON.parse(
+    env.calls.requests[1].input.input.find(
+      (item) =>
+        item.type === "function_call_output" && item.call_id === "measure",
+    ).output,
+  );
+  assert.equal(result.documentStatus, "unavailable");
+  assert.equal(result.reason, "not_found");
+  assert.match(result.instruction, /Try discover_guides/);
+  assertNextActions(reply);
 });
 
 test("a failed reread removes the old same-URL guide from the prefix, selection and reading activity", async () => {
@@ -3650,35 +3942,56 @@ test("a failed reread removes the old same-URL guide from the prefix, selection 
   assert.equal(reply.guidePresentation, undefined);
 });
 
-test("a third distinct guide stops the reply before another download or model request", async () => {
+test("a fourth distinct PDP guide is rejected before downloading and clears the old PDF prefix", async () => {
   const env = setup();
   env.streams.push(
     events(completed("", { output: [guideLookup()] })),
-    events(completed("", { output: [guideLookup("third-document")] })),
+    events(
+      completed("", { output: [guideLookup("third-document", ["fitting"])] }),
+    ),
+    events(
+      completed("", {
+        output: [guideLookup("fourth-document", ["measuring"])],
+      }),
+    ),
+    events(
+      completed("I cannot verify that next measuring step from these sources."),
+    ),
   );
   const third = guideResult(["fitting"]);
-  third.guides[0].url = `${guideOrigin}/cdn/shop/files/another-guide.pdf?v=123`;
-  const displayed = [];
+  third.guides[0].url = guideOrigin + "/cdn/shop/files/third.pdf?v=123";
+  const fourth = guideResult(["measuring"]);
+  fourth.guides[0].url = guideOrigin + "/cdn/shop/files/fourth.pdf?v=123";
   const reply = await env.api.generateReply(
     [],
-    (text) => displayed.push(text),
+    () => {},
     new AbortController().signal,
-    async (callId) => (callId === "third-document" ? third : guideResult()),
+    async (id) =>
+      id === "third-document"
+        ? third
+        : id === "fourth-document"
+          ? fourth
+          : guideResult(),
     "text",
     undefined,
     guideOrigin,
   );
-  assert.equal(env.calls.guideReads.length, 1);
-  assert.equal(env.calls.requests.length, 2);
-  assert.match(
-    reply.text,
-    /can't verify suitability or give measuring or fitting instructions/,
+  assert.equal(env.calls.guideReads.length, 2);
+  assert.equal(env.calls.requests.length, 4);
+  assert.equal(guideFiles(env.calls.requests[2].input).length, 1);
+  assert.deepEqual(guideFiles(env.calls.requests[3].input), []);
+  const result = JSON.parse(
+    env.calls.requests[3].input.input.find(
+      (item) =>
+        item.type === "function_call_output" &&
+        item.call_id === "fourth-document",
+    ).output,
   );
-  assert.equal(displayed.at(-1), reply.text);
+  assert.equal(result.reason, "document_limit");
   assert.equal(reply.guidePresentation, undefined);
 });
 
-test("unavailable guide documents replace preliminary advice with safe choices and stop queued actions without another model request", async (t) => {
+test("unavailable PDP documents discard preliminary advice and queued actions before a safe continuation", async (t) => {
   for (const scenario of [
     "missing",
     "unavailable",
@@ -3690,11 +4003,13 @@ test("unavailable guide documents replace preliminary advice with safe choices a
     "too_large",
   ]) {
     for (const mode of ["text", "voice"]) {
-      await t.test(`${mode}: ${scenario}`, async () => {
+      await t.test(mode + ": " + scenario, async () => {
         const env = setup();
-        const usage = [];
-        const displayed = [];
-        const dispatched = [];
+        const usage = [],
+          displayed = [],
+          dispatched = [];
+        const safe =
+          "I couldn't read those guides. We can look at other options.";
         env.streams.push(
           events(
             {
@@ -3711,6 +4026,10 @@ test("unavailable guide documents replace preliminary advice with safe choices a
               ],
               usage: { input_tokens: 20, output_tokens: 3, total_tokens: 23 },
             }),
+          ),
+          events(
+            { type: "response.output_text.delta", delta: safe },
+            completed(safe),
           ),
         );
         env.mock.readGuides = async () => ({
@@ -3735,27 +4054,39 @@ test("unavailable guide documents replace preliminary advice with safe choices a
           async (update) => usage.push(plain(update)),
           scenario === "no origin" ? undefined : guideOrigin,
         );
-        assert.equal(env.calls.requests.length, 1);
+        assert.equal(env.calls.requests.length, 2);
         assert.equal(dispatched.length, 1);
         assert.equal(dispatched[0][1], "get_product_guides");
         assert.equal(
           env.calls.guideReads.length,
           ["missing", "lookup throws", "no origin"].includes(scenario) ? 0 : 1,
         );
-        assert.match(reply.text, /couldn't read the product's official guides/);
-        assert.match(
-          reply.text,
-          /can't verify suitability or give measuring or fitting instructions/,
+        assert.equal(displayed.at(-1), safe);
+        assert.ok(
+          displayed.includes(""),
+          "Failed guidance must clear preliminary visible text",
         );
-        assert.equal(displayed.at(-1), reply.text);
         assert.doesNotMatch(
           reply.text,
           /Preliminary instructions|Private download detail/,
         );
         assert.equal(reply.presentation, undefined);
         assert.equal(reply.guidePresentation, undefined);
-        assertGuideRecovery(reply, mode);
-        assert.equal(usage.length, 2);
+        assert.equal(reply.cachedGuideSource, undefined);
+        assertNextActions(reply);
+        const continuation = env.calls.requests[1].input;
+        assert.deepEqual(guideFiles(continuation), []);
+        for (const id of ["question-1", "unsafe-next"]) {
+          const output = continuation.input.find(
+            (item) =>
+              item.type === "function_call_output" && item.call_id === id,
+          );
+          assert.match(
+            JSON.parse(output.output).error,
+            /Not executed: the preceding guide read failed/,
+          );
+        }
+        assert.equal(usage.length, 4);
         assert.equal(usage[1].status, "completed");
         assert.equal(usage[1].inputTokens, 20);
         assert.equal(usage[1].outputTokens, 3);
@@ -3765,11 +4096,19 @@ test("unavailable guide documents replace preliminary advice with safe choices a
   }
 });
 
-test("failed guide reading replaces an earlier selected question with safe browsing choices", async () => {
+test("failed guide reading retires an earlier selected question and permits one contextual recovery question", async () => {
   const env = setup();
+  const recovery = {
+    question: "Would you like to explore another blind?",
+    answers: ["Other colours", "Other products"],
+  };
   env.streams.push(
     events(completed("", { output: [questionCall()] })),
     events(completed("", { output: [guideLookup()] })),
+    events(
+      completed("", { output: [questionCall(recovery, "recovery-choice")] }),
+    ),
+    events(completed("I couldn't verify that measuring step.")),
   );
   env.mock.readGuides = async () => ({
     status: "unavailable",
@@ -3784,10 +4123,13 @@ test("failed guide reading replaces an earlier selected question with safe brows
     undefined,
     guideOrigin,
   );
-  assert.equal(env.calls.requests.length, 2);
-  assertGuideRecovery(reply);
-  assert.notEqual(reply.questionPresentation.callId, "question-1");
-  assert.match(reply.text, /couldn't read the product's official guides/);
+  assert.equal(env.calls.requests.length, 4);
+  assert.deepEqual(plain(reply.questionPresentation), {
+    callId: "recovery-choice",
+    ...recovery,
+  });
+  assert.equal(reply.cachedGuideSource, undefined);
+  assert.deepEqual(guideFiles(env.calls.requests[2].input), []);
 });
 
 test("a failed guide read during read-only voice resume cannot replace the saved question", async () => {
@@ -3805,7 +4147,10 @@ test("a failed guide read during read-only voice resume cannot replace the saved
     status: "unavailable",
     reason: "not_found",
   });
-  env.streams.push(events(completed("", { output: [guideLookup()] })));
+  env.streams.push(
+    events(completed("", { output: [guideLookup()] })),
+    events(completed("The guide could not be read.")),
+  );
   const reply = await env.api.generateReply(
     [],
     () => {},
@@ -3816,10 +4161,10 @@ test("a failed guide read during read-only voice resume cannot replace the saved
     guideOrigin,
     resume,
   );
-  assert.equal(env.calls.requests.length, 1);
+  assert.equal(env.calls.requests.length, 2);
   assert.equal(reply.questionPresentation, undefined);
   assert.doesNotMatch(reply.text, /What would you like to do instead/);
-  assert.match(reply.text, /couldn't read/);
+  assert.match(reply.text, /could not be safely restored/);
 });
 
 test("cancellation during a failed PDF read does not return recovery choices", async () => {
@@ -4775,7 +5120,7 @@ test("runner forwards durable startup scope and suppresses stale committed resul
     );
     assert.deepEqual(
       allowedTools(env.calls.requests[0].input).map((tool) => tool.name),
-      ["get_product_guides", "ask_question"],
+      ["get_product_guides", "read_library_guides", "ask_question"],
     );
     assert.equal(!!reply, finished);
     assert.equal(env.calls.requests.length, 1);

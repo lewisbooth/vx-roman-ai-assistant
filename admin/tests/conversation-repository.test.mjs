@@ -11,7 +11,12 @@ import { build } from "esbuild";
 
 const require = createRequire(import.meta.url);
 const bundle = await build({
-  entryPoints: ["admin/conversations/repository.server.ts"],
+  stdin: {
+    contents: `export * from "./admin/conversations/repository.server.ts";
+      export {saveLibraryDiscovery, bindLibrarySource, clearLibrarySession} from "./admin/guides/library.server.ts";
+      export {latestProductPage} from "./admin/guides/product-page.server.ts";`,
+    resolveDir: process.cwd(),
+  },
   bundle: true,
   write: false,
   format: "cjs",
@@ -2887,4 +2892,218 @@ test("migration retains legacy messages, metadata and credentials and advances o
   } finally {
     await legacy.$disconnect();
   }
+});
+
+const libraryResult = () => ({
+  library: "blinds",
+  pagePath: "/pages/measuring-blinds",
+  title: "Measuring blinds",
+  sections: [
+    {
+      id: "s_" + "1".repeat(24),
+      title: "Angled bay",
+      text: "Read each straight section separately using the matching method.",
+    },
+  ],
+  guides: [
+    {
+      id: "g_" + "2".repeat(24),
+      title: "Roller blinds in an angled bay",
+      section: "s_" + "1".repeat(24),
+      url: origin + "/cdn/shop/files/bay.pdf?v=123",
+    },
+  ],
+  diagramNotice:
+    "Diagrams and videos were not interpreted; do not infer instructions that depend on them.",
+});
+async function libraryTurn() {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  await repository.appendJourney(id, pageView({ path: guidePath }));
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Help with this bay.",
+  });
+  const sourceCallId = randomUUID();
+  const tool = await repository.createToolInvocation(id, turn.assistantId, {
+    providerCallId: sourceCallId,
+    name: "discover_guides",
+    arguments: { library: "blinds" },
+  });
+  const claim = executor();
+  await repository.claimToolInvocation(id, tool.id, claim);
+  const outcome = libraryResult();
+  await repository.completeToolInvocation(id, tool.id, claim, {
+    productIds: [],
+    outcome,
+  });
+  const inventory = repository.saveLibraryDiscovery(id, origin, outcome, {
+    sourceCallId,
+    sourceAssistantId: turn.assistantId,
+  });
+  const page = repository.latestProductPage(
+    (await repository.getSnapshot(id)).messages,
+  );
+  const bound = repository.bindLibrarySource(
+    id,
+    origin,
+    inventory.source,
+    page,
+  );
+  const question = {
+    callId: randomUUID(),
+    sourceCallId,
+    librarySource: bound,
+    question: "What is the width of this section?",
+    answers: [],
+    measurement: {
+      productPath: guidePath,
+      label: "Section width",
+      unit: "mm",
+      instructions:
+        "Measure this straight section using the established method.",
+    },
+  };
+  return { id, turn, tool, claim, outcome, inventory, bound, question };
+}
+
+test("verified library HTML supports a product-bound numeric question without exposing source receipts", async () => {
+  const value = await libraryTurn();
+  assert.equal(
+    (await repository.getBrowserToolContext(value.id, value.tool.id)).name,
+    "discover_guides",
+  );
+  await repository.finishTurn(value.id, value.turn.assistantId, {
+    status: "complete",
+    text: "",
+    questionPresentation: value.question,
+  });
+  const snapshot = await repository.getSnapshot(value.id);
+  const part = snapshot.messages.at(-1).parts[0];
+  assert.equal(part.type, "question");
+  assert.equal(part.measurement.productPath, guidePath);
+  assert.doesNotMatch(
+    JSON.stringify(snapshot),
+    /sourceAssistantId|librarySource|expiresAt|discoveryId/,
+  );
+  const next = await repository.beginTurn(value.id, {
+    requestId: randomUUID(),
+    text: "Next measurement please.",
+  });
+  await repository.finishTurn(value.id, next.assistantId, {
+    status: "complete",
+    text: "",
+    questionPresentation: { ...value.question, callId: randomUUID() },
+  });
+  assert.equal(
+    await database.toolInvocation.count({
+      where: { conversationId: value.id, name: "discover_guides" },
+    }),
+    1,
+  );
+});
+
+test("library measurement receipts reject unread PDFs, expiry, foreign sources and changed page episodes atomically", async () => {
+  for (const scenario of [
+    "unread-pdf",
+    "expired",
+    "wrong-call",
+    "wrong-assistant",
+    "different-product",
+    "away-return",
+    "evicted",
+    "failed-source",
+  ]) {
+    const value = await libraryTurn();
+    const question = structuredClone(value.question);
+    if (scenario === "unread-pdf")
+      question.librarySource.source.guideIds = [value.outcome.guides[0].id];
+    if (scenario === "expired")
+      question.librarySource.source.expiresAt = Date.now() - 1;
+    if (scenario === "wrong-call") question.sourceCallId = randomUUID();
+    if (scenario === "wrong-assistant")
+      question.librarySource.source.sourceAssistantId = randomUUID();
+    if (scenario === "different-product")
+      question.measurement.productPath = "/products/another";
+    if (scenario === "away-return") {
+      await repository.appendJourney(value.id, pageView({ path: "/" }));
+      await repository.appendJourney(value.id, pageView({ path: guidePath }));
+    }
+    if (scenario === "evicted") repository.clearLibrarySession(value.id);
+    if (scenario === "failed-source")
+      await database.toolInvocation.update({
+        where: { id: value.tool.id },
+        data: { status: "failed", error: "Failed discovery" },
+      });
+    await assert.rejects(
+      repository.finishTurn(value.id, value.turn.assistantId, {
+        status: "complete",
+        text: "",
+        questionPresentation: question,
+      }),
+      undefined,
+      scenario,
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { assistantId: value.turn.assistantId, name: "ask_measurement" },
+      }),
+      0,
+      scenario,
+    );
+  }
+});
+
+test("footer support is a durable claimed read and cannot impersonate another library", async () => {
+  const value = await libraryTurn();
+  const tool = await repository.createToolInvocation(
+    value.id,
+    value.turn.assistantId,
+    { providerCallId: randomUUID(), name: "get_store_support", arguments: {} },
+  );
+  const claim = executor();
+  await repository.claimToolInvocation(value.id, tool.id, claim);
+  const outcome = {
+    status: "found",
+    phone: "01 969 7247",
+    hours: "9am - 5:30pm 7 days a week",
+  };
+  await repository.completeToolInvocation(value.id, tool.id, claim, {
+    productIds: [],
+    outcome,
+  });
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await database.toolInvocation.findUniqueOrThrow({
+          where: { id: tool.id },
+        })
+      ).resultJson,
+    ),
+    outcome,
+  );
+  assert.equal(
+    (await repository.getBrowserToolContext(value.id, tool.id)).name,
+    "get_store_support",
+  );
+  const other = await repository.createToolInvocation(
+    value.id,
+    value.turn.assistantId,
+    {
+      providerCallId: randomUUID(),
+      name: "discover_guides",
+      arguments: { library: "curtains" },
+    },
+  );
+  const otherClaim = executor();
+  await repository.claimToolInvocation(value.id, other.id, otherClaim);
+  await assert.rejects(
+    repository.completeToolInvocation(value.id, other.id, otherClaim, {
+      productIds: [],
+      outcome: value.outcome,
+    }),
+    { status: 400 },
+  );
 });

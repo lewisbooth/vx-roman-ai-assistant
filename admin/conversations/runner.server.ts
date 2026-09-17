@@ -21,6 +21,14 @@ import {
 } from "../guides/session.server";
 import type { GuideReuse } from "./model.server";
 import {
+  readLibraryInventory,
+  readBoundLibrarySource,
+  saveLibraryDiscovery,
+  readLibraryGuides,
+  bindLibrarySource,
+  clearLibrarySession,
+} from "../guides/library.server";
+import {
   beginTurn,
   failPending,
   finishTurn,
@@ -180,6 +188,11 @@ async function completeTurn(
   signal.addEventListener("abort", clearGuideReading, { once: true });
   const initialPage = latestProductPage(initial.messages);
   const cached = readGuideSession(id, origin, initialPage);
+  const boundLibrary = readBoundLibrarySource(id, origin, initialPage);
+  const libraryBindings = new Map<string, NonNullable<typeof initialPage>>();
+  if (boundLibrary)
+    libraryBindings.set(boundLibrary.source.sourceCallId, boundLibrary);
+  let libraryFinished = false;
   let readGuides: Parameters<GuideReuse["read"]>[0] | undefined;
   try {
     const reply = await generateReply(
@@ -214,6 +227,40 @@ async function completeTurn(
           clearGuideSession(id);
         },
       },
+      {
+        inventory: readLibraryInventory(id, origin),
+        bound: boundLibrary,
+        discover: (sourceCallId, result) => {
+          signal.throwIfAborted();
+          if (active.get(id) !== turn)
+            throw new Error("The library reply is no longer active.");
+          return saveLibraryDiscovery(id, origin, result, {
+            sourceCallId,
+            sourceAssistantId: assistantId,
+          });
+        },
+        read: (selection, readSignal) =>
+          readLibraryGuides(id, origin, selection, readSignal),
+        bind: async (source, productPath) => {
+          signal.throwIfAborted();
+          const snapshot = await getSnapshot(id);
+          signal.throwIfAborted();
+          if (active.get(id) !== turn || snapshot.status !== "active")
+            return undefined;
+          const page = latestProductPage(snapshot.messages);
+          if (!page || (productPath && page.productPath !== productPath))
+            return undefined;
+          const previous = libraryBindings.get(source.sourceCallId);
+          if (
+            previous &&
+            (previous.pageId !== page.pageId ||
+              previous.productPath !== page.productPath)
+          )
+            return undefined;
+          libraryBindings.set(source.sourceCallId, page);
+          return bindLibrarySource(id, origin, source, page);
+        },
+      },
     );
     signal.throwIfAborted();
     const finished = await finishTurn(id, assistantId, {
@@ -223,6 +270,7 @@ async function completeTurn(
       resumeQuestionId: turn.resumeQuestion?.invocationId,
     });
     if (finished) {
+      libraryFinished = true;
       if (readGuides && !signal.aborted && active.get(id) === turn) {
         const current = await getSnapshot(id);
         const page = latestProductPage(current.messages);
@@ -275,6 +323,7 @@ async function completeTurn(
       });
     }
   } finally {
+    if (!libraryFinished && active.get(id) === turn) clearLibrarySession(id);
     clearGuideReading();
     signal.removeEventListener("abort", clearGuideReading);
     if (active.get(id) === turn) active.delete(id);
@@ -361,6 +410,7 @@ export async function runVoiceDelegation(
 export async function cancelVoiceDelegation(id: string, voiceId: string) {
   const turn = active.get(id);
   if (!turn || turn.voiceId !== voiceId) return;
+  clearLibrarySession(id);
   turn.controller.abort();
   await turn.ready;
   if (turn.assistantId)
@@ -374,6 +424,7 @@ export async function cancelVoiceDelegation(id: string, voiceId: string) {
 export async function endTurn(id: string): Promise<ConversationSnapshot> {
   ending.add(id);
   clearGuideSession(id);
+  clearLibrarySession(id);
   try {
     const turn = active.get(id);
     turn?.controller.abort();

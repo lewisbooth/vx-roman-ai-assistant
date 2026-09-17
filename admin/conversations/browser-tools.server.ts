@@ -34,6 +34,16 @@ import {
 } from "../../shared/product-guides";
 import { ConversationError } from "./errors.server";
 import {
+  parseGuideLibraryCall,
+  parseGuideLibraryResult,
+  type GuideLibraryResult,
+} from "../../shared/guide-library";
+import {
+  parseStoreSupportCall,
+  parseStoreSupportResult,
+  type StoreSupportResult,
+} from "../../shared/store-support";
+import {
   completeToolInvocation,
   createToolInvocation,
   failToolInvocation,
@@ -47,6 +57,8 @@ export type BrowserToolOutcome =
   | CartToolResult
   | ApplyMeasurementsResult
   | ProductGuidesResult
+  | GuideLibraryResult
+  | StoreSupportResult
   | ProductConfigurationResult
   | { error: string };
 interface BrowserWaiter {
@@ -86,20 +98,33 @@ export async function requestBrowserTool(
   signal: AbortSignal,
 ): Promise<BrowserToolOutcome> {
   const call =
-    name === "get_product_guides"
+    name === "discover_guides"
       ? {
-          name: "get_product_guides" as const,
-          arguments: parseProductGuidesCall(input),
+          name: "discover_guides" as const,
+          arguments: parseGuideLibraryCall(input),
         }
-      : name === "apply_measurements"
-        ? await resolveMeasurements(conversationId, input)
-        : name === "navigate"
-          ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
-          : isCartTool(name)
-            ? parseCartCall(name, input)
-            : isProductConfigurationTool(name)
-              ? parseProductConfigurationCall(name, input)
-              : parseCatalogCall(name, input);
+      : name === "get_store_support"
+        ? {
+            name: "get_store_support" as const,
+            arguments: parseStoreSupportCall(input),
+          }
+        : name === "get_product_guides"
+          ? {
+              name: "get_product_guides" as const,
+              arguments: parseProductGuidesCall(input),
+            }
+          : name === "apply_measurements"
+            ? await resolveMeasurements(conversationId, input)
+            : name === "navigate"
+              ? {
+                  name: "navigate" as const,
+                  arguments: parseNavigationCall(input),
+                }
+              : isCartTool(name)
+                ? parseCartCall(name, input)
+                : isProductConfigurationTool(name)
+                  ? parseProductConfigurationCall(name, input)
+                  : parseCatalogCall(name, input);
   signal.throwIfAborted();
   if (waiting.has(conversationId))
     throw new Error("A storefront action is already running.");
@@ -204,10 +229,17 @@ export async function submitBrowserToolResult(
         : { error };
   } else {
     try {
-      if (context.name === "get_product_guides") {
-        outcome = parseProductGuidesResult(result, context.origin);
-        if (outcome.productPath !== context.arguments.productPath)
+      if (context.name === "discover_guides") {
+        outcome = parseGuideLibraryResult(result, context.origin);
+        if (outcome.library !== context.arguments.library)
+          throw new Error("The guide library belongs to another page.");
+      } else if (context.name === "get_store_support") {
+        outcome = parseStoreSupportResult(result, context.origin);
+      } else if (context.name === "get_product_guides") {
+        const guides = parseProductGuidesResult(result, context.origin);
+        if (guides.productPath !== context.arguments.productPath)
           throw new Error("Guide links belong to another product.");
+        outcome = guides;
       } else if (context.name === "navigate") {
         outcome = parseNavigationResult(result);
       } else if (context.name === "apply_measurements") {
@@ -243,6 +275,8 @@ export async function submitBrowserToolResult(
           context.name === "navigate" ||
           context.name === "apply_measurements" ||
           context.name === "get_product_guides" ||
+          context.name === "discover_guides" ||
+          context.name === "get_store_support" ||
           isProductConfigurationTool(context.name)
             ? {
                 outcome: outcome as
@@ -250,6 +284,8 @@ export async function submitBrowserToolResult(
                   | ApplyMeasurementsResult
                   | NavigationResult
                   | ProductGuidesResult
+                  | GuideLibraryResult
+                  | StoreSupportResult
                   | ProductConfigurationResult,
               }
             : {}),
