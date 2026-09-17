@@ -2275,6 +2275,81 @@ test("suggested voice answers preserve media and mute, persist once and reject d
   assert.equal(ctx.calls.length, 4);
 });
 
+test("measurement widget answers retain live audio, exact units and retry identity", async (t) => {
+  const ctx = setup(t, {
+    mediaOptions: {},
+    url: "https://hd-dev-single.myshopify.com/products/example",
+  });
+  const conversation = structuredClone(voiceQuestion);
+  Object.assign(conversation.messages[0].parts[0], {
+    question: "What is the width?",
+    answers: [],
+    measurement: {
+      productPath: "/products/example",
+      label: "Width",
+      unit: "mm",
+      instructions: "Measure across the top without deductions.",
+    },
+  });
+  const voice = await activeVoice(ctx, conversation);
+  await assert.rejects(
+    ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 500 cm"),
+    /no longer waiting/,
+  );
+  const sending = ctx.client.sendVoiceAnswer(
+    voiceQuestionId,
+    "Width: 500.25 mm",
+  );
+  const rejected = assert.rejects(sending, /could not connect/);
+  assert.equal(
+    ctx.client.getSnapshot().optimisticMessage.parts[0].text,
+    "Width: 500.25 mm",
+  );
+  ctx.calls[3].reject(new Error("offline"));
+  await until(() => ctx.calls.length === 5, "Lost answer did not reconcile");
+  ctx.respond(4, { ...conversation, revision: 1, voice });
+  await rejected;
+  const retry = ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 500.25 mm");
+  assert.deepEqual(ctx.calls[5].body, ctx.calls[3].body);
+  const accepted = acceptedVoiceAnswer(ctx.calls[5].body, voice);
+  accepted.messages[0] = conversation.messages[0];
+  ctx.respond(5, accepted);
+  await retry;
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(
+    ctx.calls.some((call) => /\/(?:messages|stop)$/.test(call.url)),
+    false,
+  );
+});
+
+test("measurement answers reject stale current product before the page observation reaches the server", async (t) => {
+  const ctx = setup(t, {
+    mediaOptions: {},
+    url: "https://hd-dev-single.myshopify.com/products/example",
+  });
+  const conversation = structuredClone(voiceQuestion);
+  Object.assign(conversation.messages[0].parts[0], {
+    question: "What is the width?",
+    answers: [],
+    measurement: {
+      productPath: "/products/example",
+      label: "Width",
+      unit: "mm",
+      instructions: "Measure across the top.",
+    },
+  });
+  await activeVoice(ctx, conversation);
+  ctx.window.history.replaceState({}, "", "/products/other");
+  await assert.rejects(
+    ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 500 mm"),
+    /no longer waiting/,
+  );
+  assert.equal(ctx.calls.length, 3);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+});
+
 test("lost voice answer responses reconcile without replay and explicit retry retains request identity", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx, voiceQuestion);

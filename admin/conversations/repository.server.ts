@@ -26,7 +26,10 @@ import type {
 } from "../../shared/conversation";
 import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import {
+  isQuestionAnswer,
   latestQuestion,
+  MEASUREMENT_CHANGE_UNITS,
+  MEASUREMENT_STOP,
   parseQuestionAnswerReference,
   parseQuestionPart,
   parseQuestionSelection,
@@ -606,7 +609,9 @@ function modelHistory(
               ? [
                   {
                     role: "assistant" as const,
-                    text: `${part.question}\nSuggested answers: ${JSON.stringify(part.answers)}`,
+                    text: part.measurement
+                      ? `${part.question}\nMeasurement input: ${JSON.stringify(part.measurement)}\nAvailable controls: ${JSON.stringify([MEASUREMENT_CHANGE_UNITS, MEASUREMENT_STOP])}`
+                      : `${part.question}\nSuggested answers: ${JSON.stringify(part.answers)}`,
                   },
                 ]
               : [],
@@ -874,7 +879,10 @@ async function voiceQuestionAnswerReceipt(
       (part) =>
         part.type === "question" && part.invocationId === input.questionId,
     );
-  if (question?.type !== "question" || !question.answers.includes(input.answer))
+  if (
+    question?.type !== "question" ||
+    !isQuestionAnswer(question, input.answer)
+  )
     throw new Error("The saved answer has no matching question.");
   return {
     created: false,
@@ -942,7 +950,7 @@ export async function appendVoiceQuestionAnswer(
     const question = latestQuestion(conversationTimeline(conversation));
     if (
       question?.invocationId !== input.questionId ||
-      !question.answers.includes(input.answer)
+      !isQuestionAnswer(question, input.answer)
     )
       throw new ConversationError(
         409,
@@ -1028,6 +1036,7 @@ export async function beginTurn(
   id: string,
   input: SendMessageInput,
   voiceId?: string,
+  resumeQuestionId?: string,
 ): Promise<{
   snapshot: ConversationSnapshot;
   assistantId: string | null;
@@ -1038,6 +1047,8 @@ export async function beginTurn(
     !uuidPattern.test(input.requestId) ||
     (!voiceId && !input.text.trim()) ||
     (voiceId !== undefined && !uuidPattern.test(voiceId)) ||
+    (resumeQuestionId !== undefined &&
+      (!voiceId || !uuidPattern.test(resumeQuestionId))) ||
     input.text.length > MAX_MESSAGE_LENGTH
   ) {
     throw new ConversationError(
@@ -1049,6 +1060,17 @@ export async function beginTurn(
     await expireVoiceSessions(transaction, id);
     const conversation = await loadConversation(transaction, id);
     requireActive(conversation);
+    if (
+      resumeQuestionId !== undefined &&
+      latestQuestion(conversationTimeline(conversation))?.invocationId !==
+        resumeQuestionId
+    )
+      return {
+        snapshot: snapshot(conversation),
+        assistantId: null,
+        history: [],
+        origin: conversation.origin,
+      };
     const existing = conversation.messages.find(
       (message) =>
         message.requestId === input.requestId &&
@@ -1174,11 +1196,12 @@ export async function finishTurn(
     presentation?: ProductPresentation;
     guidePresentation?: GuidePresentation;
     questionPresentation?: QuestionPresentation;
+    resumeQuestionId?: string;
   },
-): Promise<void> {
-  await prisma.$transaction(async (transaction) => {
+): Promise<boolean> {
+  return prisma.$transaction(async (transaction) => {
     const conversation = await loadConversation(transaction, id);
-    if (conversation.status !== "active") return;
+    if (conversation.status !== "active") return false;
     const message = await transaction.conversationMessage.findFirst({
       where: {
         id: assistantId,
@@ -1187,7 +1210,21 @@ export async function finishTurn(
         status: "pending",
       },
     });
-    if (!message) return;
+    if (!message) return false;
+    const staleResume =
+      result.resumeQuestionId !== undefined &&
+      (latestQuestion(conversationTimeline(conversation))?.invocationId !==
+        result.resumeQuestionId ||
+        !conversation.voiceSessions.some(
+          (session) =>
+            session.id === result.voiceId &&
+            ["starting", "active"].includes(session.status) &&
+            session.leaseExpiresAt > new Date(),
+        ));
+    // A customer answer or departure while guides are being read wins over a
+    // startup refresh. Retire its pending row without reviving the old input.
+    if (staleResume)
+      result = { text: "", status: "cancelled", model: result.model };
     if (result.status === "cancelled" && message.role !== "context")
       throw new ConversationError(400, "Only voice work can be cancelled.");
     // Cancelling ordinary voice work is expected bookkeeping, not a failed
@@ -1392,6 +1429,9 @@ export async function finishTurn(
         selection = parseQuestionSelection({
           question: selected.question,
           answers: selected.answers,
+          ...(selected.measurement !== undefined
+            ? { measurement: selected.measurement }
+            : {}),
         });
       } catch {
         throw new ConversationError(400, "Invalid question selection.");
@@ -1405,14 +1445,49 @@ export async function finishTurn(
           400,
           "Invalid question presentation call ID.",
         );
+      if (selection.measurement) {
+        const source = conversation.toolInvocations.find(
+          (tool) =>
+            tool.providerCallId === selected.sourceCallId &&
+            tool.assistantId === assistantId &&
+            tool.name === "get_product_guides" &&
+            tool.status === "complete" &&
+            !tool.error,
+        );
+        if (!source?.resultJson)
+          throw new ConversationError(
+            400,
+            "Measurement questions require this reply's product-guide source.",
+          );
+        const found = parseProductGuidesResult(
+          JSON.parse(source.resultJson),
+          conversation.origin,
+        );
+        if (
+          found.status !== "found" ||
+          found.productPath !== selection.measurement.productPath ||
+          parseProductGuidesCall(JSON.parse(source.argumentsJson))
+            .productPath !== selection.measurement.productPath
+        )
+          throw new ConversationError(
+            400,
+            "The measurement question belongs to another product.",
+          );
+      } else if (selected.sourceCallId !== undefined)
+        throw new ConversationError(400, "Unexpected question source.");
       const presentation = await transaction.toolInvocation.create({
         data: {
           id: randomUUID(),
           conversationId: id,
           assistantId,
           providerCallId: selected.callId,
-          name: "ask_question",
-          argumentsJson: JSON.stringify(selection),
+          name: selection.measurement ? "ask_measurement" : "ask_question",
+          argumentsJson: JSON.stringify({
+            ...selection,
+            ...(selection.measurement
+              ? { sourceCallId: selected.sourceCallId }
+              : {}),
+          }),
           status: "complete",
           completedAt: new Date(),
         },
@@ -1456,6 +1531,7 @@ export async function finishTurn(
         "The reply ended before this storefront action completed.",
       );
     }
+    return !!finished.count && !staleResume;
   });
 }
 

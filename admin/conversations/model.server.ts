@@ -45,7 +45,10 @@ import { ROMAN_TEXT_PROMPT } from "../prompts/text.server";
 import { readProductGuideFiles } from "../guides/files.server";
 import {
   askQuestionToolDefinition,
+  askMeasurementToolDefinition,
+  parseMeasurementQuestionSelection,
   parseQuestionSelection,
+  type QuestionPart,
 } from "../../shared/questions";
 import { ROMAN_VOICE_BRIEFING_PROMPT } from "../prompts/voice.server";
 import {
@@ -150,6 +153,7 @@ export async function generateReply(
   mode: "text" | "voice" = "text",
   onUsage?: (usage: ModelUsageUpdate) => Promise<void>,
   storefrontOrigin?: string,
+  resumeQuestion?: QuestionPart,
 ): Promise<ModelReply> {
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
   const input: ResponseInput = history.map(({ role, text }) => ({
@@ -168,6 +172,7 @@ export async function generateReply(
     string,
     { sourceCallId: string; kinds: ProductGuideKind[] }
   >();
+  let measurementProductPath: string | undefined;
   const availableProductIds = new Set<string>();
   // Files are scoped to this provider turn, never durable chat or browser data.
   const attachedGuideUrls = new Set<string>();
@@ -200,10 +205,25 @@ export async function generateReply(
           ...(!guidePresentationAttempted ? [showGuidesToolDefinition] : []),
         ]
       : [];
-    const tools = [
+    const offeredTools = [
       ...storefrontTools,
-      ...(!questionPresentationAttempted ? [askQuestionToolDefinition] : []),
+      ...(!questionPresentationAttempted
+        ? [
+            askQuestionToolDefinition,
+            ...(execute ? [askMeasurementToolDefinition] : []),
+          ]
+        : []),
     ];
+    const resumePresentation = resumeQuestion?.measurement
+      ? "ask_measurement"
+      : "ask_question";
+    const tools = resumeQuestion
+      ? offeredTools.filter(
+          (tool) =>
+            tool.name === "get_product_guides" ||
+            tool.name === resumePresentation,
+        )
+      : offeredTools;
     const usageId = randomUUID();
     const attempt = responseUsage(usageId, "pending");
     // Persist the attempt before issuing a billed request. The callback remains
@@ -220,7 +240,12 @@ export async function generateReply(
           service_tier: TEXT_SERVICE_TIER,
           reasoning: { effort: "medium" },
           instructions:
-            mode === "voice" ? ROMAN_VOICE_BRIEFING_PROMPT : ROMAN_TEXT_PROMPT,
+            (mode === "voice"
+              ? ROMAN_VOICE_BRIEFING_PROMPT
+              : ROMAN_TEXT_PROMPT) +
+            (resumeQuestion
+              ? `\nThis is a read-only startup refresh of one saved unanswered question, not a new customer request. Resume only this question: ${JSON.stringify(resumeQuestion)}. Do not act on older requests or introduce another workflow. Only current-page guide reading and the matching question presentation are available. For numeric input, re-read the same product's current guides and keep its question, product, label and units; refresh only its guide-supported instructions. If unsupported, explain the limitation without measurement advice.`
+              : ""),
           input,
           include: ["reasoning.encrypted_content"],
           ...(tools.length
@@ -285,9 +310,24 @@ export async function generateReply(
       (item) => item.type === "function_call",
     );
     if (!toolCalls.length) {
+      if (
+        resumeQuestion &&
+        (!questionPresentation ||
+          (resumeQuestion.measurement &&
+            measurementProductPath !== resumeQuestion.measurement.productPath))
+      )
+        return {
+          text: "The saved question could not be safely restored. Do not repeat its earlier measuring instructions. Ask the customer how they would like to continue.",
+          model: completed.model,
+          serviceTier: completed.service_tier ?? undefined,
+        };
       // Voice needs the final outcome; preliminary tool narration belongs only
       // to the text transcript and can crowd out a bounded spoken briefing.
-      const answer = mode === "voice" ? text : accumulated + text;
+      const answer = resumeQuestion
+        ? ""
+        : mode === "voice"
+          ? text
+          : accumulated + text;
       if (!answer.trim() && !questionPresentation)
         throw new Error("The model returned an empty reply.");
       return {
@@ -312,7 +352,22 @@ export async function generateReply(
     );
     for (const call of toolCalls) {
       signal.throwIfAborted();
-      if (call.name === "ask_question") {
+      // The advertised subset is not authorization: reject even an unsolicited
+      // provider call before parsing or dispatching any privileged action.
+      if (
+        resumeQuestion &&
+        call.name !== "get_product_guides" &&
+        call.name !== resumePresentation
+      )
+        throw new Error("Only read-only question resume tools are allowed.");
+      if (
+        resumeQuestion?.measurement &&
+        call.name === "get_product_guides" &&
+        parseProductGuidesCall(JSON.parse(call.arguments)).productPath !==
+          resumeQuestion.measurement.productPath
+      )
+        throw new Error("The saved measurement belongs to another product.");
+      if (call.name === "ask_question" || call.name === "ask_measurement") {
         if (questionPresentationAttempted)
           throw new Error(
             "Roman reached the question presentation limit for this reply.",
@@ -320,18 +375,47 @@ export async function generateReply(
         questionPresentationAttempted = true;
         let outcome;
         try {
-          const selection = parseQuestionSelection(JSON.parse(call.arguments));
+          const selection =
+            call.name === "ask_measurement"
+              ? parseMeasurementQuestionSelection(JSON.parse(call.arguments))
+              : parseQuestionSelection(JSON.parse(call.arguments));
           if (!call.call_id || call.call_id.length > 200)
             throw new Error("Invalid question presentation call ID.");
-          questionPresentation = { callId: call.call_id, ...selection };
-          outcome = {
-            question: selection.question,
-            answers: selection.answers,
+          if (call.name === "ask_question" && selection.measurement)
+            throw new Error("Use the measurement tool for a numeric question.");
+          if (
+            resumeQuestion &&
+            (selection.question !== resumeQuestion.question ||
+              JSON.stringify(selection.answers) !==
+                JSON.stringify(resumeQuestion.answers) ||
+              selection.measurement?.productPath !==
+                resumeQuestion.measurement?.productPath ||
+              selection.measurement?.label !==
+                resumeQuestion.measurement?.label ||
+              selection.measurement?.unit !== resumeQuestion.measurement?.unit)
+          )
+            throw new Error("Resume only the saved unanswered question.");
+          const source = selection.measurement
+            ? availableGuides.get(selection.measurement.productPath)
+            : undefined;
+          if (
+            selection.measurement &&
+            (!source ||
+              selection.measurement.productPath !== measurementProductPath)
+          )
+            throw new Error("Read this product's guides before measuring.");
+          questionPresentation = {
+            callId: call.call_id,
+            ...selection,
+            ...(source ? { sourceCallId: source.sourceCallId } : {}),
           };
+          outcome = selection;
         } catch {
           outcome = {
             error:
-              "No question was selected. Ask one short plain-text question with one to four distinct short answers. Do not claim answer buttons were shown; ask the question naturally in your reply instead.",
+              call.name === "ask_measurement"
+                ? "No measurement input was shown. First read this product's current guides, then request one supported measurement with its explicit units and instructions. Do not claim an input was shown or invent measuring advice."
+                : "No question was selected. Ask one short plain-text question with one to four distinct short answers. Do not claim answer buttons were shown; ask the question naturally in your reply instead.",
           };
         }
         input.push({
@@ -421,6 +505,8 @@ export async function generateReply(
           "Roman reached the storefront tool limit for this reply.",
         );
       browserCalls++;
+      // Guide cards may refer to a previous product; a numeric input may not.
+      if (call.name === "navigate") measurementProductPath = undefined;
       let outcome: ModelToolOutcome;
       let guideFiles: ResponseInputFile[] = [];
       let unavailableGuides:
@@ -537,6 +623,7 @@ export async function generateReply(
           });
         if (guides) {
           outcome = { ...guides, guides: read.sources };
+          measurementProductPath = guides.productPath;
           availableGuides.set(guides.productPath, {
             sourceCallId: call.call_id,
             kinds: read.sources.map((guide) => guide.kind),

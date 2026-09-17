@@ -232,14 +232,34 @@ export function ConversationTimeline({
                 return (
                   <div key={index}>
                     <p className="whitespace-pre-wrap">{part.question}</p>
-                    <p className="mt-1 text-xs text-gray-600">
-                      Offered answers
-                    </p>
-                    <ul className="list-inside list-disc text-sm">
-                      {part.answers.map((answer) => (
-                        <li key={answer}>{answer}</li>
-                      ))}
-                    </ul>
+                    {part.measurement ? (
+                      <>
+                        <p className="whitespace-pre-wrap text-sm">
+                          {part.measurement.instructions}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-600">
+                          Measurement input: {part.measurement.label} (
+                          {part.measurement.unit}){" · "}
+                          <TranscriptLink
+                            value={part.measurement.productPath}
+                            origin={origin}
+                          >
+                            {part.measurement.productPath}
+                          </TranscriptLink>
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="mt-1 text-xs text-gray-600">
+                          Offered answers
+                        </p>
+                        <ul className="list-inside list-disc text-sm">
+                          {part.answers.map((answer) => (
+                            <li key={answer}>{answer}</li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
                   </div>
                 );
               if (part.type === "cart_added")

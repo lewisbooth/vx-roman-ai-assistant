@@ -10,6 +10,7 @@ import { requestBrowserTool } from "./browser-tools.server";
 import { generateReply, TEXT_MODEL, type ModelReply } from "./model.server";
 import { recordModelUsage } from "../usage/repository.server";
 import { executeMeasurementTool } from "../measurements/service.server";
+import { latestQuestion, type QuestionPart } from "../../shared/questions";
 import {
   beginTurn,
   failPending,
@@ -27,6 +28,7 @@ interface ActiveTurn {
   ready: Promise<void>;
   controller: AbortController;
   voiceId?: string;
+  resumeQuestion?: QuestionPart;
 }
 
 // One process owns generation in the single-VM deployment. A durable pending row
@@ -169,14 +171,16 @@ async function completeTurn(
       turn.voiceId ? "voice" : "text",
       (usage) => recordModelUsage(id, assistantId, usage),
       origin,
+      turn.resumeQuestion,
     );
     signal.throwIfAborted();
-    await finishTurn(id, assistantId, {
+    const finished = await finishTurn(id, assistantId, {
       ...reply,
       status: "complete",
       voiceId: turn.voiceId,
+      resumeQuestionId: turn.resumeQuestion?.invocationId,
     });
-    return reply;
+    if (finished) return reply;
   } catch (error) {
     if (turn.controller.signal.aborted) return;
     // Provider messages can include request data. Keep diagnostics categorical.
@@ -191,6 +195,8 @@ async function completeTurn(
         error:
           "Roman could not finish this reply. Please send another message to continue.",
         model: TEXT_MODEL,
+        voiceId: turn.voiceId,
+        resumeQuestionId: turn.resumeQuestion?.invocationId,
       });
     } catch {
       console.error("[Roman] Could not save the failed reply.", {
@@ -208,6 +214,7 @@ export async function runVoiceDelegation(
   voiceId: string,
   requestId: string,
   signal: AbortSignal,
+  options?: { resumeQuestionId: string },
 ): Promise<ModelReply | undefined> {
   signal.throwIfAborted();
   if (ending.has(id) || active.has(id))
@@ -236,10 +243,26 @@ export async function runVoiceDelegation(
   signal.addEventListener("abort", abort, { once: true });
   active.set(id, turn);
   try {
-    const started = await beginTurn(id, { requestId, text: "" }, voiceId);
+    const started = await beginTurn(
+      id,
+      { requestId, text: "" },
+      voiceId,
+      options?.resumeQuestionId,
+    );
     turn.assistantId = started.assistantId;
     initialized();
     if (!started.assistantId) return;
+    if (options) {
+      const question = latestQuestion(started.snapshot.messages);
+      if (question?.invocationId !== options.resumeQuestionId) {
+        await finishTurn(id, started.assistantId, {
+          text: "",
+          status: "cancelled",
+        });
+        return;
+      }
+      turn.resumeQuestion = question;
+    }
     if (turn.controller.signal.aborted) {
       await finishTurn(id, started.assistantId, {
         text: "",

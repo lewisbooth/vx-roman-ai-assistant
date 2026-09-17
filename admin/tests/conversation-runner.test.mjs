@@ -256,6 +256,7 @@ function setup() {
         ensure(id).revision++;
       }
       await mock.afterFinish?.(id, assistantId, result);
+      return true;
     },
     snapshot: async (id) => {
       calls.snapshots.push(id);
@@ -1423,6 +1424,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "show_products",
         "show_guides",
         "ask_question",
+        "ask_measurement",
       ],
     );
   }
@@ -1488,7 +1490,7 @@ test("catalog call budget leaves only presentation after four lookups and reject
     assert.equal(env.calls.requests.length, 5);
     assert.deepEqual(
       env.calls.requests[4].input.tools.map((tool) => tool.name),
-      ["show_products", "show_guides", "ask_question"],
+      ["show_products", "show_guides", "ask_question", "ask_measurement"],
     );
     assert.equal(env.calls.requests[4].input.tool_choice, "auto");
   }
@@ -1582,6 +1584,205 @@ const questionSelection = {
 };
 const questionCall = (args = questionSelection, callId = "question-1") =>
   catalogCall(callId, "ask_question", args);
+
+const measurementSelection = {
+  question: "What is the width?",
+  instructions:
+    "Measure wall to wall at the top of the recess without deductions.",
+  productPath: guidePath,
+  label: "Width",
+  unit: "mm",
+};
+const measurementCall = (
+  args = measurementSelection,
+  callId = "measurement-1",
+) => catalogCall(callId, "ask_measurement", args);
+
+test("text and voice measurement inputs retain guide provenance and instructions without saving or applying values", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [guideLookup()] })),
+      events(completed("", { output: [measurementCall()] })),
+      events(completed("")),
+    );
+    const dispatched = [];
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (...args) => {
+        dispatched.push(args);
+        return guideResult();
+      },
+      mode,
+      undefined,
+      guideOrigin,
+    );
+    const { question, ...measurement } = measurementSelection;
+    assert.deepEqual(plain(reply.questionPresentation), {
+      callId: "measurement-1",
+      sourceCallId: "guides-lookup",
+      question,
+      answers: [],
+      measurement,
+    });
+    assert.deepEqual(
+      dispatched.map((call) => call[1]),
+      ["get_product_guides"],
+    );
+    assert.equal(reply.text, "");
+    assert.equal(env.calls.guideReads.length, 1);
+    const request = env.calls.requests.at(-1).input;
+    assert.equal(
+      request.tools.some((tool) =>
+        ["ask_question", "ask_measurement"].includes(tool.name),
+      ),
+      false,
+    );
+    const result = request.input.find(
+      (item) =>
+        item.call_id === "measurement-1" &&
+        item.type === "function_call_output",
+    );
+    assert.deepEqual(JSON.parse(result.output), {
+      question,
+      answers: [],
+      measurement,
+    });
+  }
+});
+
+test("measurement inputs reject absent or wrong-product guide evidence and cannot bypass the gate through ask_question", async () => {
+  for (const scenario of ["absent", "wrong_product", "choice_bypass"]) {
+    const env = setup();
+    const { question, ...measurement } = measurementSelection;
+    const call =
+      scenario === "choice_bypass"
+        ? questionCall({ question, answers: [], measurement })
+        : measurementCall(
+            scenario === "wrong_product"
+              ? { ...measurementSelection, productPath: "/products/another" }
+              : measurementSelection,
+          );
+    env.streams.push(
+      ...(scenario === "absent"
+        ? []
+        : [events(completed("", { output: [guideLookup()] }))]),
+      events(completed("", { output: [call] })),
+      events(completed("I cannot request that measurement yet.")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => guideResult(),
+      "text",
+      undefined,
+      guideOrigin,
+    );
+    assert.equal(reply.questionPresentation, undefined);
+    const output = env.calls.requests
+      .at(-1)
+      .input.input.find(
+        (item) =>
+          item.call_id === call.call_id && item.type === "function_call_output",
+      );
+    assert.equal(typeof JSON.parse(output.output).error, "string");
+  }
+});
+
+test("measurement and choice questions share one attempt budget in either order", async () => {
+  for (const calls of [
+    [measurementCall(), questionCall()],
+    [questionCall(), measurementCall()],
+  ]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [guideLookup()] })),
+      events(completed("", { output: calls })),
+    );
+    await assert.rejects(
+      env.api.generateReply(
+        [],
+        () => {},
+        new AbortController().signal,
+        async () => guideResult(),
+        "text",
+        undefined,
+        guideOrigin,
+      ),
+      /question presentation limit/,
+    );
+  }
+});
+
+test("navigation retires measurement evidence until the destination product guides are read", async () => {
+  const destination = "/products/another";
+  for (const refreshed of [false, true]) {
+    const env = setup();
+    env.streams.push(
+      events(completed("", { output: [guideLookup()] })),
+      events(
+        completed("", {
+          output: [catalogCall("move", "navigate", { path: destination })],
+        }),
+      ),
+      ...(refreshed
+        ? [
+            events(
+              completed("", {
+                output: [
+                  catalogCall("destination-guides", "get_product_guides", {
+                    productPath: destination,
+                  }),
+                ],
+              }),
+            ),
+          ]
+        : []),
+      events(
+        completed("", {
+          output: [
+            measurementCall(
+              refreshed
+                ? { ...measurementSelection, productPath: destination }
+                : measurementSelection,
+            ),
+          ],
+        }),
+      ),
+      events(completed("Continue measuring.")),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async (callId, name) =>
+        name === "navigate"
+          ? { status: "navigated", path: destination, title: "Another blind" }
+          : {
+              ...guideResult(),
+              ...(callId === "destination-guides"
+                ? { productPath: destination }
+                : {}),
+            },
+      "text",
+      undefined,
+      guideOrigin,
+    );
+    if (refreshed) {
+      assert.equal(
+        reply.questionPresentation.measurement.productPath,
+        destination,
+      );
+      assert.equal(
+        reply.questionPresentation.sourceCallId,
+        "destination-guides",
+      );
+    } else assert.equal(reply.questionPresentation, undefined);
+  }
+});
 
 test("questions work without catalog matches or a browser executor, including question-only replies", async () => {
   for (const mode of ["text", "voice"]) {
@@ -2535,15 +2736,15 @@ test("four browser calls and all three local presentations leave a final answer 
   ]);
   assert.deepEqual(
     env.calls.requests[4].input.tools.map((tool) => tool.name),
-    ["show_products", "show_guides", "ask_question"],
+    ["show_products", "show_guides", "ask_question", "ask_measurement"],
   );
   assert.deepEqual(
     env.calls.requests[5].input.tools.map((tool) => tool.name),
-    ["show_guides", "ask_question"],
+    ["show_guides", "ask_question", "ask_measurement"],
   );
   assert.deepEqual(
     env.calls.requests[6].input.tools.map((tool) => tool.name),
-    ["ask_question"],
+    ["ask_question", "ask_measurement"],
   );
   assert.equal(env.calls.requests[7].input.tools, undefined);
   assert.equal(reply.questionPresentation.question, "Which room?");
@@ -2765,11 +2966,235 @@ test("streaming text preserves an already-persisted product widget", async () =>
 
 const VOICE_ID = "b3d1a5c9-814c-458f-a2a6-33c91b5f1d05";
 
+const savedResumeQuestion = (numeric = true) => ({
+  type: "question",
+  version: 1,
+  invocationId: "9c0f10a6-0e9e-4288-9521-b4c46285a404",
+  ...(numeric
+    ? {
+        question: measurementSelection.question,
+        answers: [],
+        measurement: {
+          productPath: guidePath,
+          label: "Width",
+          unit: "mm",
+          instructions: "Earlier instructions must be checked again.",
+        },
+      }
+    : questionSelection),
+});
+
+test("startup resume exposes only guide reads and the matching saved question presentation", async () => {
+  for (const numeric of [true, false]) {
+    const env = setup();
+    const saved = savedResumeQuestion(numeric);
+    env.streams.push(
+      ...(numeric ? [events(completed("", { output: [guideLookup()] }))] : []),
+      events(
+        completed("", {
+          output: [numeric ? measurementCall() : questionCall()],
+        }),
+      ),
+      events(
+        completed(
+          "Unneeded extra question that must not replace the saved question.",
+        ),
+      ),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      () => {},
+      new AbortController().signal,
+      async () => guideResult(),
+      "voice",
+      undefined,
+      guideOrigin,
+      saved,
+    );
+    assert.deepEqual(
+      env.calls.requests[0].input.tools.map((tool) => tool.name),
+      ["get_product_guides", numeric ? "ask_measurement" : "ask_question"],
+    );
+    assert.equal(
+      reply.text,
+      "",
+      "Service speaks the exact restored widget once",
+    );
+    assert.equal(reply.questionPresentation.question, saved.question);
+    assert.equal(env.calls.guideReads.length, numeric ? 1 : 0);
+    if (numeric) {
+      assert.equal(reply.questionPresentation.sourceCallId, "guides-lookup");
+      assert.equal(
+        reply.questionPresentation.measurement.instructions,
+        measurementSelection.instructions,
+      );
+      assert.ok(
+        env.calls.requests[1].input.input.some(
+          (item) =>
+            item.type === "function_call_output" &&
+            Array.isArray(item.output) &&
+            item.output.some((part) => part.type === "input_file"),
+        ),
+      );
+    }
+  }
+});
+
+test("startup resume rejects unsolicited actions, catalog reads and another product before dispatch", async () => {
+  for (const [name, input] of [
+    ["navigate", { path: guidePath }],
+    ["add_to_cart", { productPath: guidePath }],
+    ["apply_measurements", { productPath: guidePath }],
+    ["set_measurements", {}],
+    ["configure_product", {}],
+    ["search_products", {}],
+    ["show_products", {}],
+    ["ask_question", questionSelection],
+    ["get_product_guides", { productPath: "/products/another-blind" }],
+  ]) {
+    const env = setup();
+    let dispatched = 0;
+    env.streams.push(
+      events(completed("", { output: [catalogCall("unsafe", name, input)] })),
+    );
+    await assert.rejects(
+      env.api.generateReply(
+        [],
+        () => {},
+        new AbortController().signal,
+        async () => {
+          dispatched++;
+          return guideResult();
+        },
+        "voice",
+        undefined,
+        guideOrigin,
+        savedResumeQuestion(),
+      ),
+    );
+    assert.equal(dispatched, 0, name);
+    assert.equal(env.calls.guideReads.length, 0, name);
+  }
+});
+
+test("startup cannot invent changed measurement metadata or reuse historic guide evidence", async () => {
+  for (const changed of [
+    "no_read",
+    "question",
+    "productPath",
+    "label",
+    "unit",
+  ]) {
+    const env = setup();
+    const selection = { ...measurementSelection };
+    if (changed === "question") selection.question = "A different question?";
+    if (changed === "productPath")
+      selection.productPath = "/products/another-blind";
+    if (changed === "label") selection.label = "Drop";
+    if (changed === "unit") selection.unit = "cm";
+    env.streams.push(
+      ...(changed !== "no_read"
+        ? [events(completed("", { output: [guideLookup()] }))]
+        : []),
+      events(completed("", { output: [measurementCall(selection)] })),
+      events(completed("Unverified instructions must not be forwarded.")),
+    );
+    const reply = await env.api.generateReply(
+      [{ role: "assistant", text: "I read this guide earlier." }],
+      () => {},
+      new AbortController().signal,
+      async () => guideResult(),
+      "voice",
+      undefined,
+      guideOrigin,
+      savedResumeQuestion(),
+    );
+    assert.equal(reply.questionPresentation, undefined, changed);
+    assert.match(reply.text, /could not be safely restored/);
+    assert.doesNotMatch(reply.text, /Unverified instructions/);
+  }
+});
+
+test("runner forwards durable startup scope and suppresses stale committed results", async () => {
+  for (const finished of [true, false]) {
+    const env = setup();
+    const saved = savedResumeQuestion(false);
+    voiceHistory(env, [{ role: "assistant", text: "Which matters most?" }]);
+    env.rows.set("resume", {
+      status: "active",
+      revision: 0,
+      tools: [],
+      messages: [
+        {
+          id: "saved",
+          role: "assistant",
+          status: "complete",
+          text: "",
+          extraParts: [saved],
+        },
+      ],
+    });
+    const finish = env.mock.finish;
+    env.mock.finish = async (...args) => {
+      await finish(...args);
+      return finished;
+    };
+    env.streams.push(
+      events(completed("", { output: [questionCall()] })),
+      events(completed("")),
+    );
+    const reply = await env.api.runVoiceDelegation(
+      "resume",
+      VOICE_ID,
+      firstInput.requestId,
+      new AbortController().signal,
+      { resumeQuestionId: saved.invocationId },
+    );
+    assert.equal(env.calls.begins[0].resumeQuestionId, saved.invocationId);
+    assert.equal(
+      env.calls.finishes[0].result.resumeQuestionId,
+      saved.invocationId,
+    );
+    assert.deepEqual(
+      env.calls.requests[0].input.tools.map((tool) => tool.name),
+      ["get_product_guides", "ask_question"],
+    );
+    assert.equal(!!reply, finished);
+  }
+});
+
+test("a stale startup reservation returns without a model request or active-turn leak", async () => {
+  const env = setup();
+  env.mock.begin = async () => ({
+    snapshot: { messages: [] },
+    assistantId: null,
+    history: [],
+    origin: guideOrigin,
+  });
+  const result = await env.api.runVoiceDelegation(
+    "stale",
+    VOICE_ID,
+    firstInput.requestId,
+    new AbortController().signal,
+    { resumeQuestionId: savedResumeQuestion().invocationId },
+  );
+  assert.equal(result, undefined);
+  assert.equal(env.calls.requests.length, 0);
+  assert.equal(env.calls.finishes.length, 0);
+  assert.deepEqual(env.logs, []);
+  await env.api.runVoiceDelegation(
+    "stale",
+    VOICE_ID,
+    secondInput.requestId,
+    new AbortController().signal,
+  );
+});
+
 function voiceHistory(env, history) {
   const textBegin = env.mock.begin;
-  env.mock.begin = async (id, input, voiceId) => {
+  env.mock.begin = async (id, input, voiceId, resumeQuestionId) => {
     if (!voiceId) return textBegin(id, input);
-    env.calls.begins.push({ id, input, voiceId });
+    env.calls.begins.push({ id, input, voiceId, resumeQuestionId });
     await env.mock.beforeBegin?.(id, input, voiceId);
     let row = env.rows.get(id);
     if (!row) {

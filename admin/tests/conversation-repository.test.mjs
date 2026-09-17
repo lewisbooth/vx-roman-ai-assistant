@@ -2043,6 +2043,154 @@ const guidePresentation = (sourceCallId, kinds = ["fitting", "measuring"]) => ({
   kinds,
 });
 
+test("measurement questions persist verified product context and resume through the canonical text and voice history", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Help me measure.",
+  });
+  const source = await guideLookup(id, turn.assistantId);
+  const selection = {
+    question: "What is the handle clearance?",
+    answers: [],
+    measurement: {
+      productPath: guidePath,
+      label: "Handle clearance",
+      unit: "mm",
+      instructions: "Measure from the handle to the front of the recess.",
+    },
+  };
+  const result = {
+    status: "complete",
+    text: "",
+    questionPresentation: {
+      ...selection,
+      callId: randomUUID(),
+      sourceCallId: source.sourceCallId,
+    },
+  };
+  await repository.finishTurn(id, turn.assistantId, result);
+  const restarted = loadRepository();
+  const snapshot = await restarted.getSnapshot(id);
+  const question = snapshot.messages.at(-1).parts[0];
+  assert.deepEqual(question, {
+    type: "question",
+    version: 1,
+    invocationId: question.invocationId,
+    ...selection,
+  });
+  const saved = await database.toolInvocation.findUniqueOrThrow({
+    where: { id: question.invocationId },
+  });
+  assert.equal(saved.name, "ask_measurement");
+  assert.equal(saved.status, "complete");
+  assert.equal(saved.claimClientId, null);
+  assert.equal(
+    JSON.parse(saved.argumentsJson).sourceCallId,
+    source.sourceCallId,
+  );
+  await assert.rejects(restarted.getBrowserToolContext(id, saved.id), {
+    status: 400,
+  });
+  await restarted.finishTurn(id, turn.assistantId, result);
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "ask_measurement" } }),
+    1,
+  );
+  assert.equal(await database.measurementDraft.count(), 0);
+  const history = await restarted.getModelHistory(id);
+  assert.deepEqual(history.at(-1), {
+    role: "assistant",
+    text: `${selection.question}\nMeasurement input: ${JSON.stringify(selection.measurement)}\nAvailable controls: ["Change units","Stop measuring"]`,
+  });
+  const next = await restarted.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Handle clearance: 0 mm",
+  });
+  assert.deepEqual(next.history.slice(-2), [
+    history.at(-1),
+    { role: "user", text: "Handle clearance: 0 mm" },
+  ]);
+});
+
+test("measurement presentations reject missing, mismatched or historical guide provenance atomically", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Measure this blind.",
+  });
+  const source = await guideLookup(id, turn.assistantId);
+  const selection = {
+    callId: randomUUID(),
+    sourceCallId: source.sourceCallId,
+    question: "What is the width?",
+    answers: [],
+    measurement: {
+      productPath: guidePath,
+      label: "Width",
+      unit: "mm",
+      instructions: "Measure the width at the top.",
+    },
+  };
+  for (const invalid of [
+    { ...selection, sourceCallId: undefined },
+    { ...selection, sourceCallId: "unknown-source" },
+    {
+      ...selection,
+      measurement: { ...selection.measurement, productPath: "/products/other" },
+    },
+    { ...selection, answers: ["500"] },
+  ]) {
+    await assert.rejects(
+      repository.finishTurn(id, turn.assistantId, {
+        status: "complete",
+        text: "",
+        questionPresentation: invalid,
+      }),
+      { status: 400 },
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { name: "ask_measurement" },
+      }),
+      0,
+    );
+    assert.equal((await repository.getSnapshot(id)).busy, true);
+  }
+  await repository.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "Here is the guide.",
+  });
+  const next = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Continue.",
+  });
+  await assert.rejects(
+    repository.finishTurn(id, next.assistantId, {
+      status: "complete",
+      text: "",
+      questionPresentation: selection,
+    }),
+    { status: 400 },
+  );
+  await repository.finishTurn(id, next.assistantId, {
+    status: "failed",
+    text: "",
+    error: "Interrupted",
+    questionPresentation: selection,
+  });
+  assert.equal(
+    await database.toolInvocation.count({ where: { name: "ask_measurement" } }),
+    0,
+  );
+});
+
 test("guide results are durable evidence and explicit selection is ordered, atomic and idempotent", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,

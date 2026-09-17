@@ -20,7 +20,11 @@ import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
 import { ToolDrawer } from "./tools/ToolDrawer";
 import { VoiceChoice } from "./tools/VoiceChoice";
-import { latestQuestion, type QuestionPart } from "../../shared/questions";
+import {
+  isQuestionAnswer,
+  latestQuestion,
+  type QuestionPart,
+} from "../../shared/questions";
 
 type AssistantProps = {
   logoUrl: string;
@@ -43,6 +47,10 @@ function Assistant({
   voiceDock,
 }: AssistantProps) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const storefront = useSyncExternalStore(
+    navigation.subscribe,
+    navigation.getSnapshot,
+  );
   const viewport = useRef<HTMLDivElement>(null);
   const conversationView = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -86,7 +94,7 @@ function Assistant({
   const previousVoiceMode = useRef(voiceMode);
   const activeQuestion =
     state.conversation?.status === "active"
-      ? latestQuestion(messages ?? [])
+      ? latestQuestion(messages ?? [], storefront.url)
       : undefined;
 
   async function sendMessage(text: string) {
@@ -119,6 +127,11 @@ function Assistant({
 
   async function answerQuestion(part: QuestionPart, answer: string) {
     const current = session.getSnapshot();
+    const page = navigation.getSnapshot();
+    const question = latestQuestion(
+      current.conversation?.messages ?? [],
+      page.url,
+    );
     if (
       answeringRef.current ||
       endingRef.current ||
@@ -129,9 +142,9 @@ function Assistant({
       throw new Error("Wait for Roman's current reply.");
     if (
       current.conversation?.status !== "active" ||
-      latestQuestion(current.conversation.messages)?.invocationId !==
-        part.invocationId ||
-      !part.answers.includes(answer)
+      question?.invocationId !== part.invocationId ||
+      !isQuestionAnswer(question, answer) ||
+      (question.measurement && page.pending)
     )
       throw new Error(
         "This question is no longer waiting for an answer. Continue with the latest message.",
@@ -267,6 +280,7 @@ function Assistant({
               questionDisabled={
                 ending ||
                 answering ||
+                (!!activeQuestion?.measurement && storefront.pending) ||
                 state.pending ||
                 !!state.conversation?.busy ||
                 waitingForVoice ||

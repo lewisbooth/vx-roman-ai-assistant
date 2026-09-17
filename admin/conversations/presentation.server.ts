@@ -3,6 +3,8 @@ import type { QuestionSelection } from "../../shared/questions";
 
 export interface QuestionPresentation extends QuestionSelection {
   callId: string;
+  /** Required for measurement inputs; supplied from this turn's guide read. */
+  sourceCallId?: string;
 }
 
 export interface ProductPresentation {

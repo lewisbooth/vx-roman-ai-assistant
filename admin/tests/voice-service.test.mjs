@@ -40,6 +40,7 @@ const bundle = await build({
         export const runVoiceDelegation = (...args) => mock.delegate(...args);`;
           else if (args.path.includes("conversations"))
             contents = `export const getModelHistory = (...args) => mock.history(...args);
+            export const getSnapshot = (...args) => mock.snapshot(...args);
             export const findVoiceQuestionAnswer = (...args) => mock.findAnswer(...args);
             export const appendVoiceQuestionAnswer = (...args) => mock.saveAnswer(...args);`;
           else if (args.path.includes("usage"))
@@ -125,6 +126,7 @@ function setup() {
       return { session, created: true };
     },
     history: async () => [{ role: "user", text: "My earlier typed message" }],
+    snapshot: async () => ({ messages: [] }),
     findAnswer: async (conversationId, voiceId, input) => {
       const previous = answerReceipts.get(input.requestId);
       if (!previous) return null;
@@ -270,6 +272,7 @@ function setup() {
     require,
     mock,
     Date,
+    URL,
     AbortController,
     AbortSignal,
     Set,
@@ -830,6 +833,220 @@ test("a successful question-only delegation speaks the question instead of annou
   assert.deepEqual(plain(state.providers[0].commentaries), [
     ["item_1", "Would you prefer blackout or filtered daylight?"],
   ]);
+  await state.stop();
+});
+
+function savedMeasurement(state) {
+  const part = {
+    type: "question",
+    version: 1,
+    invocationId: randomUUID(),
+    question: "What is the width?",
+    answers: [],
+    measurement: {
+      productPath: "/products/synthetic-blind",
+      label: "Width",
+      unit: "mm",
+      instructions: "Measure the guide's stated width points before answering.",
+    },
+  };
+  state.mock.snapshot = async () => ({
+    messages: [{ role: "assistant", status: "complete", parts: [part] }],
+  });
+  return part;
+}
+
+async function readySavedQuestion(state) {
+  const question = savedMeasurement(state);
+  await state.start();
+  state.ready();
+  state.emit({ type: "started" });
+  await flush();
+  return question;
+}
+
+test("one saved-question startup delegation is restricted and numeric-only replies speak their method", async () => {
+  const state = setup();
+  const question = await readySavedQuestion(state);
+  state.mock.onDelegate = async () => ({
+    text: "",
+    questionPresentation: { ...question, callId: "resumed-question" },
+  });
+  state.emit({ type: "delegation", delegationId: "resume_1" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.deepEqual(plain(state.calls.delegate[0][4]), {
+    resumeQuestionId: question.invocationId,
+  });
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["resume_1", `${question.measurement.instructions} ${question.question}`],
+  ]);
+  state.emit({ type: "delegation", delegationId: "resume_2" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.match(
+    state.providers[0].commentaries[1][1],
+    /No new customer request/,
+  );
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "customer_1" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 2);
+  assert.equal(state.calls.delegate[1][4], undefined);
+  await state.stop();
+});
+
+test("startup eligibility requires an initial saved question and the readiness gate", async () => {
+  const state = setup();
+  savedMeasurement(state);
+  await state.start();
+  state.emit({ type: "delegation", delegationId: "too_early" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 0);
+  state.ready();
+  state.emit({ type: "started" });
+  state.emit({ type: "delegation", delegationId: "ready_resume" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  await state.stop();
+
+  const fresh = setup();
+  await fresh.start();
+  savedMeasurement(fresh); // A question appearing later cannot grant startup access.
+  fresh.ready();
+  fresh.emit({ type: "started" });
+  fresh.emit({ type: "delegation", delegationId: "invented_resume" });
+  await flush();
+  assert.equal(fresh.calls.delegate.length, 0);
+  await fresh.stop();
+});
+
+test("a question superseded at the durable start guard keeps voice connected without stale advice", async () => {
+  const state = setup();
+  await readySavedQuestion(state);
+  state.mock.onDelegate = async () => undefined;
+  state.emit({ type: "delegation", delegationId: "stale_resume" });
+  await flush();
+  assert.equal(state.providers[0].closed, false);
+  assert.equal(state.logs.length, 0);
+  assert.match(
+    state.providers[0].commentaries[0][1],
+    /saved question could not be resumed/,
+  );
+  assert.match(
+    state.providers[0].commentaries[0][1],
+    /Do not repeat its previous instructions/,
+  );
+  state.emit({ type: "delegation", delegationId: "no_retry" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  await state.stop();
+});
+
+test("an unchanged startup page observation preserves eligibility, while early speech uses normal delegation", async () => {
+  const state = setup();
+  const question = savedMeasurement(state);
+  const initial = await state.mock.snapshot();
+  initial.messages.push({
+    role: "context",
+    status: "complete",
+    parts: [{ type: "page_view", path: question.measurement.productPath }],
+  });
+  state.mock.snapshot = async () => initial;
+  await state.start();
+  state.ready();
+  state.emit({ type: "started" });
+  state.api.noteVoicePageView(state.conversationId, {
+    requestId: randomUUID(),
+    path: question.measurement.productPath,
+    title: "The same blind",
+  });
+  state.emit({ type: "delegation", delegationId: "resume_same_page" });
+  await flush();
+  assert.equal(
+    state.calls.delegate[0][4].resumeQuestionId,
+    question.invocationId,
+  );
+  await state.stop();
+
+  const speaking = setup();
+  await readySavedQuestion(speaking);
+  speaking.emit(transcript());
+  speaking.emit({ type: "delegation", delegationId: "spoken_request" });
+  await flush();
+  assert.equal(speaking.calls.delegate.length, 1);
+  assert.equal(speaking.calls.delegate[0][4], undefined);
+  await speaking.stop();
+});
+
+for (const interruption of ["speech", "answer", "page", "stop"]) {
+  test(`a ${interruption} during startup revalidation cancels work without stale speech`, async () => {
+    const state = setup();
+    const question = await readySavedQuestion(state);
+    state.mock.onDelegate = async (_id, _voiceId, _requestId, signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => resolve({ text: "Old measuring advice must not be spoken." }),
+          { once: true },
+        );
+      });
+    state.emit({ type: "delegation", delegationId: "resume_pending" });
+    await flush();
+    assert.equal(state.calls.delegate.length, 1);
+    if (interruption === "speech") state.emit(transcript());
+    if (interruption === "answer")
+      await state.api.answerVoiceQuestion(
+        state.conversationId,
+        state.input.requestId,
+        {
+          clientId: state.input.clientId,
+          requestId: randomUUID(),
+          questionId: question.invocationId,
+          answer: "Width: 300 mm",
+        },
+      );
+    if (interruption === "page")
+      state.api.noteVoicePageView(state.conversationId, {
+        requestId: randomUUID(),
+        path: "/products/different-blind",
+        title: "A different blind",
+      });
+    if (interruption === "stop") await state.stop();
+    await flush();
+    assert.equal(state.calls.delegate[0][3].aborted, true);
+    assert.equal(state.providers[0].commentaries.length, 0);
+    assert.ok(state.calls.cancelDelegation.length >= 2);
+    if (interruption === "answer") {
+      assert.equal(state.calls.answer.length, 1);
+      assert.equal(state.providers[0].closed, false);
+    }
+    if (interruption !== "stop") await state.stop();
+  });
+}
+
+test("speech captures startup cancellation before slow caption persistence can lose runner ownership", async () => {
+  const state = setup();
+  await readySavedQuestion(state);
+  const captionGate = deferred();
+  state.mock.beforeCaption = () => captionGate.promise;
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, signal) =>
+    new Promise((resolve) =>
+      signal.addEventListener("abort", () => resolve({ text: "Old reply" }), {
+        once: true,
+      }),
+    );
+  state.emit({ type: "delegation", delegationId: "resume_pending" });
+  await flush();
+  const before = state.calls.cancelDelegation.length;
+  state.emit(transcript());
+  assert.equal(state.calls.cancelDelegation.length, before + 1);
+  await flush();
+  assert.equal(state.calls.caption.length, 0);
+  captionGate.resolve();
+  await flush();
+  assert.equal(state.calls.caption.length, 1);
+  assert.equal(state.providers[0].commentaries.length, 0);
   await state.stop();
 });
 

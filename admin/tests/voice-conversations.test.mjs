@@ -994,7 +994,7 @@ test("restart recovery fails hidden delegation ownership and voice without dupli
   ]);
 });
 
-async function questionDuringVoice() {
+async function questionDuringVoice(measurement = false) {
   const session = await startVoice();
   await voice.activateVoiceSession(
     id,
@@ -1006,15 +1006,55 @@ async function questionDuringVoice() {
   // The triggering caption can arrive after the reserved delegation row. The
   // completed widget must still follow it in the canonical timeline.
   await caption(session, "Help me choose", 0);
+  const productPath = "/products/voice-measurement-shade";
+  const sourceCallId = "voice-guide-source";
+  if (measurement) {
+    const tool = await conversation.createToolInvocation(id, turn.assistantId, {
+      providerCallId: sourceCallId,
+      name: "get_product_guides",
+      arguments: { productPath },
+    });
+    const claim = {
+      clientId,
+      claimToken: randomBytes(32).toString("base64url"),
+    };
+    await conversation.claimToolInvocation(id, tool.id, claim);
+    await conversation.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome: {
+        status: "found",
+        productPath,
+        guides: [
+          {
+            kind: "measuring",
+            url: "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring.pdf?v=1",
+          },
+        ],
+      },
+    });
+  }
   await conversation.finishTurn(id, turn.assistantId, {
     status: "complete",
     text: "Which room?",
     voiceId: session.id,
-    questionPresentation: {
-      callId: "question-fixture",
-      question: "Which room?",
-      answers: ["Bedroom", "Kitchen"],
-    },
+    questionPresentation: measurement
+      ? {
+          callId: "measurement-fixture",
+          sourceCallId,
+          question: "What is the handle clearance?",
+          answers: [],
+          measurement: {
+            productPath,
+            label: "Handle clearance",
+            unit: "mm",
+            instructions: "Measure from the handle to the front of the recess.",
+          },
+        }
+      : {
+          callId: "question-fixture",
+          question: "Which room?",
+          answers: ["Bedroom", "Kitchen"],
+        },
   });
   const question = load().latestQuestion(
     (await conversation.getSnapshot(id)).messages,
@@ -1028,6 +1068,287 @@ async function questionDuringVoice() {
   };
   return { session, input, question };
 }
+
+test("startup question refresh reserves no work after an answer or a numeric product departure", async () => {
+  const { session, question, input } = await questionDuringVoice(true);
+  const before = await database.conversation.findUniqueOrThrow({
+    where: { id },
+  });
+  const request = textInput("");
+  await conversation.appendJourney(id, {
+    requestId: randomUUID(),
+    title: "Another page",
+    path: "/cart",
+    occurredAt: new Date(clock).toISOString(),
+  });
+  await conversation.appendJourney(id, {
+    requestId: randomUUID(),
+    title: "Back to the blind",
+    path: question.measurement.productPath,
+    occurredAt: new Date(clock).toISOString(),
+  });
+  const stale = await conversation.beginTurn(
+    id,
+    request,
+    session.id,
+    question.invocationId,
+  );
+  assert.equal(stale.assistantId, null);
+  assert.deepEqual(stale.history, []);
+  assert.equal(stale.snapshot.busy, false);
+  assert.equal(stale.snapshot.voice.status, "active");
+  assert.equal(
+    (await database.conversation.findUniqueOrThrow({ where: { id } }))
+      .turnCount,
+    before.turnCount,
+  );
+  assert.equal(
+    await database.conversationMessage.count({
+      where: { requestId: request.requestId },
+    }),
+    0,
+  );
+  await assert.rejects(
+    conversation.beginTurn(id, textInput(""), session.id, ""),
+    { status: 400 },
+  );
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      answer: "Handle clearance: 50 mm",
+    }),
+    { status: 409 },
+  );
+});
+
+test("startup refresh cannot reserve an answered saved choice", async () => {
+  const { session, question, input } = await questionDuringVoice();
+  await conversation.appendVoiceQuestionAnswer(id, session.id, input);
+  const before = await database.conversation.findUniqueOrThrow({
+    where: { id },
+  });
+  const result = await conversation.beginTurn(
+    id,
+    textInput(""),
+    session.id,
+    question.invocationId,
+  );
+  assert.equal(result.assistantId, null);
+  assert.equal(result.snapshot.busy, false);
+  assert.equal(
+    (await database.conversation.findUniqueOrThrow({ where: { id } }))
+      .turnCount,
+    before.turnCount,
+  );
+});
+
+for (const interrupt of ["speech", "departure", "stop"])
+  test(`startup refresh atomically discards its question and briefing after ${interrupt}`, async () => {
+    const { session, question } = await questionDuringVoice(true);
+    const started = await conversation.beginTurn(
+      id,
+      textInput(""),
+      session.id,
+      question.invocationId,
+    );
+    assert.ok(started.assistantId);
+    assert.equal(
+      load().latestQuestion(started.snapshot.messages).invocationId,
+      question.invocationId,
+    );
+    if (interrupt === "departure") {
+      for (const path of ["/cart", question.measurement.productPath])
+        await conversation.appendJourney(id, {
+          requestId: randomUUID(),
+          title: "New page",
+          path,
+          occurredAt: new Date(clock).toISOString(),
+        });
+    } else if (interrupt === "speech") {
+      await caption(session, "Actually, stop measuring", 300);
+    } else {
+      await voice.closeVoiceSession(id, session.id, clientId);
+    }
+    const accepted = await conversation.finishTurn(id, started.assistantId, {
+      status: "complete",
+      text: "Obsolete measuring instructions.",
+      voiceId: session.id,
+      resumeQuestionId: question.invocationId,
+      questionPresentation: {
+        callId: randomUUID(),
+        question: question.question,
+        answers: [],
+        measurement: question.measurement,
+        sourceCallId: "deliberately-no-new-guide",
+      },
+    });
+    assert.equal(accepted, false);
+    const stored = await database.conversationMessage.findUniqueOrThrow({
+      where: { id: started.assistantId },
+    });
+    assert.equal(stored.partsJson, "[]");
+    assert.equal(stored.error, null);
+    assert.equal(stored.status, "complete");
+    const state = await load().conversation.getSnapshot(id);
+    assert.equal(state.busy, false);
+    assert.equal(
+      state.messages
+        .flatMap((row) => row.parts)
+        .filter((part) => part.type === "question").length,
+      1,
+    );
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { assistantId: started.assistantId },
+      }),
+      0,
+    );
+    assert.equal(
+      await conversation.finishTurn(id, started.assistantId, {
+        status: "complete",
+        text: "Late retry",
+      }),
+      false,
+    );
+  });
+
+test("an unchanged saved choice refresh commits once and becomes the latest question", async () => {
+  const { session, question } = await questionDuringVoice();
+  const started = await conversation.beginTurn(
+    id,
+    textInput(""),
+    session.id,
+    question.invocationId,
+  );
+  await caption(session, "Hi, it's Roman again.", 300, "assistant");
+  assert.equal(
+    await conversation.finishTurn(id, started.assistantId, {
+      status: "complete",
+      text: question.question,
+      voiceId: session.id,
+      resumeQuestionId: question.invocationId,
+      questionPresentation: {
+        callId: randomUUID(),
+        question: question.question,
+        answers: question.answers,
+      },
+    }),
+    true,
+  );
+  const state = await load().conversation.getSnapshot(id);
+  const latest = load().latestQuestion(state.messages);
+  assert.equal(latest.question, question.question);
+  assert.deepEqual(latest.answers, question.answers);
+  assert.notEqual(latest.invocationId, question.invocationId);
+  assert.equal(state.busy, false);
+  assert.equal(state.voice.status, "active");
+});
+
+for (const answer of [
+  "Handle clearance: 0 mm",
+  "Handle clearance: 50.5 mm",
+  "Change units",
+  "Stop measuring",
+])
+  test(`voice measurement answer ${answer} persists once and reconciles after stop or restart`, async () => {
+    const { session, input, question } = await questionDuringVoice(true);
+    const selection = { ...input, answer };
+    const before = await database.measurementDraft.count();
+    const receipt = await conversation.appendVoiceQuestionAnswer(
+      id,
+      session.id,
+      selection,
+    );
+    assert.equal(receipt.answer, answer);
+    assert.equal(receipt.question, question.question);
+    assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
+    assert.equal(
+      load().latestQuestion((await conversation.getSnapshot(id)).messages),
+      undefined,
+    );
+    assert.equal(await database.measurementDraft.count(), before);
+    await voice.closeVoiceSession(id, session.id, clientId);
+    clock++;
+    const restarted = load().conversation;
+    assert.deepEqual(
+      await restarted.findVoiceQuestionAnswer(id, session.id, selection),
+      { ...receipt, created: false },
+    );
+    assert.deepEqual(
+      await restarted.appendVoiceQuestionAnswer(id, session.id, selection),
+      { ...receipt, created: false },
+    );
+    assert.equal(
+      await database.conversationMessage.count({ where: { role: "user" } }),
+      1,
+    );
+    assert.ok(
+      (await restarted.getModelHistory(id)).some(
+        (entry) =>
+          entry.text.includes(
+            '"productPath":"/products/voice-measurement-shade"',
+          ) && entry.text.includes('"unit":"mm"'),
+      ),
+    );
+    await assert.rejects(
+      restarted.findVoiceQuestionAnswer(id, session.id, {
+        ...selection,
+        answer: "Handle clearance: 60 mm",
+      }),
+      { status: 400 },
+    );
+  });
+
+test("voice measurement answers reject wrong units, labels, malformed values and navigation away", async () => {
+  const { session, input, question } = await questionDuringVoice(true);
+  for (const answer of [
+    "50",
+    "Handle clearance: 50 cm",
+    "Width: 50 mm",
+    "Handle clearance: -1 mm",
+    "Handle clearance: NaN mm",
+    "Handle clearance: 50 mm ",
+    "500 mm please buy",
+  ]) {
+    await assert.rejects(
+      conversation.appendVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        answer,
+      }),
+      { status: 409 },
+    );
+  }
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    0,
+  );
+  await conversation.appendJourney(id, {
+    requestId: randomUUID(),
+    title: "Different blind",
+    path: "/products/different-blind",
+    occurredAt: new Date(clock).toISOString(),
+  });
+  assert.equal(
+    load().latestQuestion((await conversation.getSnapshot(id)).messages),
+    undefined,
+  );
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      answer: "Handle clearance: 50 mm",
+    }),
+    { status: 409 },
+  );
+  assert.ok(
+    (await conversation.getSnapshot(id)).messages.some((message) =>
+      message.parts.some(
+        (part) =>
+          part.type === "question" &&
+          part.invocationId === question.invocationId,
+      ),
+    ),
+  );
+});
 
 test("a selected voice answer saves customer text, retires its question and leaves voice connected without a Terra turn", async () => {
   const { session, input } = await questionDuringVoice();

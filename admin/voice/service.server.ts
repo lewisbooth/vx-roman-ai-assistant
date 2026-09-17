@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { JourneyInput } from "../../shared/conversation";
-import type { VoiceAnswerInput } from "../../shared/questions";
+import { latestQuestion, type VoiceAnswerInput } from "../../shared/questions";
 import {
   DEFAULT_LIVE_VOICE,
   type LiveVoice,
@@ -11,6 +11,7 @@ import { ConversationError } from "../conversations/errors.server";
 import { recordVoiceUsage } from "../usage/repository.server";
 import {
   getModelHistory,
+  getSnapshot,
   findVoiceQuestionAnswer,
   appendVoiceQuestionAnswer,
 } from "../conversations/repository.server";
@@ -62,6 +63,8 @@ interface VoiceOwner {
   latestUserCaption?: string;
   latestUserSequence?: number;
   delegationController?: AbortController;
+  resumeQuestionId?: string;
+  resumeController?: AbortController;
   lastPage?: string;
   answer?: {
     input: Omit<VoiceAnswerInput, "voiceId">;
@@ -163,9 +166,24 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
       await delay(200, undefined, { signal });
       await owner.events;
       if (signal.aborted) return;
+      const resumeQuestionId =
+        !owner.latestUserCaption &&
+        !owner.userSpeechObserved &&
+        owner.openingStarted
+          ? owner.resumeQuestionId
+          : undefined;
+      // Only a question present before connection startup earns this one-use,
+      // read-only exception. A fresh customer request uses the ordinary path.
       if (
-        !owner.latestUserCaption ||
-        owner.latestUserCaption === owner.delegatedCaption
+        resumeQuestionId ||
+        owner.latestUserCaption ||
+        owner.userSpeechObserved
+      )
+        owner.resumeQuestionId = undefined;
+      if (
+        !resumeQuestionId &&
+        (!owner.latestUserCaption ||
+          owner.latestUserCaption === owner.delegatedCaption)
       ) {
         await owner.provider!.appendCommentary(
           delegationId,
@@ -174,20 +192,32 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
         return;
       }
       owner.delegatedCaption = owner.latestUserCaption;
+      if (resumeQuestionId) owner.resumeController = controller;
       const reply = await runVoiceDelegation(
         owner.conversationId,
         owner.voiceId,
         randomUUID(),
         signal,
+        resumeQuestionId ? { resumeQuestionId } : undefined,
       );
+      await owner.events;
       if (signal.aborted) return;
+      if (resumeQuestionId && owner.userSpeechObserved) return;
+      const question = reply?.questionPresentation;
       const briefing =
-        reply?.text.trim() || reply?.questionPresentation?.question;
+        reply?.text.trim() ||
+        (question
+          ? [question.measurement?.instructions, question.question]
+              .filter(Boolean)
+              .join(" ")
+          : undefined);
       await owner.provider!.appendCommentary(
         delegationId,
         briefing
           ? briefing.slice(0, 1_000)
-          : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.",
+          : resumeQuestionId
+            ? "The saved question could not be resumed. Do not repeat its previous instructions or claim any action. Ask the customer what they would like to continue with."
+            : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.",
       );
     })
     .catch((error: unknown) => {
@@ -199,6 +229,8 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
         );
     })
     .finally(() => {
+      if (owner.resumeController === controller)
+        owner.resumeController = undefined;
       owner.delegationCount--;
     });
 }
@@ -237,6 +269,17 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
   // generic welcome after the customer has already begun their request.
   if (event.type === "transcript" && event.role === "user")
     owner.userSpeechObserved = true;
+  const interruptedResume =
+    event.type === "transcript" && event.role === "user"
+      ? owner.resumeController
+      : undefined;
+  interruptedResume?.abort();
+  // Capture the active runner synchronously, before its aborted task can retire
+  // process ownership. Caption persistence may be slower than that cleanup.
+  const cancelledResume = interruptedResume
+    ? cancelVoiceDelegation(owner.conversationId, owner.voiceId)
+    : undefined;
+  void cancelledResume?.catch(() => undefined);
   // Final captions remain accepted while close() drains the trusted sideband.
   if (owner.eventCount >= 128) {
     fail(
@@ -268,6 +311,7 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
           owner.latestUserCaption = event.eventId;
           owner.latestUserSequence = caption.sequence;
         }
+        await cancelledResume;
       } else scheduleDelegation(owner, event.delegationId);
     })
     .catch(() => {
@@ -395,6 +439,12 @@ export async function startVoice(
     owner.reserved = true;
     owner.controller.signal.throwIfAborted();
     lease(owner, reserved.session.leaseExpiresAt);
+    const initial = await getSnapshot(conversationId);
+    owner.resumeQuestionId = latestQuestion(initial.messages)?.invocationId;
+    owner.lastPage = initial.messages
+      .flatMap((message) => message.parts)
+      .filter((part) => part.type === "page_view" || part.type === "navigation")
+      .at(-1)?.path;
     owner.provider = await createVoiceProvider({
       sdp: input.sdp,
       voice,
@@ -542,6 +592,11 @@ export async function answerVoiceQuestion(
   const accepted = owner.events.then(async () => {
     if (owner.stopping || owners.get(conversationId) !== owner)
       throw new ConversationError(409, disconnected);
+    if (owner.resumeController) {
+      owner.resumeController.abort();
+      await cancelVoiceDelegation(conversationId, voiceId);
+    }
+    owner.resumeQuestionId = undefined;
     const receipt = await appendVoiceQuestionAnswer(
       conversationId,
       voiceId,
@@ -594,6 +649,13 @@ export function noteVoicePageView(conversationId: string, input: JourneyInput) {
   if (!owner?.provider || owner.stopping || owner.lastPage === input.path)
     return;
   owner.lastPage = input.path;
+  owner.resumeQuestionId = undefined;
+  if (owner.resumeController) {
+    owner.resumeController.abort();
+    void cancelVoiceDelegation(conversationId, owner.voiceId).catch(() => {
+      if (!owner.stopping) fail(owner, disconnected, "resume_cancel_failed");
+    });
+  }
   const observation = JSON.stringify({ title: input.title, path: input.path });
   // The durable full observation remains available to Terra. Live receives a
   // short quiet hint, never a fabricated customer utterance or automatic reply.

@@ -1,4 +1,15 @@
 import type { ConversationMessage } from "./conversation";
+import { parseProductPath, productPathSchema } from "./product-path";
+
+export const MEASUREMENT_CHANGE_UNITS = "Change units";
+export const MEASUREMENT_STOP = "Stop measuring";
+
+export interface MeasurementQuestion {
+  productPath: string;
+  label: string;
+  unit: "cm" | "mm" | "in";
+  instructions: string;
+}
 
 export interface QuestionAnswerReference {
   questionId: string;
@@ -14,6 +25,8 @@ export interface VoiceAnswerInput extends QuestionAnswerReference {
 export interface QuestionSelection {
   question: string;
   answers: string[];
+  /** Numeric input and fixed flow controls instead of suggested answers. */
+  measurement?: MeasurementQuestion;
 }
 
 export interface QuestionPart extends QuestionSelection {
@@ -28,7 +41,7 @@ export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Prefer this for useful questions with a few natural choices anywhere in the conversation, including an opening clarification, without requiring a catalog call or completed action. Leave genuinely open-ended answers, such as dimensions or problem descriptions, as ordinary text questions. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. After product suggestions, give a brief overview, show the selected carousel, then use this tool for the next useful choice instead of duplicating product descriptions in a long list. Call once per reply. When this tool succeeds, keep a written text reply to its concise overview and do not end it with a question, repeat this question, or add a differently worded follow-up: the widget owns the one written question. Only end a written text reply with a direct question when you do not call this tool. In a voice briefing, provide this exact question once after the overview for Roman to say aloud, without adding or rewording another question. The customer can answer by clicking, speaking or writing their own reply. Answers are customer input; the widget does not execute actions or bypass action-specific safeguards.",
+    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Prefer this for useful questions with a few natural choices anywhere in the conversation, including an opening clarification, without requiring a catalog call or completed action. Use ask_measurement for an individual guided numeric measurement; leave genuinely open-ended descriptions as ordinary text questions. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. After product suggestions, give a brief overview, show the selected carousel, then use this tool for the next useful choice instead of duplicating product descriptions in a long list. Call once per reply, choosing either ask_question or ask_measurement. When this tool succeeds, keep a written text reply to its concise overview and do not end it with a question, repeat this question, or add a differently worded follow-up: the widget owns the one written question. Only end a written text reply with a direct question when neither answer-request tool succeeds. In a voice briefing, provide this exact question once after the overview for Roman to say aloud, without adding or rewording another question. The customer can answer by clicking, speaking or writing their own reply. Answers are customer input; the widget does not execute actions or bypass action-specific safeguards.",
   strict: true,
   parameters: {
     type: "object",
@@ -42,6 +55,26 @@ export const askQuestionToolDefinition = {
       },
     },
     required: ["question", "answers"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const askMeasurementToolDefinition = {
+  type: "function",
+  name: "ask_measurement",
+  description:
+    "Request one measurement using a numeric input, selected units and concise guide-grounded instructions beneath the reply's other widgets. First read this product's guides in this reply and establish units with ask_question (cm / mm / in), unless already explicit. Label the actual measurement, such as Width, Drop or Handle clearance; never invent a PDP field. Use only the current product and guide-supported instructions. Choose either this tool or ask_question once per reply. The widget owns the written question and instructions; voice says the instructions and question once. Typed or spoken answers also work. Change units and Stop measuring controls are supplied by the interface. A unit change restarts collection in the new units, without converting or reusing the old set. This only asks a question: it does not save, confirm or apply dimensions.",
+  strict: true,
+  parameters: {
+    type: "object",
+    properties: {
+      question: { type: "string", minLength: 1, maxLength: 300 },
+      instructions: { type: "string", minLength: 1, maxLength: 600 },
+      productPath: productPathSchema,
+      label: { type: "string", minLength: 1, maxLength: 40 },
+      unit: { type: "string", enum: ["cm", "mm", "in"] },
+    },
+    required: ["question", "instructions", "productPath", "label", "unit"],
     additionalProperties: false,
   },
 } as const;
@@ -76,8 +109,32 @@ function plainText(input: unknown, limit: number): string {
 
 export function parseQuestionSelection(input: unknown): QuestionSelection {
   const value = object(input);
-  exact(value, ["question", "answers"]);
+  exact(value, [
+    "question",
+    "answers",
+    ...(value.measurement !== undefined ? ["measurement"] : []),
+  ]);
   const question = plainText(value.question, 300);
+  if (value.measurement !== undefined) {
+    if (!Array.isArray(value.answers) || value.answers.length !== 0)
+      throw new Error(
+        "A measurement question uses a number input, not answer choices.",
+      );
+    const measurement = object(value.measurement);
+    exact(measurement, ["productPath", "label", "unit", "instructions"]);
+    if (!["cm", "mm", "in"].includes(measurement.unit as string))
+      throw new Error("Choose cm, mm or in for this measurement.");
+    return {
+      question,
+      answers: [],
+      measurement: {
+        productPath: parseProductPath(measurement.productPath),
+        label: plainText(measurement.label, 40),
+        unit: measurement.unit as MeasurementQuestion["unit"],
+        instructions: plainText(measurement.instructions, 600),
+      },
+    };
+  }
   if (
     !Array.isArray(value.answers) ||
     value.answers.length < 1 ||
@@ -93,6 +150,57 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
   return { question, answers };
 }
 
+export function parseMeasurementQuestionSelection(
+  input: unknown,
+): QuestionSelection {
+  const value = object(input);
+  exact(value, ["question", "instructions", "productPath", "label", "unit"]);
+  const { question, ...measurement } = value;
+  return parseQuestionSelection({ question, answers: [], measurement });
+}
+
+/** A customer answer, not a form mutation or a dimension confirmation. */
+export function formatMeasurementAnswer(
+  selection: QuestionSelection,
+  raw: string,
+): string {
+  const value = raw.trim();
+  if (
+    !selection.measurement ||
+    value.length > 24 ||
+    !/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value) ||
+    !Number.isFinite(Number(value)) ||
+    Number(value) < 0 ||
+    Number(value) > Number.MAX_SAFE_INTEGER
+  )
+    throw new Error(
+      "Enter zero or a positive number, using a decimal point if needed.",
+    );
+  return `${selection.measurement.label}: ${value} ${selection.measurement.unit}`;
+}
+
+export function isQuestionAnswer(
+  selection: QuestionSelection,
+  answer: string,
+): boolean {
+  if (!selection.measurement) return selection.answers.includes(answer);
+  if (answer === MEASUREMENT_CHANGE_UNITS || answer === MEASUREMENT_STOP)
+    return true;
+  const prefix = `${selection.measurement.label}: `;
+  const suffix = ` ${selection.measurement.unit}`;
+  if (!answer.startsWith(prefix) || !answer.endsWith(suffix)) return false;
+  try {
+    return (
+      formatMeasurementAnswer(
+        selection,
+        answer.slice(prefix.length, -suffix.length),
+      ) === answer
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function parseQuestionPart(input: unknown): QuestionPart {
   const value = object(input);
   exact(value, [
@@ -101,6 +209,7 @@ export function parseQuestionPart(input: unknown): QuestionPart {
     "invocationId",
     "question",
     "answers",
+    ...(value.measurement !== undefined ? ["measurement"] : []),
     ...(value.voiceReply !== undefined ? ["voiceReply"] : []),
   ]);
   if (
@@ -113,6 +222,9 @@ export function parseQuestionPart(input: unknown): QuestionPart {
   const selection = parseQuestionSelection({
     question: value.question,
     answers: value.answers,
+    ...(value.measurement !== undefined
+      ? { measurement: value.measurement }
+      : {}),
   });
   let voiceReply: QuestionPart["voiceReply"];
   if (value.voiceReply !== undefined) {
@@ -152,10 +264,12 @@ export function parseQuestionAnswerReference(
   return { questionId: value.questionId, voiceId: value.voiceId };
 }
 
-/** Journey events do not answer a question; a later customer turn does. */
+/** Customer turns retire questions; leaving a product also retires its numeric input. */
 export function latestQuestion(
   messages: readonly ConversationMessage[],
+  storefrontPath?: string,
 ): QuestionPart | undefined {
+  const laterPaths: string[] = storefrontPath ? [storefrontPath] : [];
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (message.role === "user") return;
@@ -166,7 +280,27 @@ export function latestQuestion(
       partIndex--
     ) {
       const part = message.parts[partIndex];
-      if (part.type === "question") return part;
+      if (part.type === "page_view" || part.type === "navigation")
+        laterPaths.push(part.path);
+      if (part.type === "question") {
+        if (
+          part.measurement &&
+          laterPaths.some((path) => {
+            const pathname = new URL(path, "https://storefront.invalid")
+              .pathname;
+            const match =
+              /^(?:\/[a-z]{2}(?:-[a-z]{2})?)?(?:\/collections\/[^/]+)?\/products\/([^/]+)\/?$/i.exec(
+                pathname,
+              );
+            return (
+              !match ||
+              `/products/${match[1]}` !== part.measurement!.productPath
+            );
+          })
+        )
+          return;
+        return part;
+      }
     }
   }
 }

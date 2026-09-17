@@ -150,10 +150,15 @@ async function setup(t, options = {}) {
     },
     resolveToolApproval: (id, confirmed) => options.onApproval?.(id, confirmed),
   };
-  const navigationState = {
+  let navigationState = {
     url: window.location.href,
     pending: false,
     error: null,
+  };
+  const navigationListeners = new Set();
+  const updateNavigation = (changes) => {
+    navigationState = { ...navigationState, ...changes };
+    for (const listener of navigationListeners) listener();
   };
   let ready = false;
   const dispose = window.RomanChatTest.mount(container, {
@@ -161,7 +166,10 @@ async function setup(t, options = {}) {
       "https://cdn.shopify.com/extensions/version/assets/roman-logo.svg?v=1",
     navigation: {
       getSnapshot: () => navigationState,
-      subscribe: () => () => {},
+      subscribe: (listener) => {
+        navigationListeners.add(listener);
+        return () => navigationListeners.delete(listener);
+      },
       navigate: async (path) => {
         navigationCalls.push(path);
       },
@@ -201,6 +209,7 @@ async function setup(t, options = {}) {
     voiceDock,
     calls,
     update,
+    updateNavigation,
     input,
     type,
     errors,
@@ -2485,6 +2494,80 @@ test("a failed easy answer stays retryable without automatically resending", asy
     "Retried answer was not accepted",
   );
   assert.deepEqual(ctx.calls, ["Full blackout", "Full blackout"]);
+});
+
+test("guided numeric input submits through the active chat mode and retires on product navigation", async (t) => {
+  for (const voice of [false, true]) {
+    await t.test(voice ? "live voice" : "text", async (t) => {
+      const row = questionMessage();
+      Object.assign(row.parts[0], {
+        question: "What is the width?",
+        answers: [],
+        measurement: {
+          productPath: "/products/example",
+          label: "Width",
+          unit: "mm",
+          instructions: "Measure the top of the recess without deductions.",
+        },
+      });
+      const ctx = await setup(t, {
+        state: {
+          conversation: activeConversation([row]),
+          ...(voice
+            ? { voice: { status: "active", muted: false, error: null } }
+            : {}),
+        },
+      });
+      const input = ctx.container.querySelector(".roman-question input");
+      assert.ok(input);
+      Object.getOwnPropertyDescriptor(
+        ctx.window.HTMLInputElement.prototype,
+        "value",
+      ).set.call(input, "500.5");
+      input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+      await delay(0);
+      ctx.container
+        .querySelector(".roman-question form")
+        .dispatchEvent(
+          new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+        );
+      await until(
+        () => (voice ? ctx.voiceAnswers : ctx.calls).length === 1,
+        "Numeric answer did not reach the active mode",
+      );
+      assert.deepEqual(ctx.calls, voice ? [] : ["Width: 500.5 mm"]);
+      assert.deepEqual(
+        ctx.voiceAnswers,
+        voice
+          ? [
+              {
+                questionId: row.parts[0].invocationId,
+                answer: "Width: 500.5 mm",
+              },
+            ]
+          : [],
+      );
+      assert.deepEqual(ctx.stopVoiceCalls, []);
+      ctx.updateNavigation({ pending: true });
+      await until(
+        () => ctx.container.querySelector(".roman-question input").disabled,
+        "Input stayed enabled during navigation",
+      );
+      ctx.updateNavigation({
+        pending: false,
+        url: "https://hd-dev-single.myshopify.com/products/other",
+      });
+      await until(
+        () => !ctx.container.querySelector(".roman-question input"),
+        "Old product retained an active numeric input",
+      );
+      assert.ok(
+        ctx.container.textContent.includes(
+          row.parts[0].measurement.instructions,
+        ),
+      );
+    });
+  }
 });
 
 test("a voice answer keeps the live bar and mic state, submits once, and retires accepted choices", async (t) => {

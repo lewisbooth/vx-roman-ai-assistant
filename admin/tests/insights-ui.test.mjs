@@ -255,6 +255,55 @@ test("inspection retains original question choices as literal read-only history 
   assert.match(rows[1].textContent, /Full blackout/);
 });
 
+test("inspection keeps measurement instructions, unit and product as read-only history after the answer", (t) => {
+  const { render, container } = setupView(t);
+  const instructions = "Measure the top width. <img src=x onerror=alert(1)>";
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    messages: [
+      {
+        id: "question",
+        role: "assistant",
+        status: "complete",
+        createdAt: NOW,
+        parts: [
+          {
+            type: "question",
+            version: 1,
+            invocationId: ID,
+            question: "What is the width?",
+            answers: [],
+            measurement: {
+              productPath: "/products/shade",
+              label: "Width",
+              unit: "mm",
+              instructions,
+            },
+          },
+        ],
+      },
+      {
+        id: "answer",
+        role: "user",
+        status: "complete",
+        createdAt: NOW,
+        parts: [{ type: "text", text: "Width: 500 mm" }],
+      },
+    ],
+  });
+  assert.ok(container.textContent.includes(instructions));
+  assert.match(container.textContent, /Measurement input: Width \(mm\)/);
+  assert.match(container.textContent, /Width: 500 mm/);
+  assert.doesNotMatch(container.textContent, /Offered answers/);
+  assert.equal(
+    container.querySelectorAll("button, s-button, input, img").length,
+    0,
+  );
+  const link = container.querySelector("a");
+  assert.equal(link.href, `${ORIGIN}/products/shade`);
+  assert.equal(link.target, "_blank");
+});
+
 test("inspection distinguishes confirmed Roman navigation from ordinary visits and escapes page titles", (t) => {
   const { render, container } = setupView(t);
   render("ConversationTimeline", {

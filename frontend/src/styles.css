@@ -431,6 +431,40 @@
     @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#716b60];
   }
 
+  .roman-measurement-instructions {
+    @apply mt-[10px] mb-0 whitespace-pre-line text-[14px] leading-[1.5] [overflow-wrap:anywhere];
+  }
+
+  .roman-measurement-form {
+    @apply mt-[12px] min-w-0;
+  }
+
+  .roman-measurement-form label {
+    @apply block text-[14px] leading-[1.4] [overflow-wrap:anywhere];
+  }
+
+  .roman-measurement-entry {
+    @apply mt-[6px] items-center;
+  }
+
+  .roman-measurement-field {
+    @apply flex min-w-0 flex-[1_1_120px] items-center gap-[8px] rounded-[12px] border border-solid border-[#4e0e0e66] bg-white pr-[12px];
+  }
+
+  .roman-measurement-field input {
+    @apply min-h-[44px] min-w-0 w-full rounded-[12px] border-0 bg-transparent px-[12px] py-[9px] text-[16px] text-[#4e0e0e] outline-none disabled:opacity-50;
+    font-family: inherit;
+  }
+
+  .roman-measurement-field:focus-within {
+    outline: 2px solid #4e0e0e;
+    outline-offset: 3px;
+  }
+
+  .roman-measurement-field span {
+    @apply shrink-0 text-[14px];
+  }
+
   .roman-question .roman-chat-error {
     @apply mt-[10px] pb-0 text-[#8b2424];
   }

@@ -37,6 +37,7 @@ import {
   parseNavigationPart,
 } from "../../../shared/navigation-tool";
 import {
+  isQuestionAnswer,
   latestQuestion,
   parseQuestionAnswerReference,
   parseQuestionPart,
@@ -615,7 +616,8 @@ export function createConversationClient(
     // Older backend snapshots may omit requestId; a valid POST acknowledgement
     // still confirms this exact submission without comparing customer text.
     const acknowledged =
-      path === "/messages" && record(body) &&
+      path === "/messages" &&
+      record(body) &&
       body.requestId === state.optimisticMessage?.requestId;
     const revision = state.conversation?.revision ?? -1;
     const currentStream =
@@ -1096,10 +1098,13 @@ export function createConversationClient(
       throw new Error(
         "Wait until voice is connected here and Roman has finished replying.",
       );
-    const question = latestQuestion(state.conversation.messages);
+    const question = latestQuestion(
+      state.conversation.messages,
+      window.location.pathname,
+    );
     if (
       question?.invocationId !== questionId ||
-      !question.answers.includes(answer)
+      !isQuestionAnswer(question, answer)
     )
       throw new Error("This question is no longer waiting for that answer.");
     const current = () =>
@@ -1455,8 +1460,7 @@ export function createConversationClient(
             if (
               state.conversation?.messages.some(
                 (row) =>
-                  row.role === "user" &&
-                  row.requestId === submission.requestId,
+                  row.role === "user" && row.requestId === submission.requestId,
               )
             ) {
               uncertainSubmission = null;
