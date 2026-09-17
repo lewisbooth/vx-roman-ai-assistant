@@ -854,7 +854,7 @@ test("configuration followups use real paged choices and retain final review bef
       /Otherwise offer relevant next actions through ask_question using the final review below/,
       /use a fresh get_product_configuration result from the matching current PDP after its last change/,
       /more than four choices exist, paginate the actual choices with "More options" within the four-answer limit rather than dropping choices or inventing replacements/,
-      /Do not choose recess, lining, or any other option by default/,
+      /Do not change recess, lining or other preferences arbitrarily/,
       /"Keep configuring" when editable options are available/,
       /This one question is the final review and add decision together/,
       /After the customer chooses Add product to cart[\s\S]*read the current configuration again and add that same product/,
@@ -906,6 +906,49 @@ test("dependent configuration changes stay bounded, freshly verified and separat
     ])
       assert.match(prompt, rule);
   }
+});
+
+test("new dependent options use context and sensible defaults but surface meaningful unresolved decisions", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /Compare the available controls and choices before and after each change/,
+      /including newly revealed or enabled options and newly available choices within an existing option/,
+      /Use established customer intent or unambiguous measurement meaning to resolve them/,
+      /Retain a sensible default compatible with the known context when it leaves no meaningful customer decision unresolved; not every default needs a question/,
+      /Preselection alone does not establish a customer preference/,
+      /When intent is unknown and a choice materially affects the stated goal, control or use, included hardware, compatibility or extra cost, use ask_question for that useful unresolved choice before final review/,
+      /Do not infer physical compatibility or buy an arbitrary upgrade/,
+      /Skip already-selected matching choices when established customer intent resolves them/,
+      /Preserve established choices, avoid an unrelated full option wizard and do not question unchanged defaults again on every turn/,
+    ])
+      assert.match(prompt, rule);
+    assert.doesNotMatch(prompt, /Smartview|14 Channel|No Remote/);
+  }
+  assert.match(romanVoicePrompt("marin"), /Delegate inspection of newly revealed or enabled dependent choices before final review/);
+  assert.match(romanVoicePrompt("marin"), /resolve them from established context or retain a sensible compatible default; it asks only when a meaningful decision remains unresolved, not for every default/);
+  assert.match(romanVoicePrompt("marin"), /Preselection alone does not authorize an arbitrary upgrade/);
+  assert.match(romanVoicePrompt("marin"), /Preserve established choices and say the backend's one useful follow-up rather than starting an unrelated option questionnaire/);
+});
+
+test("optional choice questions disclose verified surcharges without inventing costs or using the total", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /When offering a choice with a returned option\.priceLabel, include that verified surcharge in the concise question or answer label before an optional upgrade is accepted/);
+    assert.match(prompt, /Preserve its currency and additional-charge meaning: option\.priceLabel is the displayed option surcharge, not the configuredPrice total/);
+    assert.match(prompt, /If a relevant cost is unavailable, say so rather than guessing it or implying the option is free/);
+    assert.doesNotMatch(prompt, /19\.95|14 Channel|No Remote/);
+  }
+  assert.match(romanVoicePrompt("marin"), /Include its verified option surcharge in that spoken follow-up before an optional upgrade/);
+  assert.match(romanVoicePrompt("marin"), /keep the additional cost distinct from the configured total and never imply a missing price is free/);
+});
+
+test("configuration reviews may quote only the current verified theme price", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /fresh read supplies configuredPrice for the current dimensions and options, mention that current theme quote briefly as returned/);
+    assert.match(prompt, /Omit a null, unavailable or stale price; never substitute a catalog starting price or calculate the price yourself/);
+    assert.match(prompt, /If the read is unavailable or dimensions\/options are unresolved, say what is missing instead of calling the product fully configured/);
+  }
+  assert.match(romanVoicePrompt("marin"), /Briefly state the current configuredPrice quote as returned when the backend supplies it; omit null, stale or unavailable prices/);
+  assert.match(romanVoicePrompt("marin"), /Catalog prices are starting prices, not made-to-measure quotes, and must not replace the configured price/);
 });
 
 test("guide interpretation prioritizes full instructions and treats clearance as a physical check, not a product input", () => {

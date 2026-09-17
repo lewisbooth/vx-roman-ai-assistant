@@ -476,3 +476,203 @@ test("pending pricing failure, lifecycle changes and late native corrections are
     });
   }
 });
+
+function nestedControls(ctx) {
+  ctx.form.insertAdjacentHTML(
+    "beforeend",
+    `<fieldset data-feature="82">
+    <input type="radio" name="Control Options##82" value="Chain##203" data-feature-option="82##203" checked>
+    <div data-feature-option-container><input type="radio" name="Control Options##82" value="Electric SmartView##204" data-feature-option="82##204">
+    <div data-remote-options hidden>
+      <input type="radio" name="14 Channel Remote Control##6917##204" value="No Remote##11433" data-feature-option="6917##11433" checked disabled>
+      <input type="radio" name="14 Channel Remote Control##6917##204" value="14 Channel Remote Control##11434" data-feature-option="6917##11434" disabled>
+      <div data-detail-options hidden><input type="radio" name="Remote finish##7000##11434" value="White##12000" data-feature-option="7000##12000" checked disabled><input type="radio" name="Remote finish##7000##11434" value="Black##12001" data-feature-option="7000##12001" disabled></div>
+    </div></div></fieldset>`,
+  );
+  const group = ctx.form.querySelector('[data-feature="82"]');
+  const electric = group.querySelector('[value="Electric SmartView##204"]');
+  const remote = group.querySelector(
+    '[value="14 Channel Remote Control##11434"]',
+  );
+  const refresh = () => {
+    group.querySelector("[data-remote-options]").hidden = !electric.checked;
+    group.querySelector("[data-detail-options]").hidden =
+      !electric.checked || !remote.checked;
+    group
+      .querySelectorAll('[name="14 Channel Remote Control##6917##204"]')
+      .forEach((e) => {
+        e.disabled = !electric.checked;
+      });
+    group
+      .querySelectorAll('[name="Remote finish##7000##11434"]')
+      .forEach((e) => {
+        e.disabled = !electric.checked || !remote.checked;
+      });
+  };
+  group.addEventListener("change", refresh);
+  return { group, electric, remote, refresh };
+}
+function namedSelection(read, controlLabel, optionLabel) {
+  const control = read.controls.find((c) => c.label === controlLabel),
+    option = control?.options.find((o) => o.label === optionLabel);
+  assert.ok(control && option, `Expected ${controlLabel}: ${optionLabel}`);
+  return {
+    productPath,
+    configurationId: read.configurationId,
+    controlId: control.id,
+    optionId: option.id,
+  };
+}
+
+test("native multi-level dependencies retain hidden defaults but authorize only selected active parent branches", async (t) => {
+  const ctx = setup(t),
+    nested = nestedControls(ctx);
+  const read = ctx.read(),
+    root = read.controls.find((c) => c.label === "Control Options"),
+    remote = read.controls.find((c) => c.label === "14 Channel Remote Control"),
+    detail = read.controls.find((c) => c.label === "Remote finish");
+  assert.deepEqual(JSON.parse(JSON.stringify(remote.parent)), {
+    controlId: root.id,
+    optionId: root.options.find((o) => o.label === "Electric SmartView").id,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(detail.parent)), {
+    controlId: remote.id,
+    optionId: remote.options.find(
+      (o) => o.label === "14 Channel Remote Control",
+    ).id,
+  });
+  assert.equal(
+    remote.options[0].selected,
+    true,
+    "A theme default remains distinguishable from availability",
+  );
+  assert.ok(remote.options.every((o) => !o.available));
+  assert.ok(detail.options.every((o) => !o.available));
+  assert.equal(
+    (
+      await ctx.configure(
+        namedSelection(
+          read,
+          "14 Channel Remote Control",
+          "14 Channel Remote Control",
+        ),
+      )
+    ).status,
+    "unsupported",
+  );
+  assert.equal(
+    (
+      await ctx.configure(
+        namedSelection(ctx.read(), "Control Options", "Electric SmartView"),
+      )
+    ).status,
+    "applied",
+  );
+  const expanded = ctx.read();
+  assert.ok(
+    expanded.controls
+      .find((c) => c.label === "14 Channel Remote Control")
+      .options.every((o) => o.available),
+  );
+  assert.ok(
+    expanded.controls
+      .find((c) => c.label === "Remote finish")
+      .options.every((o) => !o.available),
+  );
+  assert.equal(
+    nested.remote.checked,
+    false,
+    "Revealing a branch does not choose its paid option",
+  );
+  assert.equal(
+    (
+      await ctx.configure(
+        namedSelection(
+          expanded,
+          "14 Channel Remote Control",
+          "14 Channel Remote Control",
+        ),
+      )
+    ).status,
+    "applied",
+  );
+  assert.ok(
+    ctx
+      .read()
+      .controls.find((c) => c.label === "Remote finish")
+      .options.every((o) => o.available),
+  );
+});
+
+test("missing, ambiguous, cross-fieldset or unavailable parents cannot authorize nested writes", async (t) => {
+  for (const scenario of [
+    "missing",
+    "ambiguous",
+    "foreign",
+    "unselected",
+    "disabled",
+    "screen-disabled",
+    "cycle",
+  ])
+    await t.test(scenario, async (t) => {
+      const ctx = setup(t),
+        nested = nestedControls(ctx);
+      nested.electric.checked = true;
+      nested.refresh();
+      if (scenario === "missing") nested.electric.remove();
+      if (scenario === "ambiguous")
+        nested.group.insertAdjacentHTML(
+          "beforeend",
+          '<input type="radio" name="Other control##82" value="Other Electric##204" data-feature-option="82##204">',
+        );
+      if (scenario === "foreign") {
+        const field = ctx.window.document.createElement("fieldset");
+        field.dataset.feature = "82";
+        ctx.form.append(field);
+        field.append(nested.electric);
+      }
+      if (scenario === "unselected") nested.electric.checked = false;
+      if (scenario === "disabled") nested.electric.disabled = true;
+      if (scenario === "screen-disabled")
+        nested.electric.setAttribute("data-screen-disabled", "");
+      if (scenario === "cycle")
+        nested.electric.name = "Control Options##82##11434";
+      const read = ctx.read();
+      if (scenario === "cycle") assert.equal(read.status, "unavailable");
+      else {
+        const remote = read.controls.find(
+          (c) => c.label === "14 Channel Remote Control",
+        );
+        assert.ok(remote.options.every((o) => !o.available));
+        assert.equal(
+          (
+            await ctx.configure(
+              namedSelection(
+                read,
+                "14 Channel Remote Control",
+                "14 Channel Remote Control",
+              ),
+            )
+          ).status,
+          "unsupported",
+        );
+      }
+      assert.deepEqual(ctx.events, []);
+    });
+});
+
+test("a parent change after discovery invalidates the child capability before mutation", async (t) => {
+  const ctx = setup(t),
+    nested = nestedControls(ctx);
+  nested.electric.checked = true;
+  nested.refresh();
+  const call = namedSelection(
+    ctx.read(),
+    "14 Channel Remote Control",
+    "14 Channel Remote Control",
+  );
+  nested.electric.checked = false;
+  assert.equal((await ctx.configure(call)).status, "unsupported");
+  assert.equal(nested.remote.checked, false);
+  assert.deepEqual(ctx.events, []);
+});

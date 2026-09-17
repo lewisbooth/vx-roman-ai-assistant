@@ -8,7 +8,11 @@ import {
 } from "../../../shared/product-configuration";
 import { readProductMeasurements } from "./measurements";
 import { isSampleAvailable } from "./product-sample";
-import { settleProductPrice } from "./product-pricing";
+import {
+  readConfiguredProductPrice,
+  readProductOptionPrice,
+  settleProductPrice,
+} from "./product-pricing";
 import {
   controlVisible,
   currentProductForm,
@@ -25,6 +29,7 @@ type Inspection = {
   elements: Element[];
   fingerprint: string;
   measurements: ProductConfiguration["measurements"];
+  configuredPrice: string | null;
 };
 const unavailable =
   "Only the current product's supported native choices can be changed. Finish any required product-page steps, then read its configuration again.";
@@ -63,6 +68,11 @@ function inspect(productPath: string): Inspection {
   if (candidates.length > 160) throw new Error(unavailable);
   const controls: ProductConfigurationControl[] = [],
     choices: Choice[][] = [];
+  const bindings: {
+    parentId?: string;
+    fieldset: Element | null;
+    ambiguous: boolean;
+  }[] = [];
   const radioGroups = new Map<string, number>();
   for (const element of candidates) {
     if (
@@ -106,6 +116,11 @@ function inspect(productPath: string): Inspection {
         options: [],
       });
       choices.push([]);
+      bindings.push({
+        parentId: parts[2],
+        fieldset: element.closest("fieldset[data-feature]"),
+        ambiguous: false,
+      });
       return index;
     };
     const addChoice = (
@@ -116,6 +131,10 @@ function inspect(productPath: string): Inspection {
       enabled: boolean,
     ) => {
       const list = controls[index].options;
+      if (
+        bindings[index].fieldset !== element.closest("fieldset[data-feature]")
+      )
+        bindings[index].ambiguous = true;
       if (list.length === 32) throw new Error(unavailable);
       list.push({
         id: `o${list.length}`,
@@ -182,14 +201,88 @@ function inspect(productPath: string): Inspection {
       }
     }
   }
+  // The theme encodes a nested choice's parent option in the third name
+  // segment. Resolve only unique native parents in the same feature fieldset.
+  const resolved = new Set<number>(),
+    resolving = new Set<number>();
+  const resolveParent = (index: number) => {
+    if (resolved.has(index)) return;
+    if (resolving.has(index)) throw new Error(unavailable);
+    resolving.add(index);
+    const binding = bindings[index];
+    if (binding.parentId !== undefined) {
+      const parents = choices.flatMap((options, controlIndex) =>
+        options.flatMap((choice, optionIndex) =>
+          choice.control instanceof HTMLInputElement &&
+          choice.checked === true &&
+          choice.value.split("##")[1] === binding.parentId &&
+          binding.fieldset !== null &&
+          choice.control.closest("fieldset[data-feature]") ===
+            binding.fieldset &&
+          (choice.control.name.split("##").length === 3 ||
+            choice.control.name.split("##")[1] ===
+              binding.fieldset.getAttribute("data-feature"))
+            ? [{ controlIndex, optionIndex }]
+            : [],
+        ),
+      );
+      if (binding.ambiguous || parents.length !== 1) {
+        controls[index].options.forEach((option) => {
+          option.available = false;
+        });
+      } else {
+        const parent = parents[0];
+        resolveParent(parent.controlIndex);
+        controls[index].parent = {
+          controlId: controls[parent.controlIndex].id,
+          optionId:
+            controls[parent.controlIndex].options[parent.optionIndex].id,
+        };
+        const option =
+          controls[parent.controlIndex].options[parent.optionIndex];
+        controls[index].options.forEach((child) => {
+          child.available &&= option.selected && option.available;
+        });
+      }
+    }
+    resolving.delete(index);
+    resolved.add(index);
+  };
+  controls.forEach((_, index) => resolveParent(index));
   const elements = [
     ...form.querySelectorAll("input:not([type=hidden]),select"),
   ];
   if (elements.length > 200) throw new Error(unavailable);
   const measurements = readProductMeasurements(form);
+  const configuredPrice = readConfiguredProductPrice(
+    form,
+    productPath,
+    measurements,
+  );
+  controls.forEach((control, index) =>
+    control.options.forEach((option, optionIndex) => {
+      if (!option.available) return;
+      const choice = choices[index][optionIndex];
+      if (
+        choice.control instanceof HTMLInputElement &&
+        choice.control.type === "checkbox" &&
+        choice.checked !== true
+      )
+        return;
+      const feature = choice.control.name.split("##")[1];
+      const priceLabel = readProductOptionPrice(
+        form,
+        choice.control,
+        `${feature}##${choice.value.split("##")[1]}`,
+        configuredPrice,
+      );
+      if (priceLabel) option.priceLabel = priceLabel;
+    }),
+  );
   const fingerprint = JSON.stringify([
     controls,
     measurements,
+    configuredPrice,
     elements.map((element) => {
       const control = element as NativeControl;
       return [
@@ -205,7 +298,15 @@ function inspect(productPath: string): Inspection {
       ];
     }),
   ]);
-  return { form, controls, choices, elements, measurements, fingerprint };
+  return {
+    form,
+    controls,
+    choices,
+    elements,
+    measurements,
+    configuredPrice,
+    fingerprint,
+  };
 }
 
 /** One bounded, expiring DOM capability per mounted Roman runtime. */
@@ -238,6 +339,7 @@ export function createProductConfigurationTools() {
           configurationId: id,
           controls: current.controls,
           measurements: current.measurements,
+          configuredPrice: current.configuredPrice,
           actions,
           message:
             "These are supported native product choices. Unavailable choices need the theme's required steps. Measurements use the confirmed measurement tool; purchases and insurance are separate.",
@@ -250,6 +352,7 @@ export function createProductConfigurationTools() {
           configurationId: null,
           controls: [],
           measurements: null,
+          configuredPrice: null,
           actions,
           message: unavailable,
         };
@@ -353,12 +456,14 @@ export function createProductConfigurationTools() {
           price === "uncertain" ||
           !selected() ||
           settled?.form !== saved.form ||
-          !settled.choices.some((choices) =>
+          !settled.choices.some((choices, controlIndex) =>
             choices.some(
-              (candidate) =>
+              (candidate, optionIndex) =>
                 candidate.control === choice.control &&
                 candidate.value === choice.value &&
-                candidate.checked === choice.checked,
+                candidate.checked === choice.checked &&
+                settled.controls[controlIndex].options[optionIndex].selected &&
+                settled.controls[controlIndex].options[optionIndex].available,
             ),
           )
         )

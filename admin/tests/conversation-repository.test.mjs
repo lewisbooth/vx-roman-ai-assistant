@@ -564,6 +564,93 @@ test("confirmed sample additions persist as distinct notifications and bind the 
   );
 });
 
+test("configuration hierarchy and displayed prices survive claimed results, persistence and model history", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Review this product's configuration.",
+  });
+  const current = {
+    status: "available",
+    productPath: "/products/shade",
+    configurationId: randomUUID(),
+    controls: [
+      {
+        id: "c0",
+        label: "Control type",
+        kind: "radio",
+        options: [
+          { id: "o0", label: "Motorized", selected: true, available: true },
+        ],
+      },
+      {
+        id: "c1",
+        label: "Remote control",
+        kind: "radio",
+        parent: { controlId: "c0", optionId: "o0" },
+        options: [
+          { id: "o0", label: "No Remote", selected: true, available: true },
+          {
+            id: "o1",
+            label: "14 Channel Remote",
+            selected: false,
+            available: true,
+            priceLabel: "+ £19.95",
+          },
+        ],
+      },
+    ],
+    measurements: { unit: "cm", width: 40, height: 50, availableUnits: ["cm"] },
+    configuredPrice: "£65.89",
+    message: "Current product choices and displayed quote.",
+  };
+  const historical = structuredClone(current);
+  historical.configurationId = randomUUID();
+  delete historical.configuredPrice;
+  delete historical.controls[1].parent;
+  delete historical.controls[1].options[1].priceLabel;
+  for (const outcome of [current, historical]) {
+    const tool = await repository.createToolInvocation(id, turn.assistantId, {
+      providerCallId: randomUUID(),
+      name: "get_product_configuration",
+      arguments: { productPath: outcome.productPath },
+    });
+    const claim = executor();
+    assert.equal(
+      (await repository.claimToolInvocation(id, tool.id, claim)).claimed,
+      true,
+    );
+    await repository.completeToolInvocation(id, tool.id, claim, {
+      productIds: [],
+      outcome,
+    });
+    const persisted = await database.toolInvocation.findUniqueOrThrow({
+      where: { id: tool.id },
+    });
+    assert.equal(persisted.status, "complete");
+    assert.deepEqual(JSON.parse(persisted.resultJson), outcome);
+  }
+  await repository.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "Here is the current configuration.",
+  });
+  const history = await loadRepository().getModelHistory(id);
+  const outcomes = history
+    .filter((message) =>
+      message.text.startsWith("Historical storefront action"),
+    )
+    .map(
+      (message) =>
+        JSON.parse(message.text.slice(message.text.indexOf("{"))).outcome,
+    );
+  assert.deepEqual(outcomes, [current, historical]);
+  assert.equal(Object.hasOwn(outcomes[1], "configuredPrice"), false);
+  assert.equal(Object.hasOwn(outcomes[1].controls[1], "parent"), false);
+});
+
 test("cart completion and its inline addition commit atomically", async () => {
   const { id, tool } = await cartInvocation("add_to_cart", {
     productPath: "/products/shade",

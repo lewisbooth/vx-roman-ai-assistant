@@ -7,12 +7,16 @@ export interface ProductConfigurationChoice {
   label: string;
   selected: boolean;
   available: boolean;
+  /** Native displayed option charge, separate from the configured product total. */
+  priceLabel?: string;
 }
 export interface ProductConfigurationControl {
   id: string;
   label: string;
   kind: "radio" | "select" | "checkbox";
   options: ProductConfigurationChoice[];
+  /** A native dependency on an option in this same configuration snapshot. */
+  parent?: { controlId: string; optionId: string };
 }
 export interface ProductMeasurements {
   unit: "mm" | "cm" | "in" | null;
@@ -28,6 +32,8 @@ export interface ProductConfiguration {
   measurements: ProductMeasurements | null;
   // Optional only for durable results recorded before action discovery existed.
   actions?: { sampleAvailable: boolean };
+  // Missing only in historical/older frontend results; null means no current quote.
+  configuredPrice?: string | null;
   message: string;
 }
 export interface ConfigureProductResult {
@@ -60,7 +66,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "get_product_configuration",
     description:
-      "Read supported native customization choices and current measurements on the currently open product. Navigate to the verified product first. Only returned available options can be changed; hidden/disabled choices may need the customer's product-page steps. The configurationId is short-lived and single-use. Unsupported custom widgets, insurance, quantity and purchase controls are excluded. Measurements must use the confirmed set_measurements/apply_measurements flow, never configure_product.",
+      "Read supported native customization choices, their parent-option dependencies, current measurements and the settled displayed configuredPrice on the currently open product. Navigate to the verified product first. Read again after every change to discover newly revealed or enabled choices. Resolve them using established context or a suitable default; ask a short follow-up when a meaningful preference remains unknown. A preselected default alone does not establish customer intent. Only returned available options can be changed; hidden/disabled choices may need the customer's product-page steps. Parent IDs belong to this snapshot only. An option's priceLabel is its native displayed charge: mention it when offering that choice, without confusing it with the total. configuredPrice is the current displayed product price, not a catalog starting price or cart total; null or missing means unknown. Never invent missing prices. The configurationId is short-lived and single-use. Unsupported custom widgets, insurance, quantity and purchase controls are excluded. Measurements must use the confirmed set_measurements/apply_measurements flow, never configure_product.",
     strict: true,
     parameters: {
       type: "object",
@@ -193,7 +199,14 @@ export function parseProductConfigurationResult(
     "measurements",
     "message",
     ...(value.actions !== undefined ? ["actions"] : []),
+    ...(value.configuredPrice !== undefined ? ["configuredPrice"] : []),
   ]);
+  const configuredPrice =
+    value.configuredPrice === undefined || value.configuredPrice === null
+      ? value.configuredPrice
+      : text(value.configuredPrice, 120);
+  if (typeof configuredPrice === "string" && !/\d/.test(configuredPrice))
+    throw new Error("Invalid configured product price.");
   let actions: ProductConfiguration["actions"];
   if (value.actions !== undefined) {
     const input = object(value.actions);
@@ -211,7 +224,22 @@ export function parseProductConfigurationResult(
   const controls = value.controls.map(
     (entry, index): ProductConfigurationControl => {
       const control = object(entry);
-      exact(control, ["id", "label", "kind", "options"]);
+      exact(control, [
+        "id",
+        "label",
+        "kind",
+        "options",
+        ...(control.parent !== undefined ? ["parent"] : []),
+      ]);
+      let parent: ProductConfigurationControl["parent"];
+      if (control.parent !== undefined) {
+        const dependency = object(control.parent);
+        exact(dependency, ["controlId", "optionId"]);
+        parent = {
+          controlId: id(dependency.controlId, controlId),
+          optionId: id(dependency.optionId, optionId),
+        };
+      }
       if (
         control.id !== `c${index}` ||
         !["radio", "select", "checkbox"].includes(control.kind as string) ||
@@ -223,7 +251,13 @@ export function parseProductConfigurationResult(
       const options = control.options.map(
         (entry, index): ProductConfigurationChoice => {
           const option = object(entry);
-          exact(option, ["id", "label", "selected", "available"]);
+          exact(option, [
+            "id",
+            "label",
+            "selected",
+            "available",
+            ...(option.priceLabel !== undefined ? ["priceLabel"] : []),
+          ]);
           if (
             option.id !== `o${index}` ||
             typeof option.selected !== "boolean" ||
@@ -235,6 +269,9 @@ export function parseProductConfigurationResult(
             label: text(option.label, 160),
             selected: option.selected,
             available: option.available,
+            ...(option.priceLabel !== undefined
+              ? { priceLabel: text(option.priceLabel, 120) }
+              : {}),
           };
         },
       );
@@ -247,9 +284,32 @@ export function parseProductConfigurationResult(
         label: text(control.label, 160),
         kind: control.kind as ProductConfigurationControl["kind"],
         options,
+        ...(parent ? { parent } : {}),
       };
     },
   );
+  // Dependencies describe only this bounded snapshot, never durable IDs or
+  // permission to enable a choice the native form currently disables.
+  for (const control of controls) {
+    const seen = new Set([control.id]);
+    let dependency = control.parent;
+    while (dependency) {
+      const ancestor = controls.find(({ id }) => id === dependency!.controlId);
+      const option = ancestor?.options.find(
+        ({ id }) => id === dependency!.optionId,
+      );
+      if (
+        !ancestor ||
+        !option ||
+        seen.has(ancestor.id) ||
+        (control.options.some(({ available }) => available) &&
+          (!option.selected || !option.available))
+      )
+        throw new Error("Invalid product configuration dependency.");
+      seen.add(ancestor.id);
+      dependency = ancestor.parent;
+    }
+  }
   let measurements: ProductMeasurements | null = null;
   if (value.measurements !== null) {
     const current = object(value.measurements);
@@ -281,7 +341,10 @@ export function parseProductConfigurationResult(
   }
   if (
     value.status === "unavailable" &&
-    (value.configurationId !== null || controls.length || measurements !== null)
+    (value.configurationId !== null ||
+      controls.length ||
+      measurements !== null ||
+      configuredPrice != null)
   )
     throw new Error(
       "Unavailable product configuration must not contain controls.",
@@ -294,6 +357,7 @@ export function parseProductConfigurationResult(
     controls,
     measurements,
     ...(actions ? { actions } : {}),
+    ...(configuredPrice !== undefined ? { configuredPrice } : {}),
     message,
   };
 }
