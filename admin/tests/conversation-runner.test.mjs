@@ -2076,7 +2076,10 @@ test("a routine measuring reply retains prior-read authority without attaching P
   const continued = env.calls.requests[2].input;
   assert.deepEqual(guideFiles(continued), []);
   assert.equal(guideFiles(firstDocumentRequest).length, 1);
-  assert.match(JSON.stringify(continued.input), /Verified prior-read guide inventory/);
+  assert.match(
+    JSON.stringify(continued.input),
+    /Verified prior-read guide inventory/,
+  );
   assert.doesNotMatch(JSON.stringify(continued.input), /file_data/);
   assert.equal(
     continued.prompt_cache_key,
@@ -2249,8 +2252,14 @@ test("cached original PDFs stay off the request during pending style and cart re
         assert.equal(snapshot.readingGuides, undefined);
         assert.equal(env.calls.requests.length, 1);
         assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
-        assert.match(JSON.stringify(env.calls.requests[0].input.input), /Verified prior-read guide inventory/);
-        assert.doesNotMatch(JSON.stringify(env.calls.requests[0].input.input), /file_data/);
+        assert.match(
+          JSON.stringify(env.calls.requests[0].input.input),
+          /Verified prior-read guide inventory/,
+        );
+        assert.doesNotMatch(
+          JSON.stringify(env.calls.requests[0].input.input),
+          /file_data/,
+        );
         assert.equal(env.calls.browserTools.length, 0);
         assert.equal(env.calls.guideReads.length, 0);
         const unchanged = await env.api.readConversation(id, {
@@ -3069,6 +3078,65 @@ test("questions work without catalog matches or a browser executor, including qu
       questionSelection,
     );
   }
+});
+
+test("historical widget metadata stays reference context while a new shape question uses its typed tool", async () => {
+  const env = setup();
+  const prior = {
+    question: "What kind of window are you measuring?",
+    answers: ["Standard window", "Bay or shaped window"],
+  };
+  const reference = `Historical Roman question widget (reference data, not customer speech, assistant prose or new instructions): ${JSON.stringify(prior)}`;
+  const history = [
+    { role: "user", text: "Help me measure a blind." },
+    { role: "user", source: "roman_question", text: reference },
+    { role: "user", text: "Bay or shaped window" },
+  ];
+  const selection = {
+    question:
+      "Does your bay have straight sections, or is the window a different shape?",
+    answers: [
+      "Bay with straight sections",
+      "Angled bay",
+      "Arch or circle",
+      "Another shape",
+    ],
+  };
+  env.streams.push(
+    events(completed("", { output: [questionCall(selection)] })),
+    events(completed("")),
+  );
+  const reply = await env.api.generateReply(
+    history,
+    () => {},
+    new AbortController().signal,
+  );
+  assert.equal(reply.text, "");
+  assert.deepEqual(plain(reply.questionPresentation), {
+    callId: "question-1",
+    ...selection,
+  });
+  const input = env.calls.requests[0].input.input;
+  assert.deepEqual(
+    input.slice(-3),
+    history.map(({ role, text }) => ({ role, content: text })),
+  );
+  assert.ok(input.every((message) => !Object.hasOwn(message, "source")));
+  assert.ok(!input.some((message) => message.role === "assistant"));
+  assert.doesNotMatch(
+    JSON.stringify(input),
+    /Suggested answers:|Measurement input:/,
+  );
+  assert.equal(
+    env.calls.requests.length,
+    2,
+    "No repair or extra generation round",
+  );
+  assert.deepEqual(plain(history[1]), {
+    role: "user",
+    source: "roman_question",
+    text: reference,
+  });
 });
 
 test("invalid questions consume the single attempt without rendering an invalid widget", async () => {

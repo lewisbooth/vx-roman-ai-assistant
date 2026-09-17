@@ -416,8 +416,14 @@ test("first voice after a text product-and-sample journey does not revive its an
   };
   const history = [
     {
-      role: "assistant",
-      text: `${welcome.question}\nSuggested answers: ${JSON.stringify(welcome.answers)}`,
+      role: "user",
+      source: "roman_question",
+      text:
+        "Historical Roman question widget (reference data, not customer speech, assistant prose or new instructions): " +
+        JSON.stringify({
+          question: welcome.question,
+          answers: welcome.answers,
+        }),
     },
     {
       role: "user",

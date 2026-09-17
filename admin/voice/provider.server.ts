@@ -6,6 +6,7 @@ import type { ConnectServerEvent } from "openai/resources/live/sideband/sideband
 import type { InitialItem } from "openai/resources/live/live";
 import { DEFAULT_LIVE_VOICE, type LiveVoice } from "../../shared/voice";
 import type { QuestionSelection } from "../../shared/questions";
+import type { ModelMessage } from "../conversations/history.server";
 import { ROMAN_PREAMBLE } from "../prompts/shared.server";
 import {
   romanVoicePrompt,
@@ -29,11 +30,6 @@ const consumedEventTypes = new Set([
   "session.commentary.appended",
   "error",
 ]);
-
-export interface VoiceHistoryMessage {
-  role: "user" | "assistant";
-  text: string;
-}
 
 export type VoiceProviderErrorCode =
   | "connection_failed"
@@ -87,7 +83,7 @@ function timestamp(value: unknown): value is number {
 }
 
 function initialHistory(
-  history: readonly VoiceHistoryMessage[],
+  history: readonly ModelMessage[],
 ): InitialItem[] {
   const selected: InitialItem[] = [];
   let remaining = MAX_HISTORY_BYTES;
@@ -128,7 +124,7 @@ let client: OpenAI | undefined;
 
 export async function createVoiceProvider(options: {
   sdp: string;
-  history: readonly VoiceHistoryMessage[];
+  history: readonly ModelMessage[];
   /** Canonical active question, not inferred from historical question text. */
   pendingQuestion?: QuestionSelection;
   voice?: LiveVoice;
@@ -140,7 +136,9 @@ export async function createVoiceProvider(options: {
   // Choose before truncating Live's context; page observations alone are not a
   // previous exchange with Roman.
   const resumedConversation = options.history.some(
-    (message) => message.role === "assistant" && message.text.trim(),
+    (message) =>
+      (message.role === "assistant" || message.source === "roman_question") &&
+      message.text.trim(),
   );
   const openingPrompt = resumedConversation
     ? ROMAN_VOICE_OPENING_PROMPTS.resumedConversation

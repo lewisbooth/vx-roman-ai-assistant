@@ -1002,8 +1002,9 @@ test("combined voice products, guides and question persist after captions withou
   const history = await conversation.getModelHistory(id);
   assert.match(history.at(-2).text, /"type":"guides"/);
   assert.deepEqual(history.at(-1), {
-    role: "assistant",
-    text: 'Which room?\nSuggested answers: ["Bedroom","Kitchen"]',
+    role: "user",
+    source: "roman_question",
+    text: 'Historical Roman question widget (reference data, not customer speech, assistant prose or new instructions): {"question":"Which room?","answers":["Bedroom","Kitchen"]}',
   });
   assert.doesNotMatch(JSON.stringify(history), /UNSPOKEN_BRIEFING/);
   const pending = await conversation.beginTurn(id, textInput(""), session.id);

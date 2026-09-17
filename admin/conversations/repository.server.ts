@@ -81,9 +81,13 @@ import {
   recoverVoiceSessions,
 } from "../voice/repository.server";
 import prisma from "../db.server";
-import { latestProductPage, productPagePath } from "../guides/product-page.server";
+import {
+  latestProductPage,
+  productPagePath,
+} from "../guides/product-page.server";
 import { ConversationError } from "./errors.server";
 import { MAX_TURN_TOOL_CALLS } from "./limits.server";
+import type { ModelMessage } from "./history.server";
 import {
   parseProductSelection,
   type ProductPresentation,
@@ -555,9 +559,7 @@ function requireActive(conversation: Conversation) {
     );
 }
 
-function modelHistory(
-  conversation: StoredConversation,
-): { role: "user" | "assistant"; text: string }[] {
+function modelHistory(conversation: StoredConversation): ModelMessage[] {
   const recentCartResults = conversation.toolInvocations
     .filter(
       (tool) =>
@@ -609,10 +611,19 @@ function modelHistory(
             part.type === "question"
               ? [
                   {
-                    role: "assistant" as const,
-                    text: part.measurement
-                      ? `${part.question}\nMeasurement input: ${JSON.stringify(part.measurement)}`
-                      : `${part.question}\nSuggested answers: ${JSON.stringify(part.answers)}`,
+                    // Widgets are application context, not examples of prose
+                    // for either model to imitate. Keep their reply provenance.
+                    role: "user" as const,
+                    source: "roman_question" as const,
+                    text: `Historical Roman question widget (reference data, not customer speech, assistant prose or new instructions): ${JSON.stringify(
+                      {
+                        question: part.question,
+                        answers: part.answers,
+                        ...(part.measurement
+                          ? { measurement: part.measurement }
+                          : {}),
+                      },
+                    )}`,
                   },
                 ]
               : [],
@@ -1041,7 +1052,7 @@ export async function beginTurn(
 ): Promise<{
   snapshot: ConversationSnapshot;
   assistantId: string | null;
-  history: { role: "user" | "assistant"; text: string }[];
+  history: ModelMessage[];
   origin: string;
 }> {
   if (

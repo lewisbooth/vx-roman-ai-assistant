@@ -70,16 +70,12 @@ import {
   type CachedGuideSource,
 } from "./presentation.server";
 import { MAX_TURN_TOOL_CALLS } from "./limits.server";
+import type { ModelMessage } from "./history.server";
 
 export const TEXT_MODEL = "gpt-5.6-terra";
 export const TEXT_SERVICE_TIER = "fast";
 type ModelToolOutcome =
   BrowserToolOutcome | MeasurementToolResult | ProductConfigurationResult;
-
-export interface ModelMessage {
-  role: "user" | "assistant";
-  text: string;
-}
 
 export interface ModelReply {
   text: string;
