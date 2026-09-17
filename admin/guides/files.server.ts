@@ -150,6 +150,7 @@ export async function readProductGuideFiles(
   result: ProductGuidesResult,
   storefrontOrigin: string,
   signal: AbortSignal,
+  options: { refresh?: boolean } = {},
 ): Promise<ProductGuideFiles> {
   signal.throwIfAborted();
   let verified: ProductGuidesResult;
@@ -160,6 +161,8 @@ export async function readProductGuideFiles(
   }
   if (verified.status === "unavailable")
     return { status: "unavailable", reason: "no_guides" };
+  if (options.refresh)
+    for (const guide of verified.guides) removeCached(guide.url);
   const files: ResponseInputFile[] = [];
   const sources: ProductGuide[] = [];
   const unavailable: { kind: ProductGuideKind; reason: FailureReason }[] = [];

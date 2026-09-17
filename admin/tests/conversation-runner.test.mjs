@@ -1908,6 +1908,17 @@ const guideSelection = (
   args = { productPath: guidePath, kinds: ["fitting", "measuring"] },
   callId = "guides-show",
 ) => catalogCall(callId, "show_guides", args);
+const guideSession = (kinds = ["measuring", "fitting"]) => ({
+  origin: guideOrigin,
+  productPath: guidePath,
+  pageId: "22222222-2222-4222-8222-222222222222",
+  sourceAssistantId: "33333333-3333-4333-8333-333333333333",
+  sourceCallId: "previous-read",
+  expiresAt: Date.now() + 60_000,
+  kinds,
+  sources: guideResult(kinds).guides,
+  files: kinds.map(syntheticGuideFile),
+});
 
 const questionSelection = {
   question: "Which matters most?",
@@ -1983,7 +1994,7 @@ test("validated text and voice measurement inputs finish immediately with guide 
   }
 });
 
-test("a continued measuring reply starts with cached original evidence and needs no lookup round", async () => {
+test("a routine measuring reply retains prior-read authority without attaching PDFs or adding a lookup round", async () => {
   const env = setup();
   const id = "11111111-1111-4111-8111-111111111111";
   const pageId = "22222222-2222-4222-8222-222222222222";
@@ -2063,7 +2074,10 @@ test("a continued measuring reply starts with cached original evidence and needs
   assert.equal(env.calls.browserTools.length, 1);
   assert.equal(env.calls.guideReads.length, 1);
   const continued = env.calls.requests[2].input;
-  assert.deepEqual(guideFiles(continued), guideFiles(firstDocumentRequest));
+  assert.deepEqual(guideFiles(continued), []);
+  assert.equal(guideFiles(firstDocumentRequest).length, 1);
+  assert.match(JSON.stringify(continued.input), /Verified prior-read guide inventory/);
+  assert.doesNotMatch(JSON.stringify(continued.input), /file_data/);
   assert.equal(
     continued.prompt_cache_key,
     firstDocumentRequest.prompt_cache_key,
@@ -2110,7 +2124,7 @@ test("a continued measuring reply starts with cached original evidence and needs
   assert.equal(env.calls.finishes[2].result.cachedGuideSource, undefined);
 });
 
-test("cached originals support voice numeric resume without rediscovery or another model round", async () => {
+test("prior-read authority supports voice numeric resume without PDFs, rediscovery or another model round", async () => {
   const env = setup();
   const activities = [];
   const { question, ...measurement } = measurementSelection;
@@ -2159,7 +2173,7 @@ test("cached originals support voice numeric resume without rediscovery or anoth
   assert.equal(env.calls.requests.length, 1);
   assert.equal(env.calls.guideReads.length, 0);
   assert.ok(activities.every((kinds) => kinds === undefined));
-  assert.equal(guideFiles(env.calls.requests[0].input).length, 1);
+  assert.equal(guideFiles(env.calls.requests[0].input).length, 0);
   assert.equal(reply.questionPresentation.sourceCallId, "previous-read");
   assert.equal(
     reply.cachedGuideSource.sourceAssistantId,
@@ -2167,7 +2181,7 @@ test("cached originals support voice numeric resume without rediscovery or anoth
   );
 });
 
-test("cached original PDFs stay attached without a reading status during pending style and cart replies", async (t) => {
+test("cached original PDFs stay off the request during pending style and cart replies", async (t) => {
   for (const mode of ["text", "voice"]) {
     for (const request of [
       "Help me choose another colour.",
@@ -2234,9 +2248,9 @@ test("cached original PDFs stay attached without a reading status during pending
         assert.equal(snapshot.busy, true);
         assert.equal(snapshot.readingGuides, undefined);
         assert.equal(env.calls.requests.length, 1);
-        assert.deepEqual(guideFiles(env.calls.requests[0].input), [
-          cachedGuideFile("measuring"),
-        ]);
+        assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
+        assert.match(JSON.stringify(env.calls.requests[0].input.input), /Verified prior-read guide inventory/);
+        assert.doesNotMatch(JSON.stringify(env.calls.requests[0].input.input), /file_data/);
         assert.equal(env.calls.browserTools.length, 0);
         assert.equal(env.calls.guideReads.length, 0);
         const unchanged = await env.api.readConversation(id, {
@@ -2263,6 +2277,219 @@ test("cached original PDFs stay attached without a reading status during pending
       });
     }
   }
+});
+
+test("explicit cached reads attach only requested originals, retain their union and keep the prior source receipt", async () => {
+  const env = setup(),
+    cached = guideSession(),
+    activities = [];
+  const original = structuredClone(cached);
+  env.streams.push(
+    events(
+      completed("", { output: [guideLookup("read-measuring", ["measuring"])] }),
+    ),
+    events(
+      completed("", { output: [guideLookup("read-fitting", ["fitting"])] }),
+    ),
+    events(completed("", { output: [measurementCall()] })),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => {
+      throw Error("A matching cached read must not dispatch to the storefront");
+    },
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    (kinds) => activities.push(kinds),
+    {
+      cached,
+      read: () => {
+        throw Error("Cache hits must not invent a new durable source");
+      },
+      clear: () => {},
+    },
+  );
+  assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
+  assert.deepEqual(guideFiles(env.calls.requests[1].input), [
+    cachedGuideFile("measuring"),
+  ]);
+  assert.deepEqual(guideFiles(env.calls.requests[2].input), [
+    cachedGuideFile("measuring"),
+    cachedGuideFile("fitting"),
+  ]);
+  assert.equal(env.calls.guideReads.length, 0);
+  assert.equal(reply.questionPresentation.sourceCallId, cached.sourceCallId);
+  assert.equal(
+    reply.cachedGuideSource.sourceAssistantId,
+    cached.sourceAssistantId,
+  );
+  assert.deepEqual(cached, original);
+  assert.ok(activities.some((value) => value?.includes("measuring")));
+  assert.ok(activities.some((value) => value?.includes("fitting")));
+  assert.equal(activities.at(-1), undefined);
+});
+
+test("missing cached kinds and explicit refresh use fresh discovery while attaching only requested files", async (t) => {
+  for (const refresh of [false, true])
+    await t.test(
+      refresh ? "explicit refresh" : "missing companion",
+      async () => {
+        const env = setup(),
+          cached = guideSession(["measuring"]),
+          reads = [],
+          dispatched = [];
+        const kinds = refresh ? ["measuring"] : ["fitting"];
+        env.streams.push(
+          events(
+            completed("", {
+              output: [
+                catalogCall("fresh-read", "get_product_guides", {
+                  productPath: guidePath,
+                  kinds,
+                  refresh,
+                }),
+              ],
+            }),
+          ),
+          events(completed("The requested detail is in this guide.")),
+        );
+        await env.api.generateReply(
+          [],
+          () => {},
+          new AbortController().signal,
+          async (...args) => {
+            dispatched.push(args);
+            return guideResult();
+          },
+          "text",
+          undefined,
+          guideOrigin,
+          undefined,
+          undefined,
+          { cached, read: (value) => reads.push(value), clear: () => {} },
+        );
+        assert.deepEqual(plain(dispatched), [
+          ["fresh-read", "get_product_guides", { productPath: guidePath }],
+        ]);
+        assert.equal(env.calls.guideReads.length, 1);
+        assert.deepEqual(plain(env.calls.guideReads[0][3]), { refresh });
+        assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
+        assert.deepEqual(
+          guideFiles(env.calls.requests[1].input),
+          kinds.map(cachedGuideFile),
+        );
+        assert.equal(reads[0].sourceCallId, "fresh-read");
+        assert.deepEqual(
+          plain(reads[0].sources.map(({ kind }) => kind).sort()),
+          refresh ? ["measuring"] : ["fitting", "measuring"],
+        );
+        assert.equal(reads[0].files.length, refresh ? 1 : 2);
+      },
+    );
+});
+
+test("a fresh companion read never retains a replaced cached source binding", async () => {
+  const env = setup(),
+    cached = guideSession(["measuring"]),
+    reads = [];
+  const found = guideResult();
+  found.guides[0].url = found.guides[0].url.replace("v=123", "v=124");
+  env.streams.push(
+    events(
+      completed("", { output: [guideLookup("fresh-fitting", ["fitting"])] }),
+    ),
+    events(completed("Here is the fitting detail.")),
+  );
+  await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => found,
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    undefined,
+    { cached, read: (value) => reads.push(value), clear: () => {} },
+  );
+  assert.deepEqual(plain(reads[0].sources.map(({ kind }) => kind)), [
+    "fitting",
+  ]);
+  assert.deepEqual(guideFiles(env.calls.requests[1].input), [
+    cachedGuideFile("fitting"),
+  ]);
+});
+
+test("navigation invalidates both cached authority and lazy PDF reuse before returning to the product", async () => {
+  const env = setup(),
+    dispatched = [],
+    cached = guideSession(["measuring"]);
+  let cleared = 0;
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          catalogCall("leave", "navigate", { path: "/collections/all" }),
+        ],
+      }),
+    ),
+    events(
+      completed("", {
+        output: [catalogCall("return", "navigate", { path: guidePath })],
+      }),
+    ),
+    events(
+      completed("", {
+        output: [guideLookup("fresh-after-return", ["measuring"])],
+      }),
+    ),
+    events(completed("", { output: [measurementCall()] })),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async (...args) => {
+      dispatched.push(args);
+      return args[1] === "navigate"
+        ? { status: "navigated", path: args[2].path, title: "Page" }
+        : guideResult();
+    },
+    "text",
+    undefined,
+    guideOrigin,
+    undefined,
+    undefined,
+    {
+      cached,
+      read: () => {},
+      clear: () => {
+        cleared++;
+      },
+    },
+  );
+  assert.equal(cleared, 2);
+  assert.deepEqual(
+    dispatched.map((call) => call[1]),
+    ["navigate", "navigate", "get_product_guides"],
+  );
+  assert.equal(env.calls.guideReads.length, 1);
+  assert.equal(reply.cachedGuideSource, undefined);
+  assert.equal(reply.questionPresentation.sourceCallId, "fresh-after-return");
+  assert.ok(
+    env.calls.requests
+      .slice(1, 3)
+      .every(
+        ({ input }) =>
+          !JSON.stringify(input.input).includes(
+            "Verified prior-read guide inventory",
+          ),
+      ),
+  );
 });
 
 test("fresh guide reading clears on the first answer text before the turn finishes, including private voice briefings", async (t) => {

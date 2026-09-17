@@ -93,11 +93,13 @@ function setup(fetcher = async () => response()) {
       result = guide(),
       signal = new AbortController().signal,
       storefrontOrigin = origin,
+      options,
     ) {
       return module.exports.readProductGuideFiles(
         result,
         storefrontOrigin,
         signal,
+        options,
       );
     },
   };
@@ -500,6 +502,46 @@ test("the cache isolates exact origin and file version, expires after fifteen mi
   await ctx.read();
   assert.equal(ctx.calls.length, 4);
   assert.equal(ctx.timers.size, 0);
+});
+
+test("explicit refresh replaces same-URL cached bytes and a failed refresh cannot resurrect them", async () => {
+  let reply = () => response();
+  const ctx = setup(() => reply());
+  const first = await ctx.read();
+  const newer = Buffer.from("%PDF-1.7\nupdated public guide\n%%EOF");
+  reply = () => response(newer);
+  assert.equal((await ctx.read()).files[0].file_data, first.files[0].file_data);
+  const refreshed = await ctx.read(guide(), undefined, origin, {
+    refresh: true,
+  });
+  assert.notEqual(refreshed.files[0].file_data, first.files[0].file_data);
+  assert.equal(ctx.calls.length, 2);
+  assert.equal(
+    (await ctx.read()).files[0].file_data,
+    refreshed.files[0].file_data,
+  );
+  reply = () => new Response("Missing", { status: 404 });
+  assert.deepEqual(
+    plain(await ctx.read(guide(), undefined, origin, { refresh: true })),
+    { status: "unavailable", reason: "not_found" },
+  );
+  assert.deepEqual(plain(await ctx.read()), {
+    status: "unavailable",
+    reason: "not_found",
+  });
+  assert.equal(ctx.calls.length, 4);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("refresh downloads one original when both guide kinds reference the identical PDF", async () => {
+  const ctx = setup();
+  const pair = guide();
+  pair.guides.push({ kind: "fitting", url: pair.guides[0].url });
+  await ctx.read(pair);
+  assert.equal(ctx.calls.length, 1);
+  const refreshed = await ctx.read(pair, undefined, origin, { refresh: true });
+  assert.equal(ctx.calls.length, 2);
+  assert.equal(refreshed.files.length, 2);
 });
 
 test("cache entry and byte bounds evict least recently used files", async () => {
