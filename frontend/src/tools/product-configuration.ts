@@ -353,6 +353,20 @@ function inspect(productPath: string): Inspection {
   };
 }
 
+/** Display-only inspection never creates or invalidates a tool capability. */
+export function readProductConfigurationDisplay(productPath: string): Pick<
+  ProductConfiguration,
+  "controls" | "measurements" | "configuredPrice"
+> | null {
+  try {
+    const { controls, measurements, configuredPrice } = inspect(productPath);
+    return { controls, measurements, configuredPrice };
+  } catch {
+    // A theme mid-update or an unsupported form has no verified display state.
+    return null;
+  }
+}
+
 /** One bounded, expiring DOM capability per mounted Roman runtime. */
 export function createProductConfigurationTools() {
   let snapshot:

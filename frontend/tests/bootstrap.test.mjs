@@ -237,19 +237,21 @@ test("the shell waits for a click before requesting runtime or loading images", 
   assert.equal(requests.length, 0);
   assert.equal(document.querySelector("script[data-roman-runtime]"), null);
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   assert.equal(window.history.length, 1);
   button.click();
   assert.equal(hidden(panel()), false);
   assert.equal(panel().tagName, "SECTION");
+  assert.equal(panel().getAttribute("role"), "dialog");
+  assert.equal(panel().getAttribute("aria-modal"), "true");
   assert.equal(panel().getAttribute("aria-label"), "Roman AI Assistant");
   assert.equal(button.getAttribute("aria-expanded"), "true");
   assert.equal(hidden(progress()), false);
   assert.equal(progress().getAttribute("aria-label"), "Loading Roman");
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     true,
   );
   assert.ok(document.querySelector("style[data-roman-layout]"));
@@ -266,7 +268,74 @@ test("the shell waits for a click before requesting runtime or loading images", 
   assert.equal(launcher(), button);
 });
 
-test("traditional navigation restores an open sidebar and starts a new runtime without stealing storefront focus", async (t) => {
+test("fullscreen containment locks storefront scrolling without disabling native product controls", async (t) => {
+  const ctx = setup(t);
+  const body = ctx.document.body;
+  body.style.width = "1280px";
+  const themeStyle = ctx.document.createElement("style");
+  themeStyle.textContent = "body { overflow: auto }";
+  ctx.document.head.append(themeStyle);
+  const product = ctx.document.querySelector("main");
+  const input = ctx.document.createElement("input");
+  const button = ctx.document.createElement("button");
+  product.append(input, button);
+  let changes = 0;
+  let clicks = 0;
+  input.addEventListener("change", () => changes++);
+  button.addEventListener("click", () => clicks++);
+  ctx.launcher().click();
+  assert.equal(ctx.window.getComputedStyle(body).overflow, "hidden");
+  assert.equal(ctx.window.getComputedStyle(ctx.document.documentElement).overflow, "hidden");
+  assert.equal(body.style.width, "1280px");
+  assert.equal(body.style.marginRight, "");
+  assert.equal(product.closest("[inert],[aria-hidden=true],[hidden]"), null);
+  input.value = "500";
+  input.dispatchEvent(new ctx.window.Event("change", { bubbles: true }));
+  button.click();
+  assert.equal(input.value, "500");
+  assert.equal(changes, 1);
+  assert.equal(clicks, 1);
+  input.focus();
+  assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+  ctx.close().click();
+  assert.equal(ctx.window.getComputedStyle(body).overflow, "auto");
+  input.focus();
+  assert.equal(ctx.document.activeElement, input);
+  ctx.launcher().click();
+  ctx.host.remove();
+  await delay(0);
+  input.focus();
+  assert.equal(ctx.document.activeElement, input);
+  assert.equal(ctx.window.getComputedStyle(body).overflow, "auto");
+  assert.equal(body.style.width, "1280px");
+});
+
+test("the fullscreen dialog wraps Tab at its visible controls without trapping ordinary field editing", (t) => {
+  const ctx = setup(t);
+  ctx.launcher().click();
+  const field = ctx.document.createElement("textarea");
+  const disabled = ctx.document.createElement("button");
+  disabled.disabled = true;
+  const invisible = ctx.document.createElement("button");
+  invisible.style.visibility = "hidden";
+  ctx.panel().prepend(field, disabled, invisible);
+  for (const element of [field, disabled, invisible, ctx.close()])
+    element.getClientRects = () => [{ width: 44, height: 44 }];
+  const tab = (element, shiftKey = false) => {
+    const event = new ctx.window.KeyboardEvent("keydown", {
+      key: "Tab", shiftKey, bubbles: true, cancelable: true,
+    });
+    element.dispatchEvent(event);
+    return event;
+  };
+  assert.equal(tab(ctx.close()).defaultPrevented, true);
+  assert.equal(ctx.host.shadowRoot.activeElement, field);
+  assert.equal(tab(field).defaultPrevented, false);
+  assert.equal(tab(field, true).defaultPrevented, true);
+  assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+});
+
+test("traditional navigation restores the fullscreen dialog and keeps focus out of the covered storefront", async (t) => {
   const first = setup(t);
   first.launcher().click();
   const oldMounts = installRuntime(first.window);
@@ -293,15 +362,14 @@ test("traditional navigation restores an open sidebar and starts a new runtime w
       storage: { ...first.window.sessionStorage },
     },
   );
-  const search = next.document.getElementById("store-search");
   assert.equal(next.launcher().getAttribute("aria-expanded"), "true");
   assert.equal(hidden(next.panel()), false);
   assert.equal(hidden(next.progress()), false);
   assert.equal(
-    next.document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    next.document.documentElement.hasAttribute("data-roman-open"),
     true,
   );
-  assert.equal(next.document.activeElement, search);
+  assert.equal(next.host.shadowRoot.activeElement, next.close());
   assert.ok(loadingScript(next.document));
   const newMounts = installRuntime(next.window);
   loadingScript(next.document).dispatchEvent(new next.window.Event("load"));
@@ -310,7 +378,7 @@ test("traditional navigation restores an open sidebar and starts a new runtime w
     "restored runtime did not become ready",
   );
   assert.equal(newMounts[0].open.at(-1), true);
-  assert.equal(next.document.activeElement, search);
+  assert.equal(next.host.shadowRoot.activeElement, next.close());
   assert.equal(next.requests.length, 1);
   assert.deepEqual(next.logs, [], "restoration is not another launcher click");
 });
@@ -333,7 +401,7 @@ test("an explicit close persists across traditional navigation without loading t
   assert.equal(next.requests.length, 0);
   assert.equal(next.host.shadowRoot.querySelector("img"), null);
   assert.equal(
-    next.document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    next.document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
 });
@@ -378,7 +446,7 @@ test("an existing conversation resumes behind a closed panel without focus or la
   assert.equal(ctx.launcher().getAttribute("aria-expanded"), "false");
   assert.equal(ctx.document.querySelector("style[data-roman-layout]"), null);
   assert.equal(
-    ctx.document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    ctx.document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   assert.equal(ctx.document.activeElement.id, "store-search");
@@ -466,7 +534,7 @@ test("malformed saved values leave the sidebar closed without loading assets", a
   }
 });
 
-test("a cached page restore follows the latest saved visibility without moving focus or remounting", async (t) => {
+test("a cached page restore updates modal focus and visibility without remounting", async (t) => {
   const ctx = setup(t);
   ctx.launcher().click();
   const mounts = installRuntime(ctx.window);
@@ -479,6 +547,7 @@ test("a cached page restore follows the latest saved visibility without moving f
   const search = ctx.document.createElement("input");
   ctx.document.querySelector("main").append(search);
   search.focus();
+  assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
   ctx.window.sessionStorage.setItem(openStorageKey, "0");
   ctx.window.dispatchEvent(
     new ctx.window.PageTransitionEvent("pageshow", { persisted: false }),
@@ -492,10 +561,10 @@ test("a cached page restore follows the latest saved visibility without moving f
     new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
   );
   assert.equal(hidden(ctx.panel()), true);
-  assert.equal(ctx.document.activeElement, search);
+  assert.equal(ctx.host.shadowRoot.activeElement, ctx.launcher());
   assert.equal(mounts[0].open.at(-1), false);
   assert.equal(
-    ctx.document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    ctx.document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   ctx.window.sessionStorage.setItem(openStorageKey, "1");
@@ -503,7 +572,7 @@ test("a cached page restore follows the latest saved visibility without moving f
     new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
   );
   assert.equal(hidden(ctx.panel()), false);
-  assert.equal(ctx.document.activeElement, search);
+  assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
   assert.equal(mounts[0].open.at(-1), true);
   assert.equal(mounts.length, 1);
   assert.equal(mounts[0].disposed, 0);
@@ -558,7 +627,7 @@ test("closing during runtime readiness stays closed and reopening keeps the moun
   assert.equal(hidden(panel()), true);
   assert.equal(host.shadowRoot.activeElement, launcher());
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   assert.equal(document.querySelector("style[data-roman-layout]"), null);
@@ -721,7 +790,7 @@ test("same-turn DOM moves preserve a ready mount while full removal disposes and
   await delay(0);
   assert.equal(mounts[0].disposed, 1);
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   assert.equal(document.querySelector("style[data-roman-layout]"), null);
@@ -747,7 +816,7 @@ test("download completion after disconnection cannot mount a detached embed", as
   await delay(0);
   assert.equal(mounts.length, 0);
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   document.body.append(host);
@@ -773,7 +842,7 @@ test("readiness completion after disconnection cannot reopen or retain the old r
   assert.equal(mounts[0].disposed, 1);
   assert.equal(mounts[0].content.isConnected, false);
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     false,
   );
   assert.equal(document.querySelector("style[data-roman-layout]"), null);

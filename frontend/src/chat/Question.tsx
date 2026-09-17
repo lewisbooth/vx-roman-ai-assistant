@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   formatMeasurementAnswer,
   type QuestionPart,
@@ -10,12 +11,14 @@ export function Question({
   disabled,
   voice,
   onAnswer,
+  dock,
 }: {
   part: QuestionPart;
   active: boolean;
   disabled: boolean;
   voice: boolean;
   onAnswer: (part: QuestionPart, answer: string) => Promise<void>;
+  dock?: HTMLElement | null;
 }) {
   const id = useId();
   const text = useRef<HTMLParagraphElement>(null);
@@ -78,7 +81,7 @@ export function Question({
         )}
       </>
     );
-  return (
+  const content = (
     <section
       className="roman-action-panel roman-question"
       aria-labelledby={id}
@@ -165,4 +168,5 @@ export function Question({
       )}
     </section>
   );
+  return dock ? createPortal(content, dock) : content;
 }

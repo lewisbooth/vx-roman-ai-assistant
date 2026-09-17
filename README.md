@@ -1,6 +1,6 @@
 # Roman AI Assistant
 
-A customer assistant foundation for SelectBlinds and Blinds 2go stores. A compact Ask Roman launcher beside the header search bar opens a 400px sidebar, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and persistent measurement drafts. Customer conversations combine Terra text chat, GPT-Live voice captions, selected product cards, PDF-grounded measuring with numeric inputs, fitting guidance and a browsing timeline. Both modes can search, navigate, save product measurements and add the chosen product after one concise conversational configuration review, without another approval panel. Removal, quantity changes and clearing the cart retain shopper review. Confirmed Roman navigation and cart additions appear as centered plain-text events; manual page visits stay quiet model context; additions include submitted dimensions when available. The [embedded admin](admin/README.md#conversation-inspection-and-usage) shows this store's sessions, transcripts, recorded usage and estimated costs from dated model rates. Home visualization remains a later phase.
+A customer assistant foundation for SelectBlinds and Blinds 2go stores. A compact Ask Roman launcher beside the header search bar opens a fullscreen shopping experience, loads the React app on demand and preserves its instance across successful in-place storefront navigation. Normal page loads restore its open/closed state for the current tab. Development stores have a [tool drawer](frontend/README.md#developer-tools) for live catalog search/lookup, theme-owned cart actions and persistent measurement drafts. Customer conversations combine Terra text chat, GPT-Live voice captions, selected product cards, PDF-grounded measuring with numeric inputs, fitting guidance and a browsing timeline. Both modes can search, navigate, save product measurements and add the chosen product after one concise conversational configuration review, without another approval panel. Removal, quantity changes and clearing the cart retain shopper review. Confirmed Roman navigation and cart additions appear as centered plain-text events; manual page visits stay quiet model context; additions include submitted dimensions when available. The [embedded admin](admin/README.md#conversation-inspection-and-usage) shows this store's sessions, transcripts, recorded usage and estimated costs from dated model rates. Home visualization remains a later phase.
 
 Home tiles start a conversation about measuring, style, no-drill products or future visualization. Roman can select supported PDP options, enter confirmed dimensions in mm/cm/in, offer the available measurement guarantee with its native terms and price, and use the theme's separate free-sample control. Product and sample additions remain distinct; unsupported customization controls stay with the theme.
 
@@ -8,11 +8,11 @@ Two React Router apps with Tailwind CSS 4 share one npm installation and lockfil
 
 | Location                                                              | Owns                                                         | Runs on                                   |
 | --------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------- |
-| [frontend/](frontend/README.md)                                       | Customer sidebar and theme navigation                        | Storefront browser; assets on Shopify CDN |
+| [frontend/](frontend/README.md)                                       | Customer experience and theme navigation                        | Storefront browser; assets on Shopify CDN |
 | [admin/](admin/README.md)                                             | Embedded admin console, authentication, webhooks and backend | Local Docker; same image on Azure later   |
 | [extensions/vx-roman-ai-assistant/](extensions/vx-roman-ai-assistant) | Liquid app embed and asset loader                            | Shopify                                   |
 
-Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation and voice models persist customer chat and captions. AI credentials and privileged calls belong on the admin/backend server. OpenAI hosts the models; browser voice audio travels directly over WebRTC. Roman stores captions, not audio. Start voice explicitly after a full page load; in-place navigation and closing the sidebar retain an active connection.
+Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation and voice models persist customer chat and captions. AI credentials and privileged calls belong on the admin/backend server. OpenAI hosts the models; browser voice audio travels directly over WebRTC. Roman stores captions, not audio. Start voice explicitly after a full page load; in-place navigation and closing the assistant retain an active connection.
 
 ## Setup and development
 
@@ -68,6 +68,20 @@ This runs checks, rebuilds the frontend and releases Shopify configuration and e
 After adding the app-proxy scope, open Roman in each development store's Shopify admin and approve the updated permissions. Enable **Assistant icon** under **App embeds** in the target theme, save and refresh the storefront. An app release reaches every store where this app is installed; a theme preview does not isolate it. Use a separate development app registration before experimenting with an app installed on production stores. Preserve the extension UID and `roman-assistant` block handle.
 
 **Run the admin/backend separately** using the [Docker instructions](admin/README.md). It runs locally now; the same image can run on one Azure VM later. Shopify CLI does not host that server. Local Docker development uses an HTTPS tunnel, matching `SHOPIFY_APP_URL` in `.env`, and ignored `shopify.app.local.toml` selected with `shopify app config use local`. Publish that configuration explicitly with `npm run deploy -- --config local`; keep Docker and the tunnel running while using the embedded admin. The checked-in `shopify.app.toml` retains placeholder URLs until a stable host is available. Retain the database volume across deployments. Pushing to GitHub alone publishes neither app.
+
+### Roll back the fullscreen experiment
+
+The source tag `roman-before-fullscreen-20260917` preserves the previous assistant at `4029e35`. The previous Docker image is retained locally as `roman-ai-admin:before-fullscreen-20260917`. No database schema changed; retain the current volume and customer conversations.
+
+To restore the previous UI and backend, with no active voice or pending tool work:
+
+```powershell
+shopify app release --config local --version vx-roman-ai-assistant-20260917-support-approval --allow-updates
+docker image tag roman-ai-admin:before-fullscreen-20260917 roman-ai-admin:latest
+docker compose up -d --no-build admin
+```
+
+The release restores the previous extension on every installed store. Refresh the storefront afterward. Do not rebuild the new checkout during that rollback: it would replace the tagged backend. Use a checkout/worktree at the source tag if source rollback is also needed. Do not restore an older database over newer customer conversations.
 
 ## Conventions and references
 

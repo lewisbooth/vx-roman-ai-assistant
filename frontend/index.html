@@ -53,6 +53,28 @@
         align-items: center;
         gap: 8px;
       }
+      .preview-search {
+        display: flex;
+        align-items: flex-end;
+        max-width: 100%;
+      }
+      .preview-search label {
+        min-width: 0;
+        font-size: 12px;
+      }
+      .preview-search input {
+        box-sizing: border-box;
+        display: block;
+        width: 240px;
+        max-width: 100%;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid #cecbc1;
+        border-radius: 999px;
+        background: #fff;
+        font: inherit;
+        font-size: 16px;
+      }
       [data-testid="menu-account-link"] {
         display: inline-flex;
         align-items: center;
@@ -84,6 +106,17 @@
       <header>
         <main-header>
           <span>Roman storefront preview</span>
+          <div class="preview-search">
+            <label for="preview-search">
+              Search products
+              <input
+                id="preview-search"
+                type="search"
+                data-testid="menu-search-input"
+                placeholder="Search this preview"
+              />
+            </label>
+          </div>
           <div class="header__utilities">
             <button type="button" data-testid="menu-account-link">
               Profile
@@ -93,8 +126,9 @@
       </header>
       <main id="main" tabindex="-1"><!-- roman:page --></main>
       <footer>
-        Open Ask Roman beside Profile to test the sidebar. Use the page links
-        above to navigate.
+        Open Ask Roman beside the search field to try the fullscreen assistant.
+        Use the page links above to navigate; this preview search does not query
+        Shopify.
       </footer>
     </app-provider>
     <roman-ai-assistant
@@ -103,7 +137,6 @@
       data-initial="R"
       data-logo-url="/src/assets/roman-logo.svg"
       data-wordmark-url="/src/assets/roman-wordmark.svg"
-      data-texture-url="/src/assets/ivory-texture.png"
     ></roman-ai-assistant>
     <script type="module" src="/src/bootstrap.ts"></script>
   </body>

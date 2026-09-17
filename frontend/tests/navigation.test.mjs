@@ -684,17 +684,17 @@ test("cart forms keep their native submission behavior", (t) => {
   assert.equal(calls.length, 0);
 });
 
-test("navigation leaves the sidebar shell's layout resources untouched", (t) => {
+test("navigation leaves the fullscreen shell's layout resources untouched", (t) => {
   const { document, navigation } = setup(t);
   const layout = document.createElement("style");
   layout.dataset.romanLayout = "";
   document.head.append(layout);
-  document.documentElement.setAttribute("data-roman-sidebar-open", "");
+  document.documentElement.setAttribute("data-roman-open", "");
   navigation.setSidebarOpen(true);
   navigation.setSidebarOpen(false);
   navigation.dispose();
   assert.equal(
-    document.documentElement.hasAttribute("data-roman-sidebar-open"),
+    document.documentElement.hasAttribute("data-roman-open"),
     true,
   );
   assert.equal(document.querySelector("style[data-roman-layout]"), layout);

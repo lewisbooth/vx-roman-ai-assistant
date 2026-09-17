@@ -1,9 +1,12 @@
-@media (min-width: 1024px) {
-  html[data-roman-sidebar-open] body {
-    width: calc(100% - 400px) !important;
-    margin-right: 400px !important;
-  }
-  html[data-roman-sidebar-open] app-provider .w-screen {
-    width: calc(100vw - 400px);
-  }
+/* Keep Shopify laid out and functional for native product tools behind Roman. */
+html[data-roman-open],
+html[data-roman-open] body {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+html[data-roman-open] body {
+  pointer-events: none;
+}
+html[data-roman-open] roman-ai-assistant {
+  pointer-events: auto;
 }

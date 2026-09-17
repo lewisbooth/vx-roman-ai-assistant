@@ -18,7 +18,11 @@ export function productImagePageUrl(value: string): string {
   return url.href;
 }
 
-function mainImage(source: ParentNode, pageUrl: string): string | undefined {
+export function readProductMainImage(
+  source: ParentNode,
+  pageUrl: string,
+  maxWidth = 480,
+): string | undefined {
   const roots = source.querySelectorAll("app-provider > main#main");
   if (roots.length !== 1) return;
   // These are the theme's initial PDP galleries, not swatches, zoom views,
@@ -61,8 +65,12 @@ function mainImage(source: ParentNode, pageUrl: string): string | undefined {
   const widths = selected.searchParams.getAll("width");
   // The theme already uses Shopify's width transform. Keep that exact asset
   // and version while avoiding a full PDP-sized download for a 176px card.
-  if (widths.length === 1 && /^\d+$/.test(widths[0]) && Number(widths[0]) > 480)
-    selected.searchParams.set("width", "480");
+  if (
+    widths.length === 1 &&
+    /^\d+$/.test(widths[0]) &&
+    Number(widths[0]) > maxWidth
+  )
+    selected.searchParams.set("width", String(maxWidth));
   return selected.href;
 }
 
@@ -78,7 +86,7 @@ export async function loadProductPageImage(
       window.location.pathname,
     );
   if (current?.[1] === new URL(pageUrl).pathname) {
-    const image = mainImage(document, pageUrl);
+    const image = readProductMainImage(document, pageUrl);
     if (image) return image;
   }
   const controller = new AbortController();
@@ -131,7 +139,7 @@ export async function loadProductPageImage(
       .querySelector('link[rel="canonical"]')
       ?.getAttribute("href");
     if (!canonical || productImagePageUrl(canonical) !== pageUrl) return;
-    return mainImage(template.content, pageUrl);
+    return readProductMainImage(template.content, pageUrl);
   } catch {
     signal.throwIfAborted();
     // A display-only timeout/unavailable PDP must not hide its catalog card.

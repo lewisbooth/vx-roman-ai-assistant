@@ -19,6 +19,7 @@ export function Timeline({
   questionDisabled = false,
   voice = false,
   onAnswer,
+  questionDock,
 }: {
   messages: readonly ConversationMessage[];
   session: ConversationClient;
@@ -28,6 +29,7 @@ export function Timeline({
   questionDisabled?: boolean;
   voice?: boolean;
   onAnswer?: (part: QuestionPart, answer: string) => Promise<void>;
+  questionDock?: HTMLElement | null;
 }) {
   const captions = voiceQuestionCaptions(messages);
   // Keep the current question below every widget and later journey event.
@@ -56,6 +58,10 @@ export function Timeline({
     ),
   );
   if (activeRow >= 0) rows.push(...rows.splice(activeRow, 1));
+  let lastCustomer = -1;
+  rows.forEach((row, index) => {
+    if (row.role === "user") lastCustomer = index;
+  });
   return (
     <ol
       className="roman-timeline"
@@ -64,10 +70,19 @@ export function Timeline({
       aria-live="polite"
       aria-relevant="additions text"
     >
-      {rows.map((message) => (
+      {rows.map((message, rowIndex) => (
         <li
           key={message.id}
           className={`roman-message roman-message-${message.role}`}
+          data-current-turn={rowIndex >= lastCustomer ? "true" : undefined}
+          hidden={
+            !!questionDock &&
+            message.parts.every(
+              (part) =>
+                part.type === "question" &&
+                part.invocationId === activeQuestionId,
+            )
+          }
         >
           {message.role !== "context" && (
             <span className="sr-only">
@@ -87,6 +102,11 @@ export function Timeline({
                     disabled={questionDisabled}
                     voice={voice}
                     onAnswer={onAnswer!}
+                    dock={
+                      part.invocationId === activeQuestionId
+                        ? questionDock
+                        : undefined
+                    }
                   />
                 );
               if (part.type === "text")
@@ -153,9 +173,7 @@ export function Timeline({
                 return (
                   <div key={index} className="roman-voice-caption">
                     <span className="roman-voice-label">Voice</span>
-                    <p className="roman-message-text">
-                      {captions.get(part)}
-                    </p>
+                    <p className="roman-message-text">{captions.get(part)}</p>
                   </div>
                 );
               if (part.type === "guides")

@@ -30,7 +30,6 @@ export default defineConfig(({ mode }) => ({
         for (const fileName of [
           "roman-logo.svg",
           "roman-wordmark.svg",
-          "ivory-texture.png",
           "roman-tile-measure-line.png",
           "roman-tile-measure-colour.png",
           "roman-tile-visualize.png",

@@ -109,6 +109,17 @@ function selection(read, control = 0, option = 1) {
   };
 }
 
+test("display-only configuration reads preserve the model's mutation capability", async (t) => {
+  const ctx = setup(t);
+  const original = ctx.read();
+  const display = ctx.readProductConfigurationDisplay(productPath);
+  assert.equal(display.controls[0].options[0].selected, true);
+  assert.equal("configurationId" in display, false);
+  assert.equal(ctx.readProductConfigurationDisplay("/products/wrong"), null);
+  const result = await ctx.configure(selection(original));
+  assert.equal(result.status, "applied");
+});
+
 function guaranteeControls(ctx) {
   const { window, form } = ctx;
   form.querySelector("product-level-insurance").remove();

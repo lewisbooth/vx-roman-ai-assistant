@@ -1,0 +1,178 @@
+.roman-product-stage {
+  box-sizing: border-box;
+  flex: 0 1 32%;
+  width: 32%;
+  max-width: 480px;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px 32px;
+  color: #4e0e0e;
+  align-self: start;
+}
+
+.roman-product-stage-image {
+  position: relative;
+  overflow: hidden;
+  border-radius: 1.5rem;
+  background: #ebe6dc;
+  aspect-ratio: 4 / 5;
+  max-height: min(55dvh, 620px);
+}
+
+.roman-product-stage-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.roman-product-stage-placeholder {
+  display: grid;
+  place-content: center;
+  height: 100%;
+  font-size: 1.25rem;
+  color: #745d52;
+}
+
+.roman-product-stage-content {
+  padding: 1.4rem 0.25rem 0;
+}
+.roman-product-stage-eyebrow {
+  margin: 0 0 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font:
+    500 0.68rem/1.4 system-ui,
+    sans-serif;
+  color: #866c5f;
+}
+.roman-product-stage h2 {
+  margin: 0;
+  font-size: clamp(1.35rem, 1.8vw, 2.15rem);
+  font-weight: 400;
+  line-height: 1.22;
+  text-wrap: balance;
+}
+.roman-product-stage-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.7rem;
+  margin: 1rem 0 0;
+  font-size: 0.8rem;
+  color: #79665c;
+}
+.roman-product-stage-price > span {
+  font-size: 1.6rem;
+  color: #4e0e0e;
+}
+.roman-product-stage-measurements {
+  margin: 0.8rem 0 0;
+  font-size: 1.05rem;
+}
+.roman-product-stage-measurements > span {
+  color: #79665c;
+  font-size: 0.8rem;
+}
+.roman-product-stage-configuration {
+  margin-top: 1rem;
+  border-top: 1px solid #4e0e0e22;
+  font-size: 0.85rem;
+}
+.roman-product-stage-configuration summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0.8rem 0;
+}
+.roman-product-stage-configuration summary:focus-visible {
+  outline: 2px solid #4e0e0e;
+  outline-offset: 3px;
+}
+.roman-product-stage-configuration summary span {
+  color: #79665c;
+  margin-left: 0.45rem;
+}
+.roman-product-stage-configuration dl {
+  margin: 0;
+  max-height: 22dvh;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.roman-product-stage-configuration dl > div {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1rem;
+  padding: 0.45rem 0;
+}
+.roman-product-stage-configuration dt {
+  color: #79665c;
+}
+.roman-product-stage-configuration dd {
+  margin: 0;
+  text-align: right;
+}
+.roman-product-stage-loading {
+  position: absolute;
+  inset: auto 0.8rem 0.8rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.8rem;
+  margin: 0;
+  background: #f7f5efed;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+@media (max-width: 1023px) {
+  .roman-product-stage {
+    flex: 0 1 auto;
+    width: 100%;
+    max-width: none;
+    max-height: 24dvh;
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 1rem;
+    padding: 12px 24px;
+  }
+  .roman-product-stage-image {
+    width: 88px;
+    height: 110px;
+    border-radius: 0.85rem;
+  }
+  .roman-product-stage-content {
+    padding: 0;
+  }
+  .roman-product-stage-eyebrow {
+    font-size: 0.6rem;
+    margin-bottom: 0.35rem;
+  }
+  .roman-product-stage h2 {
+    font-size: 1.15rem;
+    text-wrap: initial;
+  }
+  .roman-product-stage-price {
+    margin-top: 0.4rem;
+    font-size: 0.7rem;
+  }
+  .roman-product-stage-price > span {
+    font-size: 1.1rem;
+  }
+  .roman-product-stage-measurements {
+    margin-top: 0.3rem;
+    font-size: 0.85rem;
+  }
+  .roman-product-stage-configuration {
+    margin-top: 0.4rem;
+    font-size: 0.75rem;
+  }
+  .roman-product-stage-configuration dl {
+    max-height: 18dvh;
+  }
+  .roman-product-stage-loading {
+    inset: auto 0 0;
+    border-radius: 0;
+    padding: 0.4rem;
+    font-size: 0.7rem;
+  }
+}

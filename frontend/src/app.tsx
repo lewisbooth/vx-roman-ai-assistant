@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+/* eslint-disable jsx-a11y/no-noninteractive-tabindex, jsx-a11y/no-noninteractive-element-interactions -- The named history region is focusable for native keyboard scrolling; its handlers only track scroll intent. */
 import { createPortal } from "react-dom";
 import { createMemoryRouter, useRouteError } from "react-router";
 import { Composer } from "./chat/Composer";
@@ -15,6 +16,8 @@ import { Welcome } from "./chat/Welcome";
 import { VoiceControls } from "./chat/VoiceControls";
 import { ReplyActivity } from "./chat/ReplyActivity";
 import { ToolApproval } from "./chat/ToolApproval";
+import { ProductStage } from "./chat/ProductStage";
+import { CartStage } from "./chat/CartStage";
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
 import type { AssistantTools } from "./tools";
@@ -54,6 +57,9 @@ function Assistant({
   const viewport = useRef<HTMLDivElement>(null);
   const conversationView = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const manualScroll = useRef(false);
+  const [questionDock, setQuestionDock] = useState<HTMLDivElement | null>(null);
+  const [readingHistory, setReadingHistory] = useState(false);
   const messages = useMemo(
     () =>
       state.optimisticMessage
@@ -217,9 +223,18 @@ function Assistant({
 
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
-    if (hasMessages && following.current && scroll)
+    if (hasMessages && following.current && scroll) {
+      manualScroll.current = false;
       scroll.scrollTop = scroll.scrollHeight;
+    }
   }, [hasMessages]);
+
+  useLayoutEffect(() => {
+    if (!viewport.current || !window.ResizeObserver) return;
+    const observer = new ResizeObserver(followConversation);
+    observer.observe(viewport.current);
+    return () => observer.disconnect();
+  }, [followConversation]);
 
   useLayoutEffect(followConversation, [
     messages,
@@ -234,119 +249,176 @@ function Assistant({
         className="roman-conversation"
         hidden={toolsOpen}
       >
-        {(hasMessages || state.restoring || state.conversation) && (
-          <header className="roman-chat-header">
-            {state.conversation?.status === "active" && (
-              <button
-                type="button"
-                className="roman-end-chat"
-                disabled={
-                  ending || answering || state.pending || state.restoring
-                }
-                onClick={() => void endChat()}
-              >
-                {ending ? "Ending…" : "End chat"}
-              </button>
-            )}
+        <header className="roman-chat-header">
+          <div className="roman-header-brand">
             <img
               src={logoUrl}
               alt="Roman by SelectBlinds"
-              width={95}
-              height={40}
-              className="h-[40px] w-[95px] object-contain"
+              width={121}
+              height={50}
             />
-          </header>
-        )}
-        <div
-          ref={viewport}
-          className="roman-chat-scroll"
-          onScroll={(event) => {
-            const scroll = event.currentTarget;
-            following.current =
-              scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
-          }}
-        >
-          {state.restoring ? (
-            <p className="roman-chat-restoring" role="status">
-              Restoring your conversation…
-            </p>
-          ) : hasMessages ? (
-            <Timeline
-              messages={messages!}
-              session={session}
-              navigation={navigation}
-              onContentChange={followConversation}
-              activeQuestionId={activeQuestion?.invocationId}
-              questionDisabled={
-                ending ||
-                answering ||
-                (!!activeQuestion?.measurement && storefront.pending) ||
-                state.pending ||
-                !!state.conversation?.busy ||
-                waitingForVoice ||
-                (voice.status === "error" && voice.muted) ||
-                voice.status === "starting" ||
-                voice.status === "stopping"
-              }
-              voice={localVoice || waitingForVoice}
-              onAnswer={answerQuestion}
-            />
-          ) : (
-            <Welcome
-              logoUrl={logoUrl}
-              busy={textBusy}
-              onStart={(text) => void startTopic(text)}
-            />
+            <span>Your digital shop-at-home advisor</span>
+          </div>
+          {state.conversation?.status === "active" && (
+            <button
+              type="button"
+              className="roman-end-chat"
+              disabled={ending || answering || state.pending || state.restoring}
+              onClick={() => void endChat()}
+            >
+              {ending ? "Ending…" : "End chat"}
+            </button>
           )}
-          <ReplyActivity
-            state={state}
-            ending={ending}
-            onContentChange={followConversation}
-          />
-        </div>
-        {state.approval && (
-          <ToolApproval approval={state.approval} session={session} />
-        )}
-        <VoiceControls
-          session={session}
-          voice={voice}
-          waiting={waitingForVoice}
-        />
-        {voiceDock &&
-          (localVoice || state.approval) &&
-          createPortal(
-            <>
-              {state.approval && (
-                <ToolApproval
-                  approval={state.approval}
+        </header>
+        <div className="roman-workspace">
+          {hasMessages && <ProductStage navigation={navigation} />}
+          <CartStage navigation={navigation} session={session} />
+          <div className="roman-dialogue">
+            <div
+              ref={viewport}
+              className="roman-chat-scroll"
+              tabIndex={0}
+              role="region"
+              aria-label="Conversation history"
+              onWheel={(event) => {
+                if (event.deltaY) manualScroll.current = true;
+              }}
+              onTouchMove={() => {
+                manualScroll.current = true;
+              }}
+              onPointerDown={(event) => {
+                if (event.target === event.currentTarget)
+                  manualScroll.current = true;
+              }}
+              onKeyDown={(event) => {
+                if (
+                  event.target === event.currentTarget &&
+                  [
+                    "ArrowUp",
+                    "ArrowDown",
+                    "PageUp",
+                    "PageDown",
+                    "Home",
+                    "End",
+                    " ",
+                  ].includes(event.key)
+                )
+                  manualScroll.current = true;
+              }}
+              onScroll={(event) => {
+                const scroll = event.currentTarget;
+                const atBottom =
+                  scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <
+                  48;
+                if (atBottom) following.current = true;
+                else if (manualScroll.current) following.current = false;
+                manualScroll.current = false;
+                setReadingHistory(!following.current);
+              }}
+            >
+              {state.restoring ? (
+                <p className="roman-chat-restoring" role="status">
+                  Restoring your conversation…
+                </p>
+              ) : hasMessages ? (
+                <Timeline
+                  messages={messages!}
                   session={session}
-                  dock
+                  navigation={navigation}
+                  onContentChange={followConversation}
+                  activeQuestionId={activeQuestion?.invocationId}
+                  questionDisabled={
+                    ending ||
+                    answering ||
+                    (!!activeQuestion?.measurement && storefront.pending) ||
+                    state.pending ||
+                    !!state.conversation?.busy ||
+                    waitingForVoice ||
+                    (voice.status === "error" && voice.muted) ||
+                    voice.status === "starting" ||
+                    voice.status === "stopping"
+                  }
+                  voice={localVoice || waitingForVoice}
+                  onAnswer={answerQuestion}
+                  questionDock={questionDock}
+                />
+              ) : (
+                <Welcome
+                  logoUrl={logoUrl}
+                  busy={textBusy}
+                  onStart={(text) => void startTopic(text)}
                 />
               )}
-              {localVoice && (
-                <VoiceControls session={session} voice={voice} dock />
+              <ReplyActivity
+                state={state}
+                ending={ending}
+                onContentChange={followConversation}
+              />
+            </div>
+            {readingHistory && hasMessages && (
+              <button
+                className="roman-return-current"
+                type="button"
+                onClick={() => {
+                  following.current = true;
+                  setReadingHistory(false);
+                  followConversation();
+                }}
+              >
+                Back to the conversation <span aria-hidden="true">↓</span>
+              </button>
+            )}
+            <div
+              className="roman-response-dock"
+              ref={setQuestionDock}
+              aria-live={voiceMode ? "off" : "polite"}
+              aria-relevant="additions text"
+            />
+            {state.approval && (
+              <ToolApproval approval={state.approval} session={session} />
+            )}
+            <VoiceControls
+              session={session}
+              voice={voice}
+              waiting={waitingForVoice}
+            />
+            {voiceDock &&
+              (localVoice || state.approval) &&
+              createPortal(
+                <>
+                  {state.approval && (
+                    <ToolApproval
+                      approval={state.approval}
+                      session={session}
+                      dock
+                    />
+                  )}
+                  {localVoice && (
+                    <VoiceControls session={session} voice={voice} dock />
+                  )}
+                </>,
+                voiceDock,
               )}
-            </>,
-            voiceDock,
-          )}
-        <Composer
-          key={chatVersion}
-          hidden={voiceMode}
-          busy={textBusy}
-          disabled={ending || state.restoring}
-          error={state.error || startError || endError}
-          onClearError={() => {
-            setEndError(null);
-            setStartError(null);
-            session.clearError();
-          }}
-          onSend={sendMessage}
-          onStartVoice={
-            !localVoice && !waitingForVoice
-              ? () => session.startVoice()
-              : undefined
-          }
-        />
+            <Composer
+              key={chatVersion}
+              hidden={voiceMode}
+              busy={textBusy}
+              disabled={ending || state.restoring}
+              error={state.error || startError || endError}
+              onClearError={() => {
+                setEndError(null);
+                setStartError(null);
+                session.clearError();
+              }}
+              onSend={sendMessage}
+              onStartVoice={
+                !localVoice && !waitingForVoice
+                  ? () => session.startVoice()
+                  : undefined
+              }
+            />
+          </div>
+        </div>
       </div>
       {showTools && (
         <ToolDrawer tools={tools} open={toolsOpen} onOpenChange={setToolsOpen}>

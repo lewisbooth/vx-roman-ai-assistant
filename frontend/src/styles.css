@@ -1,6 +1,7 @@
 @layer theme, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./chat/product-stage.css";
 @source "./app.tsx";
 @source "./chat";
 @source "./tools/ToolDrawer.tsx";
@@ -24,17 +25,154 @@
   }
 
   .roman-chat-header {
-    @apply relative flex h-[80px] shrink-0 items-center justify-center px-[78px];
+    @apply relative flex h-[88px] shrink-0 items-center px-[32px];
+  }
+
+  .roman-header-brand {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+  }
+  .roman-header-brand img {
+    width: 121px;
+    height: 50px;
+    object-fit: contain;
+  }
+  .roman-header-brand > span {
+    font-size: 14px;
+    color: #80756b;
+  }
+
+  .roman-workspace {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    width: 100%;
+    max-width: 1760px;
+    margin: 0 auto;
+  }
+  .roman-dialogue {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+  }
+  .roman-cart-stage {
+    width: 36%;
+    max-width: 520px;
+    flex-shrink: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: 28px 32px;
+  }
+  .roman-cart-stage h2 {
+    font-size: 36px;
+    font-weight: 400;
+    margin: 12px 0 28px;
+  }
+  .roman-stage-eyebrow {
+    font:
+      500 11px/1.4 system-ui,
+      sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #866c5f;
+  }
+  .roman-cart-stage ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .roman-cart-stage li {
+    border-bottom: 1px solid #e3e0d8;
+    padding: 20px 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 15px;
+  }
+  .roman-cart-stage h3 {
+    flex-basis: 100%;
+    font-size: 21px;
+    line-height: 1.35;
+    font-weight: 400;
+    margin: 0;
+  }
+  .roman-cart-stage li strong {
+    margin-left: auto;
+  }
+  .roman-cart-total {
+    display: flex;
+    justify-content: space-between;
+    margin: 28px 0;
+    font-size: 21px;
+  }
+  .roman-checkout {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    padding: 18px;
+    border-radius: 30px;
+    color: #f7f5ef;
+    background: #4e0e0e;
+    text-decoration: none;
+  }
+  .roman-cart-note {
+    margin-top: 12px;
+    font-size: 12px;
+    color: #80756b;
+    text-align: center;
+  }
+  .roman-response-dock {
+    flex-shrink: 0;
+    width: min(100%, 840px);
+    margin: 0 auto;
+    padding: 0 28px;
+    max-height: 38dvh;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .roman-response-dock:empty {
+    display: none;
+  }
+  .roman-response-dock .roman-question {
+    margin: 10px 0;
+    text-align: center;
+  }
+  .roman-response-dock .roman-action-buttons {
+    justify-content: center;
+  }
+  .roman-return-current {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    border: 1px solid #e3d9cd;
+    border-radius: 30px;
+    background: #fffdf8;
+    color: #4e0e0e;
+    padding: 10px 18px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 4px 20px #4e0e0e12;
   }
 
   .roman-end-chat {
-    @apply absolute top-[18px] left-[14px] min-h-[44px] cursor-pointer rounded-full border-0 bg-transparent px-[10px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
+    @apply absolute top-[18px] right-[112px] min-h-[44px] cursor-pointer rounded-full border-0 bg-transparent px-[10px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
   }
 
   .roman-chat-scroll {
     @apply relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain;
     scrollbar-gutter: stable;
+    display: flex;
+    flex-direction: column;
+    scroll-padding: 28px;
   }
 
   .roman-chat-restoring {
@@ -42,19 +180,36 @@
   }
 
   .roman-timeline {
-    @apply m-0 flex list-none flex-col gap-[24px] px-[26px] pt-[19px] pb-[24px];
+    @apply flex list-none flex-col gap-[28px] px-[36px] pt-[32px] pb-[28px];
+    width: 100%;
+    max-width: 1160px;
+    margin: auto;
+    flex-shrink: 0;
   }
 
   .roman-message {
-    @apply min-w-0 text-[15px] leading-[1.5] text-[#402b2b];
+    @apply min-w-0 text-[21px] leading-[1.55] text-[#402b2b];
+  }
+  .roman-message:not([data-current-turn]) {
+    opacity: 0.65;
+    font-size: 17px;
+  }
+  .roman-message:not([data-current-turn]):is(:hover, :focus-within) {
+    opacity: 1;
   }
 
   .roman-message-user {
-    @apply ml-auto max-w-[calc(100%-38px)] rounded-[14px] bg-[#e3e0d8] px-[14px] py-[9px];
+    @apply mx-auto max-w-[760px] rounded-[24px] bg-[#eee9df] px-[22px] py-[12px] text-center;
   }
 
   .roman-message-assistant {
     @apply w-full;
+  }
+  .roman-message-assistant :is(.roman-rich-text, .roman-voice-caption),
+  .roman-message-assistant > .roman-message-parts > .roman-message-text {
+    max-width: 780px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .roman-message-parts {
@@ -159,7 +314,7 @@
   }
 
   .roman-product-scroll {
-    @apply max-w-full overflow-x-auto overscroll-x-contain rounded-[14px] pb-[8px];
+    @apply max-w-full overflow-x-auto overscroll-x-contain rounded-[22px] pb-[12px];
   }
 
   .roman-product-carousel {
@@ -190,7 +345,7 @@
 
   .roman-carousel-previous,
   .roman-carousel-next {
-    @apply absolute top-[46px] z-30 flex size-[44px] cursor-pointer items-center justify-center rounded-full border border-solid border-[#e3e0d8] bg-[#f7f5ef] p-[12px] text-[#4e0e0e];
+    @apply absolute top-[120px] z-30 flex size-[44px] cursor-pointer items-center justify-center rounded-full border border-solid border-[#e3e0d8] bg-[#f7f5ef] p-[12px] text-[#4e0e0e];
   }
 
   .roman-carousel-previous {
@@ -241,27 +396,31 @@
   }
 
   .roman-product-list {
-    @apply m-0 flex list-none gap-[10px] p-0;
+    @apply m-0 flex list-none gap-[18px] p-0;
   }
 
   .roman-product-list > li {
-    @apply w-[176px] shrink-0;
+    @apply w-[280px] shrink-0;
   }
 
   .roman-product-card {
-    @apply flex h-full flex-col overflow-hidden rounded-[14px] border border-solid border-[#e3e0d8] bg-white pb-[14px] text-[#402b2b] no-underline;
+    @apply flex h-full flex-col overflow-hidden rounded-[22px] border border-solid border-[#e3e0d8] bg-[#fffdf8] pb-[20px] text-[#402b2b] no-underline;
+    transition: border-color 150ms ease;
+  }
+  .roman-product-card:hover {
+    border-color: #4e0e0e;
   }
 
   .roman-product-card img {
-    @apply block h-[140px] w-full shrink-0 object-cover;
+    @apply block h-[260px] w-full shrink-0 object-cover;
   }
 
   .roman-product-title {
-    @apply px-[12px] pt-[12px] text-[15px] leading-[1.3];
+    @apply px-[18px] pt-[18px] text-[19px] leading-[1.3];
   }
 
   .roman-product-price {
-    @apply px-[12px] pt-[6px] text-[13px] leading-[1.4] text-[#545046];
+    @apply px-[18px] pt-[8px] text-[15px] leading-[1.4] text-[#545046];
   }
 
   .roman-products-note {
@@ -303,6 +462,11 @@
 
   .roman-reply-activity {
     @apply m-0 px-[26px] pb-[24px] text-[14px] leading-[20px] text-[#797366];
+    width: 100%;
+    max-width: 840px;
+    margin: 0 auto;
+    text-align: center;
+    flex-shrink: 0;
   }
 
   .roman-reply-activity span {
@@ -337,7 +501,7 @@
   }
 
   .roman-action-panel {
-    @apply rounded-[14px] border-2 border-solid border-transparent bg-[#f7f5ef] p-[14px] text-[#4e0e0e];
+    @apply rounded-[22px] border-2 border-solid border-transparent bg-[#f7f5ef] p-[20px] text-[#4e0e0e];
     position: relative;
     isolation: isolate;
     box-shadow: 0 6px 18px #4e0e0e26;
@@ -404,7 +568,7 @@
   }
 
   .roman-action-buttons button {
-    @apply min-h-[44px] max-w-full cursor-pointer rounded-[12px] border border-solid border-[#4e0e0e66] bg-white px-[12px] py-[9px] text-left text-[14px] leading-[1.35] text-[#4e0e0e] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
+    @apply min-h-[48px] max-w-full cursor-pointer rounded-[14px] border border-solid border-[#4e0e0e66] bg-white px-[18px] py-[12px] text-center text-[16px] leading-[1.35] text-[#4e0e0e] [overflow-wrap:anywhere] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
     transition:
       background-color 160ms ease,
@@ -491,6 +655,8 @@
 
   .roman-tools {
     @apply h-full min-h-0 overflow-y-auto overscroll-contain px-[20px] pt-[12px] pb-[24px] text-[13px] text-[#545046];
+    width: min(100%, 960px);
+    margin: 0 auto;
     padding-bottom: max(24px, env(safe-area-inset-bottom));
   }
 
@@ -509,6 +675,8 @@
   .roman-composer,
   .roman-voice-composer {
     @apply z-10 shrink-0 px-[26px] pt-[14px] pb-[24px];
+    width: min(100%, 840px);
+    margin: 0 auto;
     padding-bottom: max(24px, env(safe-area-inset-bottom));
     background: linear-gradient(transparent, #f7f5ef 14px);
   }
@@ -614,6 +782,9 @@
 
   .roman-tool-approval {
     @apply mx-[16px] my-[8px] shrink-0 text-[15px] leading-[1.5];
+    width: min(calc(100% - 32px), 780px);
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .roman-tool-approval h2 {
@@ -732,27 +903,30 @@
   }
 
   .roman-welcome {
-    @apply flex w-full flex-col items-center px-[26px] pt-[107px] pb-[24px] text-center;
+    @apply flex w-full flex-col items-center px-[32px] py-[32px] text-center;
+    margin: auto;
+    flex-shrink: 0;
   }
 
   .roman-welcome-logo {
-    @apply h-[50px] w-[121px] shrink-0 object-contain;
+    display: none;
   }
 
   .roman-welcome-title {
-    @apply mt-[57px] mb-0 min-h-[128px] w-[303px] max-w-full font-normal text-[41.809px] leading-[0.88575] tracking-[-0.02em];
+    @apply m-0 w-[900px] max-w-full font-normal leading-[1.05] tracking-[-0.045em];
+    font-size: clamp(40px, 5.5vw, 78px);
   }
 
   .roman-welcome-question {
-    @apply mt-[69px] mb-0 text-[18px] leading-[1.2] tracking-[-0.02em];
+    @apply mt-[32px] mb-0 text-[20px] leading-[1.4] tracking-[-0.02em];
   }
 
   .roman-welcome-tiles {
-    @apply mt-[19px] grid w-full max-w-[344px] grid-cols-2 gap-x-[10px] gap-y-[12px];
+    @apply mt-[28px] grid w-full max-w-[1000px] grid-cols-4 gap-[18px];
   }
 
   .roman-welcome-tile {
-    @apply flex min-h-[185px] min-w-0 cursor-pointer flex-col items-center overflow-hidden rounded-[16px] border border-solid border-[#e3e0d8] bg-white px-[4px] pt-[16px] pb-[23px] text-[#402b2b] opacity-100 disabled:cursor-default [box-shadow:0_2px_0_#00000014];
+    @apply flex min-h-[200px] min-w-0 cursor-pointer flex-col items-center overflow-hidden rounded-[22px] border border-solid border-[#e3e0d8] bg-[#fffdf8] px-[10px] pt-[20px] pb-[24px] text-[#402b2b] opacity-100 disabled:cursor-default [box-shadow:0_6px_30px_#4e0e0e06];
     font: inherit;
   }
 
@@ -773,25 +947,97 @@
   }
 
   .roman-tile-title {
-    @apply block text-[16px] leading-[24px];
+    @apply mt-[12px] block text-[19px] leading-[24px];
   }
 
   .roman-tile-description {
     @apply block text-[13px] leading-[20px] text-[#545046];
   }
 
-  @media (max-width: 639px) {
+  @media (max-width: 1023px) {
+    .roman-workspace {
+      flex-direction: column;
+    }
+    .roman-cart-stage {
+      width: 100%;
+      max-width: none;
+      max-height: 32dvh;
+      padding: 12px 24px;
+    }
+    .roman-cart-stage h2 {
+      font-size: 26px;
+      margin: 8px 0 12px;
+    }
+  }
+  @media (max-width: 767px) {
+    .roman-chat-header {
+      height: 68px;
+      padding: 0 16px;
+    }
+    .roman-header-brand img {
+      width: 95px;
+      height: 40px;
+    }
+    .roman-header-brand > span {
+      display: none;
+    }
+    .roman-end-chat {
+      right: 98px;
+      top: 12px;
+      font-size: 11px;
+    }
+    .roman-workspace {
+      flex-direction: column;
+    }
+    .roman-dialogue {
+      width: 100%;
+    }
+    .roman-timeline {
+      padding: 18px 18px 20px;
+      gap: 20px;
+    }
+    .roman-message {
+      font-size: 18px;
+    }
+    .roman-message:not([data-current-turn]) {
+      font-size: 15px;
+    }
+    .roman-response-dock {
+      padding: 0 16px;
+      max-height: 34dvh;
+    }
+    .roman-action-panel {
+      padding: 14px;
+      border-radius: 18px;
+    }
+    .roman-action-buttons button {
+      font-size: 14px;
+      padding: 10px 12px;
+    }
+    .roman-product-list > li {
+      width: 230px;
+    }
+    .roman-product-card img {
+      height: 210px;
+    }
+    .roman-product-title {
+      font-size: 17px;
+    }
+    .roman-carousel-previous,
+    .roman-carousel-next {
+      top: 90px;
+    }
     .roman-welcome {
       @apply px-[16px] pb-[16px];
       padding-top: max(12px, env(safe-area-inset-top));
     }
 
     .roman-welcome-logo {
-      @apply h-[40px] w-[95px] self-start;
+      display: none;
     }
 
     .roman-welcome-title {
-      @apply mt-[24px] min-h-0 text-[35px] leading-[1];
+      @apply mt-[12px] min-h-0 text-[40px] leading-[1.06];
     }
 
     .roman-welcome-question {
@@ -799,7 +1045,7 @@
     }
 
     .roman-welcome-tiles {
-      @apply mt-[14px] gap-[10px];
+      @apply mt-[20px] max-w-[440px] grid-cols-2 gap-[10px];
     }
 
     .roman-welcome-tile {

@@ -1149,6 +1149,9 @@ test("new messages preserve a reader's scroll position and resume following at t
     "Initial new content did not follow the conversation",
   );
   viewport.scrollTop = 100;
+  viewport.dispatchEvent(
+    new window.WheelEvent("wheel", { deltaY: -100, bubbles: true }),
+  );
   viewport.dispatchEvent(new window.Event("scroll"));
   height = 1300;
   append("Third reply");
@@ -1157,6 +1160,14 @@ test("new messages preserve a reader's scroll position and resume following at t
     "Third reply did not render",
   );
   assert.equal(viewport.scrollTop, 100);
+  const resume = container.querySelector(".roman-return-current");
+  assert.ok(resume, "A reader can return to the active turn explicitly");
+  resume.click();
+  await until(
+    () => viewport.scrollTop === 1300,
+    "Return to conversation did not scroll",
+  );
+  assert.equal(container.querySelector(".roman-return-current"), null);
   viewport.scrollTop = 1100;
   viewport.dispatchEvent(new window.Event("scroll"));
   height = 1500;
@@ -1734,6 +1745,9 @@ test("late product loading follows the transcript only while the reader stays at
         });
         if (!following) {
           viewport.scrollTop = 100;
+          viewport.dispatchEvent(
+            new ctx.window.WheelEvent("wheel", { deltaY: -100, bubbles: true }),
+          );
           viewport.dispatchEvent(new ctx.window.Event("scroll"));
         }
         resolve(catalog);
@@ -2270,13 +2284,17 @@ test("easy answers render once beneath all cards with a labelled literal questio
   assert.ok(widget, "Question widget must be visible");
   assert.ok(widget.classList.contains("roman-action-panel"));
   assert.equal(
+    ctx.container
+      .querySelector(".roman-response-dock")
+      .getAttribute("aria-live"),
+    "polite",
+  );
+  assert.equal(
     widget.querySelectorAll(".roman-action-buttons button").length,
     row.parts[0].answers.length,
   );
   assert.ok(
-    ctx.container
-      .querySelector(".roman-timeline")
-      .lastElementChild.contains(widget),
+    ctx.container.querySelector(".roman-response-dock").contains(widget),
     "Question must follow all cards",
   );
   assert.ok(parts.querySelector(".roman-guides"));
@@ -2360,8 +2378,8 @@ test("journey activity leaves choices available but text and voice customer repl
     assert.ok(ctx.container.querySelector(".roman-question button"));
     assert.ok(
       ctx.container
-        .querySelector(".roman-timeline")
-        .lastElementChild.querySelector(".roman-question"),
+        .querySelector(".roman-response-dock")
+        .querySelector(".roman-question"),
       "The active question must remain beneath journey activity",
     );
     const reply = message("reply", "user", "I prefer privacy");

@@ -117,6 +117,10 @@ class RomanAssistant extends HTMLElement {
   #onPageShow = (event: PageTransitionEvent) => {
     if (event.persisted) this.#restore();
   };
+  #onFocus = (event: FocusEvent) => {
+    if (this.#open && !event.composedPath().includes(this.#panel!))
+      this.#closeButton?.focus({ preventScroll: true });
+  };
 
   #restore() {
     const open = savedState() === "1";
@@ -163,25 +167,21 @@ class RomanAssistant extends HTMLElement {
     panel.id = `roman-panel-${crypto.randomUUID()}`;
     panel.dataset.romanPanel = "";
     panel.ariaLabel = this.#launcher!.ariaLabel;
+    panel.role = "dialog";
+    panel.ariaModal = "true";
     panel.className = "roman-panel";
     // Static markup only. Theme-provided URLs are assigned as DOM properties.
     panel.innerHTML = `
-<img class=roman-texture alt="" hidden>
-<div data-roman-content class=roman-content-scroll hidden></div>
+<div data-roman-content class=roman-frame hidden></div>
 <div data-roman-loading class=roman-loading>
-<img class=roman-loading-logo alt="Roman by SelectBlinds">
-<div class=roman-progress-track role=progressbar aria-label="Loading Roman"><div class=roman-progress></div></div>
-<p class=roman-loading-error role=alert hidden></p>
+<img class=roman-brand alt="Roman by SelectBlinds">
+<div class=roman-track role=progressbar aria-label="Loading Roman"><div class=roman-progress></div></div>
+<p class=roman-error role=alert hidden></p>
 <button data-roman-retry class=roman-retry type=button hidden>Retry</button>
 </div>
-<button class=roman-close type=button aria-label="Close assistant"><svg width=20 height=20 viewBox="0 0 20 20" aria-hidden=true><path d="M15 5L5 15M5 5L15 15" stroke=#4e0e0e stroke-width=1.67 stroke-linecap=round /></svg></button>`;
+<button class=roman-close type=button aria-label="Close assistant"><span aria-hidden=true>×</span></button>`;
     const query = panel.querySelector.bind(panel);
-    const texture = query<HTMLImageElement>(".roman-texture")!;
-    if (this.dataset.textureUrl) {
-      texture.src = this.dataset.textureUrl;
-      texture.hidden = false;
-    }
-    const logo = query<HTMLImageElement>(".roman-loading-logo")!;
+    const logo = query<HTMLImageElement>(".roman-brand")!;
     if (this.dataset.logoUrl) logo.src = this.dataset.logoUrl;
     this.#panel = panel;
     this.#closeButton = query<HTMLButtonElement>(".roman-close")!;
@@ -193,6 +193,18 @@ class RomanAssistant extends HTMLElement {
     this.#closeButton.addEventListener("click", () => this.#setOpen(false));
     this.#retryButton.addEventListener("click", () => void this.#start(true));
     panel.addEventListener("keydown", (event) => {
+      if (event.key === "Tab" && !event.defaultPrevented) {
+        const controls = [...panel.querySelectorAll<HTMLElement>(
+          "a[href],button,input,textarea,select,[tabindex]",
+        )].filter((element) => element.tabIndex >= 0 &&
+          !element.matches(":disabled") && element.getClientRects().length &&
+          getComputedStyle(element).visibility !== "hidden");
+        const edge = event.shiftKey ? controls[0] : controls.at(-1);
+        if (!edge || this.shadowRoot!.activeElement === edge) {
+          event.preventDefault();
+          (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+        }
+      }
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       event.stopPropagation();
@@ -215,14 +227,17 @@ class RomanAssistant extends HTMLElement {
     this.#panel!.hidden = !open;
     this.#launcher!.ariaExpanded = String(open);
     this.#headerLauncher?.sync();
-    document.documentElement.toggleAttribute("data-roman-sidebar-open", open);
-    if (open) document.head.append(this.#layout!);
-    else this.#layout?.remove();
-    this.#runtime?.setOpen(open);
-    if (focus) {
-      if (open) this.#closeButton?.focus();
-      else this.#headerLauncher?.focus();
+    document.documentElement.toggleAttribute("data-roman-open", open);
+    if (open) {
+      document.head.append(this.#layout!);
+      document.addEventListener("focusin", this.#onFocus);
+    } else {
+      this.#layout?.remove();
+      document.removeEventListener("focusin", this.#onFocus);
     }
+    this.#runtime?.setOpen(open);
+    if (open) this.#closeButton?.focus({ preventScroll: true });
+    else if (focus) this.#headerLauncher?.focus();
     if (open && this.#state === "idle") void this.#start();
   }
 
@@ -281,12 +296,13 @@ class RomanAssistant extends HTMLElement {
       if (this.isConnected) return;
       ++this.#generation;
       window.removeEventListener("pageshow", this.#onPageShow);
+      document.removeEventListener("focusin", this.#onFocus);
       this.#headerLauncher?.dispose();
       this.#headerLauncher = undefined;
       this.#runtime?.dispose();
       this.#runtime = undefined;
       this.#layout?.remove();
-      document.documentElement.removeAttribute("data-roman-sidebar-open");
+      document.documentElement.removeAttribute("data-roman-open");
       this.shadowRoot?.replaceChildren();
       this.#launcher = undefined;
       this.#panel = undefined;
