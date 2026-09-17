@@ -865,6 +865,35 @@ test("sample outcomes continue contextually without replaying an addition or res
   assert.match(romanVoicePrompt("marin"), /Preserve preferences and measurement drafts without a generic welcome or redundant configuration recap/);
 });
 
+test("moving to another window after adding a full product establishes fresh intent and approvals", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /After a verified full-product addition, continue any next task already requested; otherwise offer contextual next actions with ask_question/,
+      /Ask whether to use the same blind again or explore something different unless their latest request already makes that choice unambiguous/,
+      /A new bedroom or other use case alone does not select the previous product/,
+      /you may search relevant alternatives while clarifying, but do not start modifying the old product/,
+      /The still-open PDP is a page observation, not intent for the new window/,
+      /Preserve useful preferences and conversation history without carrying over the completed blind's approvals/,
+      /previous saved values or a configured form are not approval to reuse them, even for the same product/,
+      /A clear request to reuse particular settings can establish those choices, but the new window still needs its own dimension confirmation, explicit measurement-guarantee decision and final product review/,
+      /Reuse relevant original guide evidence when valid, not the old window's physical-fit conclusions/,
+      /Do not clear the transcript or erase saved work merely to move on/,
+      /Sample additions alone do not complete the full-product flow/,
+      /already confirmed that exact pair for the current window/,
+    ])
+      assert.match(prompt, rule);
+  }
+  for (const rule of [
+    /After a confirmed full-product addition, delegate the useful next actions or the customer's already-requested next task/,
+    /delegate one same-blind-or-different choice unless their latest request already settles it/,
+    /A still-open PDP or new room mention does not choose the old product/,
+    /do not carry the completed blind's dimensions, fitting conclusions, option approvals, guarantee decision or final add approval into the new window, even for the same product/,
+    /A sample addition is not this full-product handoff/,
+    /If the pair was already confirmed for the current window, skip this question/,
+  ])
+    assert.match(romanVoicePrompt("marin"), rule);
+});
+
 test("configuration followups use real paged choices and retain final review before a full-product addition", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
@@ -976,7 +1005,7 @@ test("measurement guarantees require their own informed answer before full-produ
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
       /control with purpose measurement_guarantee is an explicit-consent exception to sensible defaults/,
-      /always offer an available guarantee before the final full-product review or addition unless the customer already explicitly accepted or declined it for this product at its current guarantee fee and material terms/,
+      /always offer an available guarantee before the final full-product review or addition unless the customer already explicitly accepted or declined it for this product and window at its current guarantee fee and material terms/,
       /Use its returned description and the actual native yes\/no choices, including the accepting option's priceLabel/,
       /briefly explain the guarantee fee and material conditions once, then call ask_question with two clear choices/,
       /Preserve returned conditions such as same-blind replacement and charges for larger measurements when stated/,
@@ -985,10 +1014,10 @@ test("measurement guarantees require their own informed answer before full-produ
       /already selected without an explicit answer, make that state clear and ask whether to keep or remove it/,
       /Only an explicit answer authorizes configure_product using the fresh returned control and option IDs/,
       /For a new explicit yes\/no answer, call configure_product even if that option is already selected: the native action records the customer decision and prevents a default from overriding it/,
-      /do not ask again unless the product, guarantee fee or material terms change/,
-      /Changes only to blind configuration or configuredPrice do not reopen that answer/,
+      /do not ask again unless the window, product, guarantee fee or material terms change/,
+      /Within the same window, changes only to blind configuration or configuredPrice do not reopen that answer/,
       /accepting it does not authorize adding the full product/,
-      /This fresh read needs no extra customer question unless an available guarantee lacks an explicit answer for this product and its current guarantee fee and material terms/,
+      /This fresh read needs no extra customer question unless an available guarantee lacks an explicit answer for this window and product at its current guarantee fee and material terms/,
     ])
       assert.match(prompt, rule);
     assert.doesNotMatch(prompt, /12\.00/);

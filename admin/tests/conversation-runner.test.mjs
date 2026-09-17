@@ -13,7 +13,7 @@ const bundle = await build({
     contents: `
       export * from "./admin/conversations/runner.server.ts";
       export * from "./admin/conversations/model.server.ts";
-      export { readGuideSession } from "./admin/guides/session.server.ts";
+      export { readGuideSession, saveGuideSession } from "./admin/guides/session.server.ts";
       export { ConversationError } from "./admin/conversations/errors.server.ts";
     `,
     resolveDir: process.cwd(),
@@ -2024,23 +2024,35 @@ test("a continued measuring reply starts with cached original evidence and needs
   assert.equal(env.calls.finishes.length, 1);
   assert.deepEqual(env.logs, []);
   const firstDocumentRequest = env.calls.requests[1].input;
+  const nextReading = deferred();
   env.streams.push(
-    events(
-      completed("", {
-        output: [
-          measurementCall(
-            {
-              ...measurementSelection,
-              label: "Drop",
-              question: "What is the drop?",
-            },
-            "next-reading",
-          ),
-        ],
-      }),
-    ),
+    (async function* () {
+      yield await nextReading.promise;
+    })(),
   );
   await env.api.startTurn(id, { ...secondInput, text: "400" });
+  await flush();
+  const pending = await env.api.readConversation(id);
+  assert.equal(pending.busy, true);
+  assert.equal(
+    pending.readingGuides,
+    undefined,
+    "Reusing original files is not another guide read",
+  );
+  nextReading.resolve(
+    completed("", {
+      output: [
+        measurementCall(
+          {
+            ...measurementSelection,
+            label: "Drop",
+            question: "What is the drop?",
+          },
+          "next-reading",
+        ),
+      ],
+    }),
+  );
   await flush();
   assert.deepEqual(env.logs, []);
   assert.equal(
@@ -2100,6 +2112,7 @@ test("a continued measuring reply starts with cached original evidence and needs
 
 test("cached originals support voice numeric resume without rediscovery or another model round", async () => {
   const env = setup();
+  const activities = [];
   const { question, ...measurement } = measurementSelection;
   const resume = {
     type: "question",
@@ -2132,7 +2145,7 @@ test("cached originals support voice numeric resume without rediscovery or anoth
     undefined,
     guideOrigin,
     resume,
-    undefined,
+    (kinds) => activities.push(kinds),
     {
       cached,
       read: () => {
@@ -2145,12 +2158,181 @@ test("cached originals support voice numeric resume without rediscovery or anoth
   );
   assert.equal(env.calls.requests.length, 1);
   assert.equal(env.calls.guideReads.length, 0);
+  assert.ok(activities.every((kinds) => kinds === undefined));
   assert.equal(guideFiles(env.calls.requests[0].input).length, 1);
   assert.equal(reply.questionPresentation.sourceCallId, "previous-read");
   assert.equal(
     reply.cachedGuideSource.sourceAssistantId,
     cached.sourceAssistantId,
   );
+});
+
+test("cached original PDFs stay attached without a reading status during pending style and cart replies", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    for (const request of [
+      "Help me choose another colour.",
+      "What is in my basket?",
+    ]) {
+      await t.test(`${mode}: ${request}`, async () => {
+        const env = setup(),
+          id = "11111111-1111-4111-8111-111111111111",
+          pageId = "22222222-2222-4222-8222-222222222222",
+          sourceAssistantId = "33333333-3333-4333-8333-333333333333";
+        env.rows.set(id, {
+          status: "active",
+          revision: 0,
+          tools: [],
+          messages: [
+            {
+              id: pageId,
+              role: "context",
+              status: "complete",
+              text: "",
+              extraParts: [
+                {
+                  type: "page_view",
+                  version: 1,
+                  path: guidePath,
+                  title: "Shade",
+                  occurredAt: "2026-09-17T10:00:00Z",
+                },
+              ],
+            },
+          ],
+        });
+        env.api.saveGuideSession(id, {
+          origin: guideOrigin,
+          pageId,
+          productPath: guidePath,
+          sourceAssistantId,
+          sourceCallId: "original-read",
+          expiresAt: Date.now() + 60_000,
+          kinds: ["measuring"],
+          sources: guideResult(["measuring"]).guides,
+          files: [syntheticGuideFile("measuring")],
+        });
+        const gate = deferred();
+        env.streams.push(
+          (async function* () {
+            yield await gate.promise;
+          })(),
+        );
+        let reply;
+        if (mode === "voice") {
+          voiceHistory(env, [{ role: "user", text: request }]);
+          reply = env.api.runVoiceDelegation(
+            id,
+            VOICE_ID,
+            firstInput.requestId,
+            new AbortController().signal,
+          );
+        } else {
+          await env.api.startTurn(id, { ...firstInput, text: request });
+        }
+        await flush();
+        const snapshot = await env.api.readConversation(id);
+        assert.equal(snapshot.busy, true);
+        assert.equal(snapshot.readingGuides, undefined);
+        assert.equal(env.calls.requests.length, 1);
+        assert.deepEqual(guideFiles(env.calls.requests[0].input), [
+          cachedGuideFile("measuring"),
+        ]);
+        assert.equal(env.calls.browserTools.length, 0);
+        assert.equal(env.calls.guideReads.length, 0);
+        const unchanged = await env.api.readConversation(id, {
+          revision: snapshot.revision,
+          streamRevision: snapshot.streamRevision,
+        });
+        assert.equal(unchanged.unchanged, true);
+        gate.resolve(completed("Let's continue with your request."));
+        await reply;
+        await flush();
+        assert.equal(
+          env.calls.finishes[0].result.cachedGuideSource.sourceCallId,
+          "original-read",
+        );
+        assert.equal(
+          env.calls.finishes[0].result.cachedGuideSource.sourceAssistantId,
+          sourceAssistantId,
+        );
+        assert.equal(
+          (await env.api.readConversation(id)).readingGuides,
+          undefined,
+        );
+        assert.deepEqual(env.logs, []);
+      });
+    }
+  }
+});
+
+test("fresh guide reading clears on the first answer text before the turn finishes, including private voice briefings", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    await t.test(mode, async () => {
+      const env = setup(),
+        firstText = deferred(),
+        terminal = deferred();
+      env.mock.executeTool = async () => guideResult(["measuring"]);
+      env.streams.push(
+        events(
+          completed("", { output: [guideLookup("fresh-read", ["measuring"])] }),
+        ),
+        (async function* () {
+          yield await firstText.promise;
+          yield await terminal.promise;
+        })(),
+      );
+      let reply;
+      if (mode === "voice") {
+        voiceHistory(env, [
+          { role: "user", text: "Read this measuring guide." },
+        ]);
+        reply = env.api.runVoiceDelegation(
+          mode,
+          VOICE_ID,
+          firstInput.requestId,
+          new AbortController().signal,
+        );
+      } else await env.api.startTurn(mode, firstInput);
+      await flush();
+      const reading = await env.api.readConversation(mode);
+      assert.equal(reading.busy, true);
+      assert.deepEqual(plain(reading.readingGuides), ["measuring"]);
+      assert.equal(env.calls.guideReads.length, 1);
+      firstText.resolve({
+        type: "response.output_text.delta",
+        delta: "The document is available.",
+      });
+      await flush();
+      const answering = await env.api.readConversation(mode, {
+        revision: reading.revision,
+        streamRevision: reading.streamRevision,
+      });
+      assert.notEqual(
+        answering.unchanged,
+        true,
+        "Clearing reading status advances the polling revision",
+      );
+      assert.equal(answering.busy, true);
+      assert.equal(answering.readingGuides, undefined);
+      assert.ok(answering.streamRevision > reading.streamRevision);
+      if (mode === "voice")
+        assert.doesNotMatch(
+          JSON.stringify(answering.messages),
+          /The document is available/,
+        );
+      terminal.resolve(completed("The document is available."));
+      await reply;
+      await flush();
+      assert.equal(
+        (await env.api.readConversation(mode)).readingGuides,
+        undefined,
+      );
+      assert.equal(env.calls.requests.length, 2);
+      assert.deepEqual(guideFiles(env.calls.requests[1].input), [
+        cachedGuideFile("measuring"),
+      ]);
+    });
+  }
 });
 
 test("ending or leaving and returning during guide completion cannot populate a reusable source", async (t) => {
@@ -3064,7 +3246,7 @@ test("only requested guide kinds are read and a later companion preserves the fi
       (value, index) =>
         !index || JSON.stringify(value) !== JSON.stringify(stages[index - 1]),
     ),
-    [undefined, ["measuring"], undefined, ["fitting"]],
+    [undefined, ["measuring"], undefined, ["fitting"], undefined],
   );
   const metadata = JSON.parse(
     first.input.find((item) => item.type === "function_call_output").output,
@@ -3150,7 +3332,8 @@ test("a failed reread removes the old same-URL guide from the prefix, selection 
     guideFiles(env.calls.requests[2].input).map(({ filename }) => filename),
     ["measuring-guide.pdf"],
   );
-  assert.deepEqual(stages.at(-1), ["measuring"]);
+  assert.deepEqual(stages.filter(Boolean).at(-1), ["measuring"]);
+  assert.equal(stages.at(-1), undefined);
   const metadata = JSON.parse(
     env.calls.requests[2].input.input.find(
       (item) =>

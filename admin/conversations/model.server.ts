@@ -240,6 +240,12 @@ export async function generateReply(
   let documentProductPath: string | undefined;
   let guideContext: ReturnType<typeof createGuideContext> | undefined;
   let cachedGuideSource: CachedGuideSource | undefined;
+  let guideResponsePending = false;
+  const finishGuideReading = () => {
+    if (!guideResponsePending) return;
+    guideResponsePending = false;
+    onGuideReading?.(undefined);
+  };
   const cached = guideReuse?.cached;
   if (
     execute &&
@@ -269,7 +275,7 @@ export async function generateReply(
       sourceCallId: cached.sourceCallId,
       kinds: [...cached.kinds],
     });
-    onGuideReading?.([...cached.kinds]);
+    // Available reference material is not an active document-reading task.
   }
   const resumePresentation = resumeQuestion?.measurement
     ? "ask_measurement"
@@ -409,6 +415,7 @@ export async function generateReply(
           event.type === "response.failed" ||
           event.type === "response.incomplete"
         ) {
+          finishGuideReading();
           terminalReceived = true;
           await onUsage?.(
             responseUsage(
@@ -421,6 +428,7 @@ export async function generateReply(
           );
         }
         if (event.type === "response.output_text.delta") {
+          if (event.delta.trim()) finishGuideReading();
           text += event.delta;
           onText(accumulated + text);
         } else if (event.type === "response.completed") {
@@ -837,6 +845,7 @@ export async function generateReply(
             parseProductGuidesCall(parsed.arguments).productPath,
           );
         signal.throwIfAborted();
+        guideResponsePending = false;
         onGuideReading?.(undefined);
         outcome = await execute(call.call_id, parsed.name, parsed.arguments);
         signal.throwIfAborted();
@@ -976,6 +985,7 @@ export async function generateReply(
             .filter((kind) => !selected.some((guide) => guide.kind === kind))
             .map((kind) => ({ kind, reason: "no_guides" })) ?? []),
         ];
+        guideResponsePending = true;
         onGuideReading?.(read.sources.map(({ kind }) => kind));
         if (unavailableGuides?.length)
           console.warn("[Roman] Some product guides could not be read.", {
