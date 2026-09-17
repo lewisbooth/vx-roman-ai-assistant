@@ -33,7 +33,10 @@ function primaryGuideAnchors(
       const ids = region.getAttribute("aria-labelledby")!.trim().split(/\s+/);
       // Resolve only inside this accordion, never another page section's title.
       const titles = [...region.parentElement!.querySelectorAll("h2[id]")].filter(
-        (title) => ids.includes(title.id) && !region.contains(title),
+        (title) =>
+          ids.includes(title.id) &&
+          !region.contains(title) &&
+          title.closest("main-product") === root,
       );
       return { region, titles, ids };
     })
@@ -46,6 +49,7 @@ function primaryGuideAnchors(
   if (titles.length !== 1 || ids.length !== 1) return [];
   return [...region.querySelectorAll<HTMLAnchorElement>("a[href]")].filter(
     (anchor) =>
+      anchor.closest("main-product") === root &&
       anchor.closest('[role="region"]') === region &&
       ["download guide", PRODUCT_GUIDE_LABELS[kind].toLowerCase()].includes(
         label(anchor).toLowerCase(),
@@ -76,10 +80,17 @@ export async function getProductGuides(
     !document.body.classList.contains("template-product")
   )
     return unavailable;
+  // The theme also renders main-product inside recommendation/search cards.
+  // Only the URL-owning PDP component can supply this page's guide sections.
   const primaryRoots = document.querySelectorAll(
-    "app-provider > main#main main-product",
+    'app-provider > main#main main-product[update-url="true"]:not([data-product-card]):not([section-id="product-card"])',
   );
-  if (primaryRoots.length > 1) return unavailable;
+  if (
+    primaryRoots.length > 1 ||
+    (primaryRoots.length === 1 &&
+      primaryRoots[0].getAttribute("product-url") !== productPath)
+  )
+    return unavailable;
   const legacyRoots = document.querySelectorAll(
     "app-provider > main#main product-accordions",
   );

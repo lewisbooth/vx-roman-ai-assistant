@@ -90,6 +90,15 @@ function setup(t, pagePath = productPath, storefrontOrigin = origin) {
 // region, inside its owning wrapper. Guide reading must not open the accordion.
 function addPrimaryGuides(ctx) {
   const root = ctx.window.document.createElement("main-product");
+  root.id = "template--28531254853816__main";
+  root.setAttribute("section-id", root.id);
+  root.setAttribute("update-url", "true");
+  root.setAttribute(
+    "product-url",
+    ctx.window.location.pathname
+      .slice(ctx.window.location.pathname.lastIndexOf("/products/"))
+      .replace(/\/$/, ""),
+  );
   root.innerHTML = `<section id="ProductInfo-template--28531254853816__main-after-media">
     <div id="Details-10_1">
       <label for="accordion-checkbox-10_1">
@@ -165,6 +174,66 @@ test("collapsed primary product guides take precedence over separate legacy guid
     },
     "Only an absent primary kind may use its legacy guide",
   );
+});
+
+test("recommendation cards loaded after the PDP do not hide or replace its guides", async (t) => {
+  const ctx = setup(t);
+  const root = addPrimaryGuides(ctx);
+  const expected = { status: "found", productPath, guides: primaryGuides };
+  assert.deepEqual(
+    plain(await ctx.api.getProductGuides(productPath, ctx.signal())),
+    expected,
+  );
+
+  for (let index = 0; index < 8; index++) {
+    const card = root.cloneNode(true);
+    card.id = `recommendation-product-card-${index}`;
+    // Even a matching URL and update-url flag do not make a card the PDP.
+    card.setAttribute(
+      "product-url",
+      index % 2 ? `/products/other-${index}` : productPath,
+    );
+    if (index !== 0) card.setAttribute("data-product-card", "");
+    card.setAttribute(
+      "section-id",
+      index === 1 ? "recommendations" : "product-card",
+    );
+    for (const anchor of card.querySelectorAll("a[href]"))
+      anchor.setAttribute(
+        "href",
+        `${origin}/cdn/shop/files/unrelated-card.pdf?v=1`,
+      );
+    if (index === 7) {
+      // A nested card without its own region must not lend its link to the
+      // parent's measuring accordion either.
+      card.innerHTML = `<a href="${origin}/cdn/shop/files/unrelated-card.pdf?v=1">Download Guide</a>`;
+      root.querySelector("#accordion-content-10_2").append(card);
+    } else if (index === 6) {
+      root.append(card);
+    } else {
+      ctx.window.document.querySelector("main#main").append(card);
+    }
+  }
+  assert.equal(
+    ctx.window.document.querySelectorAll("main#main main-product").length,
+    9,
+  );
+  assert.deepEqual(
+    plain(await ctx.api.getProductGuides(productPath, ctx.signal())),
+    expected,
+  );
+  assert.equal(ctx.fetches(), 0);
+});
+
+test("a primary product URL mismatch cannot use otherwise valid legacy guides", async (t) => {
+  const ctx = setup(t);
+  const root = addPrimaryGuides(ctx);
+  root.setAttribute("product-url", "/products/different-blind");
+  assert.deepEqual(
+    plain(await ctx.api.getProductGuides(productPath, ctx.signal())),
+    { status: "unavailable", productPath, guides: [] },
+  );
+  assert.equal(ctx.fetches(), 0);
 });
 
 test("invalid or ambiguous primary guides cannot silently fall back to legacy links", async (t) => {
