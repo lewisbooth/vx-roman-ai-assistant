@@ -7,7 +7,7 @@ import { StorefrontLink } from "./StorefrontLink";
 import { Question } from "./Question";
 import type { QuestionPart } from "../../../shared/questions";
 import { VOICE_EVENT_LABELS } from "../../../shared/voice";
-import { voiceQuestionCaptions } from "./voice-question-captions";
+import { voiceCaptionText } from "../../../shared/voice-transcript";
 import type { CatalogProduct } from "../../../shared/catalog";
 
 export function Timeline({
@@ -36,7 +36,6 @@ export function Timeline({
     product: CatalogProduct,
   ) => Promise<void>;
 }) {
-  const captions = voiceQuestionCaptions(messages);
   // Keep the current question below every widget and later journey event.
   // Stable row IDs retain the question when its buttons retire after a reply.
   const rows = messages.flatMap((message) => {
@@ -48,7 +47,7 @@ export function Timeline({
           part.type !== "page_view" &&
           part.type !== "guides",
       )
-      .filter((part) => part.type !== "voice" || captions.get(part));
+      .filter((part) => part.type !== "voice" || voiceCaptionText(part.text));
     return [
       ...(parts.length || message.status === "failed"
         ? [{ ...message, parts }]
@@ -183,7 +182,9 @@ export function Timeline({
                 return (
                   <div key={index} className="roman-voice-caption">
                     <span className="roman-voice-label">Voice</span>
-                    <p className="roman-message-text">{captions.get(part)}</p>
+                    <p className="roman-message-text">
+                      {voiceCaptionText(part.text)}
+                    </p>
                   </div>
                 );
               return (

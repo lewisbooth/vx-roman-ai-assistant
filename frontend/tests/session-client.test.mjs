@@ -1221,8 +1221,8 @@ const recommendations = {
   ],
 };
 
-test("carousel snapshots accept eight products and reject nine", async (t) => {
-  for (const count of [8, 9]) {
+test("carousel snapshots accept ten products and reject eleven", async (t) => {
+  for (const count of [10, 11]) {
     await t.test(`${count} products`, async (t) => {
       const saved = JSON.parse(JSON.stringify(recommendations));
       const products = saved.messages[1].parts.find(
@@ -1233,7 +1233,7 @@ test("carousel snapshots accept eight products and reject nine", async (t) => {
         (_, index) => `gid://shopify/Product/${index + 1}`,
       );
       const ctx = setup(t, { saved: access });
-      if (count === 8) await resume(ctx, saved);
+      if (count === 10) await resume(ctx, saved);
       else {
         ctx.respond(0, { ...access, conversation: saved });
         await until(
@@ -1242,13 +1242,13 @@ test("carousel snapshots accept eight products and reject nine", async (t) => {
         );
       }
       const state = ctx.client.getSnapshot();
-      if (count === 8) {
+      if (count === 10) {
         assert.equal(state.error, null);
         assert.equal(
           state.conversation.messages[1].parts.find(
             (part) => part.type === "products",
           ).productIds.length,
-          8,
+          10,
         );
       } else {
         assert.match(state.error, /invalid session response/i);

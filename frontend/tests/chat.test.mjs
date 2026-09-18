@@ -1418,7 +1418,7 @@ const catalog = {
   messages: [],
 };
 
-test("product references hydrate once and Choose blind submits intent without navigating directly", async (t) => {
+test("product references hydrate once and choosing the image submits intent without navigating directly", async (t) => {
   let resolve;
   const pending = new Promise((done) => {
     resolve = done;
@@ -1465,6 +1465,10 @@ test("product references hydrate once and Choose blind submits intent without na
   assert.equal(card.querySelector("a"), null);
   assert.equal(card.querySelector("img").src, catalog.products[0].imageUrl);
   assert.equal(card.querySelector("img").getAttribute("loading"), "lazy");
+  const choice = card.querySelector("img").closest("button");
+  assert.equal(choice.getAttribute("aria-label"), "Choose Lottie Roman blind");
+  assert.equal(choice.type, "button");
+  assert.equal(card.querySelectorAll("button").length, 1);
   assert.match(card.textContent, /Lottie Roman blind/);
   assert.match(card.textContent, /From £30.00/);
   assert.doesNotMatch(
@@ -1475,7 +1479,7 @@ test("product references hydrate once and Choose blind submits intent without na
     bubbles: true,
     cancelable: true,
   });
-  card.querySelector("button").dispatchEvent(click);
+  card.querySelector("img").dispatchEvent(click);
   await until(() => ctx.calls.length === 1, "Choice should be sent to Roman");
   assert.deepEqual(ctx.calls, [
     "Choose Lottie Roman blind (/products/lottie).",

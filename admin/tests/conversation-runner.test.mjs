@@ -4190,7 +4190,7 @@ test("explicit product presentation selects only the requested ordered subset wi
   ]);
   assert.match(
     JSON.parse(acknowledged.output).instruction,
-    /Each displayed card has a Choose blind button/,
+    /Each displayed card has a Choose this blind image control/,
   );
   assert.equal(
     allowedTools(env.calls.requests[2].input).some(
@@ -4201,9 +4201,9 @@ test("explicit product presentation selects only the requested ordered subset wi
   );
 });
 
-test("a fullscreen carousel accepts eight current-turn products in their selected order", async () => {
+test("a fullscreen carousel accepts ten current-turn products in their selected order", async () => {
   const env = setup();
-  const ids = [8, 3, 1, 5, 2, 6, 7, 4];
+  const ids = [8, 3, 1, 5, 2, 6, 7, 4, 10, 9];
   env.streams.push(
     events(completed("", { output: [catalogCall("catalog-1")] })),
     events(completed("", { output: [showCall(ids)] })),
@@ -4213,15 +4213,148 @@ test("a fullscreen carousel accepts eight current-turn products in their selecte
     [],
     () => {},
     new AbortController().signal,
-    async () => catalogResult(...ids, 9, 10),
+    async () => catalogResult(...ids),
   );
   assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
   assert.equal(
     allowedTools(env.calls.requests[0].input).find(
       (tool) => tool.name === "show_products",
     ).parameters.properties.productIds.maxItems,
-    8,
+    10,
   );
+});
+
+test("initial PDP choice preserves its single verified card and one alternative in text and voice", async (t) => {
+  const selection = {
+    question:
+      "Do you want to start with the blind you're currently looking at, or something else?",
+    answers: ["Something else"],
+  };
+  const shoppingState = {
+    role: "user",
+    text: `Current Roman shopping state (application state, not a new customer request): ${JSON.stringify({
+      activeBlind: null,
+      backgroundPage: { title: "Shade 123", path: "/products/shade-123" },
+    })}`,
+  };
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const env = setup();
+      env.mock.executeTool = async () => catalogResult(456, 123, 789);
+      env.streams.push(
+        events(
+          completed("", {
+            output: [
+              catalogCall("current-pdp", "search_products", {
+                query: "Shade 123",
+              }),
+            ],
+          }),
+        ),
+        events(completed("", { output: [showCall([123])] })),
+        events(completed("", { output: [questionCall(selection)] })),
+        events(completed(mode === "voice" ? selection.question : "")),
+      );
+      const customerText = "Help me measure my windows for blinds.";
+      if (mode === "voice") {
+        voiceHistory(env, [shoppingState, { role: "user", text: customerText }]);
+        await env.api.runVoiceDelegation(
+          "voice",
+          VOICE_ID,
+          firstInput.requestId,
+          new AbortController().signal,
+        );
+      } else {
+        const begin = env.mock.begin;
+        env.mock.begin = async (...args) => {
+          const result = await begin(...args);
+          result.history.unshift(shoppingState);
+          return result;
+        };
+        await env.api.startTurn("text", { ...firstInput, text: customerText });
+        await flush();
+      }
+      assert.equal(env.calls.finishes.length, 1);
+      const { result } = env.calls.finishes[0];
+      assert.equal(result.status, "complete");
+      assert.deepEqual(plain(result.presentation), {
+        callId: "show-1",
+        productIds: [productGid(123)],
+      });
+      assert.deepEqual(plain(result.questionPresentation), {
+        callId: "question-1",
+        ...selection,
+      });
+      assert.equal(result.text, mode === "voice" ? selection.question : "");
+      assert.equal(env.calls.browserTools.length, 1);
+      assert.equal(env.calls.browserTools[0][3], "search_products");
+      assert.equal(env.calls.guideReads.length, 0);
+      assert.equal(env.calls.requests.length, 4);
+      const questionReceipt = env.calls.requests[3].input.input.find(
+        (item) =>
+          item.type === "function_call_output" && item.call_id === "question-1",
+      );
+      assert.deepEqual(JSON.parse(questionReceipt.output), selection);
+      assert.match(
+        env.calls.requests[0].input.instructions,
+        /Something else/,
+      );
+    });
+});
+
+test("declining the initial PDP can continue with room discovery without restoring product cards", async (t) => {
+  const selection = {
+    question: "Which room are you shopping for?",
+    answers: ["Bedroom", "Living room", "Another room"],
+  };
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const env = setup();
+      env.streams.push(
+        events(completed("", { output: [questionCall(selection)] })),
+        events(completed(mode === "voice" ? selection.question : "")),
+      );
+      const history = [
+        { role: "user", text: "Help me measure my windows for blinds." },
+        {
+          role: "user",
+          source: "roman_question",
+          text: 'Historical Roman question widget: {"question":"Do you want to start with the blind you\'re currently looking at, or something else?","answers":["Something else"]}',
+        },
+        { role: "user", text: "Something else" },
+      ];
+      if (mode === "voice") {
+        voiceHistory(env, history);
+        await env.api.runVoiceDelegation(
+          "voice",
+          VOICE_ID,
+          firstInput.requestId,
+          new AbortController().signal,
+        );
+      } else {
+        const begin = env.mock.begin;
+        env.mock.begin = async (...args) => {
+          const result = await begin(...args);
+          result.history = history;
+          return result;
+        };
+        await env.api.startTurn("text", {
+          ...firstInput,
+          text: "Something else",
+        });
+        await flush();
+      }
+      const { result } = env.calls.finishes[0];
+      assert.equal(result.status, "complete");
+      assert.deepEqual(plain(result.questionPresentation), {
+        callId: "question-1",
+        ...selection,
+      });
+      assert.equal(result.presentation, undefined);
+      assert.equal(env.calls.browserTools.length, 0);
+      assert.equal(env.calls.guideReads.length, 0);
+      assert.equal(env.calls.requests.length, 2);
+    });
 });
 
 test("missing question after a carousel offers browsing refinement in text and voice without another model call", async () => {
@@ -4529,7 +4662,7 @@ test("invalid selections cannot present duplicate, variant, unknown or historica
     ["variant", { productIds: ["gid://shopify/ProductVariant/123"] }],
     ["unknown", { productIds: [productGid(999)] }],
     ["empty", { productIds: [] }],
-    ["too many", { productIds: [1, 2, 3, 4, 5, 6, 7, 8, 9].map(productGid) }],
+    ["too many", { productIds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(productGid) }],
     ["extra fields", { productIds: [productGid(123)], title: "Forged" }],
     ["invalid JSON", "not JSON"],
   ]) {
@@ -4553,7 +4686,7 @@ test("invalid selections cannot present duplicate, variant, unknown or historica
         ],
         () => {},
         new AbortController().signal,
-        async () => catalogResult(123, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+        async () => catalogResult(123, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
       );
       assert.equal(reply.presentation, undefined);
       const result = env.calls.requests[2].input.input.find(

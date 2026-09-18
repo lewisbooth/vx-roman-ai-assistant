@@ -204,6 +204,155 @@ test("streaming prose does not repeatedly reload an unchanged cart", async (t) =
   );
 });
 
+test("cart cards show their own image, title, quantity and line price from one cart read", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  const cart = {
+    ...exampleCart,
+    item_count: 3,
+    total_price: 9700,
+    items: [
+      {
+        ...exampleCart.items[0],
+        quantity: 2,
+        final_line_price: 9000,
+        featured_image: { url: "//cdn.shopify.com/s/files/1/2/linen.jpg?v=2" },
+        image: "https://cdn.shopify.com/s/files/1/2/other.jpg",
+      },
+      {
+        ...exampleCart.items[0],
+        key: "line-2",
+        title: "Matching sample",
+        final_line_price: 700,
+        image: "/cdn/shop/files/sample.jpg?v=1",
+      },
+    ],
+  };
+  const original = structuredClone(cart);
+  ctx.calls[0].complete(cart);
+  await until(
+    () => ctx.container.querySelectorAll(".roman-cart-items li").length === 2,
+    "Image cards rendered",
+  );
+  const cards = ctx.container.querySelectorAll(".roman-cart-items li");
+  assert.equal(
+    cards[0].querySelector("img").src,
+    "https://cdn.shopify.com/s/files/1/2/linen.jpg?v=2",
+  );
+  assert.equal(
+    cards[1].querySelector("img").src,
+    "https://shop.example/cdn/shop/files/sample.jpg?v=1",
+  );
+  assert.equal(cards[0].querySelector("h3").textContent, "Linen blind");
+  assert.match(
+    cards[0].querySelector(".roman-cart-item-details").textContent,
+    /Quantity 2.*90\.00/,
+  );
+  assert.match(
+    cards[1].querySelector(".roman-cart-item-details").textContent,
+    /Quantity 1.*7\.00/,
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-cart-total").textContent,
+    /97\.00/,
+  );
+  assert.equal(cards[0].querySelector("img").getAttribute("loading"), "lazy");
+  assert.equal(cards[0].querySelector("img").alt, "");
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Images use the cart payload, without product/catalog requests",
+  );
+  assert.deepEqual(
+    cart,
+    original,
+    "Display projection does not mutate the Shopify payload",
+  );
+  assert.doesNotMatch(
+    ctx.container.innerHTML,
+    /private cart token|Private note/,
+  );
+});
+
+test("unsafe and missing images fall back without hiding cart contents", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  const images = [
+    undefined,
+    "javascript:alert(1)",
+    "http://cdn.shopify.com/s/files/unsafe.jpg",
+    "https://external.example/tracker.jpg",
+    "https://secret@cdn.shopify.com/s/files/private.jpg",
+    "https://shop.example/account",
+    "https://cdn.shopify.com/s/files/image.jpg#fragment",
+  ];
+  ctx.calls[0].complete({
+    ...exampleCart,
+    item_count: images.length,
+    total_price: images.length * 4500,
+    items: images.map((image, index) => ({
+      ...exampleCart.items[0],
+      key: `line-${index}`,
+      image,
+    })),
+  });
+  await until(
+    () =>
+      ctx.container.querySelectorAll(".roman-cart-items li").length ===
+      images.length,
+    "Every valid cart line rendered",
+  );
+  assert.equal(ctx.container.querySelectorAll("img").length, 0);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-cart-image span").length,
+    images.length,
+  );
+  assert.equal(ctx.container.querySelector('[role="alert"]'), null);
+});
+
+test("failed image loading has a quiet fallback and a refreshed source can load", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  const cart = {
+    ...exampleCart,
+    items: [
+      {
+        ...exampleCart.items[0],
+        image: "https://cdn.shopify.com/s/files/image.jpg?v=1",
+      },
+    ],
+  };
+  ctx.calls[0].complete(cart);
+  await until(
+    () => ctx.container.querySelector("img"),
+    "Initial image rendered",
+  );
+  ctx.container
+    .querySelector("img")
+    .dispatchEvent(new ctx.window.Event("error"));
+  await until(
+    () => ctx.container.querySelector(".roman-cart-image span"),
+    "Failed image falls back",
+  );
+  assert.match(ctx.container.textContent, /Linen blind/);
+  ctx.window.document.dispatchEvent(new ctx.window.CustomEvent("cart:updated"));
+  await until(() => ctx.calls.length === 2, "Refresh reads cart once");
+  ctx.calls[1].complete({
+    ...cart,
+    items: [
+      {
+        ...cart.items[0],
+        image: "https://cdn.shopify.com/s/files/image.jpg?v=2",
+      },
+    ],
+  });
+  await until(() => ctx.container.querySelector("img"), "New source rendered");
+  assert.equal(
+    ctx.container.querySelector("img").src,
+    "https://cdn.shopify.com/s/files/image.jpg?v=2",
+  );
+});
+
 test("native cart changes and completed cart tools refresh the display without racing a mutation", async (t) => {
   const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial cart read");

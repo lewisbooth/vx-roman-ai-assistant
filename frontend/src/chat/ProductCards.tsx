@@ -135,18 +135,6 @@ export function ProductCards({
             {result.products.map((product) => (
               <li key={product.id}>
                 <article className="roman-product-card">
-                  <ProductImage
-                    productUrl={product.url}
-                    fallback={product.imageUrl}
-                    session={session}
-                    active={nearby}
-                  />
-                  <span className="roman-product-title">{product.title}</span>
-                  {product.priceLabel && (
-                    <span className="roman-product-price">
-                      {product.priceLabel}
-                    </span>
-                  )}
                   <button
                     type="button"
                     className="roman-choose-blind"
@@ -154,8 +142,22 @@ export function ProductCards({
                     aria-label={`Choose ${product.title}`}
                     onClick={() => void choose(product)}
                   >
-                    Choose blind <span aria-hidden="true">→</span>
+                    <ProductImage
+                      productUrl={product.url}
+                      fallback={product.imageUrl}
+                      session={session}
+                      active={nearby}
+                    />
+                    <span className="roman-choose-blind-label" aria-hidden="true">
+                      Choose this blind <span>→</span>
+                    </span>
                   </button>
+                  <span className="roman-product-title">{product.title}</span>
+                  {product.priceLabel && (
+                    <span className="roman-product-price">
+                      {product.priceLabel}
+                    </span>
+                  )}
                 </article>
               </li>
             ))}

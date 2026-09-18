@@ -69,7 +69,7 @@ test("the generic welcome offers canonical quick answers without repeating text 
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /widget owns the welcome's final question; do not also write it/,
+    /You may also include the welcome's final question in the text alongside its quick-answer widget/,
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
@@ -252,7 +252,7 @@ test("both backend modes use concise card recommendations and optional answer ch
     );
     assert.match(
       prompt,
-      /Leave the written question to the answer widget, including an application-supplied fallback; do not add a second question in the prose/,
+      /The same quick-answer question may also appear in Roman's written response or spoken transcript; that duplication with the widget is intentional/,
     );
     assert.match(
       prompt,
@@ -278,7 +278,7 @@ test("both backend modes use concise card recommendations and optional answer ch
   }
 });
 
-test("text leaves a displayed question to its widget while voice says it once", () => {
+test("text allows its displayed question alongside the widget while voice says it once", () => {
   assert.match(
     ROMAN_TEXT_PROMPT,
     /Refer to products by their verified names without Markdown links or raw URLs/,
@@ -791,7 +791,7 @@ test("all channels keep original PDF evidence in the background without source-l
 
 test("carousel questions refine browsing while card buttons select products", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(prompt, /The cards own product selection through Choose blind/);
+    assert.match(prompt, /The cards own product selection through Choose this blind/);
     assert.match(prompt, /Use ask_question for browsing or refinement, such as Show me more, Different colours or a useful unresolved requirement/);
     assert.match(prompt, /never repeat displayed product names as answer choices/);
     assert.match(prompt, /If a blind replacement awaits confirmation, that Yes\/No question takes priority over refinement/);
@@ -1376,7 +1376,7 @@ test("substantive completions invite one natural next step without inventing mea
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /Leave the written question to the answer widget, including an application-supplied fallback; do not add a second question in the prose/,
+    /The same quick-answer question may also appear in Roman's written response or spoken transcript; that duplication with the widget is intentional/,
   );
   assert.match(
     romanVoicePrompt("marin"),

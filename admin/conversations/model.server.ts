@@ -832,7 +832,7 @@ export async function generateReply(
           outcome = {
             selectedProductIds: [...productIds],
             instruction:
-              "Each displayed card has a Choose blind button. Call ask_question for useful browsing refinements such as Show me more, Different colours or an unresolved requirement, not product-name choices or a generic capability menu. If replacing the active blind is awaiting confirmation, ask its Yes/No question instead. If the product is already chosen, ask only the actual next unresolved question.",
+              "Each displayed card has a Choose this blind image control. For the unselected entry-PDP choice, ask whether to start with the blind currently being viewed or something else, with only Something else as its answer. Otherwise call ask_question for useful browsing refinements such as Show me more, Different colours or an unresolved requirement, not product-name choices or a generic capability menu. If replacing the active blind is awaiting confirmation, ask its Yes/No question instead. If the product is already chosen, ask only the actual next unresolved question.",
           };
         } catch {
           outcome = {

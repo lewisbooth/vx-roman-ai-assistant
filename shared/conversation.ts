@@ -41,7 +41,7 @@ export interface ProductListPart {
 }
 
 /** Maximum verified products in one customer-facing carousel. */
-export const MAX_PRODUCT_CARDS = 8;
+export const MAX_PRODUCT_CARDS = 10;
 
 export interface PageViewPart {
   type: "page_view";

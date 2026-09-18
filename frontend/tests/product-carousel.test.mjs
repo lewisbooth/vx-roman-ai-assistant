@@ -18,8 +18,11 @@ const bundle = await build({
           render(count = 6) { flushSync(() => root.render(<ProductCarousel>
             <ul className="roman-product-list">{Array.from({length: count}, (_, index) => <li key={index}>
               <article className="roman-product-card">
-                <img alt="" src="/fixture.jpg" /><span>Blind {index}</span>
-                <button type="button" className="roman-choose-blind" onClick={() => choose(index)}>Choose blind</button>
+                <button type="button" className="roman-choose-blind" aria-label={"Choose Blind " + index} onClick={() => choose(index)}>
+                  <img alt="" src="/fixture.jpg" />
+                  <span className="roman-choose-blind-label" aria-hidden="true">Choose this blind</span>
+                </button>
+                <span>Blind {index}</span>
               </article>
             </li>)}</ul>
           </ProductCarousel>)); },
@@ -237,7 +240,7 @@ test("a horizontal mouse drag from a card image scrolls and suppresses only its 
   const image = ctx.container.querySelector("img");
   const choice = ctx.container.querySelector(".roman-choose-blind");
   ctx.click(image);
-  assert.equal(ctx.choices.length, 0, "only Choose blind selects a product");
+  assert.deepEqual(ctx.choices, [0], "the image selects its product");
   ctx.pointer("pointerdown", { target: choice });
   ctx.pointer("pointermove", { x: 195 });
   assert.equal(ctx.carousel.scrollLeft, 0);
@@ -246,7 +249,7 @@ test("a horizontal mouse drag from a card image scrolls and suppresses only its 
   ctx.click(choice);
   assert.equal(
     ctx.choices.length,
-    1,
+    2,
     "sub-threshold movement stays an ordinary product click",
   );
   ctx.pointer("pointerdown", { target: image });
@@ -259,13 +262,13 @@ test("a horizontal mouse drag from a card image scrolls and suppresses only its 
   assert.equal(ctx.carousel.scrollLeft, 160);
   ctx.pointer("pointerup", { x: 40 });
   assert.equal(ctx.click(choice).defaultPrevented, true);
-  assert.equal(ctx.choices.length, 1);
+  assert.equal(ctx.choices.length, 2);
   assert.equal(ctx.captured.size, 0);
   assert.equal(ctx.carousel.dataset.dragging, undefined);
   ctx.pointer("pointerdown", { target: choice });
   ctx.pointer("pointerup");
   ctx.click(choice);
-  assert.deepEqual(ctx.choices, [0, 0], "a later click must not be swallowed");
+  assert.deepEqual(ctx.choices, [0, 0, 0], "a later click must not be swallowed");
   await delay(0);
 });
 

@@ -1855,22 +1855,22 @@ test("a completed reply atomically presents one ordered subset of current-turn c
   );
 });
 
-test("eight selected products persist and restore as one ordered carousel", async () => {
+test("ten selected products persist and restore as one ordered carousel", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
   );
   const turn = await repository.beginTurn(id, {
     requestId: randomUUID(),
-    text: "Show eight roller blinds.",
+    text: "Show ten roller blinds.",
   });
   const productIds = Array.from(
-    { length: 8 },
-    (_, index) => `gid://shopify/Product/${8 - index}`,
+    { length: 10 },
+    (_, index) => `gid://shopify/Product/${10 - index}`,
   );
   await completedCatalog(id, turn.assistantId, productIds);
   await repository.finishTurn(id, turn.assistantId, {
-    text: "Here are eight options.",
+    text: "Here are ten options.",
     status: "complete",
     presentation: { callId: randomUUID(), productIds },
   });
@@ -2064,14 +2064,14 @@ test("invalid or ungrounded presentations cannot partially complete a reply", as
     text: "Show recommendations.",
   });
   const available = Array.from(
-    { length: 9 },
+    { length: 10 },
     (_, index) => `gid://shopify/Product/${index + 1}`,
   );
   await completedCatalog(id, turn.assistantId, available);
   const before = await repository.getSnapshot(id);
   for (const presentation of [
     { callId: randomUUID(), productIds: [] },
-    { callId: randomUUID(), productIds: available },
+    { callId: randomUUID(), productIds: [...available, "gid://shopify/Product/11"] },
     { callId: randomUUID(), productIds: [available[0], available[0]] },
     { callId: randomUUID(), productIds: ["gid://shopify/Product/999"] },
     { callId: randomUUID(), productIds: ["gid://shopify/ProductVariant/1"] },

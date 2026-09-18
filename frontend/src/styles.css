@@ -16,6 +16,11 @@
 .roman-content,
 .roman-content * {
   box-sizing: border-box;
+  scrollbar-width: none;
+}
+.roman-content::-webkit-scrollbar,
+.roman-content *::-webkit-scrollbar {
+  display: none;
 }
 .roman-content [hidden] {
   display: none !important;
@@ -116,9 +121,11 @@
   }
   .roman-cart-stage {
     width: 100%;
-    max-width: 800px;
+    max-width: 1320px;
+    min-width: 0;
     margin: 0 auto;
     padding: 28px 32px;
+    text-align: center;
   }
   .roman-cart-stage h2 {
     font-size: 36px;
@@ -133,28 +140,56 @@
     letter-spacing: 0.12em;
     color: #866c5f;
   }
-  .roman-cart-stage ul {
+  .roman-cart-items {
     list-style: none;
     margin: 0;
     padding: 0;
-  }
-  .roman-cart-stage li {
-    border-bottom: 1px solid #e3e0d8;
-    padding: 20px 0;
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    justify-content: center;
+    gap: 32px 24px;
+  }
+  .roman-cart-items li {
+    flex: 0 0 calc((100% - 72px) / 4);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
     font-size: 15px;
   }
+  .roman-cart-image {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    aspect-ratio: 4 / 5;
+    overflow: hidden;
+    border-radius: 16px;
+    background: #eae6dd;
+    color: #80756b;
+    font-size: 13px;
+  }
+  .roman-cart-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
   .roman-cart-stage h3 {
-    flex-basis: 100%;
     font-size: 21px;
     line-height: 1.35;
     font-weight: 400;
-    margin: 0;
+    overflow-wrap: anywhere;
+    margin: 14px 0 10px;
   }
-  .roman-cart-stage li strong {
-    margin-left: auto;
+  .roman-cart-item-details {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 14px;
+    margin-top: auto;
+  }
+  .roman-cart-summary {
+    max-width: 400px;
+    margin: 36px auto 0;
   }
   .roman-cart-total {
     display: flex;
@@ -221,7 +256,6 @@
 
   .roman-chat-scroll {
     @apply relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain;
-    scrollbar-gutter: stable;
     display: flex;
     flex-direction: column;
     scroll-padding: 28px;
@@ -234,7 +268,6 @@
   .roman-timeline {
     @apply flex list-none flex-col gap-[28px] px-[36px] pt-[32px] pb-[28px];
     width: 100%;
-    max-width: 1160px;
     margin: auto;
     flex-shrink: 0;
   }
@@ -406,7 +439,8 @@
   .roman-carousel-next {
     right: 0;
   }
-  .roman-product-carousel button:disabled {
+  .roman-carousel-previous:disabled,
+  .roman-carousel-next:disabled {
     opacity: 0;
     pointer-events: none;
   }
@@ -445,6 +479,9 @@
 
   .roman-product-list {
     @apply m-0 flex list-none gap-[18px] p-0;
+    width: max-content;
+    min-width: 100%;
+    justify-content: center;
   }
 
   .roman-product-list > li {
@@ -463,6 +500,22 @@
     @apply block h-[260px] w-full shrink-0 object-cover;
   }
 
+  @media (min-width: 1024px) {
+    .roman-product-carousel {
+      --roman-product-image-height: clamp(320px, 25vw, 380px);
+    }
+    .roman-product-list > li {
+      width: clamp(360px, 28vw, 400px);
+    }
+    .roman-product-card img {
+      height: var(--roman-product-image-height);
+    }
+    .roman-carousel-previous,
+    .roman-carousel-next {
+      top: calc(var(--roman-product-image-height) / 2 - 22px);
+    }
+  }
+
   .roman-product-title {
     @apply px-[18px] pt-[18px] text-[19px] leading-[1.3];
   }
@@ -471,27 +524,50 @@
     @apply px-[18px] pt-[8px] text-[15px] leading-[1.4] text-[#545046];
   }
   .roman-choose-blind {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    margin: 20px 18px 0;
-    padding: 12px 16px;
-    border: 1px solid #4e0e0e;
-    border-radius: 28px;
-    color: #4e0e0e;
+    position: relative;
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
     background: transparent;
     font: inherit;
-    font-size: 16px;
     cursor: pointer;
   }
-  .roman-choose-blind:hover:not(:disabled) {
-    background: #4e0e0e;
+  .roman-choose-blind-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 22px 18px;
     color: #fffdf8;
+    background: linear-gradient(transparent 40%, rgb(45 12 12 / 85%));
+    font-size: 18px;
+    line-height: 1.3;
+    text-align: left;
+    transition: opacity 150ms ease;
+    pointer-events: none;
   }
   .roman-choose-blind:disabled {
-    opacity: 0.5;
     cursor: default;
+  }
+  .roman-choose-blind:disabled .roman-choose-blind-label {
+    opacity: 0;
+  }
+  .roman-product-carousel button.roman-choose-blind:focus-visible {
+    outline-offset: -4px;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .roman-choose-blind-label {
+      opacity: 0;
+    }
+    .roman-choose-blind:not(:disabled):hover .roman-choose-blind-label,
+    .roman-choose-blind:not(:disabled):focus-visible .roman-choose-blind-label {
+      opacity: 1;
+    }
   }
 
   .roman-products-note {
@@ -1015,6 +1091,18 @@
     .roman-cart-stage h2 {
       font-size: 26px;
       margin: 8px 0 12px;
+    }
+    .roman-cart-items li {
+      flex-basis: calc((100% - 24px) / 2);
+    }
+  }
+  @media (max-width: 479px) {
+    .roman-cart-stage {
+      padding-inline: 16px;
+    }
+    .roman-cart-items li {
+      flex-basis: 100%;
+      max-width: 300px;
     }
   }
   @media (max-width: 767px) {

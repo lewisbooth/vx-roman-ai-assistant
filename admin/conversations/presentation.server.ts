@@ -31,7 +31,7 @@ export const showProductsDefinition = {
   type: "function",
   name: "show_products",
   description:
-    "Display up to eight selected products in Roman's large, horizontally scrolling carousel. Use for recommendations, collection browsing or whenever the customer asks to see a carousel or product cards, including showing earlier products again. These cards replace the storefront's collection pages in Roman. First search or refresh the requested products with a catalog tool in this reply, then pass their returned IDs in display order. Call once per reply. Avoid unsolicited carousels during routine price checks or measurement clarification; an explicit request to show products takes precedence. Catalog lookups alone do not display cards.",
+    "Display up to ten selected products in Roman's large, horizontally scrolling carousel. Use for recommendations, collection browsing or whenever the customer asks to see a carousel or product cards, including showing earlier products again. These cards replace the storefront's collection pages in Roman. For discovery, show a useful spread of up to ten relevant verified matches when available; do not artificially cap results at three or four or pad with poor matches. A specific entry-PDP choice still shows only that product. First search or refresh the requested products with a catalog tool in this reply, then pass their returned IDs in display order. Call once per reply. Avoid unsolicited carousels during routine price checks or measurement clarification; an explicit request to show products takes precedence. Catalog lookups alone do not display cards.",
   strict: true,
   parameters: {
     type: "object",

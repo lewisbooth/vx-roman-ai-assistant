@@ -70,7 +70,7 @@ test("question selection is bounded, normalized and plain text with distinct ans
   assert.equal(askQuestionToolDefinition.name, "ask_question");
   assert.match(
     askQuestionToolDefinition.description,
-    /When this tool succeeds, keep a written text reply to its concise overview and do not end it with a question/,
+    /Roman may also include its exact question in the written reply; duplication with the quick-answer widget is allowed/,
   );
   assert.match(
     askQuestionToolDefinition.description,

@@ -2,7 +2,60 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { parseCartResult, type CartSnapshot } from "../../../shared/cart-tools";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
-import { getCart } from "../tools/cart";
+import { getStoreCart, summarizeCart } from "../tools/cart";
+
+type DisplayCart = Omit<CartSnapshot, "items"> & {
+  items: (CartSnapshot["items"][number] & { imageUrl?: string })[];
+};
+
+/** Cart imagery is display-only and never changes tool/approval snapshots. */
+function cartImageUrl(item: Record<string, unknown>): string | undefined {
+  const featured = item.featured_image;
+  const candidates = [
+    featured && typeof featured === "object" && !Array.isArray(featured)
+      ? (featured as Record<string, unknown>).url
+      : undefined,
+    item.image,
+  ];
+  for (const value of candidates) {
+    if (typeof value !== "string" || !value || value.length > 2048) continue;
+    try {
+      const url = new URL(value, window.location.origin);
+      if (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        !url.hash &&
+        ((url.origin === window.location.origin &&
+          url.pathname.startsWith("/cdn/shop/")) ||
+          (url.origin === "https://cdn.shopify.com" &&
+            url.pathname.startsWith("/s/files/")))
+      )
+        return url.href;
+    } catch {
+      // Missing or unsupported imagery must not hide a valid cart line.
+    }
+  }
+}
+
+function CartImage({ url }: { url?: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="roman-cart-image" aria-hidden="true">
+      {url && !failed ? (
+        <img
+          src={url}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span>Image unavailable</span>
+      )}
+    </div>
+  );
+}
 
 /** Roman's Cart view reads Shopify without navigating the underlying theme. */
 export function CartStage({
@@ -20,7 +73,7 @@ export function CartStage({
   );
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const requested = visible;
-  const [cart, setCart] = useState<CartSnapshot>();
+  const [cart, setCart] = useState<DisplayCart>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -65,10 +118,17 @@ export function CartStage({
       10000,
     );
     let current = true;
-    void getCart(controller.signal)
+    void getStoreCart(controller.signal)
       .then((value) => {
-        const verified = parseCartResult("get_cart", value);
-        if (current && "items" in verified) setCart(verified);
+        const verified = parseCartResult("get_cart", summarizeCart(value));
+        if (current && "items" in verified)
+          setCart({
+            ...verified,
+            items: verified.items.map((item, index) => ({
+              ...item,
+              imageUrl: cartImageUrl(value.items[index]),
+            })),
+          });
       })
       .catch((cause: unknown) => {
         if (current)
@@ -119,12 +179,18 @@ export function CartStage({
         cart && (
           <>
             {cart.items.length ? (
-              <ul>
+              <ul className="roman-cart-items">
                 {cart.items.map((item) => (
                   <li key={item.lineKey}>
+                    <CartImage
+                      key={item.imageUrl ?? "missing"}
+                      url={item.imageUrl}
+                    />
                     <h3>{item.title}</h3>
-                    <span>Quantity {item.quantity}</span>
-                    <strong>{price(item.linePriceMinorUnits)}</strong>
+                    <div className="roman-cart-item-details">
+                      <span>Quantity {item.quantity}</span>
+                      <strong>{price(item.linePriceMinorUnits)}</strong>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -132,7 +198,7 @@ export function CartStage({
               <p>Your cart is empty. Let’s find something you love.</p>
             )}
             {cart.items.length > 0 && (
-              <>
+              <div className="roman-cart-summary">
                 <div className="roman-cart-total">
                   <span>Subtotal</span>
                   <strong>{price(cart.totalPriceMinorUnits)}</strong>
@@ -147,7 +213,7 @@ export function CartStage({
                 <p className="roman-cart-note">
                   Checkout opens securely with the store.
                 </p>
-              </>
+              </div>
             )}
           </>
         )
