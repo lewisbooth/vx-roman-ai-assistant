@@ -114,13 +114,11 @@ test("confirmed order dimensions update the exact active pair and notify the the
   );
 });
 
-test("window drafts, unsupported inches, wrong products and invalid increments never touch live values", async (t) => {
+test("window drafts, unsupported inches and wrong products never touch live values", async (t) => {
   for (const change of [
     { kind: "window" },
     { unit: "in" },
     { productPath: "/products/other" },
-    { width: 300.5 },
-    { height: 2500 },
   ])
     await t.test(JSON.stringify(change), async (t) => {
       const ctx = setup(t);
@@ -134,6 +132,105 @@ test("window drafts, unsupported inches, wrong products and invalid increments n
       assert.equal(ctx.form.innerHTML, before);
       assert.deepEqual(ctx.events, []);
     });
+});
+
+test("native range and increment failures explain the rejected dimension without writing either field", async (t) => {
+  for (const [change, details] of [
+    [
+      { width: 300.5 },
+      /Width 300\.5 mm.*minimum 100 mm, maximum 2000 mm, increments of 1 mm/,
+    ],
+    [
+      { height: 2500 },
+      /Drop 2500 mm.*minimum 100 mm, maximum 2000 mm, increments of 1 mm/,
+    ],
+  ])
+    await t.test(JSON.stringify(change), async (t) => {
+      const ctx = setup(t);
+      const before = ctx.form.innerHTML;
+      const result = await ctx.applyMeasurements(
+        { ...draft, ...change },
+        new ctx.window.AbortController().signal,
+      );
+      assert.equal(result.status, "invalid_measurements");
+      assert.match(result.message, details);
+      assert.match(result.message, /No confirmed dimensions were entered/);
+      assert.equal(result.productPath, draft.productPath);
+      assert.equal(result.draftUpdatedAt, draft.updatedAt);
+      assert.equal(ctx.form.innerHTML, before);
+      assert.deepEqual(ctx.events, []);
+    });
+});
+
+test("70 by 35 cm is a known minimum-drop rejection after switching units and on retry, then a confirmed 40 cm correction applies exactly", async (t) => {
+  const ctx = setup(t);
+  const component = ctx.form.querySelector("dynamic-pricing-measurements");
+  const units = component.querySelector("[data-measurement-select]");
+  const cm = component.querySelector('[data-input-measurement-group="cm"]');
+  for (const input of cm.querySelectorAll("input")) input.value = "";
+  const updateConstraints = (event) => {
+    if (event.target !== units || units.value !== "cm") return;
+    const width = cm.querySelector("[data-width-input]");
+    const drop = cm.querySelector("[data-drop-input]");
+    width.min = drop.min = "40";
+    width.max = "233";
+    drop.max = "240";
+    width.step = drop.step = "0.1";
+  };
+  component.addEventListener("input", updateConstraints);
+  component.addEventListener("change", updateConstraints);
+  const dimensionEvents = [];
+  ctx.form.addEventListener("input", (event) => {
+    if (event.target.matches("[data-width-input],[data-drop-input]"))
+      dimensionEvents.push(event.target.value);
+  });
+  let submissions = 0;
+  ctx.form.addEventListener("submit", () => submissions++);
+  const executor = ctx.createStorefrontExecutor({
+    execute: async () => assert.fail("No other tool should run"),
+  });
+  t.after(() => executor.dispose());
+  const invalid = { ...draft, unit: "cm", width: 70, height: 35 };
+  for (const attempt of ["unit switch", "same-unit retry"]) {
+    const result = await executor.execute("apply_measurements", {
+      productPath: draft.productPath,
+      draft: invalid,
+    });
+    assert.equal(result.status, "invalid_measurements", attempt);
+    assert.match(
+      result.message,
+      /Drop 35 cm.*minimum 40 cm, maximum 240 cm, increments of 0\.1 cm/,
+    );
+    assert.match(result.message, /No confirmed dimensions were entered/);
+    assert.equal(units.value, "cm");
+    assert.deepEqual(
+      [...cm.querySelectorAll("input")].map((input) => input.value),
+      ["", ""],
+    );
+    assert.equal(ctx.readProductMeasurements(ctx.form).width, null);
+    assert.equal(ctx.readProductMeasurements(ctx.form).height, null);
+  }
+  assert.deepEqual(dimensionEvents, []);
+  assert.equal(submissions, 0);
+  assert.deepEqual(
+    [
+      ...component.querySelectorAll(
+        '[data-input-measurement-group="mm"] input',
+      ),
+    ].map((input) => input.value),
+    ["200", "250"],
+  );
+  const result = await executor.execute("apply_measurements", {
+    productPath: draft.productPath,
+    draft: { ...invalid, height: 40, updatedAt: "2026-09-15T00:01:00.000Z" },
+  });
+  assert.equal(result.status, "applied");
+  assert.deepEqual(
+    [...cm.querySelectorAll("input")].map((input) => input.value),
+    ["70", "40"],
+  );
+  assert.deepEqual(dimensionEvents, ["70", "40"]);
+  assert.equal(submissions, 0);
 });
 
 test("disabled units or aborted work never alter the current fields", async (t) => {
@@ -345,14 +442,19 @@ test("inch dimensions use only the exact available whole and fractional options"
   );
 });
 
-test("unsupported inch precision is never rounded and a unit-only change is explicitly uncertain", async (t) => {
+test("unsupported inch precision is a known rejection even after a unit change and is never rounded", async (t) => {
   const ctx = setup(t);
   addInches(ctx);
   const result = await ctx.applyMeasurements(
     { ...draft, unit: "in", width: 20.1, height: 30.75 },
     new ctx.window.AbortController().signal,
   );
-  assert.equal(result.status, "uncertain");
+  assert.equal(result.status, "invalid_measurements");
+  assert.match(
+    result.message,
+    /Width 20\.1 in is not one of the product's available sizes or inch fractions/,
+  );
+  assert.match(result.message, /No confirmed dimensions were entered/);
   const values = [
     ...ctx.form.querySelectorAll(
       '[data-input-measurement-group="inches"] select',

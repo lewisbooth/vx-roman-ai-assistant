@@ -14,6 +14,13 @@ import { settleProductPrice } from "./product-pricing";
 const unavailable =
   "These measurements need the product's own supported controls. Review its units, dimensions and fitting option on the matching product page.";
 type NumericControl = HTMLInputElement | HTMLSelectElement;
+type DimensionField = {
+  control: NumericControl;
+  number: number;
+  axis: "width" | "drop";
+  part?: "whole" | "fractional";
+};
+class InvalidMeasurement extends Error {}
 const themeUnit = { mm: "mm", cm: "cm", in: "inches" } as const;
 const publicUnit = (unit: string): ProductMeasurements["unit"] =>
   unit === "inches" ? "in" : unit === "mm" || unit === "cm" ? unit : null;
@@ -59,7 +66,9 @@ function numericControl(group: Element, selector: string): NumericControl {
   return control;
 }
 
-function validateValue(control: NumericControl, value: number) {
+function validateValue(field: DimensionField, draft: MeasurementDraft) {
+  const { control, number: value, axis, part } = field;
+  const requested = `${axis === "width" ? "Width" : "Drop"} ${axis === "width" ? draft.width : draft.height} ${draft.unit}`;
   if (
     control.matches(":disabled") ||
     (control instanceof HTMLInputElement && control.readOnly) ||
@@ -74,18 +83,41 @@ function validateValue(control: NumericControl, value: number) {
         !option.disabled &&
         !option.closest("optgroup[disabled]"),
     );
-    if (options.length !== 1)
-      throw new Error(
-        "The dimension is not one of the product's available sizes or inch fractions.",
+    if (options.length > 1) throw new Error(unavailable);
+    if (!options.length)
+      throw new InvalidMeasurement(
+        `${requested} is not one of the product's available sizes or inch fractions.`,
       );
     return options[0].value;
   }
   const probe = control.cloneNode(false) as HTMLInputElement;
   probe.value = String(value);
-  if (probe.valueAsNumber !== value || !probe.checkValidity())
-    throw new Error(
-      "The saved dimension does not match the product's allowed range or increments. Review it in the product controls.",
+  if (probe.valueAsNumber !== value) throw new Error(unavailable);
+  if (!probe.checkValidity()) {
+    if (
+      !probe.validity.rangeUnderflow &&
+      !probe.validity.rangeOverflow &&
+      !probe.validity.stepMismatch
+    )
+      throw new Error(unavailable);
+    const bounds = (["min", "max"] as const).flatMap((attribute) => {
+      const raw = control.getAttribute(attribute);
+      return raw?.trim() && Number.isFinite(Number(raw))
+        ? [
+            `${attribute === "min" ? "minimum" : "maximum"} ${Number(raw)} ${draft.unit}`,
+          ]
+        : [];
+    });
+    if (control.step !== "any") {
+      const step = Number(control.step);
+      bounds.push(
+        `increments of ${Number.isFinite(step) && step > 0 ? step : 1} ${draft.unit}`,
+      );
+    }
+    throw new InvalidMeasurement(
+      `${requested} is outside the product's allowed range or increments${part ? ` for its ${part}-inch field` : ""}: ${bounds.join(", ")}.`,
     );
+  }
   return String(value);
 }
 
@@ -99,26 +131,40 @@ function groupFor(component: Element, unit: string) {
   return groups[0];
 }
 
-function dimensions(group: Element, draft: MeasurementDraft) {
+function dimensions(group: Element, draft: MeasurementDraft): DimensionField[] {
   const width = numericControl(group, "[data-width-input]"),
     height = numericControl(group, "[data-drop-input]");
   if (draft.unit !== "in")
     return [
-      { control: width, number: draft.width },
-      { control: height, number: draft.height },
+      { control: width, number: draft.width, axis: "width" },
+      { control: height, number: draft.height, axis: "drop" },
     ];
   // Splitting an explicitly supplied inch value into the theme's whole/fraction
   // fields changes its representation only. Never round to a supported fraction.
   return [
-    { control: width, number: Math.floor(draft.width) },
+    {
+      control: width,
+      number: Math.floor(draft.width),
+      axis: "width",
+      part: "whole",
+    },
     {
       control: numericControl(group, "[data-width-inches-input]"),
       number: draft.width % 1,
+      axis: "width",
+      part: "fractional",
     },
-    { control: height, number: Math.floor(draft.height) },
+    {
+      control: height,
+      number: Math.floor(draft.height),
+      axis: "drop",
+      part: "whole",
+    },
     {
       control: numericControl(group, "[data-drop-inches-input]"),
       number: draft.height % 1,
+      axis: "drop",
+      part: "fractional",
     },
   ];
 }
@@ -194,6 +240,7 @@ export async function applyMeasurements(
   const target = groupFor(component, unit);
   dimensions(target, draft); // Check the supported shape before changing any live control.
   let changed = false;
+  let dimensionsWritten = false;
   const uncertain = (): ApplyMeasurementsResult => ({
     status: "uncertain",
     productPath: draft.productPath,
@@ -213,6 +260,7 @@ export async function applyMeasurements(
       "[data-active-input-measurement]",
     );
     if (
+      !isCurrentProduct(draft.productPath) ||
       !form.isConnected ||
       !component.isConnected ||
       !units.isConnected ||
@@ -221,14 +269,16 @@ export async function applyMeasurements(
       groups[0] !== target
     )
       throw new Error(unavailable);
-    const fields = dimensions(target, draft).map(({ control, number }) => {
+    const fields = dimensions(target, draft).map((field) => {
+      const { control, number } = field;
       if (control.form !== form) throw new Error(unavailable);
-      return { control, number, value: validateValue(control, number) };
+      return { control, number, value: validateValue(field, draft) };
     });
     signal.throwIfAborted();
     // Assign the complete pair (and inch fractions) before either event. Theme
     // pricing always sees coherent confirmed values, never a half-written pair.
     changed = true;
+    dimensionsWritten = true;
     for (const { control, value } of fields) control.value = value;
     for (const { control } of fields) notifyProductControl(control);
     const finalGroups = component.querySelectorAll(
@@ -276,6 +326,13 @@ export async function applyMeasurements(
           : "The confirmed units, width and drop were entered in the product controls. Check the theme's price and fitting choice. Nothing was added to the cart.",
     };
   } catch (error) {
+    if (error instanceof InvalidMeasurement && !dimensionsWritten)
+      return {
+        status: "invalid_measurements",
+        productPath: draft.productPath,
+        draftUpdatedAt: draft.updatedAt,
+        message: `${error.message} No confirmed dimensions were entered; no values were rounded or adjusted. The displayed unit is ${draft.unit}.`,
+      };
     if (changed) return uncertain();
     throw error;
   }

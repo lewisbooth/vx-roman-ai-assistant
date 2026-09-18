@@ -225,6 +225,13 @@ test("result and apply projection reject unknown fields and bind order drafts to
     message: "Dimensions filled. Review the product form.",
   };
   assert.deepEqual(api.parseApplyMeasurementsResult(applied), applied);
+  const rejected = {
+    ...applied,
+    status: "invalid_measurements",
+    message:
+      "Drop 35 cm is below this product's minimum of 40 cm. No dimensions were entered.",
+  };
+  assert.deepEqual(api.parseApplyMeasurementsResult(rejected), rejected);
   assert.throws(() =>
     api.parseApplyMeasurementsResult({ ...applied, draftUpdatedAt: undefined }),
   );

@@ -421,6 +421,49 @@ test("applying measurements resolves a saved order draft before exposing the bro
   });
 });
 
+test("a native size rejection reaches the advisor unchanged rather than becoming uncertain", async () => {
+  const env = setup();
+  const draft = {
+    productPath: "/products/shade",
+    width: 70,
+    height: 35,
+    unit: "cm",
+    kind: "order",
+    mount: "recess",
+    updatedAt: "2026-09-18T12:39:23.959Z",
+  };
+  env.mock.measurementDraft = async () => draft;
+  env.mock.toolName = "apply_measurements";
+  env.mock.toolArguments = { productPath: draft.productPath, draft };
+  const pending = env.api.requestBrowserTool(
+    "conversation-1",
+    "assistant-1",
+    "call-size",
+    "apply_measurements",
+    { productPath: draft.productPath },
+    new AbortController().signal,
+  );
+  await flush();
+  const result = {
+    status: "invalid_measurements",
+    productPath: draft.productPath,
+    draftUpdatedAt: draft.updatedAt,
+    message:
+      "Drop 35 cm is below this product's minimum of 40 cm. No dimensions were entered.",
+  };
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await pending), result);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [],
+    outcome: result,
+  });
+});
+
 test("browser result reaches its waiter only after durable IDs-only completion", async () => {
   const env = setup();
   const gate = deferred();

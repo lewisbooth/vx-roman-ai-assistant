@@ -1126,7 +1126,7 @@ test("configuration followups use real paged choices and retain final review bef
       /use a fresh get_product_configuration result from the matching current PDP after its last change/,
       /more than four choices exist, paginate the actual choices with "More options" within the four-answer limit rather than dropping choices or inventing replacements/,
       /Do not change recess, lining or other preferences arbitrarily/,
-      /"Keep configuring" when editable options are available/,
+      /"Keep configuring" when editable options remain but no helpful concrete suggestion fits/,
       /This one question is the final review and add decision together/,
       /After the customer chooses Add product to cart[\s\S]*read the current configuration again and add that same product/,
     ])
@@ -1175,7 +1175,7 @@ test("dependent configuration changes stay bounded, freshly verified and separat
       /If the budget is reached with work remaining, preserve the outstanding intent and say what remains rather than claiming configuration is complete/,
       /Keep a cart mutation in a separate reply from measurement application or option changes/,
       /After each completed configuration request, continue any meaningful pending measuring or option question/,
-      /"Add sample to cart" only when this read returns actions.sampleAvailable true/,
+      /"Add sample to cart" only when this fresh read returns actions.sampleAvailable true/,
       /Omit Add product when required dimensions or choices are still missing/,
     ])
       assert.match(prompt, rule);
@@ -1657,4 +1657,14 @@ test('guide-prescribed multiple positions form one measurement step without inve
  for(const prompt of [ROMAN_TEXT_PROMPT,ROMAN_VOICE_BRIEFING_PROMPT]){
  assert.match(prompt,/When the verified guide prescribes several positions and one resulting value, treat that as one measuring step/);assert.match(prompt,/smallest, largest or other result in one ask_measurement/);assert.match(prompt,/Keep separate readings only when the guide needs them independently/);assert.match(prompt,/Do not substitute a familiar smallest-of-three method/);
  }
+});
+
+test("native dimension limits lead to correction or alternatives before further upsells", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /invalid_measurements means the native product controls rejected a dimension/);
+    assert.match(prompt, /State the returned width\/drop limit or increment in its stated units/);
+    assert.match(prompt, /offer to recheck that measurement or find a suitable alternative/);
+    assert.match(prompt, /Do not retry the same rejected values, silently increase a real window measurement to the minimum/);
+    assert.match(prompt, /Resolve invalid or unconfirmed size entry before offering new measurement cover or other paid upgrades/);
+  }
 });

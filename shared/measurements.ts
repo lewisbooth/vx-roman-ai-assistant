@@ -28,6 +28,7 @@ export interface ApplyMeasurementsResult {
     | "applied"
     | "unsupported"
     | "needs_configuration"
+    | "invalid_measurements"
     | "cancelled"
     | "uncertain";
   productPath: string;
@@ -206,6 +207,7 @@ export function parseApplyMeasurementsResult(
       "applied",
       "unsupported",
       "needs_configuration",
+      "invalid_measurements",
       "cancelled",
       "uncertain",
     ].includes(value.status as string) ||

@@ -898,6 +898,68 @@ test("measurement application uses an ordinary claim bound to the exact order dr
   );
 });
 
+test("rejected native dimensions remain a precise durable result without a cart event or changed draft", async () => {
+  const draft = {
+    productPath: "/products/shade",
+    width: 70,
+    height: 35,
+    unit: "cm",
+    kind: "order",
+    mount: "recess",
+    updatedAt: new Date().toISOString(),
+  };
+  const { id, tool } = await cartInvocation("apply_measurements", {
+    productPath: draft.productPath,
+    draft,
+  });
+  const { updatedAt, ...values } = draft;
+  await database.measurementDraft.create({
+    data: { conversationId: id, ...values, updatedAt: new Date(updatedAt) },
+  });
+  const claim = executor();
+  assert.equal(
+    (await repository.claimToolInvocation(id, tool.id, claim)).claimed,
+    true,
+  );
+  const outcome = {
+    status: "invalid_measurements",
+    productPath: draft.productPath,
+    draftUpdatedAt: updatedAt,
+    message:
+      "Drop 35 cm is below this product's minimum of 40 cm. No dimensions were entered.",
+  };
+  await repository.completeToolInvocation(id, tool.id, claim, {
+    productIds: [],
+    outcome,
+  });
+  const saved = await database.toolInvocation.findUniqueOrThrow({
+    where: { id: tool.id },
+  });
+  assert.equal(
+    saved.status,
+    "complete",
+    "the tool completed with a known rejection, not an unknown mutation",
+  );
+  assert.deepEqual(JSON.parse(saved.resultJson), outcome);
+  const measurement = await database.measurementDraft.findFirstOrThrow({
+    where: { conversationId: id },
+  });
+  assert.equal(measurement.width, 70);
+  assert.equal(measurement.height, 35);
+  assert.equal(measurement.updatedAt.toISOString(), updatedAt);
+  const snapshot = await repository.getSnapshot(id);
+  assert.equal(
+    snapshot.messages.some((row) =>
+      row.parts.some((part) => part.type === "cart_added"),
+    ),
+    false,
+  );
+  assert.equal(
+    (await repository.claimToolInvocation(id, tool.id, executor())).claimed,
+    false,
+  );
+});
+
 test("interrupted measurement applications retain claim uncertainty without cart confirmation and never replay", async () => {
   for (const cleanup of ["timeout", "end", "restart", "browser-error"]) {
     for (const claimed of [false, true]) {
