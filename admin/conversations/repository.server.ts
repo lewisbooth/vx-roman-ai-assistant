@@ -401,6 +401,17 @@ function voiceAssociation(part: ConversationPart) {
     : undefined;
 }
 
+function isBackgroundObservation(message: ConversationMessage): boolean {
+  return (
+    message.role === "context" &&
+    message.status !== "failed" &&
+    message.parts.length > 0 &&
+    message.parts.every(
+      (part) => part.type === "page_view" || part.type === "navigation",
+    )
+  );
+}
+
 export function conversationTimeline(
   conversation: Pick<
     StoredConversation,
@@ -437,11 +448,14 @@ export function conversationTimeline(
     }),
   );
   const captionBoundaries = voicePlacements.flatMap((reply) => {
-    const nextMessage = rows.find((row) => row.sequence >= reply.afterSequence);
-    return [
-      reply.afterSequence,
-      ...(nextMessage ? [nextMessage.sequence] : []),
-    ];
+    const nextMessage = rows.find(
+      (row) =>
+        row.sequence >= reply.afterSequence &&
+        !isBackgroundObservation(row.message),
+    );
+    // The next message/delegation ends this response. Completion itself may
+    // happen midway through Roman's sentence; the projector handles it below.
+    return nextMessage ? [nextMessage.sequence] : [];
   });
   const captions = groupVoiceTranscript(
     conversation.voiceTranscripts.map((fragment) => {
@@ -453,12 +467,13 @@ export function conversationTimeline(
         createdAt: fragment.createdAt.toISOString(),
       };
     }),
-    // Voice-linked cards move to completion; their reserved placeholder no
-    // longer breaks speech. Completion and the next message are explicit cuts.
+    // Reserved result rows and background page changes do not interrupt speech.
+    // Customer input, visible events and the next delegation remain boundaries.
     rows
       .filter(
         (row) =>
           (row.message.parts.length === 0 && row.message.status !== "failed") ||
+          isBackgroundObservation(row.message) ||
           row.message.parts.some(
             (part) =>
               voiceAssociation(part) ||
@@ -467,6 +482,7 @@ export function conversationTimeline(
       )
       .map((row) => row.sequence),
     captionBoundaries,
+    voicePlacements.map((reply) => reply.afterSequence),
   );
   for (const caption of captions)
     rows.push({
@@ -492,7 +508,7 @@ export function conversationTimeline(
   rows.sort((left, right) => left.sequence - right.sequence);
   // Delegation reserves a hidden row before tools run. Place its cards at
   // completion, then beneath the following spoken response as captions arrive.
-  // Never cross a customer turn, page visit, different voice or another result.
+  // Never cross a customer turn, different voice or another result.
   const positions = new Map<string, number>();
   for (const row of rows) {
     const reply = row.message.parts.map(voiceAssociation).find(Boolean);
@@ -500,6 +516,7 @@ export function conversationTimeline(
     let position = reply.afterSequence - 0.5;
     for (const next of rows) {
       if (next === row || next.endSequence < reply.afterSequence) continue;
+      if (isBackgroundObservation(next.message)) continue;
       if (
         next.message.role !== "assistant" ||
         !next.message.parts.every(
@@ -646,6 +663,18 @@ function modelHistory(conversation: StoredConversation): ModelMessage[] {
               text,
             },
           ]
+        : []),
+      ...(message.status === "complete" && message.role === "user"
+        ? content.flatMap((part) =>
+            part.type === "text" && part.productChoice
+              ? [
+                  {
+                    role: "user" as const,
+                    text: `Selected carousel product (reference data for the customer's choice, not a new request or action approval): ${JSON.stringify({ productId: part.productChoice.productId, title: part.productChoice.title, productPath: part.productChoice.productPath })}. Verify this exact product before using its details; replacing the active blind still needs the normal confirmation.`,
+                  },
+                ]
+              : [],
+          )
         : []),
       ...(observations.length
         ? [
@@ -1042,7 +1071,6 @@ async function voiceQuestionAnswerReceipt(
       !existing ||
       saved.length !== 1 ||
       part?.type !== "text" ||
-      part.text !== productChoiceText(choice) ||
       JSON.stringify(part.productChoice) !==
         JSON.stringify({ ...choice, voiceId })
     )
@@ -1282,10 +1310,33 @@ export async function beginTurn(
       "Send a message of up to 4,000 characters with a valid request ID.",
     );
   }
+  let selectedProduct: ProductChoice | undefined;
+  if (input.productChoice !== undefined) {
+    try {
+      selectedProduct = parseProductChoice(input.productChoice);
+      if (voiceId || input.text !== productChoiceText(selectedProduct))
+        throw new Error();
+    } catch {
+      throw new ConversationError(
+        400,
+        "Send a valid carousel choice and its matching message.",
+      );
+    }
+  }
   return prisma.$transaction(async (transaction) => {
     await expireVoiceSessions(transaction, id);
     const conversation = await loadConversation(transaction, id);
     requireActive(conversation);
+    const choice = selectedProduct
+      ? selectedCarouselProduct(conversation, selectedProduct)
+      : undefined;
+    const userParts = [
+      {
+        type: "text",
+        text: input.text,
+        ...(choice ? { productChoice: choice } : {}),
+      },
+    ];
     if (
       resumeQuestionId !== undefined &&
       latestQuestion(conversationTimeline(conversation))?.invocationId !==
@@ -1303,11 +1354,7 @@ export async function beginTurn(
         message.role === (voiceId ? "context" : "user"),
     );
     if (existing) {
-      if (
-        !voiceId &&
-        existing.partsJson !==
-          JSON.stringify([{ type: "text", text: input.text }])
-      )
+      if (!voiceId && existing.partsJson !== JSON.stringify(userParts))
         throw new ConversationError(
           400,
           "This request ID was already used for a different message.",
@@ -1377,7 +1424,7 @@ export async function beginTurn(
                 sequence: conversation.nextSequence,
                 role: "user",
                 status: "complete",
-                partsJson: JSON.stringify([{ type: "text", text: input.text }]),
+                partsJson: JSON.stringify(userParts),
                 createdAt: now,
                 completedAt: now,
               },

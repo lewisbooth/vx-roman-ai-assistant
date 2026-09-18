@@ -29,7 +29,7 @@ export function StorefrontLink({
   try {
     const target = new URL(url, window.location.origin);
     // Product choice goes through Roman so a replacement can be confirmed.
-    // Old prose links and navigation events cannot bypass that conversation.
+    // Historical prose links cannot bypass that conversation.
     if (/(?:^|\/)(?:products|collections)(?:\/|$)/i.test(target.pathname))
       return <span className={className}>{children}</span>;
     if (

@@ -189,12 +189,15 @@ export function CartStage({
             {cart.items.length ? (
               <ul className="roman-cart-items">
                 {cart.items.map((item) => (
-                  <li key={item.lineKey}>
+                  <li
+                    key={item.lineKey}
+                    className="roman-product-card roman-cart-card"
+                  >
                     <CartImage
                       key={item.imageUrl ?? "missing"}
                       url={item.imageUrl}
                     />
-                    <h3>{item.title}</h3>
+                    <h3 className="roman-product-title">{item.title}</h3>
                     {item.configuration.length > 0 && (
                       <dl className="roman-cart-configuration">
                         {item.configuration.map(({ name, value }) => (
@@ -228,9 +231,6 @@ export function CartStage({
                 >
                   Continue to checkout <span aria-hidden="true">↗</span>
                 </a>
-                <p className="roman-cart-note">
-                  Checkout opens securely with the store.
-                </p>
               </div>
             )}
           </>

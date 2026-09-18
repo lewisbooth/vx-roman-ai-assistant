@@ -54,6 +54,7 @@ import {
   parseProductChoiceReference,
   productChoiceText,
   type ProductChoiceReference,
+  type ProductChoice,
 } from "../../../shared/product-choice";
 import type { CatalogProduct } from "../../../shared/catalog";
 import type {
@@ -449,7 +450,11 @@ export function createConversationClient(
       outcome?: { result: BrowserToolResult } | { error: string };
     }
   >();
-  let uncertainSubmission: { requestId: string; text: string } | null = null;
+  let uncertainSubmission: {
+    requestId: string;
+    text: string;
+    productChoice?: ProductChoice;
+  } | null = null;
   let uncertainVoiceAnswer: (VoiceSelectionInput & { voiceId: string }) | null =
     null;
   let uncertainMeasurement: { requestId: string; key: string } | null = null;
@@ -1647,15 +1652,22 @@ export function createConversationClient(
         listeners.delete(listener);
       };
     },
-    async sendMessage(value) {
+    async sendMessage(value, selectedProduct) {
+      const choice = selectedProduct
+        ? parseProductChoice(selectedProduct)
+        : undefined;
       const text = value.trim();
+      if (choice && text !== productChoiceText(choice))
+        throw new Error(
+          "The selected product message does not match this choice.",
+        );
       if (disposed) throw new Error("Roman has been removed.");
       if (!text || text.length > MAX_MESSAGE_LENGTH)
         throw new Error(
           `Enter a message of up to ${MAX_MESSAGE_LENGTH} characters.`,
         );
       if (state.voice.status === "starting" || state.voice.status === "active")
-        return sendVoiceSelection({ text });
+        return sendVoiceSelection(choice ?? { text });
       if (
         ending ||
         voiceId ||
@@ -1675,14 +1687,25 @@ export function createConversationClient(
       }
       const startedEpoch = epoch;
       const submission =
-        uncertainSubmission?.text === text
+        uncertainSubmission?.text === text &&
+        JSON.stringify(uncertainSubmission.productChoice) ===
+          JSON.stringify(choice)
           ? uncertainSubmission
-          : { requestId: window.crypto.randomUUID(), text };
+          : {
+              requestId: window.crypto.randomUUID(),
+              text,
+              ...(choice ? { productChoice: choice } : {}),
+            };
       uncertainSubmission = submission;
       update({
         pending: true,
         error: null,
-        optimisticMessage: pendingUserMessage(submission.requestId, text),
+        optimisticMessage: pendingUserMessage(
+          submission.requestId,
+          text,
+          undefined,
+          choice,
+        ),
       });
       try {
         if (!access) await bootstrap(resumeAccess);

@@ -1,4 +1,4 @@
-import type { ProductChoiceReference } from "./product-choice";
+import type { ProductChoice, ProductChoiceReference } from "./product-choice";
 
 export type MessageStatus = "pending" | "complete" | "failed";
 
@@ -26,6 +26,7 @@ export interface TextPart {
   text: string;
   /** A real customer selection during voice, never an audio transcript. */
   questionAnswer?: QuestionAnswerReference;
+  /** Exact carousel selection; voiceId is present only for a voice receipt. */
   productChoice?: ProductChoiceReference;
   /** Typed customer input delivered through an active voice connection. */
   voiceInput?: VoiceInputReference;
@@ -182,6 +183,7 @@ export interface ConversationBootstrap extends ConversationCredential {
 export interface SendMessageInput {
   requestId: string;
   text: string;
+  productChoice?: ProductChoice;
 }
 
 export const MAX_MESSAGE_LENGTH = 4000;

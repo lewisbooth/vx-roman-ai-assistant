@@ -76,6 +76,7 @@ import {
   guideLibraryToolDefinition,
   parseGuideLibraryCall,
   parseGuideLibraryResult,
+  type GuideLibrary,
   type GuideLibraryResult,
 } from "../../shared/guide-library";
 import {
@@ -120,6 +121,9 @@ export interface GuideReuse {
 export interface LibraryReuse {
   inventory: LibraryInventory[];
   bound?: BoundLibrarySource;
+  recall(
+    library: GuideLibrary,
+  ): { inventory: LibraryInventory; result: GuideLibraryResult } | undefined;
   discover(callId: string, result: GuideLibraryResult): LibraryInventory;
   read(
     call: ReturnType<typeof parseLibraryReadCall>,
@@ -333,6 +337,7 @@ export async function generateReply(
     ? allTools.filter(
         (tool) =>
           tool.name === "get_product_guides" ||
+          tool.name === "discover_guides" ||
           tool.name === "read_library_guides" ||
           tool.name === resumePresentation,
       )
@@ -353,7 +358,7 @@ export async function generateReply(
     ? [
         {
           role: "developer",
-          content: `This is a read-only startup refresh of one saved unanswered question, not a new customer request. Resume only this question: ${JSON.stringify(resumeQuestion)}. Do not act on older requests or introduce another workflow. Only guide reading and the matching question presentation are available. For numeric input, reuse previously grounded instructions only when the same product's verified prior-read inventory is available; request a needed original through get_product_guides when its detail is absent or uncertain. Keep the question, product, label and units, with instructions grounded in that document. If unsupported, explain the limitation without measurement advice.`,
+          content: `This is a read-only startup refresh of one saved unanswered question, not a new customer request. Resume only this question: ${JSON.stringify(resumeQuestion)}. Do not act on older requests or introduce another workflow. Only guide reading and the matching question presentation are available. For a saved library-grounded question, continue from that library source rather than a mismatched product-page document. For numeric input, reuse previously grounded instructions only when the same product's verified prior-read inventory is available; request a needed original through get_product_guides when its detail is absent or uncertain. Keep the question, product, label and units, with instructions grounded in that document. If unsupported, explain the limitation without measurement advice.`,
         },
       ]
     : [];
@@ -429,7 +434,7 @@ export async function generateReply(
               ? [
                   {
                     role: "developer" as const,
-                    content: `Verified library prior-read binding: ${JSON.stringify({ productPath: libraryBound.productPath, pagePath: libraryBound.source.pagePath, guideIds: libraryBound.source.guideIds })}. The receipt supports already-grounded instructions for this uninterrupted product visit; no original files are attached unless requested in this turn. Request original evidence only for new or uncertain details.`,
+                    content: `Verified library prior-read binding: ${JSON.stringify({ productPath: libraryBound.productPath, pagePath: libraryBound.source.pagePath, guideIds: libraryBound.source.guideIds, sourceType: libraryBound.source.guideIds.length ? "selected_original_pdfs" : "written_page_sections" })}. This is the working library source for this uninterrupted product visit, independent of product-page document availability. Continue from its already-grounded method when applicable; a known mismatched product-page guide does not invalidate suitable library evidence. For missing written-source details, call discover_guides for this library to recall its exact cached sections without a browser lookup or PDF. For missing PDF detail, use read_library_guides with the listed discovery and guide IDs. No original files are attached unless requested in this turn. The receipt proves a read, not new suitability: verify any changed product, shape or mounting requirement from that source.`,
                   },
                 ]
               : []),
@@ -457,7 +462,7 @@ export async function generateReply(
                         productPath: cached.productPath,
                         kinds: cached.kinds,
                       },
-                    )}. This inventory contains no PDF contents or new suitability finding. Reuse instructions already grounded in that prior read for routine follow-ups. Call get_product_guides with refresh false when a new detail or branch needs an original not already attached in this turn; matching cached files require no storefront lookup or download.`,
+                    )}. This inventory contains no PDF contents or new suitability finding. Product-page provenance does not supersede a separately verified library source; a previously mismatched document remains mismatched. Reuse instructions already grounded in that prior read for routine follow-ups. Call get_product_guides with refresh false when a new detail or branch needs an original not already attached in this turn; matching cached files require no storefront lookup or download.`,
                   },
                 ]
               : []),
@@ -605,6 +610,7 @@ export async function generateReply(
       if (
         resumeQuestion &&
         call.name !== "get_product_guides" &&
+        call.name !== "discover_guides" &&
         call.name !== "read_library_guides" &&
         call.name !== resumePresentation
       )
@@ -852,6 +858,7 @@ export async function generateReply(
       let outcome: ModelToolOutcome;
       let requestedGuides: ReturnType<typeof parseProductGuideRead> | undefined;
       let cachedRead: GuideSession | undefined;
+      let recalledLibrary: ReturnType<LibraryReuse["recall"]>;
       let priorRead: GuideSession | undefined;
       let unavailableGuides:
         { kind: ProductGuideKind; reason: string }[] | undefined;
@@ -961,7 +968,13 @@ export async function generateReply(
         signal.throwIfAborted();
         guideResponsePending = false;
         onGuideReading?.(undefined);
-        if (
+        if (parsed.name === "discover_guides")
+          recalledLibrary = libraryReuse?.recall(
+            parseGuideLibraryCall(parsed.arguments).library,
+          );
+        if (recalledLibrary) {
+          outcome = recalledLibrary.result;
+        } else if (
           parsed.name === "get_product_guides" &&
           requestedGuides &&
           !requestedGuides.refresh &&
@@ -1054,22 +1067,31 @@ export async function generateReply(
         storefrontOrigin
       ) {
         const result = parseGuideLibraryResult(outcome, storefrontOrigin);
-        const inventory = libraryReuse.discover(call.call_id, result);
+        const inventory =
+          recalledLibrary?.inventory ??
+          libraryReuse.discover(call.call_id, result);
         const old = libraryInventory.findIndex(
           (entry) => entry.library === result.library,
         );
         if (old >= 0) {
           libraryInventory.splice(old, 1);
           // A fresh discovery supersedes its old links and in-turn originals.
-          libraryInputs.clear();
+          if (!recalledLibrary) libraryInputs.clear();
         }
         libraryInventory.push(inventory);
-        librarySource = result.sections.some((section) => section.text.trim())
-          ? inventory.source
-          : undefined;
-        libraryBound = librarySource
-          ? await libraryReuse.bind(librarySource)
-          : undefined;
+        // Recalling written sections must not replace selected PDF provenance
+        // from this same discovery with a weaker HTML-only source receipt.
+        if (
+          !recalledLibrary ||
+          librarySource?.sourceCallId !== inventory.source.sourceCallId
+        ) {
+          librarySource = result.sections.some((section) => section.text.trim())
+            ? inventory.source
+            : undefined;
+          libraryBound = librarySource
+            ? await libraryReuse.bind(librarySource)
+            : undefined;
+        }
         input.push({
           type: "function_call_output",
           call_id: call.call_id,

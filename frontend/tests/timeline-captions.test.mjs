@@ -76,6 +76,43 @@ function setup(t) {
   return { container, render: view.render };
 }
 
+test("carousel choices display friendly text from structured metadata without rewriting actual customer text", (t) => {
+  const ctx = setup(t);
+  const text = "Choose Lottie Roman blind (/products/lottie).";
+  const choice = {
+    carouselId: "carousel-1",
+    productId: "gid://shopify/Product/123",
+    title: "Lottie Roman blind",
+    productPath: "/products/lottie",
+  };
+  const messages = [
+    message("user", { type: "text", text, productChoice: choice }),
+    message("user", {
+      type: "text",
+      text,
+      productChoice: { ...choice, voiceId: "voice-1" },
+    }),
+    message("user", { type: "text", text }),
+  ];
+  const original = structuredClone(messages);
+  ctx.render({ messages });
+  assert.deepEqual(
+    [...ctx.container.querySelectorAll(".roman-message-user p")].map(
+      (node) => node.textContent,
+    ),
+    [
+      "I'd like the Lottie Roman blind.",
+      "I'd like the Lottie Roman blind.",
+      text,
+    ],
+  );
+  assert.deepEqual(
+    messages,
+    original,
+    "Rendering must preserve source context",
+  );
+});
+
 test("answering a voice question retires its controls without adding a second transcript message", async (t) => {
   const ctx = setup(t);
   const spoken = caption("Yes, we can. Would you like a sample?");
@@ -212,7 +249,7 @@ test("a resumed pending question remains visible in new voice captions and its w
   assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
 });
 
-test("a text question has one owner while active, answered, restored and voice is enabled", (t) => {
+test("one structured text question stays in history while its active answer panel comes and goes", (t) => {
   const ctx = setup(t);
   const offered = question({ voiceReply: undefined });
   const messages = [
@@ -227,7 +264,11 @@ test("a text question has one owner while active, answered, restored and voice i
     activeQuestionId: offered.invocationId,
     onAnswer: async () => {},
   });
-  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
+  const history = ctx.container.querySelectorAll(".roman-message-assistant")[1];
+  const questionText = history.querySelector(".roman-message-text");
+  assert.equal(questionText.textContent, offered.question);
+  assert.equal(history.hidden, false);
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
   assert.equal(
     ctx.container.querySelectorAll(".roman-question button").length,
     2,
@@ -237,6 +278,11 @@ test("a text question has one owner while active, answered, restored and voice i
     message("user", { type: "text", text: "Keep browsing" }),
   ];
   ctx.render({ messages: answered, voice: true });
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-message-assistant")[1],
+    history,
+  );
+  assert.equal(history.querySelector(".roman-message-text"), questionText);
   assert.equal(ctx.container.querySelector(".roman-question"), null);
   assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
   assert.equal(
@@ -249,7 +295,7 @@ test("a text question has one owner while active, answered, restored and voice i
   assert.equal(restored.container.textContent, ctx.container.textContent);
 });
 
-test("text numeric questions retain one question, instructions and units in history", (t) => {
+test("numeric history keeps the short question and answer while instructions and input units belong only to active controls", (t) => {
   const ctx = setup(t);
   const offered = question({
     voiceReply: undefined,
@@ -284,14 +330,15 @@ test("text numeric questions retain one question, instructions and units in hist
       });
     assert.equal(
       ctx.container.textContent.split(offered.question).length - 1,
-      1,
+      active ? 2 : 1,
     );
     assert.equal(
       ctx.container.textContent.split(offered.measurement.instructions).length -
         1,
-      1,
+      active ? 1 : 0,
     );
-    assert.match(ctx.container.textContent, /Width \(mm\)/);
+    assert.equal(ctx.container.textContent.includes("Width (mm)"), active);
+    if (!active) assert.match(ctx.container.textContent, /Width: 500 mm/);
   }
   assert.equal(ctx.container.querySelector('input[type="number"]'), null);
 });

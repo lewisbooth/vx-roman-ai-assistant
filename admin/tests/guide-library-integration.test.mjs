@@ -137,6 +137,7 @@ function setup() {
     activity = [];
   let plans = [];
   let productGuides = { status: "unavailable", productPath, guides: [] };
+  let libraryResult = library();
   let currentPage = { productPath, pageId: randomUUID() };
   let assistantId = randomUUID();
   const id = randomUUID();
@@ -166,7 +167,7 @@ function setup() {
   };
   const execute = async (callId, name, args) => {
     browser.push({ callId, name, args: plain(args) });
-    if (name === "discover_guides") return library();
+    if (name === "discover_guides") return libraryResult;
     if (name === "get_product_guides") return productGuides;
     if (name === "get_store_support")
       return {
@@ -211,6 +212,7 @@ function setup() {
   const reuse = () => ({
     inventory: inventory(),
     bound: api.readBoundLibrarySource(id, origin, currentPage),
+    recall: (library) => api.readCachedLibraryDiscovery(id, origin, library),
     discover: (sourceCallId, result) =>
       api.saveLibraryDiscovery(id, origin, result, {
         sourceCallId,
@@ -236,6 +238,9 @@ function setup() {
     usage,
     activity,
     inventory,
+    library(value) {
+      libraryResult = value;
+    },
     productGuides(value) {
       productGuides = value;
     },
@@ -282,7 +287,7 @@ function setup() {
         origin,
         options.resume,
         (value) => activity.push(plain(value ?? null)),
-        undefined,
+        options.guideReuse,
         reuse(),
       );
       assert.equal(plans.length, 0, "Planned responses were unused");
@@ -378,6 +383,158 @@ test("cached grounded numeric follow-up uses one request without automatic PDFs 
     JSON.stringify(state.requests[0].input),
     /Synthetic native method/,
   );
+});
+
+test("a matching written library method survives a wrong product PDF and later measuring decisions without new storefront or PDF reads", async () => {
+  const state = setup();
+  const source = library();
+  source.sections = [
+    {
+      id: sectionId,
+      title: "Roman blinds — standard windows",
+      text: "Synthetic verified Roman method: use recess fitting for a rectangular opening, check 50 mm recess depth, then take the instructed width and drop without deductions.",
+    },
+  ];
+  state.library(source);
+  state.productGuides({
+    status: "found",
+    productPath,
+    guides: [
+      {
+        kind: "measuring",
+        url: `${origin}/cdn/shop/files/wrong-roller.pdf?v=1`,
+      },
+    ],
+  });
+  const shape = await state.run([
+    [
+      call("get_product_guides", {
+        productPath,
+        kinds: ["measuring"],
+        refresh: false,
+      }),
+    ],
+    [
+      call(
+        "discover_guides",
+        { library: "blinds" },
+        "matching_written_library",
+      ),
+    ],
+    [
+      call("ask_question", {
+        message: "Let's walk through the measuring guide.",
+        question: "What shape is the window?",
+        answers: ["Standard rectangular window", "Bay window"],
+      }),
+    ],
+  ]);
+  const receipt = plain(state.inventory()[0].source);
+  const before = state.requests.length;
+  const cached = {
+    sourceCallId: "wrong_product_pdf",
+    sourceAssistantId: randomUUID(),
+    productPath,
+    kinds: ["measuring"],
+    expiresAt: Date.now() + 30 * 60_000,
+    origin,
+    pageId: randomUUID(),
+    sources: [
+      {
+        kind: "measuring",
+        url: `${origin}/cdn/shop/files/wrong-roller.pdf?v=1`,
+      },
+    ],
+    files: [
+      {
+        type: "input_file",
+        filename: "wrong-roller.pdf",
+        file_data: `data:application/pdf;base64,${Buffer.from("%PDF-1.7 wrong roller").toString("base64")}`,
+      },
+    ],
+  };
+  await state.run(
+    [
+      [call("discover_guides", { library: "blinds" }, "recall_method")],
+      (request) => {
+        const recalled = outputs(request).at(-1);
+        assert.deepEqual(recalled.sections, source.sections);
+        assert.equal(recalled.discoveryId, state.inventory()[0].discoveryId);
+        return [
+          call("ask_question", {
+            message: "",
+            question: "Will it sit inside the recess?",
+            answers: ["Inside the recess", "Outside the recess"],
+          }),
+        ];
+      },
+    ],
+    {
+      history: [
+        { role: "assistant", text: shape.text },
+        { role: "user", text: "Standard rectangular window" },
+      ],
+      guideReuse: { cached, read() {}, clear() {} },
+    },
+  );
+  const firstFollowup = JSON.stringify(state.requests[before].input);
+  assert.match(firstFollowup, /working library source/);
+  assert.match(firstFollowup, /written_page_sections/);
+  assert.match(
+    firstFollowup,
+    /known mismatched product-page guide does not invalidate suitable library evidence/,
+  );
+  assert.match(firstFollowup, /Product-page provenance does not supersede/);
+  assert.doesNotMatch(firstFollowup, /Synthetic verified Roman method/);
+  await state.run(
+    [
+      [
+        call("ask_question", {
+          message: "",
+          question: "Which units would you like to use?",
+          answers: ["cm", "mm", "in"],
+        }),
+      ],
+    ],
+    { history: [{ role: "user", text: "Inside the recess; depth checked" }] },
+  );
+  const numeric = await state.run([[call("ask_measurement", measurement())]], {
+    history: [{ role: "user", text: "mm" }],
+  });
+  assert.deepEqual(
+    plain(numeric.questionPresentation.librarySource.source),
+    receipt,
+  );
+  assert.deepEqual(
+    state.browser.map(({ name }) => name),
+    ["get_product_guides", "discover_guides"],
+  );
+  assert.equal(
+    state.downloads.length,
+    1,
+    "Only the initial wrong product PDF was downloaded; library HTML never invokes a PDF",
+  );
+  assert.ok(
+    state.requests
+      .slice(before)
+      .every((request) => files(request).length === 0),
+  );
+});
+
+test("recalling cached written sections preserves an already selected library PDF binding", async () => {
+  const state = setup();
+  await state.seed();
+  const result = await state.run([
+    [call("discover_guides", { library: "blinds" })],
+    [call("ask_measurement", measurement())],
+  ]);
+  assert.deepEqual(
+    plain(result.questionPresentation.librarySource.source.guideIds),
+    [guideId(1)],
+  );
+  assert.equal(state.browser.length, 0);
+  assert.equal(state.downloads.length, 1);
+  assert.ok(state.requests.every((request) => files(request).length === 0));
 });
 
 test("explicit cached PDF selection attaches only its original with no browser read or download", async () => {
@@ -760,7 +917,12 @@ test("saved numeric voice resume may reuse its bound library evidence without re
   const tools = state.requests[0].tools.map(({ name }) => name);
   assert.deepEqual(
     tools.sort(),
-    ["ask_measurement", "get_product_guides", "read_library_guides"].sort(),
+    [
+      "ask_measurement",
+      "get_product_guides",
+      "discover_guides",
+      "read_library_guides",
+    ].sort(),
   );
 });
 
@@ -787,6 +949,7 @@ test("support details come from the footer tool, without fabricating missing fie
 
 function runnerSetup() {
   const id = randomUUID(),
+    voiceId = randomUUID(),
     assistantId = randomUUID();
   let pageId = randomUUID();
   let status = "active";
@@ -853,11 +1016,14 @@ function runnerSetup() {
     newEpisode() {
       pageId = randomUUID();
     },
+    cancel() {
+      return api.cancelVoiceDelegation(id, voiceId);
+    },
     run(generate) {
       mock.generate = generate;
       return api.runVoiceDelegation(
         id,
-        randomUUID(),
+        voiceId,
         randomUUID(),
         new AbortController().signal,
       );
@@ -955,6 +1121,51 @@ test("runner retains successful source authority only after a successful reply c
       pageId: state.snapshot().messages[0].id,
     }),
   );
+});
+
+test("later failed or cancelled voice work cannot discard an earlier completed library source", async () => {
+  for (const outcome of ["failed", "cancelled"]) {
+    const state = runnerSetup();
+    const saved = state.api.saveLibraryDiscovery(state.id, origin, library(), {
+      sourceCallId: "completed_discovery",
+      sourceAssistantId: randomUUID(),
+    });
+    const page = { productPath, pageId: state.snapshot().messages[0].id };
+    const bound = state.api.bindLibrarySource(
+      state.id,
+      origin,
+      saved.source,
+      page,
+    );
+    let release;
+    const pending = state.run(async (...args) => {
+      assert.deepEqual(plain(args[10].bound), plain(bound));
+      if (outcome === "failed") throw Error("Unrelated later provider failure");
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+      return successfulReply;
+    });
+    if (outcome === "cancelled") {
+      for (let index = 0; index < 20 && !release; index++) await setImmediate();
+      assert.ok(release);
+      await state.cancel();
+      release();
+    }
+    assert.equal(await pending, undefined);
+    assert.deepEqual(
+      plain(state.api.readBoundLibrarySource(state.id, origin, page)),
+      plain(bound),
+    );
+    state.newEpisode();
+    assert.equal(
+      state.api.readBoundLibrarySource(state.id, origin, {
+        productPath,
+        pageId: state.snapshot().messages[0].id,
+      }),
+      undefined,
+    );
+  }
 });
 
 test("a model read over the combined original budget cannot authorize unread evidence", async () => {

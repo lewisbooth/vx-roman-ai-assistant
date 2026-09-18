@@ -9,7 +9,7 @@ export interface ProductChoice {
 }
 
 export interface ProductChoiceReference extends ProductChoice {
-  voiceId: string;
+  voiceId?: string;
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -46,11 +46,17 @@ export function parseProductChoiceReference(
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Invalid product choice reference.");
   const { voiceId, ...choice } = value as Record<string, unknown>;
-  if (typeof voiceId !== "string" || !uuid.test(voiceId))
+  if (
+    voiceId !== undefined &&
+    (typeof voiceId !== "string" || !uuid.test(voiceId))
+  )
     throw new Error("Invalid product choice reference.");
-  return { ...parseProductChoice(choice), voiceId };
+  return {
+    ...parseProductChoice(choice),
+    ...(voiceId !== undefined ? { voiceId } : {}),
+  };
 }
 
 export function productChoiceText(choice: ProductChoice): string {
-  return `Choose ${choice.title} (${choice.productPath}).`;
+  return `I'd like the ${choice.title}.`;
 }

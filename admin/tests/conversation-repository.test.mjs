@@ -3050,3 +3050,142 @@ test("Roman view switches persist independently of background navigation and rej
   assert.deepEqual(JSON.parse(stored.resultJson), result.outcome);
   assert.equal((await repository.getSnapshot(id)).messages.some(row => row.parts.some(part => part.type === "navigation")), false);
 });
+
+
+async function savedProductChoice() {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show roller blinds",
+  });
+  const productIds = ["gid://shopify/Product/123", "gid://shopify/Product/456"];
+  await completedCatalog(id, turn.assistantId, productIds);
+  await repository.finishTurn(id, turn.assistantId, {
+    text: "Two options.",
+    status: "complete",
+    presentation: { callId: randomUUID(), productIds },
+  });
+  const snapshot = await repository.getSnapshot(id);
+  const carousel = snapshot.messages
+    .flatMap((message) => message.parts)
+    .find((part) => part.type === "products");
+  return {
+    id,
+    snapshot,
+    choice: {
+      carouselId: carousel.invocationId,
+      productId: productIds[0],
+      title: "Green roller blind",
+      productPath: "/products/green-roller",
+    },
+  };
+}
+
+test("text carousel selections persist exact reference data separately from their friendly customer message", async () => {
+  const { id, choice } = await savedProductChoice();
+  const input = {
+    requestId: randomUUID(),
+    text: "I'd like the Green roller blind.",
+    productChoice: choice,
+  };
+  const toolsBefore = await database.toolInvocation.count();
+  const turn = await repository.beginTurn(id, input);
+  const selected = turn.snapshot.messages.find(
+    (row) => row.requestId === input.requestId,
+  );
+  assert.deepEqual(selected.parts, [
+    { type: "text", text: input.text, productChoice: choice },
+  ]);
+  assert.doesNotMatch(selected.parts[0].text, /\/products\//);
+  const reference = turn.history.find((row) =>
+    row.text.startsWith("Selected carousel product"),
+  );
+  assert.equal(reference.role, "user");
+  assert.ok(reference.text.includes(choice.productId));
+  assert.ok(reference.text.includes(choice.productPath));
+  assert.ok(reference.text.includes(choice.title));
+  assert.match(
+    reference.text,
+    /reference data.*not a new request or action approval/,
+  );
+  assert.match(
+    reference.text,
+    /replacing the active blind still needs the normal confirmation/,
+  );
+  assert.equal(
+    await database.toolInvocation.count(),
+    toolsBefore,
+    "selection alone cannot execute navigation or cart actions",
+  );
+  assert.equal((await repository.beginTurn(id, input)).assistantId, null);
+  for (const productChoice of [
+    { ...choice, productPath: "/products/another-green-roller" },
+    { ...choice, productId: "gid://shopify/Product/456" },
+  ])
+    await assert.rejects(
+      repository.beginTurn(id, { ...input, productChoice }),
+      { status: 400 },
+    );
+  await assert.rejects(
+    repository.beginTurn(id, { requestId: input.requestId, text: input.text }),
+    { status: 400 },
+  );
+  await repository.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "Ready to explore it.",
+  });
+  const restored = loadRepository();
+  assert.equal((await restored.beginTurn(id, input)).assistantId, null);
+  assert.deepEqual(
+    (await restored.getSnapshot(id)).messages.find(
+      (row) => row.requestId === input.requestId,
+    ).parts,
+    selected.parts,
+  );
+  assert.equal(
+    await database.conversationMessage.count({
+      where: { conversationId: id, requestId: input.requestId, role: "user" },
+    }),
+    1,
+  );
+});
+
+test("text product choices reject unoffered products and forged metadata before creating a customer turn", async () => {
+  const { id, choice, snapshot } = await savedProductChoice();
+  const input = {
+    requestId: randomUUID(),
+    text: "I'd like the Green roller blind.",
+    productChoice: choice,
+  };
+  for (const productChoice of [
+    { ...choice, carouselId: randomUUID() },
+    { ...choice, productId: "gid://shopify/Product/999" },
+  ])
+    await assert.rejects(
+      repository.beginTurn(id, { ...input, productChoice }),
+      { status: 409 },
+    );
+  await assert.rejects(
+    repository.beginTurn(id, { ...input, text: "Add it to cart" }),
+    { status: 400 },
+  );
+  await assert.rejects(
+    repository.beginTurn(id, {
+      ...input,
+      productChoice: { ...choice, voiceId: randomUUID() },
+    }),
+    { status: 400 },
+  );
+  await assert.rejects(repository.beginTurn(id, input, randomUUID()), {
+    status: 400,
+  });
+  const { conversationId: otherId } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  await assert.rejects(repository.beginTurn(otherId, input), { status: 409 });
+  assert.deepEqual(await repository.getSnapshot(id), snapshot);
+});

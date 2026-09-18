@@ -147,7 +147,8 @@ test("measurement input has explicit units and guide instructions without steali
     part.measurement.instructions,
   );
   assert.match(
-    ctx.container.querySelector(".roman-question-hint").textContent,
+    ctx.container.querySelector(".roman-question .roman-question-hint")
+      .textContent,
     /Reply aloud or enter your measurement/,
   );
   assert.deepEqual(
@@ -251,35 +252,44 @@ test("submission failure retains the value and permits editing/retry without aut
   );
 });
 
-test("an optimistic voice answer can hide the row and restore its numeric draft and failure for retry", async (t) => {
-  let reject;
-  const submission = new Promise((_resolve, fail) => {
-    reject = fail;
+for (const voice of [false, true])
+  test(`an optimistic ${voice ? "voice" : "text"} answer can retire controls and restore its numeric draft and failure for retry`, async (t) => {
+    let reject;
+    const submission = new Promise((_resolve, fail) => {
+      reject = fail;
+    });
+    const ctx = setup(t, {
+      voice,
+      part: {
+        ...part,
+        ...(voice
+          ? { voiceReply: { voiceId: "voice-1", afterSequence: 2 } }
+          : {}),
+      },
+      onAnswer: () => submission,
+    });
+    ctx.fill("12.5");
+    ctx.submit();
+    ctx.render({ active: false });
+    assert.equal(ctx.container.querySelector(".roman-question"), null);
+    assert.equal(ctx.container.children.length, voice ? 0 : 1);
+    if (!voice)
+      assert.match(
+        ctx.container.textContent,
+        /How much clearance is available/,
+      );
+    assert.equal(ctx.calls.length, 1);
+    reject(new ctx.window.Error("Connection lost. Please retry."));
+    await delay(0);
+    ctx.render({ active: true });
+    await until(() => ctx.container.querySelector('[role="alert"]'));
+    assert.equal(ctx.input().value, "12.5");
+    assert.equal(ctx.input().readOnly, false);
+    assert.match(ctx.container.textContent, /Connection lost/);
+    assert.equal(ctx.calls.length, 1);
   });
-  const ctx = setup(t, {
-    voice: true,
-    part: {
-      ...part,
-      voiceReply: { voiceId: "voice-1", afterSequence: 2 },
-    },
-    onAnswer: () => submission,
-  });
-  ctx.fill("12.5");
-  ctx.submit();
-  ctx.render({ active: false });
-  assert.equal(ctx.container.children.length, 0);
-  assert.equal(ctx.calls.length, 1);
-  reject(new ctx.window.Error("Connection lost. Please retry."));
-  await delay(0);
-  ctx.render({ active: true });
-  await until(() => ctx.container.querySelector('[role="alert"]'));
-  assert.equal(ctx.input().value, "12.5");
-  assert.equal(ctx.input().readOnly, false);
-  assert.match(ctx.container.textContent, /Connection lost/);
-  assert.equal(ctx.calls.length, 1);
-});
 
-test("disabled and retired questions cannot submit; history retains guide instructions and units", (t) => {
+test("disabled and retired questions cannot submit; retiring leaves only the short question in history", (t) => {
   const ctx = setup(t, { disabled: true });
   assert.equal(ctx.input().disabled, true);
   assert.ok(
@@ -298,8 +308,14 @@ test("disabled and retired questions cannot submit; history retains guide instru
     null,
   );
   assert.ok(ctx.container.textContent.includes(part.question));
-  assert.ok(ctx.container.textContent.includes(part.measurement.instructions));
-  assert.ok(ctx.container.textContent.includes("Recess clearance (in)"));
+  assert.equal(
+    ctx.container.textContent.includes(part.measurement.instructions),
+    false,
+  );
+  assert.equal(
+    ctx.container.textContent.includes("Recess clearance (in)"),
+    false,
+  );
   assert.equal(ctx.shadow.activeElement, ctx.elsewhere);
 });
 

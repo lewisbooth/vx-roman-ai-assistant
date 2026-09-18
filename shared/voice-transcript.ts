@@ -54,6 +54,7 @@ export function groupVoiceTranscript(
   fragments: readonly VoiceTranscriptFragment[],
   hiddenSequences: readonly number[] = [],
   breakBeforeSequences: readonly number[] = [],
+  replyCompletedSequences: readonly number[] = [],
 ): VoiceTranscriptGroup[] {
   const groups: VoiceTranscriptGroup[] = [];
   const hidden = new Set(hiddenSequences);
@@ -61,6 +62,7 @@ export function groupVoiceTranscript(
     (left, right) => left.sequence - right.sequence,
   );
   let segment: VoiceTranscriptFragment[] = [];
+  let continueAssistant = false;
 
   function appendSegment() {
     // Input ASR can arrive after Roman's response caption. Both streams carry
@@ -72,7 +74,13 @@ export function groupVoiceTranscript(
     );
     let userIndex = 0;
     let assistantIndex = 0;
-    let previous: VoiceTranscriptGroup | undefined;
+    // A tool can complete in the middle of Roman's sentence. Keep its response
+    // continuous, but never combine customer speech from before and after a
+    // newly offered question or reorder speech across that completion.
+    let previous =
+      continueAssistant && groups.at(-1)?.role === "assistant"
+        ? groups.at(-1)
+        : undefined;
     for (const slot of segment) {
       const user = users[userIndex];
       const assistant = assistants[assistantIndex];
@@ -87,6 +95,7 @@ export function groupVoiceTranscript(
         : assistants[assistantIndex++];
       if (
         previous &&
+        previous.voiceId === fragment.voiceId &&
         previous.role === fragment.role &&
         adjacentInTimeline(previous.endSequence, slot.sequence, hidden) &&
         fragment.startMs >= previous.startMs &&
@@ -111,17 +120,24 @@ export function groupVoiceTranscript(
 
   for (const fragment of ordered) {
     const previous = segment.at(-1);
-    if (
+    const hardBoundary =
       previous &&
       (previous.voiceId !== fragment.voiceId ||
         !adjacentInTimeline(previous.sequence, fragment.sequence, hidden) ||
         breakBeforeSequences.some(
           (sequence) =>
             sequence > previous.sequence && sequence <= fragment.sequence,
-        ))
-    ) {
+        ));
+    const replyBoundary =
+      previous &&
+      replyCompletedSequences.some(
+        (sequence) =>
+          sequence > previous.sequence && sequence <= fragment.sequence,
+      );
+    if (hardBoundary || replyBoundary) {
       appendSegment();
       segment = [];
+      continueAssistant = !!replyBoundary && !hardBoundary;
     }
     segment.push(fragment);
   }

@@ -29,17 +29,19 @@ const bundle = await build({
             : path.endsWith("library.server")
               ? `export const readLibraryInventory=(...args)=>{mock.libraryReads.push(args);return []};
                  export const readBoundLibrarySource=()=>undefined;
+                 export const readCachedLibraryDiscovery=()=>undefined;
+                 export const discardLibraryTurn=(...args)=>mock.libraryDiscards.push(args);
                  export const saveLibraryDiscovery=()=>{throw Error('Unexpected library discovery')};
                  export const readLibraryGuides=()=>{throw Error('Unexpected library read')};
                  export const bindLibrarySource=()=>{throw Error('Unexpected library binding')};
                  export const clearLibrarySession=(id)=>mock.libraryClears.push(id);`
-            : path.includes("usage")
-              ? "export const recordModelUsage=async()=>{};"
-              : path.endsWith("browser-tools.server")
-                ? "export const requestBrowserTool=()=>{throw Error('Unexpected browser action');};"
-                : path.includes("measurements")
-                  ? "export const executeMeasurementTool=()=>{throw Error('Unexpected measurement action');};"
-                  : `export const beginTurn=(...args)=>mock.begin(...args);
+              : path.includes("usage")
+                ? "export const recordModelUsage=async()=>{};"
+                : path.endsWith("browser-tools.server")
+                  ? "export const requestBrowserTool=()=>{throw Error('Unexpected browser action');};"
+                  : path.includes("measurements")
+                    ? "export const executeMeasurementTool=()=>{throw Error('Unexpected measurement action');};"
+                    : `export const beginTurn=(...args)=>mock.begin(...args);
                    export const finishTurn=(...args)=>mock.finish(...args);
                    export const getSnapshot=(...args)=>mock.snapshot(...args);
                    export const getReadRevision=(id)=>mock.rows.get(id).revision;
@@ -71,6 +73,7 @@ function setup() {
     rows,
     libraryReads: [],
     libraryClears: [],
+    libraryDiscards: [],
     snapshot: async (id) => {
       const row = rows.get(id);
       return plain({
@@ -169,7 +172,9 @@ for (const voice of [false, true]) {
     const ctx = setup();
     const { generation, done } = await ctx.start(voice);
     assert.deepEqual(plain(generation.library.inventory), []);
-    assert.deepEqual(plain(ctx.mock.libraryReads), [["chat", "https://store.example"]]);
+    assert.deepEqual(plain(ctx.mock.libraryReads), [
+      ["chat", "https://store.example"],
+    ]);
     const before = await ctx.api.readConversation("chat");
     assert.equal(before.streamRevision, 0);
     if (voice) generation.text("PRIVATE_UNSPOKEN_BRIEFING");
@@ -224,7 +229,9 @@ test("provider failure clears reading activity and preserves the failed outcome"
   assert.equal(final.busy, false);
   assert.equal(final.messages[0].status, "failed");
   assert.doesNotMatch(JSON.stringify(ctx.logs), /PRIVATE_PROVIDER_FAILURE/);
-  assert.deepEqual(ctx.mock.libraryClears, ["chat"]);
+  assert.deepEqual(ctx.mock.libraryClears, []);
+  assert.equal(ctx.mock.libraryDiscards.length, 1);
+  assert.equal(ctx.mock.libraryDiscards[0][0], "chat");
 });
 
 test("cancel clears activity before persistence, and obsolete callbacks cannot affect a replacement", async () => {
@@ -240,15 +247,21 @@ test("cancel clears activity before persistence, and obsolete callbacks cannot a
   assert.equal(clearing.streamRevision, reading.streamRevision + 1);
   finish.resolve();
   await cancelled;
-  assert.deepEqual(ctx.mock.libraryClears, ["chat"]);
+  assert.deepEqual(ctx.mock.libraryClears, []);
+  assert.equal(ctx.mock.libraryDiscards.length, 1);
+  assert.equal(ctx.mock.libraryDiscards[0][0], "chat");
   ctx.mock.beforeFinish = undefined;
   const second = await ctx.start(true);
-  const cleanupAtReplacement = ctx.mock.libraryClears.length;
+  const cleanupAtReplacement = ctx.mock.libraryDiscards.length;
   second.generation.reading(["fitting"]);
   first.generation.reading(["measuring"]);
   first.generation.result.resolve({ text: "Stale", model: "synthetic" });
   await first.done;
-  assert.equal(ctx.mock.libraryClears.length, cleanupAtReplacement, "Obsolete generation cleanup cannot erase a replacement's library evidence");
+  assert.equal(
+    ctx.mock.libraryDiscards.length,
+    cleanupAtReplacement,
+    "Obsolete generation cleanup cannot erase a replacement's library evidence",
+  );
   const replacement = await ctx.api.readConversation("chat");
   assert.deepEqual(plain(replacement.readingGuides), ["fitting"]);
   assert.equal(replacement.busy, true);

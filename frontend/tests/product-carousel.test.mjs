@@ -17,13 +17,14 @@ const bundle = await build({
           flush: flushSync,
           render(count = 6) { flushSync(() => root.render(<ProductCarousel>
             <ul className="roman-product-list">{Array.from({length: count}, (_, index) => <li key={index}>
-              <article className="roman-product-card">
-                <button type="button" className="roman-choose-blind" aria-label={"Choose Blind " + index} onClick={() => choose(index)}>
+              <button type="button" className="roman-product-card roman-choose-blind" aria-label={"Choose Blind " + index} onClick={() => choose(index)}>
+                <span className="roman-product-image">
                   <img alt="" src="/fixture.jpg" />
                   <span className="roman-choose-blind-label" aria-hidden="true">Choose this blind</span>
-                </button>
-                <span>Blind {index}</span>
-              </article>
+                </span>
+                <span className="roman-product-title">Blind {index}</span>
+                <span className="roman-product-price">From GBP 30.00</span>
+              </button>
             </li>)}</ul>
           </ProductCarousel>)); },
           dispose() { flushSync(() => root.unmount()); },
@@ -235,42 +236,47 @@ test("overflow cues and accessible directional controls follow scrolling, resize
   assert.equal(ctx.frame().dataset.right, "true");
 });
 
-test("a horizontal mouse drag from a card image scrolls and suppresses only its resulting click", async (t) => {
-  const ctx = setup(t);
-  const image = ctx.container.querySelector("img");
-  const choice = ctx.container.querySelector(".roman-choose-blind");
-  ctx.click(image);
-  assert.deepEqual(ctx.choices, [0], "the image selects its product");
-  ctx.pointer("pointerdown", { target: choice });
-  ctx.pointer("pointermove", { x: 195 });
-  assert.equal(ctx.carousel.scrollLeft, 0);
-  assert.equal(ctx.captured.size, 0);
-  ctx.pointer("pointerup", { x: 195 });
-  ctx.click(choice);
-  assert.equal(
-    ctx.choices.length,
-    2,
-    "sub-threshold movement stays an ordinary product click",
-  );
-  ctx.pointer("pointerdown", { target: image });
-  const movement = ctx.pointer("pointermove", { x: 60 });
-  assert.equal(movement.defaultPrevented, true);
-  assert.equal(ctx.carousel.scrollLeft, 140);
-  assert.equal(ctx.captured.has(1), true);
-  ctx.render(); // An unrelated parent snapshot must not abandon an active drag.
-  ctx.pointer("pointermove", { x: 40 });
-  assert.equal(ctx.carousel.scrollLeft, 160);
-  ctx.pointer("pointerup", { x: 40 });
-  assert.equal(ctx.click(choice).defaultPrevented, true);
-  assert.equal(ctx.choices.length, 2);
-  assert.equal(ctx.captured.size, 0);
-  assert.equal(ctx.carousel.dataset.dragging, undefined);
-  ctx.pointer("pointerdown", { target: choice });
-  ctx.pointer("pointerup");
-  ctx.click(choice);
-  assert.deepEqual(ctx.choices, [0, 0, 0], "a later click must not be swallowed");
-  await delay(0);
-});
+for (const target of ["img", ".roman-product-title", ".roman-product-price"])
+  test(`a horizontal mouse drag from ${target} scrolls and suppresses only its resulting click`, async (t) => {
+    const ctx = setup(t);
+    const image = ctx.container.querySelector(target);
+    const choice = ctx.container.querySelector(".roman-choose-blind");
+    ctx.click(image);
+    assert.deepEqual(ctx.choices, [0], "the image selects its product");
+    ctx.pointer("pointerdown", { target: choice });
+    ctx.pointer("pointermove", { x: 195 });
+    assert.equal(ctx.carousel.scrollLeft, 0);
+    assert.equal(ctx.captured.size, 0);
+    ctx.pointer("pointerup", { x: 195 });
+    ctx.click(choice);
+    assert.equal(
+      ctx.choices.length,
+      2,
+      "sub-threshold movement stays an ordinary product click",
+    );
+    ctx.pointer("pointerdown", { target: image });
+    const movement = ctx.pointer("pointermove", { x: 60 });
+    assert.equal(movement.defaultPrevented, true);
+    assert.equal(ctx.carousel.scrollLeft, 140);
+    assert.equal(ctx.captured.has(1), true);
+    ctx.render(); // An unrelated parent snapshot must not abandon an active drag.
+    ctx.pointer("pointermove", { x: 40 });
+    assert.equal(ctx.carousel.scrollLeft, 160);
+    ctx.pointer("pointerup", { x: 40 });
+    assert.equal(ctx.click(choice).defaultPrevented, true);
+    assert.equal(ctx.choices.length, 2);
+    assert.equal(ctx.captured.size, 0);
+    assert.equal(ctx.carousel.dataset.dragging, undefined);
+    ctx.pointer("pointerdown", { target: choice });
+    ctx.pointer("pointerup");
+    ctx.click(choice);
+    assert.deepEqual(
+      ctx.choices,
+      [0, 0, 0],
+      "a later click must not be swallowed",
+    );
+    await delay(0);
+  });
 
 test("touch, vertical intent, modified clicks and keyboard activation keep their native behavior", async (t) => {
   const ctx = setup(t);

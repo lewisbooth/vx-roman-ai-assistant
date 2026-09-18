@@ -60,41 +60,36 @@ export function Question({
     }
   }
 
-  const question = (
-    <p ref={text} id={id} tabIndex={-1} className="roman-message-text">
-      {part.question}
-    </p>
-  );
   const measurement = part.measurement;
-  const instructions = measurement && (
-    <p id={`${id}-instructions`} className="roman-measurement-instructions">
-      {measurement.instructions}
-    </p>
-  );
   // Keep the component mounted when an optimistic voice answer retires it.
   // Failed submissions can restore the numeric draft and error without a
   // manufactured transcript row or a separate question-state cache.
   if (!active && part.voiceReply) return null;
-  const content = !active ? (
-    <>
-      {question}
-      {instructions}
-      {measurement && (
-        <p className="roman-question-hint">
-          {measurement.label} ({measurement.unit})
-        </p>
-      )}
-    </>
-  ) : (
+  // The same structured question owns the transcript and its current controls.
+  // Keep text history in place while the answer panel comes and goes. Voice
+  // captions alone own spoken history, so their widgets never add prose here.
+  const transcript = !part.voiceReply && (
+    <p ref={text} id={id} tabIndex={-1} className="roman-message-text">
+      {part.question}
+    </p>
+  );
+  const controls = active && (
     <section
       className="roman-action-panel roman-question"
-      aria-labelledby={id}
+      aria-labelledby={`${id}-prompt`}
       aria-busy={pending}
     >
-      {question}
+      <p id={`${id}-prompt`} className="roman-message-text">
+        {part.question}
+      </p>
       {measurement ? (
         <>
-          {instructions}
+          <p
+            id={`${id}-instructions`}
+            className="roman-measurement-instructions"
+          >
+            {measurement.instructions}
+          </p>
           <form
             className="roman-measurement-form"
             noValidate
@@ -176,11 +171,12 @@ export function Question({
     <li
       className="roman-message roman-message-assistant"
       data-current-turn={currentTurn ? "true" : undefined}
-      hidden={active && !!dock}
+      hidden={!!part.voiceReply && active && !!dock}
     >
       <span className="sr-only">Roman:</span>
       <div className="roman-message-parts">
-        {active && dock ? createPortal(content, dock) : content}
+        {transcript}
+        {controls && dock ? createPortal(controls, dock) : controls}
       </div>
     </li>
   );

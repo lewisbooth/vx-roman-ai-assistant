@@ -9,6 +9,7 @@ import type { QuestionPart } from "../../../shared/questions";
 import { VOICE_EVENT_LABELS } from "../../../shared/voice";
 import { voiceCaptionText } from "../../../shared/voice-transcript";
 import type { CatalogProduct } from "../../../shared/catalog";
+import { productChoiceText } from "../../../shared/product-choice";
 
 export function Timeline({
   messages,
@@ -37,7 +38,7 @@ export function Timeline({
   ) => Promise<void>;
 }) {
   // Keep the current question below every widget and later journey event.
-  // Text questions become history. Voice questions own controls only: recorded
+  // Text questions stay visible as history. Voice questions own controls only: recorded
   // captions own spoken history, even when speech was interrupted or absent.
   const rows = messages.flatMap((message) => {
     const questions = message.parts.filter((part) => part.type === "question");
@@ -46,6 +47,7 @@ export function Timeline({
         (part) =>
           part.type !== "question" &&
           part.type !== "page_view" &&
+          part.type !== "navigation" &&
           part.type !== "guides",
       )
       .filter((part) => part.type !== "voice" || voiceCaptionText(part.text));
@@ -120,19 +122,9 @@ export function Timeline({
                     />
                   ) : (
                     <p key={index} className="roman-message-text">
-                      {part.text}
-                    </p>
-                  );
-                if (part.type === "navigation")
-                  return (
-                    <p
-                      key={index}
-                      className="roman-inline-event roman-navigation"
-                    >
-                      Roman navigated to{" "}
-                      <StorefrontLink url={part.path} navigation={navigation}>
-                        {part.title || part.path}
-                      </StorefrontLink>
+                      {part.productChoice
+                        ? productChoiceText(part.productChoice)
+                        : part.text}
                     </p>
                   );
                 if (part.type === "cart_added")

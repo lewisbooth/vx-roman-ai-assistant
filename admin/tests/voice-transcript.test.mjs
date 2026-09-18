@@ -229,3 +229,43 @@ test("late captions cross hidden bookkeeping but never visible, completion, or c
     ["Great.", "Sure"],
   );
 });
+
+test("tool completion inside Roman's sentence preserves one stable caption without changing raw fragments", () => {
+  const captions = [
+    fragment(1, "Let's look for blinds that suit", 0, 400),
+    fragment(3, " your room", 600, 800),
+    fragment(4, " and style.", 1000, 1200),
+  ];
+  const original = structuredClone(captions);
+  for (let count = 1; count <= captions.length; count++) {
+    const groups = groupVoiceTranscript(captions.slice(0, count), [2], [], [3]);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].id, captions[0].id);
+    assert.equal(
+      groups[0].text,
+      captions
+        .slice(0, count)
+        .map((caption) => caption.text)
+        .join(""),
+    );
+    assert.deepEqual(groups[0].fragments, captions.slice(0, count));
+  }
+  assert.deepEqual(captions, original);
+  assert.equal(groupVoiceTranscript(captions, [2], [3], [3]).length, 2);
+});
+
+test("completion still separates customer speech before and after a new question", () => {
+  const captions = [
+    fragment(1, "Help me measure", 0, 400, { role: "user" }),
+    fragment(3, "Actually, use centimetres", 600, 800, { role: "user" }),
+  ];
+  const groups = groupVoiceTranscript(captions, [2], [], [3]);
+  assert.deepEqual(
+    groups.map((group) => group.text),
+    captions.map((caption) => caption.text),
+  );
+  assert.deepEqual(
+    groups.map((group) => group.sequence),
+    [1, 3],
+  );
+});

@@ -1,3 +1,4 @@
+import type { ProductChoice } from "../../../shared/product-choice";
 import type {
   ConversationMessage,
   ConversationSnapshot,
@@ -24,7 +25,7 @@ export interface ConversationClient {
   getSnapshot(): ConversationClientState;
   subscribe(listener: () => void): () => void;
   /** Uses connected/starting voice when present, otherwise text; resolves on acceptance. */
-  sendMessage(text: string): Promise<void>;
+  sendMessage(text: string, productChoice?: ProductChoice): Promise<void>;
   /** Sends a saved suggested answer to this tab's live connection. */
   sendVoiceAnswer(questionId: string, answer: string): Promise<void>;
   /** A carousel click enters the live conversation without disconnecting audio. */

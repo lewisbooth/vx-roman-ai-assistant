@@ -1,4 +1,8 @@
-﻿import {
+import {
+  parseProductChoice,
+  productChoiceText,
+} from "../../shared/product-choice";
+import {
   MAX_MESSAGE_LENGTH,
   type SendMessageInput,
   type JourneyInput,
@@ -168,7 +172,7 @@ export function bootstrapInput(value: Record<string, unknown>) {
 export function messageInput(value: Record<string, unknown>): SendMessageInput {
   const keys = Object.keys(value);
   if (
-    keys.length !== 2 ||
+    keys.length !== (value.productChoice === undefined ? 2 : 3) ||
     !keys.includes("requestId") ||
     !keys.includes("text") ||
     typeof value.requestId !== "string" ||
@@ -181,7 +185,24 @@ export function messageInput(value: Record<string, unknown>): SendMessageInput {
       400,
       `Send a requestId UUID and 1â€“${MAX_MESSAGE_LENGTH} characters of text.`,
     );
-  return { requestId: value.requestId, text: value.text.trim() };
+  let productChoice;
+  if (value.productChoice !== undefined) {
+    try {
+      productChoice = parseProductChoice(value.productChoice);
+      if (value.text.trim() !== productChoiceText(productChoice))
+        throw new Error();
+    } catch {
+      throw new ConversationError(
+        400,
+        "Send a valid carousel choice and its matching message.",
+      );
+    }
+  }
+  return {
+    requestId: value.requestId,
+    text: value.text.trim(),
+    ...(productChoice ? { productChoice } : {}),
+  };
 }
 
 export function journeyInput(value: Record<string, unknown>): JourneyInput {

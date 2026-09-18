@@ -2033,6 +2033,7 @@ function libraryContext() {
   };
   const reuse = {
     inventory: [],
+    recall: () => undefined,
     discover: (callId, discovery) => {
       discoveries.push({ callId, discovery });
       return inventory;
@@ -5262,7 +5263,7 @@ test("runner forwards durable startup scope and suppresses stale committed resul
     );
     assert.deepEqual(
       allowedTools(env.calls.requests[0].input).map((tool) => tool.name),
-      ["get_product_guides", "read_library_guides", "ask_question"],
+      ["get_product_guides", "discover_guides", "read_library_guides", "ask_question"],
     );
     assert.equal(!!reply, finished);
     assert.equal(env.calls.requests.length, 1);

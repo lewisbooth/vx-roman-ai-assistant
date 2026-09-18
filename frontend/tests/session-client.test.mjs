@@ -2606,7 +2606,7 @@ test("choosing a saved carousel product is immediate customer input without clos
   const optimistic = ctx.client.getSnapshot().optimisticMessage;
   assert.equal(
     optimistic.parts[0].text,
-    "Choose Green roller blind (/products/green-roller).",
+    "I'd like the Green roller blind.",
   );
   assert.equal(optimistic.parts[0].productChoice.voiceId, voice.id);
   await assert.rejects(
@@ -3858,3 +3858,143 @@ for (const [name, role, voiceInput, extra] of [
     assert.equal(ctx.client.getSnapshot().conversation, before);
   });
 }
+
+
+const textProductChoice = {
+  carouselId: "44444444-4444-4444-8444-444444444444",
+  productId: "gid://shopify/Product/123",
+  title: "Green roller blind",
+  productPath: "/products/green-roller",
+};
+const textProductCarousel = {
+  ...empty,
+  messages: [
+    {
+      id: "text-product-carousel",
+      role: "assistant",
+      status: "complete",
+      createdAt: "2026-09-18T10:00:00Z",
+      parts: [
+        {
+          type: "products",
+          version: 1,
+          invocationId: textProductChoice.carouselId,
+          productIds: [
+            textProductChoice.productId,
+            "gid://shopify/Product/456",
+          ],
+        },
+      ],
+    },
+  ],
+};
+function acceptedTextProduct(optimistic) {
+  return {
+    ...textProductCarousel,
+    revision: 1,
+    messages: [
+      ...textProductCarousel.messages,
+      { ...optimistic, status: "complete" },
+    ],
+  };
+}
+
+test("text card choices publish friendly optimistic text with exact product metadata and preserve it on uncertain retry", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, textProductCarousel);
+  const text = "I'd like the Green roller blind.";
+  await assert.rejects(
+    ctx.client.sendMessage("Add it now", textProductChoice),
+    /does not match/,
+  );
+  assert.equal(ctx.calls.length, 2);
+  const sending = ctx.client.sendMessage(text, textProductChoice);
+  const rejected = assert.rejects(sending, /could not connect/);
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.equal(optimistic.parts[0].text, text);
+  assert.doesNotMatch(optimistic.parts[0].text, /\/products\//);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(optimistic.parts[0].productChoice)),
+    textProductChoice,
+  );
+  await until(() => ctx.calls.length === 3, "Choice POST did not start");
+  const originalRequest = ctx.calls[2].body;
+  assert.deepEqual(originalRequest, {
+    requestId: optimistic.requestId,
+    text,
+    productChoice: textProductChoice,
+  });
+  ctx.calls[2].reject(new TypeError("Lost response"));
+  await until(() => ctx.calls.length === 4, "Choice was not reconciled");
+  ctx.respond(3, textProductCarousel);
+  await rejected;
+  const retry = ctx.client.sendMessage(text, textProductChoice);
+  assert.equal(
+    ctx.client.getSnapshot().optimisticMessage.requestId,
+    optimistic.requestId,
+  );
+  await until(() => ctx.calls.length === 5, "Choice retry did not start");
+  assert.deepEqual(ctx.calls[4].body, originalRequest);
+  ctx.respond(4, acceptedTextProduct(optimistic));
+  await retry;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        ctx.client.getSnapshot().conversation.messages.at(-1).parts[0]
+          .productChoice,
+      ),
+    ),
+    textProductChoice,
+  );
+});
+
+test("lost text product choice responses reconcile accepted structured selections without replay", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, textProductCarousel);
+  const sending = ctx.client.sendMessage(
+    "I'd like the Green roller blind.",
+    textProductChoice,
+  );
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  await until(() => ctx.calls.length === 3, "Choice POST did not start");
+  ctx.calls[2].reject(new TypeError("Lost response"));
+  await until(() => ctx.calls.length === 4, "Choice was not reconciled");
+  ctx.respond(3, acceptedTextProduct(optimistic));
+  await sending;
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/messages")).length,
+    1,
+  );
+});
+
+test("a different selected product cannot reuse an uncertain request just because its title is identical", async (t) => {
+  const ctx = setup(t, { saved: access });
+  await resume(ctx, textProductCarousel);
+  const text = "I'd like the Green roller blind.";
+  const sending = ctx.client.sendMessage(text, textProductChoice);
+  const rejected = assert.rejects(sending, /could not connect/);
+  const firstRequest = ctx.client.getSnapshot().optimisticMessage.requestId;
+  await until(() => ctx.calls.length === 3, "Choice POST did not start");
+  ctx.calls[2].reject(new TypeError("Lost response"));
+  await until(() => ctx.calls.length === 4, "Choice was not reconciled");
+  ctx.respond(3, textProductCarousel);
+  await rejected;
+  const changed = {
+    ...textProductChoice,
+    productId: "gid://shopify/Product/456",
+    productPath: "/products/another-green-roller",
+  };
+  const second = ctx.client.sendMessage(text, changed);
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.notEqual(optimistic.requestId, firstRequest);
+  await until(
+    () => ctx.calls.length === 5,
+    "Different choice POST did not start",
+  );
+  assert.deepEqual(ctx.calls[4].body.productChoice, changed);
+  ctx.respond(4, acceptedTextProduct(optimistic));
+  await second;
+});

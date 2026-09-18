@@ -527,7 +527,7 @@ test("readable but mismatched product guides are reported honestly in both backe
     );
     assert.match(
       prompt,
-      /readable PDF covers a different product family or mount, explicitly say you read it but it does not match this product/,
+      /readable PDF covers a different product family or mount and no suitable library source resolves the requested step, explicitly say you read it but it does not match this product/,
     );
     assert.match(
       prompt,
@@ -584,7 +584,7 @@ test("guide mismatches affect only the current requested measuring or fitting st
     );
     assert.match(
       prompt,
-      /If a relevant readable PDF covers a different product family or mount, explicitly say you read it/,
+      /If a relevant readable PDF covers a different product family or mount and no suitable library source resolves the requested step, explicitly say you read it/,
     );
     assert.match(
       prompt,
@@ -1564,5 +1564,27 @@ test("the canonical shopping policy appears once in each advisor channel and ret
     assert.match(prompt, /Never guess a product URL/);
     assert.match(prompt, /return to the store by closing Roman/);
     assert.match(prompt, /Model navigation rejects redirects and unsafe theme swaps without reloading/);
+  }
+});
+
+test("voice waits for verified guidance and gives one customer-facing guide introduction", () => {
+  const prompt = romanVoicePrompt("marin");
+  assert.match(prompt, /wait for the verified briefing before giving its overview or next question/);
+  assert.match(prompt, /do not fill it with speculative actions, repeated acknowledgements or a provisional guide introduction/);
+  assert.match(prompt, /Do not say "PDP", backend, tool names or other implementation terms to the customer/);
+  assert.match(prompt, /one short phrase such as "I'm pulling up the measuring guide\."/);
+  assert.match(prompt, /Treat the briefing as the complete next reply, not a request for another introduction/);
+  assert.match(prompt, /Do not prepend a second version or repeat an introduction already spoken during this flow/);
+  assert.match(prompt, /Do not reject supported library guidance merely because the original product-page link was wrong/);
+});
+
+test("a matching library remains the working source and written steps can be recalled without another PDF", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /Once the library evidence positively matches the chosen blind, window shape and intended mount, keep that source as the working method across follow-ups/);
+    assert.match(prompt, /known wrong product-page PDF does not regain authority or invalidate that supported method on the next turn/);
+    assert.match(prompt, /call discover_guides for the same library: the server recalls the exact cached page sections without another storefront request, download or PDF/);
+    assert.match(prompt, /For an unfamiliar shape, mount or changed product, reassess the library evidence/);
+    assert.match(prompt, /When matching library guidance already resolves that mismatch, continue from it without narrating the discarded source or repeating its limitation/);
+    assert.match(prompt, /Never say "PDP", cache, source receipt or backend to the customer/);
   }
 });

@@ -26,11 +26,13 @@ import {
 } from "../guides/session.server";
 import {
   readLibraryInventory,
+  readCachedLibraryDiscovery,
   readBoundLibrarySource,
   saveLibraryDiscovery,
   readLibraryGuides,
   bindLibrarySource,
   clearLibrarySession,
+  discardLibraryTurn,
 } from "../guides/library.server";
 import {
   beginTurn,
@@ -234,6 +236,7 @@ async function completeTurn(
       {
         inventory: readLibraryInventory(id, origin),
         bound: boundLibrary,
+        recall: (library) => readCachedLibraryDiscovery(id, origin, library),
         discover: (sourceCallId, result) => {
           signal.throwIfAborted();
           if (active.get(id) !== turn)
@@ -327,7 +330,8 @@ async function completeTurn(
       });
     }
   } finally {
-    if (!libraryFinished && active.get(id) === turn) clearLibrarySession(id);
+    if (!libraryFinished && active.get(id) === turn)
+      discardLibraryTurn(id, assistantId);
     clearGuideReading();
     signal.removeEventListener("abort", clearGuideReading);
     if (active.get(id) === turn) active.delete(id);
@@ -414,14 +418,15 @@ export async function runVoiceDelegation(
 export async function cancelVoiceDelegation(id: string, voiceId: string) {
   const turn = active.get(id);
   if (!turn || turn.voiceId !== voiceId) return;
-  clearLibrarySession(id);
   turn.controller.abort();
   await turn.ready;
-  if (turn.assistantId)
+  if (turn.assistantId) {
+    discardLibraryTurn(id, turn.assistantId);
     await finishTurn(id, turn.assistantId, {
       text: "",
       status: "cancelled",
     });
+  }
   if (active.get(id) === turn) active.delete(id);
 }
 

@@ -1418,7 +1418,7 @@ const catalog = {
   messages: [],
 };
 
-test("product references hydrate once and choosing the image submits intent without navigating directly", async (t) => {
+test("product references hydrate once and the whole card submits intent without navigating directly", async (t) => {
   let resolve;
   const pending = new Promise((done) => {
     resolve = done;
@@ -1468,7 +1468,16 @@ test("product references hydrate once and choosing the image submits intent with
   const choice = card.querySelector("img").closest("button");
   assert.equal(choice.getAttribute("aria-label"), "Choose Lottie Roman blind");
   assert.equal(choice.type, "button");
-  assert.equal(card.querySelectorAll("button").length, 1);
+  assert.equal(choice, card, "One native button owns the entire card");
+  assert.equal(
+    card.querySelector(".roman-product-title").closest("button"),
+    choice,
+  );
+  assert.equal(
+    card.querySelector(".roman-product-price").closest("button"),
+    choice,
+  );
+  assert.equal(card.querySelector("button"), null, "No nested actions");
   assert.match(card.textContent, /Lottie Roman blind/);
   assert.match(card.textContent, /From £30.00/);
   assert.doesNotMatch(
@@ -1479,11 +1488,9 @@ test("product references hydrate once and choosing the image submits intent with
     bubbles: true,
     cancelable: true,
   });
-  card.querySelector("img").dispatchEvent(click);
+  card.querySelector(".roman-product-title").dispatchEvent(click);
   await until(() => ctx.calls.length === 1, "Choice should be sent to Roman");
-  assert.deepEqual(ctx.calls, [
-    "Choose Lottie Roman blind (/products/lottie).",
-  ]);
+  assert.deepEqual(ctx.calls, ["I'd like the Lottie Roman blind."]);
   assert.deepEqual(ctx.navigationCalls, []);
 });
 
@@ -1637,7 +1644,7 @@ test("product errors have an explicit retry, and missing products remain honest"
   assert.equal(ctx.container.querySelector(".roman-product-card"), null);
 });
 
-test("only Roman navigation uses a notification; manual visits stay hidden and link text stays literal", async (t) => {
+test("background page visits and Roman navigation remain out of the customer transcript", async (t) => {
   const ctx = await setup(t, {
     state: {
       conversation: engagedConversation([
@@ -1680,25 +1687,15 @@ test("only Roman navigation uses a notification; manual visits stay hidden and l
       ]),
     },
   });
-  const entries = ctx.container.querySelectorAll(".roman-navigation");
-  assert.equal(entries.length, 2);
+  assert.equal(ctx.container.querySelector(".roman-navigation"), null);
   assert.equal(
     ctx.container.querySelectorAll(".roman-timeline > li").length,
-    3,
+    1,
+    "Hidden navigation cannot leave empty transcript rows",
   );
-  assert.doesNotMatch(ctx.container.textContent, /Manual browsing page|Viewed/);
-  assert.ok(
-    [...entries].every((entry) =>
-      entry.classList.contains("roman-inline-event"),
-    ),
-  );
-  assert.equal(entries[0].textContent, "Roman navigated to Lottie <img src=x>");
-  assert.equal(entries[0].querySelector("img"), null);
-  assert.equal(entries[1].querySelector("a"), null);
-  assert.equal(
-    entries[0].querySelector("a"),
-    null,
-    "Historical navigation cannot bypass a new product choice confirmation",
+  assert.doesNotMatch(
+    ctx.container.querySelector(".roman-timeline").textContent,
+    /Manual browsing page|Roman navigated|Lottie|Unsafe link|Viewed/,
   );
   assert.deepEqual(ctx.navigationCalls, []);
 });
@@ -2463,7 +2460,7 @@ function questionMessage(id = "question-one", question = "What matters most?") {
   };
 }
 
-test("easy answers render once beneath all cards with a labelled literal question", async (t) => {
+test("easy answers have one labelled panel below cards and the canonical question stays visible in the transcript", async (t) => {
   const row = questionMessage("question-one", "What matters most? <img src=x>");
   row.parts.push(
     { type: "text", text: "Here are a few useful options." },
@@ -2514,6 +2511,20 @@ test("easy answers render once beneath all cards with a labelled literal questio
   );
   assert.equal(widget.querySelector("img, a"), null);
   assert.match(widget.textContent, /Or reply in your own words/);
+  const history = [
+    ...ctx.container.querySelectorAll(".roman-timeline .roman-message-text"),
+  ].filter((node) => node.textContent === row.parts[0].question);
+  assert.equal(history.length, 1, "The transcript owns exactly one copy");
+  assert.equal(history[0].closest("li").hidden, false);
+  assert.notEqual(history[0].id, widget.querySelector("p").id);
+  const ids = [...ctx.container.querySelectorAll("[id]")].map(
+    (node) => node.id,
+  );
+  assert.equal(
+    new Set(ids).size,
+    ids.length,
+    "Portal labels must have unique IDs",
+  );
 });
 
 test("clicking an easy answer submits ordinary customer text once and retires choices after acceptance", async (t) => {
@@ -2848,10 +2859,11 @@ test("guided numeric input submits through the active chat mode and retires on p
         () => !ctx.container.querySelector(".roman-question input"),
         "Old product retained an active numeric input",
       );
-      assert.ok(
+      assert.equal(
         ctx.container.textContent.includes(
           row.parts[0].measurement.instructions,
         ),
+        false,
       );
     });
   }

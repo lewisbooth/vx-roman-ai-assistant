@@ -155,40 +155,39 @@
     display: flex;
     flex-direction: column;
     font-size: 15px;
+    text-align: left;
   }
   .roman-cart-image {
     display: flex;
     align-items: center;
     justify-content: center;
     width: 100%;
-    aspect-ratio: 4 / 5;
+    aspect-ratio: 20 / 19;
     overflow: hidden;
-    border-radius: 16px;
     background: #eae6dd;
     color: #80756b;
     font-size: 13px;
   }
-  .roman-cart-image img {
+  .roman-cart-card .roman-cart-image img {
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
-  .roman-cart-stage h3 {
-    font-size: 21px;
-    line-height: 1.35;
+  .roman-cart-card h3 {
     font-weight: 400;
     overflow-wrap: anywhere;
-    margin: 14px 0 10px;
+    margin: 0 0 14px;
   }
   .roman-cart-item-details {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
+    justify-content: space-between;
     gap: 6px 14px;
     margin-top: auto;
+    padding: 0 18px;
   }
   .roman-cart-configuration {
-    margin: 0 0 18px;
+    margin: 0 18px 18px;
     font:
       13px/1.5 system-ui,
       sans-serif;
@@ -212,9 +211,11 @@
     max-width: 400px;
     margin: 36px auto 0;
     padding: 28px;
+    border: 1px solid #4e0e0e;
     border-radius: 24px;
-    background: #4e0e0e;
-    color: #f7f5ef;
+    background: #f7f5ef;
+    color: #4e0e0e;
+    box-shadow: 0 6px 18px #4e0e0e1a;
   }
   .roman-cart-total {
     display: flex;
@@ -228,22 +229,16 @@
     gap: 16px;
     padding: 18px;
     border-radius: 30px;
-    color: #4e0e0e;
-    background: #f7f5ef;
+    color: #f7f5ef;
+    background: #4e0e0e;
     text-decoration: none;
   }
   .roman-checkout:hover {
-    background: #eae6dd;
+    background: #681c1c;
   }
   .roman-checkout:focus-visible {
-    outline: 2px solid #f7f5ef;
+    outline: 2px solid #4e0e0e;
     outline-offset: 4px;
-  }
-  .roman-cart-note {
-    margin-top: 12px;
-    font-size: 12px;
-    color: #f7f5ef;
-    text-align: center;
   }
   .roman-response-dock {
     flex-shrink: 0;
@@ -524,7 +519,8 @@
     @apply flex h-full flex-col overflow-hidden rounded-[22px] border border-solid border-[#e3e0d8] bg-[#fffdf8] pb-[20px] text-[#402b2b] no-underline;
     transition: border-color 150ms ease;
   }
-  .roman-product-card:hover {
+  .roman-choose-blind:not(:disabled):hover,
+  .roman-choose-blind:not(:disabled):focus-visible {
     border-color: #4e0e0e;
   }
 
@@ -556,16 +552,18 @@
     @apply px-[18px] pt-[8px] text-[15px] leading-[1.4] text-[#545046];
   }
   .roman-choose-blind {
+    width: 100%;
+    margin: 0;
+    padding-top: 0;
+    padding-inline: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .roman-product-image {
     position: relative;
     display: block;
     width: 100%;
-    margin: 0;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    font: inherit;
-    cursor: pointer;
   }
   .roman-choose-blind-label {
     position: absolute;

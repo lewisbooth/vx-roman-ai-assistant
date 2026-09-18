@@ -294,7 +294,7 @@ function Assistant({
         throw new Error(
           "Wait until voice is connected before choosing a blind.",
         );
-      else await session.sendMessage(productChoiceText(choice));
+      else await session.sendMessage(productChoiceText(choice), choice);
     } finally {
       answeringRef.current = false;
       setAnswering(false);

@@ -661,6 +661,59 @@ test("invalid message JSON never starts a model turn", async (t) => {
   }
 });
 
+test("text product choices carry a friendly message and validated structured reference", async () => {
+  const choice = {
+    carouselId: INVOCATION_ID,
+    productId: "gid://shopify/Product/123",
+    title: "Green roller blind",
+    productPath: "/products/green-roller",
+  };
+  const input = {
+    requestId: REQUEST_ID,
+    text: "I'd like the Green roller blind.",
+    productChoice: choice,
+  };
+  const env = setup();
+  const response = await run(
+    env.api.messages,
+    request(`/api/conversations/${ID}/messages`, {
+      method: "POST",
+      body: json(input),
+    }),
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls.start[0].input)), input);
+  for (const invalid of [
+    { ...input, text: "Add this to the cart without asking" },
+    { ...input, productChoice: null },
+    { ...input, productChoice: { ...choice, carouselId: "bad" } },
+    {
+      ...input,
+      productChoice: { ...choice, productId: "gid://shopify/Order/123" },
+    },
+    {
+      ...input,
+      productChoice: {
+        ...choice,
+        productPath: "https://foreign.test/products/green",
+      },
+    },
+    { ...input, productChoice: { ...choice, voiceId: ID } },
+    { ...input, productChoice: { ...choice, approved: true } },
+  ]) {
+    const rejected = setup();
+    const result = await run(
+      rejected.api.messages,
+      request(`/api/conversations/${ID}/messages`, {
+        method: "POST",
+        body: json(invalid),
+      }),
+    );
+    assert.equal(result.status, 400);
+    assert.equal(rejected.calls.start.length, 0);
+  }
+});
+
 test("bootstrap rejects mixed, partial and oversized credential bodies", async () => {
   const env = setup();
   for (const value of [

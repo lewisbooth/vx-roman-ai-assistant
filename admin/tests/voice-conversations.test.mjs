@@ -455,7 +455,7 @@ test("text, exact voice captions and journey observations share one ordered hist
   const next = await conversation.beginTurn(id, textInput("What next?"));
   assert.deepEqual(
     next.history.map((entry) => entry.role),
-    ["user", "assistant", "user", "user", "user", "assistant", "user", "user"],
+    ["user", "assistant", "user", "user", "assistant", "user", "user"],
   );
   assert.deepEqual(
     next.history
@@ -468,8 +468,7 @@ test("text, exact voice captions and journey observations share one ordered hist
     [
       "I want blackout.",
       "Which window?",
-      "300 x 400",
-      " mm",
+      "300 x 400 mm",
       "I can help.",
       "What next?",
     ],
@@ -485,7 +484,8 @@ test("text, exact voice captions and journey observations share one ordered hist
   state = await conversation.getSnapshot(id);
   assert.equal(state.messages[2].id, width.id);
   assert.equal(state.messages[3].parts[0].type, "page_view");
-  assert.equal(state.messages[4].parts[0].text, " mm");
+  assert.equal(state.messages[2].parts[0].text, "300 x 400 mm");
+  assert.equal(state.messages[4].parts[0].text, "I can help.");
   assert.equal(await database.voiceTranscript.count(), 4);
   assert.equal(await database.conversationMessage.count(), 5);
   const stored = await database.conversationMessage.findMany();
@@ -612,6 +612,7 @@ test("empty delegation bookkeeping does not split a spoken reply during or after
 for (const entry of [
   {
     label: "confirmed navigation",
+    background: true,
     role: "context",
     status: "complete",
     parts: [
@@ -639,6 +640,7 @@ for (const entry of [
   },
   {
     label: "page visits",
+    background: true,
     role: "context",
     status: "complete",
     parts: [
@@ -677,7 +679,7 @@ for (const entry of [
     parts: [],
   },
 ]) {
-  test(`visible ${entry.label} remain ordered boundaries between voice captions`, async () => {
+  test(`${entry.label} ${entry.background ? "preserve continuous speech and durable audit context" : "remain ordered boundaries between voice captions"}`, async () => {
     const session = await startVoice();
     const first = await caption(session, "Before", 0, "assistant");
     const boundary = await database.conversationMessage.create({
@@ -702,10 +704,17 @@ for (const entry of [
     const state = await conversation.getSnapshot(id);
     assert.deepEqual(
       state.messages.map((message) => message.id),
-      [first.id, boundary.id, last.id],
+      entry.background
+        ? [first.id, boundary.id]
+        : [first.id, boundary.id, last.id],
     );
-    assert.equal(state.messages[0].parts[0].text, "Before");
-    assert.equal(state.messages[2].parts[0].text, " after");
+    assert.equal(
+      state.messages[0].parts[0].text,
+      entry.background ? "Before after" : "Before",
+    );
+    if (!entry.background)
+      assert.equal(state.messages[2].parts[0].text, " after");
+    assert.deepEqual(state.messages[1].parts, entry.parts);
   });
 }
 
@@ -785,7 +794,7 @@ for (const widgetKinds of [
   ["question"],
   ["products", "guides", "question"],
 ])
-  test(`voice ${widgetKinds.join(" and ")} follow only their result captions and retain exact durable records`, () => {
+  test(`voice ${widgetKinds.join(" and ")} follow the continuous reply without splitting speech at tool completion`, () => {
     const voiceId = randomUUID();
     const widgetId = randomUUID();
     const widget = {
@@ -842,10 +851,9 @@ for (const widgetKinds of [
     let rows = conversation.conversationTimeline(base);
     assert.deepEqual(
       rows.map((row) => row.id),
-      ["caption-0", "caption-2", "caption-4", widgetId],
+      ["caption-0", "caption-2", widgetId],
     );
-    assert.equal(rows[1].parts[0].text, "Let me check.");
-    assert.equal(rows[2].parts[0].text, "Here are the options.");
+    assert.equal(rows[1].parts[0].text, "Let me check.Here are the options.");
     assert.deepEqual(base, original);
     // The final response fragment can arrive after the customer's next caption.
     // Widget placement must use the projected response end, not that fragment's
@@ -867,16 +875,9 @@ for (const widgetKinds of [
     });
     assert.deepEqual(
       rows.map((row) => row.id),
-      [
-        "caption-0",
-        "caption-2",
-        "caption-4",
-        widgetId,
-        "caption-5",
-        "caption-7",
-      ],
+      ["caption-0", "caption-2", widgetId, "caption-5", "caption-7"],
     );
-    assert.equal(rows[2].parts[0].text, "Here are the options.");
+    assert.equal(rows[1].parts[0].text, "Let me check.Here are the options.");
     for (const barrier of [
       {
         ...widget,
@@ -884,20 +885,6 @@ for (const widgetKinds of [
         sequence: 6,
         status: "pending",
         partsJson: "[]",
-      },
-      {
-        ...widget,
-        id: "page",
-        sequence: 6,
-        partsJson: JSON.stringify([
-          {
-            type: "page_view",
-            version: 1,
-            title: "Blinds",
-            path: "/collections/all",
-            occurredAt: new Date().toISOString(),
-          },
-        ]),
       },
       {
         ...widget,
@@ -923,6 +910,52 @@ for (const widgetKinds of [
         rows.findIndex((row) => row.id === barrier.id) <
           rows.findIndex((row) => row.id === "caption-7"),
       );
+    }
+    for (const observation of [
+      {
+        type: "page_view",
+        version: 1,
+        title: "Blinds",
+        path: "/collections/all",
+        occurredAt: new Date().toISOString(),
+      },
+      {
+        type: "navigation",
+        version: 1,
+        invocationId: randomUUID(),
+        title: "A chosen blind",
+        path: "/products/chosen-blind",
+      },
+    ]) {
+      const background = {
+        ...widget,
+        id: "background",
+        sequence: 6,
+        partsJson: JSON.stringify([observation]),
+      };
+      const continued = {
+        ...base,
+        messages: [widget, background],
+        voiceTranscripts: [
+          ...base.voiceTranscripts,
+          fragment(7, " Which suits your room?"),
+        ],
+      };
+      const originalContinued = structuredClone(continued);
+      rows = conversation.conversationTimeline(continued);
+      assert.equal(rows.filter((row) => row.role === "assistant").length, 1);
+      assert.equal(
+        rows.find((row) => row.id === "caption-2").parts[0].text,
+        "Let me check.Here are the options. Which suits your room?",
+      );
+      assert.ok(
+        rows.findIndex((row) => row.id === widgetId) >
+          rows.findIndex((row) => row.id === "caption-2"),
+      );
+      assert.deepEqual(continued, originalContinued);
+      assert.deepEqual(rows.find((row) => row.id === "background").parts, [
+        observation,
+      ]);
     }
     for (const extra of [{ role: "user" }, { voiceId: randomUUID() }]) {
       rows = conversation.conversationTimeline({
@@ -1587,14 +1620,19 @@ test("voice product choices bind to a saved carousel, persist once and reconcile
   assert.deepEqual(accepted.messages.at(-1).parts, [
     {
       type: "text",
-      text: "Choose Green roller blind (/products/green-roller).",
+      text: "I'd like the Green roller blind.",
       productChoice: { ...choice, voiceId: session.id },
     },
   ]);
-  assert.deepEqual((await conversation.getModelHistory(id)).at(-1), {
+  const history = await conversation.getModelHistory(id);
+  assert.deepEqual(history.at(-2), {
     role: "user",
     text: receipt.answer,
   });
+  assert.match(history.at(-1).text, /Selected carousel product/);
+  assert.ok(history.at(-1).text.includes(choice.productId));
+  assert.ok(history.at(-1).text.includes(choice.productPath));
+  assert.match(history.at(-1).text, /not a new request or action approval/);
   for (const changed of [
     { title: "Forged title" },
     { productPath: "/products/different" },
@@ -1607,9 +1645,22 @@ test("voice product choices bind to a saved carousel, persist once and reconcile
       { status: 400 },
     );
   await voice.closeVoiceSession(id, session.id, clientId);
+  const persisted = accepted.messages.at(-1).parts;
+  await database.conversationMessage.update({
+    where: { id: input.requestId },
+    data: {
+      partsJson: JSON.stringify([
+        { ...persisted[0], text: "An earlier friendly display label." },
+      ]),
+    },
+  });
   assert.deepEqual(
     await load().conversation.appendVoiceQuestionAnswer(id, session.id, input),
-    { ...receipt, created: false },
+    {
+      ...receipt,
+      created: false,
+      answer: "An earlier friendly display label.",
+    },
   );
   assert.equal(
     await database.conversationMessage.count({

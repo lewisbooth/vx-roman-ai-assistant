@@ -113,6 +113,68 @@ function setup(fetcher = async () => response()) {
   };
 }
 
+test("written library recall retains exact scoped source and expiry without downloading or exposing caller-owned state", () => {
+  const state = setup();
+  const saved = state.save();
+  const recall = () =>
+    state.api.readCachedLibraryDiscovery(state.id, origin, "blinds");
+  const first = recall();
+  assert.deepEqual(plain(first.result), discovery());
+  assert.deepEqual(plain(first.inventory), plain(saved));
+  first.result.sections[0].text = "Caller changed the source";
+  assert.equal(recall().result.sections[0].text, discovery().sections[0].text);
+  state.advance(29 * 60_000);
+  assert.equal(recall().inventory.source.expiresAt, saved.source.expiresAt);
+  assert.equal(state.calls.length, 0);
+  assert.equal(
+    state.api.readCachedLibraryDiscovery(randomUUID(), origin, "blinds"),
+    undefined,
+  );
+  assert.equal(
+    state.api.readCachedLibraryDiscovery(
+      state.id,
+      "https://other-shop.test",
+      "blinds",
+    ),
+    undefined,
+  );
+  assert.equal(
+    state.api.readCachedLibraryDiscovery(state.id, origin, "curtains"),
+    undefined,
+  );
+  state.advance(60_000);
+  assert.equal(recall(), undefined);
+});
+
+test("discarding one failed turn preserves completed library authority but ending chat clears it", async () => {
+  const state = setup();
+  const previous = state.save();
+  const read = await state.read(previous);
+  const page = { productPath: "/products/roller", pageId: randomUUID() };
+  const bound = state.api.bindLibrarySource(
+    state.id,
+    origin,
+    read.source,
+    page,
+  );
+  const pendingId = randomUUID();
+  state.save(discovery("curtains"), state.id, {
+    sourceCallId: "pending",
+    sourceAssistantId: pendingId,
+  });
+  state.api.discardLibraryTurn(state.id, pendingId);
+  assert.deepEqual(
+    plain(state.api.readBoundLibrarySource(state.id, origin, page)),
+    plain(bound),
+  );
+  assert.equal(state.api.readLibraryInventory(state.id, origin).length, 1);
+  state.api.clearLibrarySession(state.id);
+  assert.equal(
+    state.api.readCachedLibraryDiscovery(state.id, origin, "blinds"),
+    undefined,
+  );
+});
+
 test("discovery stores scoped HTML authority but later inventory contains neither page text nor originals", () => {
   const state = setup();
   const input = discovery();
@@ -229,12 +291,6 @@ test("selection cannot inject URLs, unknown IDs or another conversation's discov
     });
   assert.equal(state.calls.length, 0);
 });
-
-
-
-
-
-
 
 test("receipt validation binds fixed source pages, authentic source IDs and immutable expiry", () => {
   const state = setup();
@@ -579,5 +635,4 @@ test("the attachment budget rejects verified URLs before downloading or authoriz
     1,
     "A denied refresh neither evicts nor downloads the prior valid original",
   );
-
 });

@@ -285,6 +285,41 @@ export function readLibraryInventory(
     .map(inventory);
 }
 
+/** Demand-driven access to the original written source, never PDF attachment. */
+export function readCachedLibraryDiscovery(
+  conversationId: string,
+  origin: string,
+  library: GuideLibrary,
+): { inventory: LibraryInventory; result: GuideLibraryResult } | undefined {
+  scope(conversationId, origin);
+  expire();
+  const entry = [...entries.values()].find(
+    (item) =>
+      item.conversationId === conversationId &&
+      item.origin === origin &&
+      item.discovery.library === library,
+  );
+  if (!entry) return;
+  touch(entry);
+  return {
+    inventory: inventory(entry),
+    result: structuredClone(entry.discovery),
+  };
+}
+
+/** Failed new work cannot revoke an earlier completed reply's source. */
+export function discardLibraryTurn(
+  conversationId: string,
+  assistantId: string,
+): void {
+  for (const [id, entry] of entries)
+    if (
+      entry.conversationId === conversationId &&
+      entry.source.sourceAssistantId === assistantId
+    )
+      entries.delete(id);
+}
+
 export function clearLibrarySession(conversationId: string): void {
   for (const [id, entry] of entries)
     if (entry.conversationId === conversationId) entries.delete(id);
