@@ -24,6 +24,8 @@ import { ReplyActivity } from "./chat/ReplyActivity";
 import { ToolApproval } from "./chat/ToolApproval";
 import { ProductStage } from "./chat/ProductStage";
 import { CartStage } from "./chat/CartStage";
+import { EndChatDialog } from "./chat/EndChatDialog";
+import { useCart } from "./chat/useCart";
 import { RomanViewContext } from "./chat/views";
 import { activeProduct } from "../../shared/active-product";
 import type { CatalogProduct } from "../../shared/catalog";
@@ -81,6 +83,9 @@ function Assistant({
     navigation.subscribe,
     navigation.getSnapshot,
   );
+  const cart = useCart(navigation, session);
+  const cartCount =
+    !cart.loading && !cart.error ? cart.cart?.itemCount : undefined;
   const viewport = useRef<HTMLDivElement>(null);
   const conversationView = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -133,6 +138,7 @@ function Assistant({
       showView("chat");
   }, [state.conversation, showView]);
   const [ending, setEnding] = useState(false);
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
   const [chatVersion, setChatVersion] = useState(0);
@@ -250,6 +256,7 @@ function Assistant({
     setEndError(null);
     try {
       await session.end();
+      setConfirmEnd(false);
       showView("chat");
       setStartError(null);
       following.current = true;
@@ -368,7 +375,17 @@ function Assistant({
               <NavLink to="/" end>
                 Chat
               </NavLink>
-              <NavLink to="/cart">Cart</NavLink>
+              <NavLink to="/cart">
+                Cart
+                {!!cartCount && (
+                  <span
+                    className="roman-cart-count"
+                    aria-label={`${cartCount} ${cartCount === 1 ? "item" : "items"}`}
+                  >
+                    {cartCount}
+                  </span>
+                )}
+              </NavLink>
               <NavLink to="/gallery">Gallery</NavLink>
             </nav>
             {state.conversation?.status === "active" && (
@@ -378,7 +395,10 @@ function Assistant({
                 disabled={
                   ending || answering || state.pending || state.restoring
                 }
-                onClick={() => void endChat()}
+                onClick={() => {
+                  setEndError(null);
+                  setConfirmEnd(true);
+                }}
               >
                 {ending ? "Ending…" : "End chat"}
               </button>
@@ -396,11 +416,7 @@ function Assistant({
             <div className="roman-dialogue">
               {view !== "chat" && (
                 <div className="roman-secondary-view">
-                  <CartStage
-                    navigation={navigation}
-                    session={session}
-                    visible={view === "cart"}
-                  />
+                  {view === "cart" && <CartStage {...cart} />}
                   {view === "gallery" && (
                     <section
                       className="roman-gallery"
@@ -580,6 +596,15 @@ function Assistant({
             </div>
           </div>
         </div>
+        {confirmEnd && (
+          <EndChatDialog
+            logoUrl={logoUrl}
+            pending={ending}
+            error={endError}
+            onCancel={() => setConfirmEnd(false)}
+            onConfirm={() => void endChat()}
+          />
+        )}
         {showTools && (
           <ToolDrawer
             tools={tools}

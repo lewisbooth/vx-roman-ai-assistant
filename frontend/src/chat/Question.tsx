@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   formatMeasurementAnswer,
+  MAX_QUESTION_ANSWER_LENGTH,
   type QuestionPart,
 } from "../../../shared/questions";
 
@@ -84,12 +85,14 @@ export function Question({
       </p>
       {measurement ? (
         <>
-          <p
-            id={`${id}-instructions`}
-            className="roman-measurement-instructions"
-          >
-            {measurement.instructions}
-          </p>
+          {measurement.instructions && (
+            <p
+              id={`${id}-instructions`}
+              className="roman-measurement-instructions"
+            >
+              {measurement.instructions}
+            </p>
+          )}
           <form
             className="roman-measurement-form"
             noValidate
@@ -103,35 +106,42 @@ export function Question({
                 setError(
                   cause instanceof Error
                     ? cause.message
-                    : "Enter a number of zero or more.",
+                    : "Enter your measurement or reply.",
                 );
               }
             }}
           >
-            <label htmlFor={`${id}-measurement`}>
-              {measurement.label} ({measurement.unit})
-            </label>
             <div className="roman-action-buttons roman-measurement-entry">
               <div className="roman-measurement-field">
                 <input
                   id={`${id}-measurement`}
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="any"
+                  type="text"
+                  aria-label={part.question}
+                  maxLength={
+                    MAX_QUESTION_ANSWER_LENGTH - measurement.label.length - 2
+                  }
                   required
                   value={measurementValue}
                   disabled={disabled}
                   readOnly={pending}
                   aria-invalid={invalid}
-                  aria-describedby={`${id}-instructions${error ? ` ${id}-error` : ""}`}
+                  aria-describedby={
+                    [
+                      measurement.instructions && `${id}-instructions`,
+                      error && `${id}-error`,
+                    ]
+                      .filter(Boolean)
+                      .join(" ") || undefined
+                  }
                   onChange={(event) => {
                     setMeasurementValue(event.target.value);
                     setError(undefined);
                     setInvalid(false);
                   }}
                 />
-                <span aria-hidden="true">{measurement.unit}</span>
+                {measurement.unit && (
+                  <span aria-hidden="true">{measurement.unit}</span>
+                )}
               </div>
               <button type="submit" disabled={disabled || pending}>
                 Submit

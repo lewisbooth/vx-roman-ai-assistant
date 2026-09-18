@@ -37,6 +37,12 @@ function setup(t, initialTime = 0) {
   );
   const { window } = dom;
   Object.assign(window, { Request, Response, Headers });
+  window.HTMLDialogElement.prototype.showModal = function () {
+    this.setAttribute("open", "");
+  };
+  window.HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute("open");
+  };
   let now = initialTime;
   let nextTimer = 900000;
   const timers = new Map();
@@ -169,6 +175,9 @@ test("runtime reports confirmed conversation activity, not an open panel or save
   [...ctx.container.querySelectorAll("button")]
     .find((button) => button.textContent === "End chat")
     .click();
+  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
+  assert.equal(resolveEnd, undefined, "Opening confirmation must not send End");
+  ctx.container.querySelector(".roman-end-confirm").click();
   await until(() => !!resolveEnd, "End request was not sent");
   assert.equal(
     activity.at(-1),

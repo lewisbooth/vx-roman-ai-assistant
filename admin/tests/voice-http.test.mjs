@@ -675,7 +675,7 @@ test("voice answers reject forged fields, invalid IDs and non-offered input shap
     { ...ANSWER, clientId: "invalid" },
     { ...ANSWER, requestId: "invalid" },
     { ...ANSWER, answer: " " },
-    { ...ANSWER, answer: "x".repeat(81) },
+    { ...ANSWER, answer: "x".repeat(241) },
     { ...ANSWER, answer: 4 },
     { ...ANSWER, transcript: "forged voice caption" },
     { ...ANSWER, providerId: "live_forged" },

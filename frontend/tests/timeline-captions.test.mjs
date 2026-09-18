@@ -316,7 +316,7 @@ test("numeric history keeps the short question and answer while instructions and
   });
   assert.ok(
     ctx.container
-      .querySelector('input[type="number"]')
+      .querySelector('input[type="text"]')
       .getAttribute("aria-describedby")
       .includes("instructions"),
   );
@@ -337,10 +337,14 @@ test("numeric history keeps the short question and answer while instructions and
         1,
       active ? 1 : 0,
     );
-    assert.equal(ctx.container.textContent.includes("Width (mm)"), active);
+    assert.equal(ctx.container.textContent.includes("Width (mm)"), false);
+    assert.equal(
+      !!ctx.container.querySelector(".roman-measurement-field span"),
+      active,
+    );
     if (!active) assert.match(ctx.container.textContent, /Width: 500 mm/);
   }
-  assert.equal(ctx.container.querySelector('input[type="number"]'), null);
+  assert.equal(ctx.container.querySelector('input[type="text"]'), null);
 });
 
 test("voice question history uses provenance across reloads and mode switches, without inventing interrupted speech", (t) => {

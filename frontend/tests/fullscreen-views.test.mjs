@@ -91,6 +91,13 @@ async function setup(t, initial = {}) {
   );
   const { window } = dom;
   Object.assign(window, { Request, Response, Headers });
+  window.document.documentElement.setAttribute("data-roman-open", "");
+  window.HTMLDialogElement.prototype.showModal = function () {
+    this.setAttribute("open", "");
+  };
+  window.HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute("open");
+  };
   for (const name of ["dynamic-pricing", "dynamic-pricing-measurements"])
     window.customElements.define(
       name,
@@ -231,7 +238,7 @@ test("Cart and Gallery use memory navigation while retaining the transcript and 
   ).set.call(textarea, "Keep my draft");
   textarea.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
   await delay(0);
-  assert.deepEqual(ctx.fetches, []);
+  assert.equal(ctx.fetches.length, 1, "The open assistant reads the shared cart once for its badge");
   await ctx.select("Cart");
   await until(
     () => ctx.container.textContent.includes("Your cart is empty"),
@@ -303,6 +310,8 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
   );
   await ctx.select("Cart");
   ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
+  ctx.container.querySelector(".roman-end-confirm").click();
   await until(
     () => !ctx.container.querySelector(".roman-end-chat"),
     "Conversation did not end",
@@ -338,7 +347,7 @@ test("cart additions stay in Chat until View Cart is explicitly chosen", async (
     voice: { status: "active", muted: false, error: null },
   });
   assert.equal(ctx.container.querySelector(".roman-chat-scroll").hidden, false);
-  assert.deepEqual(ctx.fetches, []);
+  assert.equal(ctx.fetches.length, 1, "The cart badge shares its background read without showing Cart");
   ctx.container.querySelector(".roman-cart-added a").click();
   await until(
     () => ctx.container.querySelector(".roman-cart-stage"),
@@ -543,7 +552,7 @@ test("a new numeric measurement reveals Chat without interrupting voice or reope
     "Numeric voice question stayed hidden on Gallery",
   );
   assert.ok(
-    ctx.container.querySelector('.roman-response-dock input[type="number"]'),
+    ctx.container.querySelector('.roman-response-dock input[type="text"]'),
   );
   await ctx.select("Cart");
   ctx.update({
@@ -752,6 +761,8 @@ test("restored customer conversation opens the transcript and ending it restores
   );
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
   ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
+  ctx.container.querySelector(".roman-end-confirm").click();
   await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "End chat did not reset the welcome",

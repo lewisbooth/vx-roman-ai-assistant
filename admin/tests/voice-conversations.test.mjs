@@ -1081,7 +1081,7 @@ test("restart recovery fails hidden delegation ownership and voice without dupli
   ]);
 });
 
-async function questionDuringVoice(measurement = false) {
+async function questionDuringVoice(measurement = false, measurementOverrides = {}) {
   const session = await startVoice();
   await voice.activateVoiceSession(
     id,
@@ -1135,6 +1135,7 @@ async function questionDuringVoice(measurement = false) {
             label: "Handle clearance",
             unit: "mm",
             instructions: "Measure from the handle to the front of the recess.",
+            ...measurementOverrides,
           },
         }
       : {
@@ -1372,6 +1373,9 @@ test("an unchanged saved choice refresh commits once and becomes the latest ques
 for (const answer of [
   "Handle clearance: 0 mm",
   "Handle clearance: 50.5 mm",
+  "Handle clearance: 50.5",
+  "Handle clearance: 1 1/2 in",
+  "Handle clearance: 50 mm or 5 cm",
 ])
   test(`voice measurement answer ${answer} persists once and reconciles after stop or restart`, async () => {
     const { session, input, question } = await questionDuringVoice(true);
@@ -1453,15 +1457,36 @@ for (const channel of ["typed", "spoken"])
       );
     });
 
-test("voice measurement answers reject wrong units, labels, malformed values and navigation away", async () => {
+test("voice measurement replies with unknown units preserve exact free text across restart without changing dimensions", async () => {
+  const {session,input,question} = await questionDuringVoice(true,{unit:null,instructions:""});
+  assert.equal(question.measurement.unit,null);
+  const selection={...input,answer:'Handle clearance: 1 1/2" or 38 mm'};
+  const receipt=await conversation.appendVoiceQuestionAnswer(id,session.id,selection);
+  assert.equal(receipt.answer,selection.answer);
+  const history=await load().conversation.getModelHistory(id);
+  assert.ok(history.some(item=>item.text===selection.answer));
+  assert.ok(history.some(item=>item.source==="roman_question"&&item.text.includes('"unit":null')));
+  assert.equal(await database.measurementDraft.count(),0);
+  assert.equal((await conversation.getSnapshot(id)).voice.status,"active");
+});
+
+test("voice measurement receipt enforces the shared bound without truncation", async () => {
+  const {session,input} = await questionDuringVoice(true);
+  await assert.rejects(conversation.appendVoiceQuestionAnswer(id,session.id,{...input,answer:"Handle clearance: "+"x".repeat(241)}), {status:400});
+  const answer="Handle clearance: "+"x".repeat(240-"Handle clearance: ".length);
+  const receipt=await conversation.appendVoiceQuestionAnswer(id,session.id,{...input,answer});
+  assert.equal(receipt.answer,answer);
+  assert.equal(answer.length,240);
+});
+
+test("voice measurement answers reject wrong labels, malformed receipts and navigation away", async () => {
   const { session, input, question } = await questionDuringVoice(true);
   for (const answer of [
     "50",
-    "Handle clearance: 50 cm",
     "Width: 50 mm",
-    "Handle clearance: -1 mm",
-    "Handle clearance: NaN mm",
     "Handle clearance: 50 mm ",
+    "Handle clearance: ",
+    "Handle clearance:  50 mm",
     "500 mm please buy",
     "Change units",
     "Stop measuring",
@@ -1985,7 +2010,7 @@ test("only an exact offered answer to the current question can become durable cu
     );
   for (const changed of [
     { answer: "" },
-    { answer: "x".repeat(81) },
+    { answer: "x".repeat(241) },
     { requestId: "invalid" },
     { clientId: [clientId] },
     { extra: true },

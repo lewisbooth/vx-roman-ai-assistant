@@ -44,6 +44,7 @@ import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import { activeProduct } from "../../shared/active-product";
 import {
   isQuestionAnswer,
+  MAX_QUESTION_ANSWER_LENGTH,
   latestQuestion,
   parseQuestionAnswerReference,
   parseVoiceInputReference,
@@ -980,7 +981,7 @@ function validateVoiceQuestionAnswer(
       !uuidPattern.test(input.questionId) ||
       typeof input.answer !== "string" ||
       !input.answer.trim() ||
-      input.answer.length > 80
+      input.answer.length > MAX_QUESTION_ANSWER_LENGTH
     )
       throw new Error("Invalid selected answer.");
   } catch {

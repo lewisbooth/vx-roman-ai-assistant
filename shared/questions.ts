@@ -5,7 +5,8 @@ import { parseProductPath, productPathSchema } from "./product-path";
 export interface MeasurementQuestion {
   productPath: string;
   label: string;
-  unit: "cm" | "mm" | "in";
+  /** Display hint established by the customer; null until units are known. */
+  unit: "cm" | "mm" | "in" | null;
   instructions: string;
 }
 
@@ -38,7 +39,7 @@ export type VoiceSelectionInput =
 export interface QuestionSelection {
   question: string;
   answers: string[];
-  /** Numeric input instead of suggested answers. */
+  /** Free-text measurement input instead of suggested answers. */
   measurement?: MeasurementQuestion;
 }
 
@@ -59,7 +60,7 @@ export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Finish this reply with a brief message, one question and one to four concise clickable answers. This is a terminal tool: complete necessary research, actions and carousel presentation first, then call this alone; there is no prose response afterward. Put only necessary confirmed outcomes, explanation or introduction in message, or use an empty string for a simple follow-up. Put the question only in question, never in message. Prefer two or three answers and fewer where sufficient. Use contextual choices throughout the conversation; default to Help me measure, Explore products and Find my style only when no useful contextual next step remains. Ask missing room/requirements before new recommendations. Carousel images select products; use refinement answers rather than repeating product names. The unselected entry-PDP choice has only Something else. A replacement needs Yes, change blind / No, keep this blind. Use ask_measurement instead for a supported individual numeric reading. Questions and answers are plain text; message may use brief Markdown in text mode. In voice mode keep message plus question within 1000 characters; the application assembles the spoken briefing. Clicked, typed and spoken answers are customer input, never implicit tool commands or approval to act.",
+    "Finish this reply with a brief message, one question and one to four concise clickable answers. This is a terminal tool: complete necessary research, actions and carousel presentation first, then call this alone; there is no prose response afterward. Put only necessary confirmed outcomes, explanation or introduction in message, or use an empty string for a simple follow-up. Put the question only in question, never in message. Prefer two or three answers and fewer where sufficient. Use contextual choices throughout the conversation; default to Help me measure, Explore products and Find my style only when no useful contextual next step remains. Ask missing room/requirements before new recommendations. Carousel images select products; use refinement answers rather than repeating product names. The unselected entry-PDP choice has only Something else. A replacement needs conversational confirmation: use Yes, change blind / No, keep this blind when no work has begun; otherwise combine replacement and compatible-transfer intent with Change and carry over / Change and start fresh / Keep this blind, following the guide-verification rule. Use ask_measurement instead for a supported individual measurement question. Questions and answers are plain text; message may use brief Markdown in text mode. In voice mode keep message plus question within 1000 characters; the application assembles the spoken briefing. Clicked, typed and spoken answers are customer input, never implicit tool commands or approval to act.",
   strict: true,
   parameters: {
     type: "object",
@@ -87,7 +88,7 @@ export const askMeasurementToolDefinition = {
   type: "function",
   name: "ask_measurement",
   description:
-    "Finish this reply with one guide-grounded numeric measurement, its units, instructions and question. This is a terminal tool: complete needed guide reads, actions and carousel presentation first, then call this alone; there is no prose response afterward. Use message only for a necessary confirmed outcome or the initial guide introduction, otherwise an empty string. Put the question only in question and the complete current-step method only in instructions. Use the current product and verified original-guide evidence, including valid prior reads. Establish cm/mm/in first unless already clear. Label the actual reading; never invent a PDP field. In voice mode keep message plus instructions plus question within 1000 characters without losing fit-critical conditions; stage a smaller step if needed. Typed or spoken answers also work, including unit changes and stopping. Unit changes restart collection without silently converting or reusing the old set. This requests a reading; it does not save, confirm or apply dimensions.",
+    "Finish this reply with one guide-grounded measurement question and a free-text answer field. Complete needed reads and actions first, then call this alone; there is no prose response afterward. Use message for a necessary outcome or initial guide introduction, otherwise an empty string. Put the question only in question. Put only useful measuring method and fit-critical conditions in instructions; use an empty string when already explained, never redundant entry directions such as Enter the width in cm. Use verified guide evidence for the current product. Do not ask units upfront: use unit null until the customer establishes them, then the known cm/mm/in as a display hint. Do not infer units from magnitude or the guide. Preserve explicit units in each answer, accepting changes and fractions; clarify ambiguity and confirm the reconciled final pair before saving or applying. Label the reading internally; the label is not displayed above the input. In voice mode keep message plus instructions plus question within 1000 characters without losing fit-critical conditions. This requests an answer, not a saved dimension or action approval.",
   strict: true,
   parameters: {
     type: "object",
@@ -99,10 +100,10 @@ export const askMeasurementToolDefinition = {
           "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
       },
       question: { type: "string", minLength: 1, maxLength: 300 },
-      instructions: { type: "string", minLength: 1, maxLength: 600 },
+      instructions: { type: "string", maxLength: 600 },
       productPath: productPathSchema,
       label: { type: "string", minLength: 1, maxLength: 40 },
-      unit: { type: "string", enum: ["cm", "mm", "in"] },
+      unit: { type: ["string", "null"], enum: ["cm", "mm", "in", null] },
     },
     required: [
       "message",
@@ -118,6 +119,8 @@ export const askMeasurementToolDefinition = {
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const MAX_QUESTION_ANSWER_LENGTH = 240;
 
 function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input))
@@ -155,12 +158,15 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
   if (value.measurement !== undefined) {
     if (!Array.isArray(value.answers) || value.answers.length !== 0)
       throw new Error(
-        "A measurement question uses a number input, not answer choices.",
+        "A measurement question uses a text input, not answer choices.",
       );
     const measurement = object(value.measurement);
     exact(measurement, ["productPath", "label", "unit", "instructions"]);
-    if (!["cm", "mm", "in"].includes(measurement.unit as string))
-      throw new Error("Choose cm, mm or in for this measurement.");
+    if (
+      measurement.unit !== null &&
+      !["cm", "mm", "in"].includes(measurement.unit as string)
+    )
+      throw new Error("Use cm, mm, in or null for this measurement.");
     return {
       question,
       answers: [],
@@ -168,7 +174,10 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
         productPath: parseProductPath(measurement.productPath),
         label: plainText(measurement.label, 40),
         unit: measurement.unit as MeasurementQuestion["unit"],
-        instructions: plainText(measurement.instructions, 600),
+        instructions:
+          measurement.instructions === ""
+            ? ""
+            : plainText(measurement.instructions, 600),
       },
     };
   }
@@ -256,16 +265,15 @@ export function formatMeasurementAnswer(
   const value = raw.trim();
   if (
     !selection.measurement ||
-    value.length > 24 ||
-    !/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value) ||
-    !Number.isFinite(Number(value)) ||
-    Number(value) < 0 ||
-    Number(value) > Number.MAX_SAFE_INTEGER
+    !value ||
+    /\p{Cc}/u.test(value) ||
+    `${selection.measurement.label}: ${value}`.length >
+      MAX_QUESTION_ANSWER_LENGTH
   )
     throw new Error(
-      "Enter zero or a positive number, using a decimal point if needed.",
+      "Enter a short measurement or reply, including units if needed.",
     );
-  return `${selection.measurement.label}: ${value} ${selection.measurement.unit}`;
+  return `${selection.measurement.label}: ${value}`;
 }
 
 export function isQuestionAnswer(
@@ -274,14 +282,10 @@ export function isQuestionAnswer(
 ): boolean {
   if (!selection.measurement) return selection.answers.includes(answer);
   const prefix = `${selection.measurement.label}: `;
-  const suffix = ` ${selection.measurement.unit}`;
-  if (!answer.startsWith(prefix) || !answer.endsWith(suffix)) return false;
+  if (!answer.startsWith(prefix)) return false;
   try {
     return (
-      formatMeasurementAnswer(
-        selection,
-        answer.slice(prefix.length, -suffix.length),
-      ) === answer
+      formatMeasurementAnswer(selection, answer.slice(prefix.length)) === answer
     );
   } catch {
     return false;
@@ -359,7 +363,7 @@ export function parseVoiceInputReference(input: unknown): VoiceInputReference {
   return { voiceId: value.voiceId };
 }
 
-/** Customer turns retire questions; leaving a product also retires its numeric input. */
+/** Customer turns retire questions; leaving a product also retires its measurement input. */
 export function latestQuestion(
   messages: readonly ConversationMessage[],
   storefrontPath?: string,

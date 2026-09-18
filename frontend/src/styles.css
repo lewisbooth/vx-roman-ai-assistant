@@ -58,6 +58,9 @@
     background: #fffdf880;
   }
   .roman-view-nav a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     padding: 10px 22px;
     border-radius: 24px;
     color: #6f5550;
@@ -70,6 +73,21 @@
   .roman-view-nav a[aria-current] {
     background: #4e0e0e;
     color: #fffdf8;
+  }
+  .roman-cart-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 5px;
+    border: 1px solid #f7f5ef;
+    border-radius: 999px;
+    background: #4e0e0e;
+    color: #f7f5ef;
+    font:
+      600 11px/1 system-ui,
+      sans-serif;
   }
   .roman-view-nav a:focus-visible,
   .roman-choose-blind:focus-visible {
@@ -764,10 +782,6 @@
     @apply mt-[12px] min-w-0;
   }
 
-  .roman-measurement-form label {
-    @apply block text-[14px] leading-[1.4] [overflow-wrap:anywhere];
-  }
-
   .roman-measurement-entry {
     @apply mt-[6px] items-center;
   }
@@ -788,6 +802,44 @@
 
   .roman-measurement-field span {
     @apply shrink-0 text-[14px];
+  }
+
+  .roman-end-dialog {
+    position: fixed;
+    inset: 0;
+    width: min(460px, calc(100% - 40px));
+    max-height: calc(100dvh - 40px);
+    margin: auto;
+    padding: 30px;
+    text-align: center;
+    color: #4e0e0e;
+  }
+  .roman-end-dialog::backdrop {
+    background: #27171966;
+    backdrop-filter: blur(4px);
+  }
+  .roman-end-dialog img {
+    margin: 0 auto 24px;
+  }
+  .roman-end-dialog h2 {
+    margin-bottom: 12px;
+    font-size: 30px;
+    font-weight: 400;
+  }
+  .roman-end-dialog p {
+    line-height: 1.5;
+  }
+  .roman-end-dialog .roman-action-buttons {
+    justify-content: center;
+    margin-top: 24px;
+  }
+  .roman-end-dialog .roman-end-confirm {
+    background: #4e0e0e;
+    color: #f7f5ef;
+  }
+  .roman-end-dialog .roman-end-confirm:not(:disabled):hover {
+    background: #681c1c;
+    color: #f7f5ef;
   }
 
   .roman-question .roman-chat-error {

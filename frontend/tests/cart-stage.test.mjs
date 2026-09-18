@@ -12,9 +12,11 @@ const bundle = await build({
       import { flushSync } from 'react-dom';
       import { useSyncExternalStore } from 'react';
       import { CartStage } from './frontend/src/chat/CartStage';
+      import { useCart } from './frontend/src/chat/useCart';
       function Cart({navigation, session}) {
         const page = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot);
-        return <CartStage navigation={navigation} session={session} visible={page.cartVisible} />;
+        const cart = useCart(navigation, session);
+        return page.cartVisible ? <CartStage {...cart} /> : null;
       }
       export function mount(container, navigation, session) {
         const root = createRoot(container);
@@ -59,7 +61,7 @@ async function until(condition, message) {
   assert.fail(message);
 }
 
-function setup(t, view = "chat") {
+function setup(t, view = "chat", open = true) {
   const dom = new JSDOM(
     "<!doctype html><roman-ai-assistant></roman-ai-assistant>",
     {
@@ -71,6 +73,7 @@ function setup(t, view = "chat") {
   const { window } = dom,
     errors = [],
     calls = [];
+  if (open) window.document.documentElement.setAttribute("data-roman-open", "");
   window.console.error = (...args) => errors.push(args);
   window.fetch = (url, options) =>
     new Promise((resolve, reject) =>
@@ -138,6 +141,9 @@ function setup(t, view = "chat") {
     dispose,
     navigationListeners,
     sessionListeners,
+    open(value) {
+      window.document.documentElement.toggleAttribute("data-roman-open", value);
+    },
     show(view) {
       page = { ...page, cartVisible: view === "cart" };
       navigationListeners.forEach((fn) => fn());
@@ -152,15 +158,17 @@ function setup(t, view = "chat") {
   };
 }
 
-test("cart appears and reads only on the requested Roman cart view, never on product additions", async (t) => {
+test("cart display and navigation share one initial read; additions never open the cart view", async (t) => {
   const ctx = setup(t);
   ctx.update({
     messages: [
       { id: "added", parts: [{ type: "cart_addition", title: "Linen blind" }] },
     ],
   });
-  await delay(20);
-  assert.equal(ctx.calls.length, 0);
+  await until(
+    () => ctx.calls.length === 1,
+    "Opening Roman reads its cart once",
+  );
   assert.equal(ctx.container.textContent, "");
   ctx.show("cart");
   await until(() => ctx.calls.length === 1, "Requested cart should read once");
@@ -675,18 +683,18 @@ test("native cart changes and completed cart tools refresh the display without r
   );
 });
 
-test("leaving cart cancels its read and a late response cannot overwrite a future cart", async (t) => {
+test("closing Roman cancels its read and a late response cannot overwrite its reopened cart", async (t) => {
   const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial request started");
-  ctx.show("chat");
+  ctx.open(false);
   await until(
     () => ctx.calls[0].options.signal.aborted,
     "Obsolete read aborted",
   );
   ctx.calls[0].complete();
   await delay(10);
-  assert.equal(ctx.container.textContent, "");
-  ctx.show("cart");
+  assert.equal(ctx.container.textContent.includes("Linen blind"), false);
+  ctx.open(true);
   await until(
     () => ctx.calls.length === 2,
     "Returning starts a fresh cart read",

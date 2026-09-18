@@ -8,6 +8,7 @@ import {
   type VoiceStartResult,
 } from "../../shared/voice";
 import { ConversationError } from "../conversations/errors.server";
+import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
 import { recordVoiceUsage } from "../usage/repository.server";
 import {
   getVoiceStartupContext,
@@ -126,6 +127,13 @@ function beginConversation(owner: VoiceOwner) {
       // A home tile or typed first request owns the first response. The normal
       // welcome must not race its acknowledged provider continuation.
       if (owner.userSpeechObserved) return;
+      if (owner.resumeQuestionId) {
+        scheduleAdvisorReply(owner, {
+          kind: "resume",
+          questionId: owner.resumeQuestionId,
+        });
+        return;
+      }
       // Never hold the event queue for speech or playback acknowledgments.
       void owner.provider!.beginConversation().catch(() => {
         if (!owner.stopping)
@@ -148,7 +156,8 @@ function beginConversation(owner: VoiceOwner) {
 
 type AdvisorRequest =
   | { kind: "speech"; delegationId: string }
-  | { kind: "input"; requestId: string; caption: string };
+  | { kind: "input"; requestId: string; caption: string }
+  | { kind: "resume"; questionId: string };
 
 function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
   if (owner.stopping) return;
@@ -158,6 +167,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     return;
   if (request.kind === "speech") {
     if (owner.seenDelegations.has(request.delegationId)) return;
+    if (owner.resumeController && !owner.userSpeechObserved) return;
     // UI input already owns a backend turn. An unsolicited Live delegation
     // must not cancel it, replay its actions, or ask the customer to repeat it.
     if (
@@ -179,6 +189,10 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
   owner.delegationController?.abort();
   const controller = new AbortController();
   owner.delegationController = controller;
+  if (request.kind === "resume") {
+    owner.resumeController = controller;
+    owner.resumeQuestionId = undefined;
+  }
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
   // A new delegation may be a spoken correction. Retire pending tools from
   // the earlier request before beginning work from the updated captions.
@@ -199,19 +213,9 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
       )
         return;
       const resumeQuestionId =
-        request.kind === "speech" &&
-        !owner.latestUserCaption &&
-        !owner.userSpeechObserved &&
-        owner.openingStarted
-          ? owner.resumeQuestionId
-          : undefined;
-      // Only a question present before connection startup earns this one-use,
-      // read-only exception. A fresh customer request uses the ordinary path.
-      if (
-        resumeQuestionId ||
-        owner.latestUserCaption ||
-        owner.userSpeechObserved
-      )
+        request.kind === "resume" ? request.questionId : undefined;
+      if (resumeQuestionId && owner.userSpeechObserved) return;
+      if (owner.latestUserCaption || owner.userSpeechObserved)
         owner.resumeQuestionId = undefined;
       if (
         request.kind === "speech" &&
@@ -219,14 +223,11 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         (!owner.latestUserCaption ||
           owner.latestUserCaption === owner.delegatedCaption)
       ) {
-        await owner.provider!.appendCommentary(
-          request.delegationId,
-          "No new customer request was captured, so no tools were run. Ask the customer to repeat or clarify their request.",
-        );
+        // A provider cue is not customer speech. Repeated or unsolicited
+        // delegations must not fabricate a request to repeat an unheard answer.
         return;
       }
       owner.delegatedCaption = owner.latestUserCaption;
-      if (resumeQuestionId) owner.resumeController = controller;
       const reply = await runVoiceDelegation(
         owner.conversationId,
         owner.voiceId,
@@ -250,7 +251,8 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         : resumeQuestionId
           ? "The saved question could not be resumed. Do not repeat its previous instructions or claim any action. Ask the customer what they would like to continue with."
           : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.";
-      if (request.kind === "input") await owner.provider!.appendReply(response);
+      if (request.kind !== "speech")
+        await owner.provider!.appendReply(response);
       else
         await owner.provider!.appendCommentary(request.delegationId, response);
     })
@@ -483,13 +485,22 @@ export async function startVoice(
     const { history, pendingQuestion, lastPage } =
       await getVoiceStartupContext(conversationId);
     const contextAt = Date.now();
-    owner.resumeQuestionId = pendingQuestion?.invocationId;
+    const welcomePending =
+      pendingQuestion &&
+      !pendingQuestion.measurement &&
+      pendingQuestion.question === ROMAN_WELCOME_QUESTION.question &&
+      JSON.stringify(pendingQuestion.answers) ===
+        JSON.stringify(ROMAN_WELCOME_QUESTION.answers);
+    owner.resumeQuestionId = welcomePending
+      ? undefined
+      : pendingQuestion?.invocationId;
     owner.lastPage = lastPage;
     owner.provider = await createVoiceProvider({
       sdp: input.sdp,
       voice,
       history,
       pendingQuestion,
+      resumePendingQuestion: !!owner.resumeQuestionId,
       signal: owner.controller.signal,
       onEvent: (event) => receive(owner, event),
     });

@@ -243,8 +243,11 @@ export function ConversationTimeline({
                           {part.measurement.instructions}
                         </p>
                         <p className="mt-1 text-xs text-gray-600">
-                          Measurement input: {part.measurement.label} (
-                          {part.measurement.unit}){" · "}
+                          Measurement input: {part.measurement.label}
+                          {part.measurement.unit
+                            ? ` (${part.measurement.unit})`
+                            : " (units not yet established)"}
+                          {" · "}
                           <TranscriptLink
                             value={part.measurement.productPath}
                             origin={origin}

@@ -1102,6 +1102,10 @@ function savedMeasurement(state) {
 
 async function readySavedQuestion(state) {
   const question = savedMeasurement(state);
+  state.mock.onDelegate ??= async () => ({
+    text: "",
+    questionPresentation: { ...question, callId: "resumed-question" },
+  });
   await state.start();
   state.ready();
   state.emit({ type: "started" });
@@ -1109,32 +1113,29 @@ async function readySavedQuestion(state) {
   return question;
 }
 
-test("one saved-question startup delegation is restricted and numeric-only replies speak their method", async () => {
+test("the server resumes one saved question silently at readiness without a Live opening or delegation", async () => {
   const state = setup();
   const question = await readySavedQuestion(state);
   assert.deepEqual(plain(state.providers[0].options.pendingQuestion), question);
-  state.mock.onDelegate = async () => ({
-    text: "",
-    questionPresentation: { ...question, callId: "resumed-question" },
-  });
-  state.emit({ type: "delegation", delegationId: "resume_1" });
-  await flush();
+  assert.equal(state.providers[0].options.resumePendingQuestion, true);
+  assert.equal(state.providers[0].openingCount, 0);
   assert.equal(state.calls.delegate.length, 1);
   assert.deepEqual(plain(state.calls.delegate[0][4]), {
     resumeQuestionId: question.invocationId,
   });
-  assert.deepEqual(plain(state.providers[0].commentaries), [
-    ["resume_1", `${question.measurement.instructions} ${question.question}`],
+  assert.deepEqual(plain(state.providers[0].replies), [
+    question.measurement.instructions + " " + question.question,
   ]);
-  state.emit({ type: "delegation", delegationId: "resume_2" });
+  assert.deepEqual(state.providers[0].commentaries, []);
+  state.ready();
+  state.emit({ type: "started" });
+  state.emit({ type: "delegation", delegationId: "unsolicited_resume" });
   await flush();
   assert.equal(state.calls.delegate.length, 1);
-  assert.match(
-    state.providers[0].commentaries[1][1],
-    /No new customer request/,
-  );
+  assert.equal(state.providers[0].replies.length, 1);
+  assert.deepEqual(state.providers[0].commentaries, []);
   state.emit(transcript());
-  state.emit({ type: "delegation", delegationId: "customer_1" });
+  state.emit({ type: "delegation", delegationId: "fresh_customer" });
   await flush();
   assert.equal(state.calls.delegate.length, 2);
   assert.equal(state.calls.delegate[1][4], undefined);
@@ -1168,18 +1169,18 @@ test("startup eligibility requires an initial saved question and the readiness g
 
 test("a question superseded at the durable start guard keeps voice connected without stale advice", async () => {
   const state = setup();
-  await readySavedQuestion(state);
   state.mock.onDelegate = async () => undefined;
+  await readySavedQuestion(state);
   state.emit({ type: "delegation", delegationId: "stale_resume" });
   await flush();
   assert.equal(state.providers[0].closed, false);
   assert.equal(state.logs.length, 0);
   assert.match(
-    state.providers[0].commentaries[0][1],
+    state.providers[0].replies[0],
     /saved question could not be resumed/,
   );
   assert.match(
-    state.providers[0].commentaries[0][1],
+    state.providers[0].replies[0],
     /Do not repeat its previous instructions/,
   );
   state.emit({ type: "delegation", delegationId: "no_retry" });
@@ -1215,8 +1216,11 @@ test("an unchanged startup page observation preserves eligibility, while early s
   await state.stop();
 
   const speaking = setup();
-  await readySavedQuestion(speaking);
+  savedMeasurement(speaking);
+  await speaking.start();
   speaking.emit(transcript());
+  speaking.ready();
+  speaking.emit({ type: "started" });
   speaking.emit({ type: "delegation", delegationId: "spoken_request" });
   await flush();
   assert.equal(speaking.calls.delegate.length, 1);
@@ -1227,7 +1231,6 @@ test("an unchanged startup page observation preserves eligibility, while early s
 for (const interruption of ["speech", "answer", "page", "stop"]) {
   test(`a ${interruption} during startup revalidation cancels work without stale speech`, async () => {
     const state = setup();
-    const question = await readySavedQuestion(state);
     state.mock.onDelegate = async (_id, _voiceId, _requestId, signal) =>
       new Promise((resolve) => {
         signal.addEventListener(
@@ -1236,6 +1239,7 @@ for (const interruption of ["speech", "answer", "page", "stop"]) {
           { once: true },
         );
       });
+    const question = await readySavedQuestion(state);
     state.emit({ type: "delegation", delegationId: "resume_pending" });
     await flush();
     assert.equal(state.calls.delegate.length, 1);
@@ -1272,7 +1276,6 @@ for (const interruption of ["speech", "answer", "page", "stop"]) {
 
 test("speech captures startup cancellation before slow caption persistence can lose runner ownership", async () => {
   const state = setup();
-  await readySavedQuestion(state);
   const captionGate = deferred();
   state.mock.beforeCaption = () => captionGate.promise;
   state.mock.onDelegate = async (_id, _voiceId, _requestId, signal) =>
@@ -1281,6 +1284,7 @@ test("speech captures startup cancellation before slow caption persistence can l
         once: true,
       }),
     );
+  await readySavedQuestion(state);
   state.emit({ type: "delegation", delegationId: "resume_pending" });
   await flush();
   const before = state.calls.cancelDelegation.length;
@@ -1376,11 +1380,7 @@ test("new delegation IDs without new customer captions cannot replay prior actio
   state.emit({ type: "delegation", delegationId: "item_2" });
   await flush();
   assert.equal(state.calls.delegate.length, 1);
-  assert.equal(state.providers[0].commentaries.length, 2);
-  assert.match(
-    state.providers[0].commentaries[1][1],
-    /No new customer request was captured/,
-  );
+  assert.equal(state.providers[0].commentaries.length, 1);
   await state.stop();
 });
 
@@ -1398,10 +1398,7 @@ test("an older duplicate caption cannot reset the consumed request and replay to
   state.emit({ type: "delegation", delegationId: "item_2" });
   await flush();
   assert.equal(state.calls.delegate.length, 1);
-  assert.match(
-    state.providers[0].commentaries[1][1],
-    /No new customer request was captured/,
-  );
+  assert.equal(state.providers[0].commentaries.length, 1);
   await state.stop();
 });
 

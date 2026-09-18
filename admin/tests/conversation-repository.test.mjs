@@ -2210,6 +2210,28 @@ async function guideLookup(id, assistantId, outcome = guideOutcome()) {
   return { tool, claim, sourceCallId };
 }
 
+test("measurement questions with unknown units persist without inventing units or dimensions for free-text replies", async () => {
+  const {conversationId:id}=await repository.createConversation(shop,origin);
+  const turn=await repository.beginTurn(id,{requestId:randomUUID(),text:"I have some measurements"});
+  const source=await guideLookup(id,turn.assistantId);
+  await repository.finishTurn(id,turn.assistantId,{
+    status:"complete",text:"",questionPresentation:{
+      callId:randomUUID(),sourceCallId:source.sourceCallId,
+      question:"What width have you measured?",answers:[],
+      measurement:{productPath:guidePath,label:"Width",unit:null,instructions:""},
+    },
+  });
+  const restarted=loadRepository();
+  const snapshot=await restarted.getSnapshot(id);
+  const question=snapshot.messages.at(-1).parts.find(part=>part.type==="question");
+  assert.deepEqual(question.measurement,{productPath:guidePath,label:"Width",unit:null,instructions:""});
+  const text='Width: 1 1/2 in, or about 38 mm';
+  const next=await restarted.beginTurn(id,{requestId:randomUUID(),text});
+  assert.deepEqual(next.history.at(-1),{role:"user",text});
+  assert.ok(next.history.some(item=>item.source==="roman_question"&&item.text.includes('"unit":null')));
+  assert.equal(await database.measurementDraft.count(),0);
+});
+
 
 test("measurement questions persist verified product context and resume through the canonical text and voice history", async () => {
   const { conversationId: id } = await repository.createConversation(

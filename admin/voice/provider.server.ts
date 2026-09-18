@@ -13,6 +13,7 @@ import {
   romanVoicePrompt,
   ROMAN_VOICE_OPENING_PROMPTS,
   ROMAN_VOICE_OPENING_CUE,
+  ROMAN_VOICE_PENDING_QUESTION_OPENING,
 } from "../prompts/voice.server";
 
 export const VOICE_MODEL = "gpt-live-1";
@@ -131,6 +132,8 @@ export async function createVoiceProvider(options: {
   history: readonly ModelMessage[];
   /** Canonical active question, not inferred from historical question text. */
   pendingQuestion?: QuestionSelection;
+  /** The server owns read-only resumption; Live waits for its one briefing. */
+  resumePendingQuestion?: boolean;
   voice?: LiveVoice;
   onEvent(event: VoiceProviderEvent): void;
   signal: AbortSignal;
@@ -144,9 +147,11 @@ export async function createVoiceProvider(options: {
       (message.role === "assistant" || message.source === "roman_question") &&
       message.text.trim(),
   );
-  const openingPrompt = resumedConversation
-    ? ROMAN_VOICE_OPENING_PROMPTS.resumedConversation
-    : ROMAN_VOICE_OPENING_PROMPTS.newConversation;
+  const openingPrompt = options.resumePendingQuestion
+    ? ROMAN_VOICE_PENDING_QUESTION_OPENING
+    : resumedConversation
+      ? ROMAN_VOICE_OPENING_PROMPTS.resumedConversation
+      : ROMAN_VOICE_OPENING_PROMPTS.newConversation;
   const pendingQuestion = options.pendingQuestion
     ? JSON.stringify({
         question: options.pendingQuestion.question,
@@ -167,7 +172,7 @@ export async function createVoiceProvider(options: {
     ...(resumedConversation
       ? [
           options.pendingQuestion
-            ? "Resume only the question selected by Current pending follow-up (application state), following its existing read-only startup rules. Delegate its guidance to the backend; only an unanswered initial welcome question may be said directly. Do not replay actions or advance the workflow."
+            ? "Resume only the unanswered initial welcome question selected by Current pending follow-up (application state); say that question directly and listen. The application resumes every other saved question separately. Do not delegate, replay actions or advance the workflow."
             : "No follow-up is pending. Begin with one relevant continuation of that latest task, then listen; do not restore a historical question.",
         ]
       : []),
@@ -544,6 +549,7 @@ export async function createVoiceProvider(options: {
       },
       beginConversation: () =>
         (openingPromise ??= (async () => {
+          if (options.resumePendingQuestion) return;
           if (speechObserved || closed || closing || options.signal.aborted)
             return;
           await append("instructions", null, openingInstruction);

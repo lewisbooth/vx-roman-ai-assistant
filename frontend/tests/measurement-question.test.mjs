@@ -101,7 +101,7 @@ function setup(t, options = {}) {
     window.close();
     assert.deepEqual(failures, []);
   });
-  const input = () => container.querySelector('input[type="number"]');
+  const input = () => container.querySelector('input[type="text"]');
   const fill = (value) =>
     view.flush(() => {
       Object.getOwnPropertyDescriptor(
@@ -132,15 +132,19 @@ function setup(t, options = {}) {
   };
 }
 
-test("measurement input has explicit units and guide instructions without stealing voice focus", (t) => {
+test("measurement input has a unit hint and useful guide instructions without stealing voice focus", (t) => {
   const ctx = setup(t, { voice: true });
   const input = ctx.input();
   assert.equal(ctx.shadow.activeElement, ctx.elsewhere);
-  assert.equal(input.step, "any");
-  assert.equal(input.min, "0");
+  assert.equal(input.type, "text");
+  assert.equal(input.min, "");
   assert.equal(input.max, "");
-  assert.equal(input.inputMode, "decimal");
-  assert.equal(input.labels[0].textContent, "Recess clearance (in)");
+  assert.equal(input.labels.length, 0);
+  assert.equal(input.getAttribute("aria-label"), part.question);
+  assert.equal(
+    ctx.container.querySelector(".roman-measurement-field span").textContent,
+    "in",
+  );
   assert.equal(
     ctx.shadow.getElementById(input.getAttribute("aria-describedby"))
       .textContent,
@@ -165,6 +169,40 @@ test("measurement input has explicit units and guide instructions without steali
   assert.deepEqual(ctx.calls, []);
 });
 
+test("unknown units and empty instructions leave a clean, accessible free-text field", async (t) => {
+  const ctx = setup(t, {
+    part: {
+      ...part,
+      measurement: { ...part.measurement, unit: null, instructions: "" },
+    },
+  });
+  assert.equal(ctx.container.querySelector("label"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-measurement-instructions"),
+    null,
+  );
+  assert.equal(
+    ctx.container.querySelector(".roman-measurement-field span"),
+    null,
+  );
+  assert.equal(ctx.input().getAttribute("aria-label"), part.question);
+  assert.equal(ctx.input().getAttribute("aria-describedby"), null);
+  ctx.fill("1 1/2 in or 38 mm");
+  ctx.submit();
+  await until(() => !ctx.input().readOnly);
+  assert.equal(ctx.calls[0][1], "Recess clearance: 1 1/2 in or 38 mm");
+});
+
+test("established unit hints do not overwrite explicit units, fractions or uncertainty", async (t) => {
+  const ctx = setup(t);
+  for (const value of ['1 1/2"', "50 mm", "Actually 5 cm", "I'm not sure"]) {
+    ctx.fill(value);
+    ctx.submit();
+    await until(() => !ctx.input().readOnly);
+    assert.equal(ctx.calls.at(-1)[1], `Recess clearance: ${value}`);
+  }
+});
+
 test("decimal submission uses the canonical answer and locks repeated submissions while pending", async (t) => {
   let finish;
   const ctx = setup(t, {
@@ -178,7 +216,7 @@ test("decimal submission uses the canonical answer and locks repeated submission
   ctx.submit();
   assert.equal(ctx.calls.length, 1);
   assert.equal(ctx.calls[0][0], part);
-  assert.equal(ctx.calls[0][1], "Recess clearance: 20.5 in");
+  assert.equal(ctx.calls[0][1], "Recess clearance: 20.5");
   assert.equal(ctx.input().value, "20.5");
   assert.equal(ctx.input().readOnly, true);
   assert.equal(ctx.shadow.activeElement, ctx.input());
@@ -199,9 +237,9 @@ test("decimal submission uses the canonical answer and locks repeated submission
   assert.equal(ctx.calls.length, 1);
 });
 
-test("invalid numbers stay editable with an associated error and zero remains a valid clearance", async (t) => {
+test("empty or oversized answers stay editable with an associated error and zero remains valid", async (t) => {
   const ctx = setup(t);
-  for (const value of ["", "-1", "1e2"]) {
+  for (const value of ["", " ", "x".repeat(241)]) {
     ctx.fill(value);
     ctx.submit();
     assert.equal(ctx.calls.length, 0);
@@ -221,7 +259,7 @@ test("invalid numbers stay editable with an associated error and zero remains a 
   assert.equal(ctx.container.querySelector('[role="alert"]'), null);
   ctx.submit();
   await until(() => !ctx.input().readOnly);
-  assert.equal(ctx.calls[0][1], "Recess clearance: 0 in");
+  assert.equal(ctx.calls[0][1], "Recess clearance: 0");
 });
 
 test("submission failure retains the value and permits editing/retry without automatic replay", async (t) => {
@@ -248,7 +286,7 @@ test("submission failure retains the value and permits editing/retry without aut
   await until(() => !ctx.input().readOnly);
   assert.deepEqual(
     ctx.calls.map((call) => call[1]),
-    ["Recess clearance: .5 in", "Recess clearance: .75 in"],
+    ["Recess clearance: .5", "Recess clearance: .75"],
   );
 });
 
@@ -326,10 +364,15 @@ test("the next measurement question starts empty without reusing the earlier val
     part: {
       ...part,
       invocationId: "6cbecb55-dd6f-47d7-ab8c-81272fd01214",
+      question: "What is the width?",
       measurement: { ...part.measurement, label: "Width", unit: "cm" },
     },
   });
   assert.equal(ctx.input().value, "");
-  assert.equal(ctx.input().labels[0].textContent, "Width (cm)");
+  assert.equal(ctx.input().getAttribute("aria-label"), "What is the width?");
+  assert.equal(
+    ctx.container.querySelector(".roman-measurement-field span").textContent,
+    "cm",
+  );
   assert.equal(ctx.shadow.activeElement, ctx.elsewhere);
 });

@@ -5,9 +5,10 @@ import {
 } from "../../shared/voice";
 import { UUID_PATTERN } from "../conversations/auth.server";
 import { ConversationError } from "../conversations/errors.server";
-import type {
-  VoiceSelectionInput,
-  VoiceTextInput,
+import {
+  MAX_QUESTION_ANSWER_LENGTH,
+  type VoiceSelectionInput,
+  type VoiceTextInput,
 } from "../../shared/questions";
 import { parseProductChoice } from "../../shared/product-choice";
 import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
@@ -119,7 +120,7 @@ export function voiceAnswerInput(
     ) ||
     typeof value.answer !== "string" ||
     !value.answer.trim() ||
-    value.answer.length > 80
+    value.answer.length > MAX_QUESTION_ANSWER_LENGTH
   )
     throw new ConversationError(
       400,

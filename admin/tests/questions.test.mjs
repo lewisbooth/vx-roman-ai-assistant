@@ -25,6 +25,7 @@ const {
   formatMeasurementAnswer,
   isQuestionAnswer,
   latestQuestion,
+  MAX_QUESTION_ANSWER_LENGTH,
 } = module.exports;
 const selection = { question: "Which room?", answers: ["Bedroom", "Kitchen"] };
 
@@ -129,7 +130,7 @@ test("both terminal tools require a bounded context message and prohibit unknown
       definition.parameters.required.toSorted(),
       Object.keys(definition.parameters.properties).toSorted(),
     );
-    assert.match(definition.description, /terminal tool/);
+    assert.match(definition.description, /call this alone/);
     assert.match(definition.description, /no prose response afterward/);
     assert.match(definition.description, /Put the question only in question/);
     assert.doesNotMatch(
@@ -176,7 +177,7 @@ test("numeric questions preserve guide instructions, units and product without a
       ...expected,
     },
   );
-  for (const unit of ["cm", "mm", "in"])
+  for (const unit of ["cm", "mm", "in", null])
     assert.equal(
       parseMeasurementQuestionCall({ ...measurementCall, unit }).measurement
         .unit,
@@ -184,21 +185,24 @@ test("numeric questions preserve guide instructions, units and product without a
     );
   for (const invalid of [
     { ...measurementCall, unit: "m" },
-    { ...measurementCall, unit: null },
+    { ...measurementCall, unit: undefined },
+    { ...measurementCall, instructions: null },
     { ...measurementCall, productPath: "/products/blind?variant=1" },
     { ...measurementCall, productPath: "https://other.test/products/blind" },
     { ...measurementCall, label: "x".repeat(41) },
     { ...measurementCall, label: "" },
     { ...measurementCall, instructions: "x".repeat(601) },
     { ...measurementCall, instructions: "**Measure** here" },
-    { ...measurementCall, instructions: "" },
     { ...measurementCall, instructions: measurementCall.question },
     {
       ...measurementCall,
       instructions: `Measure without deductions. ${measurementCall.question.toUpperCase()}`,
     },
     { ...measurementCall, instructions: "What is the   width?" },
-    { ...measurementCall, instructions: "What is the \uFF57\uFF49\uFF44\uFF54\uFF48?" },
+    {
+      ...measurementCall,
+      instructions: "What is the \uFF57\uFF49\uFF44\uFF54\uFF48?",
+    },
     { ...measurementCall, min: 30 },
     { ...measurementCall, sourceCallId: randomUUID() },
     { ...measurementCall, message: undefined },
@@ -241,36 +245,39 @@ test("numeric questions preserve guide instructions, units and product without a
   );
 });
 
-test("numeric answers validate exact label/unit and remain ordinary bounded customer messages", () => {
-  for (const raw of ["0", "500", "500.25", ".5", "0.0001", "000.50"]) {
-    const answer = formatMeasurementAnswer(numeric(), raw);
-    assert.equal(answer, `Width: ${raw} mm`);
-    assert.equal(isQuestionAnswer(numeric(), answer), true);
+test("measurement answers preserve bounded customer text without inferring units or numeric values", () => {
+  for (const unit of ["mm", "cm", "in", null]) {
+    const value = {
+      ...numeric(),
+      measurement: { ...numeric().measurement, unit },
+    };
+    for (const raw of [
+      "500",
+      "500.25",
+      ".5",
+      "1 1/2 in",
+      "500 mm by 40 cm",
+      "actually 3/4 inch",
+      "Not sure",
+      "-1",
+      "1e3",
+      "1,000",
+    ]) {
+      const answer = formatMeasurementAnswer(value, raw);
+      assert.equal(answer, "Width: " + raw);
+      assert.equal(isQuestionAnswer(value, answer), true);
+    }
+    assert.equal(formatMeasurementAnswer(value, " 500 "), "Width: 500");
   }
-  assert.equal(formatMeasurementAnswer(numeric(), " 500 "), "Width: 500 mm");
-  for (const raw of [
-    "",
-    " ",
-    "-1",
-    "+1",
-    "1e3",
-    "1,000",
-    "NaN",
-    "Infinity",
-    "1 2",
-    "1.",
-    "9007199254740992",
-    "0".repeat(25),
-  ])
+  for (const raw of ["", " ", "x".repeat(241), "500\nmm", "500\u0000mm"])
     assert.throws(() => formatMeasurementAnswer(numeric(), raw));
   for (const answer of [
-    "Width: 500 cm",
     "Drop: 500 mm",
     "Width:  500 mm",
     "Width: 500 mm ",
     "500",
-    "Width: -1 mm",
-    "Width: 1e3 mm",
+    "Width: ",
+    "Width: " + "x".repeat(241),
   ])
     assert.equal(isQuestionAnswer(numeric(), answer), false);
   for (const answer of [
@@ -283,13 +290,44 @@ test("numeric answers validate exact label/unit and remain ordinary bounded cust
   assert.equal(isQuestionAnswer(selection, "Bedroom"), true);
   assert.equal(isQuestionAnswer(selection, "Width: 500 mm"), false);
   assert.throws(() => formatMeasurementAnswer(selection, "500"));
-  const longest = parseMeasurementQuestionCall({
-    ...measurementCall,
-    label: "x".repeat(40),
-  });
-  assert.ok(
-    formatMeasurementAnswer(longest, "0.1234567890123456789012").length <= 80,
+  const exact = "x".repeat(MAX_QUESTION_ANSWER_LENGTH - "Width: ".length);
+  assert.equal(
+    formatMeasurementAnswer(numeric(), exact).length,
+    MAX_QUESTION_ANSWER_LENGTH,
   );
+  assert.equal(isQuestionAnswer(numeric(), "Width: " + exact), true);
+  assert.throws(() => formatMeasurementAnswer(numeric(), exact + "x"));
+});
+
+test("unknown units and an empty instruction body are valid while saved established units remain readable", () => {
+  const call = parseMeasurementQuestionCall({
+    ...measurementCall,
+    unit: null,
+    instructions: "",
+  });
+  assert.equal(call.measurement.unit, null);
+  assert.equal(call.measurement.instructions, "");
+  const selection = {
+    question: call.question,
+    answers: call.answers,
+    measurement: call.measurement,
+  };
+  const part = {
+    type: "question",
+    version: 1,
+    invocationId: randomUUID(),
+    ...selection,
+  };
+  assert.deepEqual(parseQuestionPart(part), part);
+  for (const unit of ["mm", "cm", "in"])
+    assert.equal(
+      parseQuestionPart({ ...part, measurement: { ...part.measurement, unit } })
+        .measurement.unit,
+      unit,
+    );
+  const schema = askMeasurementToolDefinition.parameters.properties;
+  assert.ok(schema.unit.enum.includes(null));
+  assert.equal(schema.instructions.minLength, undefined);
 });
 
 const questionMessage = (part) => ({

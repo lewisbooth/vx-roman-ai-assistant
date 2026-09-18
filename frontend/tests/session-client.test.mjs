@@ -2628,7 +2628,7 @@ test("choosing a saved carousel product is immediate customer input without clos
   assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
 });
 
-test("measurement widget answers retain live audio, exact units and retry identity", async (t) => {
+test("measurement widget answers retain live audio, unmodified free text and retry identity", async (t) => {
   const ctx = setup(t, {
     mediaOptions: {},
     url: "https://hd-dev-single.myshopify.com/products/example",
@@ -2646,23 +2646,23 @@ test("measurement widget answers retain live audio, exact units and retry identi
   });
   const voice = await activeVoice(ctx, conversation);
   await assert.rejects(
-    ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 500 cm"),
+    ctx.client.sendVoiceAnswer(voiceQuestionId, "Drop: 500 cm"),
     /no longer waiting/,
   );
   const sending = ctx.client.sendVoiceAnswer(
     voiceQuestionId,
-    "Width: 500.25 mm",
+    "Width: 1 1/2 in or 38 mm",
   );
   const rejected = assert.rejects(sending, /could not connect/);
   assert.equal(
     ctx.client.getSnapshot().optimisticMessage.parts[0].text,
-    "Width: 500.25 mm",
+    "Width: 1 1/2 in or 38 mm",
   );
   ctx.calls[3].reject(new Error("offline"));
   await until(() => ctx.calls.length === 5, "Lost answer did not reconcile");
   ctx.respond(4, { ...conversation, revision: 1, voice });
   await rejected;
-  const retry = ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 500.25 mm");
+  const retry = ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 1 1/2 in or 38 mm");
   assert.deepEqual(ctx.calls[5].body, ctx.calls[3].body);
   const accepted = acceptedVoiceAnswer(ctx.calls[5].body, voice);
   accepted.messages[0] = conversation.messages[0];

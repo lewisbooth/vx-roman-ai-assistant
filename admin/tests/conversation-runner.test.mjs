@@ -2493,6 +2493,68 @@ test("prior-read authority supports voice numeric resume without PDFs, rediscove
   );
 });
 
+test("an established measuring method accepts unknown units and empty instructions without another guide or unit-selection turn", async () => {
+  for (const mode of ["text", "voice", "resume"]) {
+    const env = setup();
+    const selection = { ...measurementSelection, unit: null, instructions: "" };
+    const { question, ...measurement } = selection;
+    const resume =
+      mode === "resume"
+        ? {
+            type: "question",
+            version: 1,
+            invocationId: "11111111-1111-4111-8111-111111111111",
+            question,
+            answers: [],
+            measurement,
+          }
+        : undefined;
+    env.streams.push(
+      events(completed("", { output: [measurementCall(selection)] })),
+    );
+    const reply = await env.api.generateReply(
+      [
+        {
+          role: "user",
+          text: "I'm ready to measure the width as you described.",
+        },
+      ],
+      () => {},
+      new AbortController().signal,
+      async () => {
+        throw Error("No new storefront read needed");
+      },
+      mode === "text" ? "text" : "voice",
+      undefined,
+      guideOrigin,
+      resume,
+      undefined,
+      {
+        cached: guideSession(["measuring"]),
+        read: () => {
+          throw Error("No new PDF read needed");
+        },
+        clear: () => {
+          throw Error("No product change expected");
+        },
+      },
+    );
+    assert.equal(env.calls.requests.length, 1);
+    assert.equal(env.calls.guideReads.length, 0);
+    assert.equal(guideFiles(env.calls.requests[0].input).length, 0);
+    assert.deepEqual(
+      plain(reply.questionPresentation.measurement),
+      measurement,
+    );
+    assert.equal(reply.text, mode === "text" ? "" : question);
+    if (resume)
+      assert.match(
+        JSON.stringify(env.calls.requests[0].input.input),
+        /known unit hint, including null when unknown/,
+      );
+  }
+});
+
 test("cached original PDFs stay off the request during pending style and cart replies", async (t) => {
   for (const mode of ["text", "voice"]) {
     for (const request of [

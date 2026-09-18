@@ -923,16 +923,9 @@ test("long and escaped customer messages retain their full backend input without
 test("fresh resumed opening references the latest task and canonical pending state without copying the business prompt", async () => {
   for (const pendingQuestion of [
     undefined,
-    { question: "Which unit?", answers: ["mm", "cm", "in"] },
     {
-      question: "What is the width?",
-      answers: [],
-      measurement: {
-        productPath: "/products/roller",
-        label: "Width",
-        unit: "mm",
-        instructions: "PRIVATE_GUIDE_INSTRUCTIONS",
-      },
+      question: "Where would you like to start?",
+      answers: ["Help me measure", "Explore products", "Find my style"],
     },
   ]) {
     const app = setup();
@@ -968,10 +961,10 @@ test("fresh resumed opening references the latest task and canonical pending sta
         instruction,
         /Current pending follow-up \(application state\)/,
       );
-      assert.match(instruction, /existing read-only startup rules/);
+      assert.match(instruction, /unanswered initial welcome question/);
       assert.match(
         instruction,
-        /Do not replay actions or advance the workflow/,
+        /Do not delegate, replay actions or advance the workflow/,
       );
     } else {
       assert.match(instruction, /No follow-up is pending/);
@@ -983,6 +976,53 @@ test("fresh resumed opening references the latest task and canonical pending sta
     await opening;
     assert.equal(app.timers.size, 0);
   }
+});
+
+test("a pending question starts silently and receives one verified briefing without an opening cue", async () => {
+  const app = setup();
+  const provider = await app.connect({
+    history: [{ role: "user", text: "Help me measure this bay." }],
+    pendingQuestion: {
+      invocationId: "saved-width",
+      question: "What is the front blind's corner-to-corner width?",
+      answers: [],
+      measurement: {
+        productPath: "/products/venetian",
+        label: "Front width",
+        unit: null,
+        instructions: "Use a metal tape between the marked corners.",
+      },
+    },
+    resumePendingQuestion: true,
+  });
+  const socket = app.sockets[0];
+  const initial = app.requests[0][0].session.instructions;
+  assert.match(
+    initial,
+    /This is a channel change, not a request to repeat or clarify anything/,
+  );
+  assert.match(initial, /Remain silent while it works/);
+  assert.doesNotMatch(
+    initial,
+    /Wait for the application's opening cue|Say this complete welcome exactly/,
+  );
+  await Promise.all([
+    provider.beginConversation(),
+    provider.beginConversation(),
+  ]);
+  assert.equal(socket.sent.length, 0);
+  const briefing =
+    "Use a metal tape between the marked corners. What is the front blind's corner-to-corner width?";
+  const reply = provider.appendReply(briefing);
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].type, "session.commentary.append");
+  assert.equal(socket.sent[0].content, briefing);
+  socket.ack();
+  await reply;
+  const closing = provider.close();
+  socket.event(ended);
+  await closing;
+  assert.equal(app.timers.size, 0);
 });
 
 function questionReference({ question, answers, measurement }) {
@@ -1002,7 +1042,11 @@ function questionReference({ question, answers, measurement }) {
 test("initial instructions select the opening from full history before Live creation", async () => {
   async function openingFor(history, pendingQuestion) {
     const app = setup();
-    const provider = await app.connect({ history, pendingQuestion });
+    const provider = await app.connect({
+      history,
+      pendingQuestion,
+      resumePendingQuestion: !!pendingQuestion,
+    });
     const socket = app.sockets[0];
     const instruction = app.requests[0][0].session.instructions;
     assert.equal(socket.sent.length, 0, "No late instructions are necessary");
@@ -1046,7 +1090,7 @@ test("initial instructions select the opening from full history before Live crea
   );
   assert.match(
     resumed.instruction,
-    /Do not say that other question in this opening: after the backend briefing returns, say the displayed question once with its exact wording/,
+    /For any other saved question, the application owns its read-only resumption/,
   );
   assert.doesNotMatch(resumed.instruction, /Say this complete welcome exactly/);
 
@@ -1077,7 +1121,7 @@ test("initial instructions select the opening from full history before Live crea
   assert.doesNotMatch(resumedQuestion.instruction, /not-prompt-content/);
   assert.match(
     resumedQuestion.instruction,
-    /Continue this existing text or voice conversation/,
+    /The customer has enabled voice while a question is already waiting/,
   );
   assert.ok(resumedQuestion.input.every((item) => item.role === "user"));
   assert.deepEqual(resumedQuestion.input[0], {
