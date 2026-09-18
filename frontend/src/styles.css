@@ -187,14 +187,39 @@
     gap: 6px 14px;
     margin-top: auto;
   }
+  .roman-cart-configuration {
+    margin: 0 0 18px;
+    font:
+      13px/1.5 system-ui,
+      sans-serif;
+    text-align: left;
+  }
+  .roman-cart-configuration > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 12px;
+    margin-top: 6px;
+    overflow-wrap: anywhere;
+  }
+  .roman-cart-configuration dt {
+    color: #80756b;
+  }
+  .roman-cart-configuration dd {
+    margin: 0;
+    text-align: right;
+  }
   .roman-cart-summary {
     max-width: 400px;
     margin: 36px auto 0;
+    padding: 28px;
+    border-radius: 24px;
+    background: #4e0e0e;
+    color: #f7f5ef;
   }
   .roman-cart-total {
     display: flex;
     justify-content: space-between;
-    margin: 28px 0;
+    margin: 0 0 22px;
     font-size: 21px;
   }
   .roman-checkout {
@@ -203,14 +228,21 @@
     gap: 16px;
     padding: 18px;
     border-radius: 30px;
-    color: #f7f5ef;
-    background: #4e0e0e;
+    color: #4e0e0e;
+    background: #f7f5ef;
     text-decoration: none;
+  }
+  .roman-checkout:hover {
+    background: #eae6dd;
+  }
+  .roman-checkout:focus-visible {
+    outline: 2px solid #f7f5ef;
+    outline-offset: 4px;
   }
   .roman-cart-note {
     margin-top: 12px;
     font-size: 12px;
-    color: #80756b;
+    color: #f7f5ef;
     text-align: center;
   }
   .roman-response-dock {

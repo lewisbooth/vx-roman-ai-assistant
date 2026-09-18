@@ -310,6 +310,275 @@ test("unsafe and missing images fall back without hiding cart contents", async (
   assert.equal(ctx.container.querySelector('[role="alert"]'), null);
 });
 
+test("each cart card shows its own public dimensions and configuration without using the current product or private metadata", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  const cart = {
+    ...exampleCart,
+    item_count: 2,
+    total_price: 9000,
+    items: [
+      {
+        ...exampleCart.items[0],
+        options_with_values: [
+          { name: "Title", value: "Default Title" },
+          { name: "Colour", value: "Linen" },
+        ],
+        properties: {
+          Width: "400 mm",
+          Drop: "500 mm",
+          "Fitting option": "Exact",
+          "Measurement type": "Bracket to bracket",
+          Motor: "Electric Smartview",
+          "Remote control": "14 Channel",
+          Colour: "Linen",
+          _configuration_id: "private configuration id",
+          " _insurance_group": "private insurance grouping",
+          Empty: "",
+          Missing: null,
+          Structured: { nested: "internal value" },
+        },
+      },
+      {
+        ...exampleCart.items[0],
+        key: "line-2",
+        options_with_values: [{ name: "Colour", value: "Green" }],
+        properties: { Width: "80 cm", Drop: "120 cm", Fitting: "Recess" },
+      },
+    ],
+  };
+  const original = structuredClone(cart);
+  ctx.calls[0].complete(cart);
+  await until(
+    () =>
+      ctx.container.querySelectorAll(".roman-cart-configuration").length === 2,
+    "Configuration is rendered for each line",
+  );
+  const details = [
+    ...ctx.container.querySelectorAll(".roman-cart-configuration"),
+  ].map((list) =>
+    [...list.querySelectorAll("div")].map((row) => [
+      row.querySelector("dt").textContent,
+      row.querySelector("dd").textContent,
+    ]),
+  );
+  assert.deepEqual(details[0], [
+    ["Colour", "Linen"],
+    ["Width", "400 mm"],
+    ["Drop", "500 mm"],
+    ["Fitting option", "Exact"],
+    ["Measurement type", "Bracket to bracket"],
+    ["Motor", "Electric Smartview"],
+    ["Remote control", "14 Channel"],
+  ]);
+  assert.deepEqual(details[1], [
+    ["Colour", "Green"],
+    ["Width", "80 cm"],
+    ["Drop", "120 cm"],
+    ["Fitting", "Recess"],
+  ]);
+  assert.doesNotMatch(
+    ctx.container.textContent,
+    /private|internal value|Default Title|Structured|Missing|Empty/,
+  );
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Cart configuration needs no PDP or catalog fetch",
+  );
+  assert.deepEqual(cart, original);
+});
+
+test("cart configuration remains literal text and malformed optional details cannot hide a valid line", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  ctx.calls[0].complete({
+    ...exampleCart,
+    properties: { "Cart attribute": "not a line option" },
+    items: [
+      {
+        ...exampleCart.items[0],
+        options_with_values: [
+          null,
+          [],
+          "unexpected",
+          { name: "Bad", value: {} },
+        ],
+        properties: {
+          "<img src=x onerror=alert(1)>": "<script>alert(1)</script>",
+          Spacing: 0,
+          Selection: false,
+          Excessive: "x".repeat(1001),
+        },
+      },
+    ],
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-cart-configuration"),
+    "Literal options render",
+  );
+  const details = ctx.container.querySelector(".roman-cart-configuration");
+  assert.equal(details.querySelector("img,script,a"), null);
+  assert.match(details.textContent, /<script>alert\(1\)<\/script>/);
+  assert.match(details.textContent, /Spacing0Selectionfalse/);
+  assert.doesNotMatch(details.textContent, /Excessive|not a line option/);
+  assert.match(ctx.container.textContent, /Linen blind/);
+  assert.equal(ctx.container.querySelector('[role="alert"]'), null);
+});
+
+test("HD cart dimensions and nested options use saved display fields without leaking serialized private configuration", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  const properties = {
+    _user_unit: "cm",
+    _user_unit_width: "30",
+    _user_unit_drop: "66",
+    _width: "300",
+    _drop: "660",
+    _unit: "mm",
+    _selected_features_data: JSON.stringify([
+      {
+        feature_id: "1",
+        feature_label: "Fitting",
+        feature_option_label: "Exact",
+        feature_option_id: "2",
+      },
+      {
+        feature_id: "82",
+        feature_label: "Control",
+        feature_option_label: "Electric Smartview",
+        feature_option_id: "204",
+      },
+      {
+        feature_id: "6917",
+        feature_label: "Remote control",
+        feature_option_label: "14 Channel Remote Control",
+        feature_option_id: "11434",
+        feature_option_price: "19.95",
+      },
+      {
+        feature_label: "Measurement Placeholder",
+        feature_option_label: "internal placeholder",
+      },
+    ]),
+    _insurance_group: "private group",
+    _custom_price: "private price",
+    _sku: "private SKU",
+  };
+  ctx.calls[0].complete({
+    ...exampleCart,
+    item_count: 2,
+    total_price: 9000,
+    items: [
+      { ...exampleCart.items[0], properties },
+      {
+        ...exampleCart.items[0],
+        key: "line-2",
+        properties: {
+          _user_unit: "inches",
+          _user_unit_width: "20",
+          _user_unit_width_inches: "0.125",
+          _user_unit_drop: "30",
+          _user_unit_drop_inches: "0.5",
+          _width: "511.175",
+          _drop: "774.7",
+          _unit: "mm",
+        },
+      },
+    ],
+  });
+  await until(
+    () =>
+      ctx.container.querySelectorAll(".roman-cart-configuration").length === 2,
+    "Saved HD selections render",
+  );
+  const lists = [
+    ...ctx.container.querySelectorAll(".roman-cart-configuration"),
+  ];
+  assert.deepEqual(
+    [...lists[0].querySelectorAll("div")].map((row) => [
+      row.querySelector("dt").textContent,
+      row.querySelector("dd").textContent,
+    ]),
+    [
+      ["Width", "30 cm"],
+      ["Drop", "66 cm"],
+      ["Fitting", "Exact"],
+      ["Control", "Electric Smartview"],
+      ["Remote control", "14 Channel Remote Control"],
+    ],
+  );
+  assert.match(lists[1].textContent, /Width20\.125 inDrop30\.5 in/);
+  assert.doesNotMatch(
+    ctx.container.textContent,
+    /private|_user_unit|feature_option_id|11434|19\.95|internal placeholder|300 mm/,
+  );
+  assert.equal(ctx.calls.length, 1);
+});
+
+test("malformed HD details do not hide valid cart lines or invent dimensions or feature labels", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Initial cart read");
+  ctx.calls[0].complete({
+    ...exampleCart,
+    item_count: 3,
+    total_price: 13500,
+    items: [
+      {
+        ...exampleCart.items[0],
+        properties: {
+          _user_unit: "unknown",
+          _user_unit_width: "100",
+          _user_unit_drop: "200",
+          _width: "600",
+          _drop: "900",
+          _unit: "mm",
+          _selected_features_data: "{bad json",
+        },
+      },
+      {
+        ...exampleCart.items[0],
+        key: "line-2",
+        properties: {
+          _user_unit: "inches",
+          _user_unit_width: "20",
+          _user_unit_width_inches: "wrong",
+          _user_unit_drop: "0",
+          _selected_features_data: JSON.stringify([
+            null,
+            "bad",
+            { feature_label: "Broken", feature_option_label: {} },
+          ]),
+        },
+      },
+      {
+        ...exampleCart.items[0],
+        key: "line-3",
+        properties: {
+          _preset_size_name: "Small",
+          _selected_features_data: JSON.stringify({ token: "private value" }),
+        },
+      },
+    ],
+  });
+  await until(
+    () => ctx.container.querySelectorAll(".roman-cart-items li").length === 3,
+    "All valid cart lines render",
+  );
+  const cards = ctx.container.querySelectorAll(".roman-cart-items li");
+  assert.match(cards[0].textContent, /Width600 mmDrop900 mm/);
+  assert.equal(cards[1].querySelector(".roman-cart-configuration"), null);
+  assert.equal(
+    cards[2].querySelector(".roman-cart-configuration").textContent,
+    "SizeSmall",
+  );
+  assert.doesNotMatch(
+    ctx.container.textContent,
+    /wrong|bad json|Broken|private value|100 unknown|Drop0/,
+  );
+  assert.equal(ctx.container.querySelector('[role="alert"]'), null);
+});
+
 test("failed image loading has a quiet fallback and a refreshed source can load", async (t) => {
   const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial cart read");

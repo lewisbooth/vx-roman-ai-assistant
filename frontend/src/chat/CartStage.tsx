@@ -3,9 +3,16 @@ import { parseCartResult, type CartSnapshot } from "../../../shared/cart-tools";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { getStoreCart, summarizeCart } from "../tools/cart";
+import {
+  cartLineConfiguration,
+  type CartConfiguration,
+} from "../tools/cart-configuration";
 
 type DisplayCart = Omit<CartSnapshot, "items"> & {
-  items: (CartSnapshot["items"][number] & { imageUrl?: string })[];
+  items: (CartSnapshot["items"][number] & {
+    imageUrl?: string;
+    configuration: CartConfiguration;
+  })[];
 };
 
 /** Cart imagery is display-only and never changes tool/approval snapshots. */
@@ -127,6 +134,7 @@ export function CartStage({
             items: verified.items.map((item, index) => ({
               ...item,
               imageUrl: cartImageUrl(value.items[index]),
+              configuration: cartLineConfiguration(value.items[index]),
             })),
           });
       })
@@ -187,6 +195,16 @@ export function CartStage({
                       url={item.imageUrl}
                     />
                     <h3>{item.title}</h3>
+                    {item.configuration.length > 0 && (
+                      <dl className="roman-cart-configuration">
+                        {item.configuration.map(({ name, value }) => (
+                          <div key={JSON.stringify([name, value])}>
+                            <dt>{name}</dt>
+                            <dd>{value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
                     <div className="roman-cart-item-details">
                       <span>Quantity {item.quantity}</span>
                       <strong>{price(item.linePriceMinorUnits)}</strong>
