@@ -8,6 +8,7 @@ import type { CatalogResult, CatalogProduct } from "../../../shared/catalog";
 import type { MeasurementToolResult } from "../../../shared/measurements";
 import type { LiveVoice, VoiceClientState } from "../../../shared/voice";
 import type { PendingToolApproval } from "./tool-approval";
+import type { ProductGallerySnapshot } from "../tools/product-image";
 
 export interface ConversationClientState {
   conversation: ConversationSnapshot | null;
@@ -45,6 +46,10 @@ export interface ConversationClient {
     signal: AbortSignal,
     maxWidth?: 480 | 1200,
   ): Promise<string | undefined>;
+  loadProductGallery(
+    url: string,
+    signal: AbortSignal,
+  ): Promise<ProductGallerySnapshot | undefined>;
   resolveToolApproval(invocationId: string, confirmed: boolean): void;
   startVoice(): Promise<void>;
   setVoice(voice: LiveVoice): void;

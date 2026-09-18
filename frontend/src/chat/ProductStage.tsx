@@ -4,7 +4,11 @@ import type { ConversationClient } from "../session/types";
 import { storefrontPageTitle } from "../session/page-title";
 import { readProductConfigurationDisplay } from "../tools/product-configuration";
 import { isCurrentProduct } from "../tools/product-controls";
-import { readProductMainImage } from "../tools/product-image";
+import {
+  readProductGallery,
+  type ProductGallerySnapshot,
+} from "../tools/product-image";
+import { ProductGallery } from "./ProductGallery";
 
 function productPath(url: string): string | undefined {
   try {
@@ -21,7 +25,7 @@ function productPath(url: string): string | undefined {
 type ProductStageState = {
   path: string;
   title: string;
-  image?: string;
+  gallery?: ProductGallerySnapshot;
   configuration: ReturnType<typeof readProductConfigurationDisplay>;
 };
 
@@ -30,7 +34,7 @@ function readProductStage(path: string): ProductStageState | null {
   return {
     path,
     title: storefrontPageTitle(path),
-    image: readProductMainImage(document, window.location.href, 1200),
+    gallery: readProductGallery(document, window.location.href),
     configuration: readProductConfigurationDisplay(path),
   };
 }
@@ -44,7 +48,7 @@ export function ProductStage({
   hidden = false,
 }: {
   navigation: StorefrontNavigation;
-  session: Pick<ConversationClient, "loadProductImage">;
+  session: Pick<ConversationClient, "loadProductGallery">;
   selectedPath: string;
   selectedTitle: string;
   hidden?: boolean;
@@ -55,13 +59,12 @@ export function ProductStage({
   );
   const path = productPath(page.url);
   const [product, setProduct] = useState<ProductStageState | null>(null);
-  const [imagery, setImagery] = useState<{ path: string; image?: string }>();
-  const [failedImage, setFailedImage] = useState<string>();
+  const [imagery, setImagery] = useState<ProductGallerySnapshot>();
 
   useEffect(() => {
     // Keep the preceding product visible while navigation resolves. It cannot
     // supply an active quote until the new page and its theme controls settle.
-    if (page.pending) return;
+    if (page.pending || hidden) return;
     if (!path || path !== selectedPath) {
       return;
     }
@@ -81,11 +84,11 @@ export function ProductStage({
       if (last !== fingerprint) {
         last = fingerprint;
         setProduct(next);
-        if (next?.image)
+        if (next?.gallery?.items.length)
           setImagery((previous) =>
-            previous?.path === path && previous.image === next.image
+            JSON.stringify(previous) === JSON.stringify(next.gallery)
               ? previous
-              : { path, image: next.image },
+              : next.gallery,
           );
       }
     };
@@ -121,6 +124,7 @@ export function ProductStage({
       attributes: true,
       attributeFilter: [
         "class",
+        "style",
         "hidden",
         "disabled",
         "checked",
@@ -132,6 +136,10 @@ export function ProductStage({
         "active",
         "data-active-input-measurement",
         "src",
+        "srcset",
+        "data-src",
+        "data-srcset",
+        "alt",
       ],
     });
     main.addEventListener("input", schedule);
@@ -143,10 +151,10 @@ export function ProductStage({
       main.removeEventListener("change", schedule);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
     };
-  }, [path, page.url, page.pending, selectedPath]);
+  }, [path, page.url, page.pending, selectedPath, hidden]);
 
   useEffect(() => {
-    if (page.pending || imagery?.path === selectedPath) return;
+    if (hidden || page.pending || imagery?.productPath === selectedPath) return;
     const controller = new AbortController();
     let current = true;
     // Restore a selected blind even when this session opens on the cart or
@@ -154,21 +162,24 @@ export function ProductStage({
     void Promise.resolve().then(async () => {
       if (!current) return;
       try {
-        const image = await session.loadProductImage(
+        const gallery = await session.loadProductGallery(
           selectedPath,
           controller.signal,
-          1200,
         );
         if (current && !controller.signal.aborted)
           setImagery((previous) =>
-            previous?.path === selectedPath && previous.image
+            previous?.productPath === selectedPath && previous.items.length
               ? previous
-              : { path: selectedPath, image },
+              : gallery?.productPath === selectedPath
+                ? gallery
+                : { productPath: selectedPath, items: [] },
           );
       } catch {
         if (current && !controller.signal.aborted)
           setImagery((previous) =>
-            previous?.path === selectedPath ? previous : { path: selectedPath },
+            previous?.productPath === selectedPath
+              ? previous
+              : { productPath: selectedPath, items: [] },
           );
       }
     });
@@ -176,7 +187,7 @@ export function ProductStage({
       current = false;
       controller.abort();
     };
-  }, [imagery?.path, page.pending, selectedPath, session]);
+  }, [imagery?.productPath, page.pending, selectedPath, session, hidden]);
 
   const display = product?.path === selectedPath ? product : null;
   // Selection survives a temporary cart page, but only the matching live PDP
@@ -198,9 +209,7 @@ export function ProductStage({
               : undefined,
         })),
     ) ?? [];
-  const selectedImage =
-    imagery?.path === selectedPath ? imagery.image : undefined;
-  const image = selectedImage !== failedImage ? selectedImage : undefined;
+  const gallery = imagery?.productPath === selectedPath ? imagery.items : [];
   const title = display?.title || selectedTitle;
 
   return (
@@ -210,20 +219,13 @@ export function ProductStage({
       aria-busy={page.pending}
       hidden={hidden}
     >
-      <div className="roman-product-stage-image">
-        {image ? (
-          <img src={image} alt={title} onError={() => setFailedImage(image)} />
-        ) : (
-          <span className="roman-product-stage-placeholder">
-            Your selection
-          </span>
-        )}
-        {page.pending && (
-          <p className="roman-product-stage-loading" role="status">
-            Opening your next page…
-          </p>
-        )}
-      </div>
+      <ProductGallery
+        key={selectedPath}
+        items={gallery}
+        title={title}
+        pending={page.pending}
+        hidden={hidden}
+      />
       <div className="roman-product-stage-content">
         <p className="roman-product-stage-eyebrow">
           {page.pending ? "Previously selected" : "Your selection"}

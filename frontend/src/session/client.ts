@@ -1895,6 +1895,18 @@ export function createConversationClient(
         );
       return executor.loadProductImage(url, signal, maxWidth);
     },
+    loadProductGallery(url, signal) {
+      if (
+        !executor ||
+        disposed ||
+        ending ||
+        state.conversation?.status !== "active"
+      )
+        return Promise.reject(
+          new Error("Start a chat to load product images."),
+        );
+      return executor.loadProductGallery(url, signal);
+    },
     resolveToolApproval(invocationId, confirmed) {
       if (approvalChoice?.id === invocationId && typeof confirmed === "boolean")
         approvalChoice.resolve(confirmed);

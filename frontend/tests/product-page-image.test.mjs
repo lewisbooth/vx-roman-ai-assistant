@@ -79,17 +79,25 @@ function setup(
     },
     console,
   });
-  return { ...module.exports, window: dom.window, calls, timers, clock };
+  return {
+    ...module.exports,
+    window: dom.window,
+    calls,
+    timers,
+    clock,
+    async loadImage(url, signal, maxWidth = 480) {
+      const gallery = await module.exports.loadProductPageGallery(url, signal);
+      const image = gallery?.items.find((item) => item.kind === "product");
+      return image && module.exports.productImageWidth(image.src, maxWidth);
+    },
+  };
 }
 
 test("the actual HD gallery structure selects its first main PDP image, not swatch, zoom or later media", async (t) => {
   const ctx = setup(t, async () =>
     response(html(page, `${gallery()}${gallery()}`)),
   );
-  assert.equal(
-    await ctx.loadProductPageImage(page, new AbortController().signal),
-    main,
-  );
+  assert.equal(await ctx.loadImage(page, new AbortController().signal), main);
   assert.equal(ctx.calls.length, 1);
   assert.equal(ctx.calls[0][0], page);
   const options = ctx.calls[0][1];
@@ -106,10 +114,7 @@ test("the matching current PDP is reused, including collection-scoped paths, wit
     html(),
     `${origin}/collections/roman/products/shade`,
   );
-  assert.equal(
-    await ctx.loadProductPageImage(page, new AbortController().signal),
-    main,
-  );
+  assert.equal(await ctx.loadImage(page, new AbortController().signal), main);
   assert.equal(ctx.calls.length, 0);
 });
 
@@ -122,7 +127,7 @@ test("the existing Shopify width transform is capped without changing asset iden
     const src = `${origin}/cdn/shop/files/room.webp?${query}`;
     const ctx = setup(t, async () => response(html(page, gallery(src))));
     assert.equal(
-      await ctx.loadProductPageImage(page, new AbortController().signal),
+      await ctx.loadImage(page, new AbortController().signal),
       `${origin}/cdn/shop/files/room.webp?${expected}`,
     );
   }
@@ -148,7 +153,7 @@ test("fetched content remains inert and remote base tags cannot redirect image s
     },
   );
   assert.equal(
-    await ctx.loadProductPageImage(page, new AbortController().signal),
+    await ctx.loadImage(page, new AbortController().signal),
     `${origin}/cdn/shop/files/room.webp`,
   );
   assert.equal(connected, 0);
@@ -180,7 +185,7 @@ test("unsupported markup, wrong canonical pages and unsafe images leave the cata
     await t.test(name, async (t) => {
       const ctx = setup(t, async () => response(body));
       assert.equal(
-        await ctx.loadProductPageImage(page, new AbortController().signal),
+        await ctx.loadImage(page, new AbortController().signal),
         undefined,
       );
     });
@@ -197,9 +202,7 @@ test("invalid product destinations are rejected before any request", async (t) =
     `${origin}/products/../cart`,
     "javascript:alert(1)",
   ])
-    await assert.rejects(
-      ctx.loadProductPageImage(url, new AbortController().signal),
-    );
+    await assert.rejects(ctx.loadImage(url, new AbortController().signal));
   assert.equal(ctx.calls.length, 0);
 });
 
@@ -225,7 +228,7 @@ test("HTTP failures, non-HTML, oversized pages and a timed-out read fall back wi
     await t.test(name, async (t) => {
       const ctx = setup(t, async () => makeResponse());
       assert.equal(
-        await ctx.loadProductPageImage(page, new AbortController().signal),
+        await ctx.loadImage(page, new AbortController().signal),
         undefined,
       );
       assert.equal(ctx.calls.length, 1);
@@ -241,10 +244,7 @@ test("HTTP failures, non-HTML, oversized pages and a timed-out read fall back wi
           }),
         ),
     );
-    const loading = ctx.loadProductPageImage(
-      page,
-      new AbortController().signal,
-    );
+    const loading = ctx.loadImage(page, new AbortController().signal);
     const timer = [...ctx.timers.values()][0];
     assert.equal(timer.delay, 5000);
     timer.callback();
@@ -265,7 +265,7 @@ test("caller cancellation propagates and removes request resources", async (t) =
       ),
   );
   const controller = new AbortController();
-  const loading = ctx.loadProductPageImage(page, controller.signal);
+  const loading = ctx.loadImage(page, controller.signal);
   controller.abort(new Error("Card left the viewport"));
   await assert.rejects(loading, /left the viewport/);
   assert.equal(ctx.calls[0][1].signal.aborted, true);
@@ -376,7 +376,7 @@ test("unavailable images are cached briefly; cancelled and disposed reads never 
   assert.equal(pending.calls[0][1].signal.aborted, true);
 });
 
-test("active-product recovery keeps its larger image separate from carousel-size cache entries", async (t) => {
+test("active-product recovery and carousel sizing reuse one gallery metadata request", async (t) => {
   const ctx = setup(t);
   const executor = ctx.createStorefrontExecutor({
     execute: () => assert.fail("Image recovery must not request catalog"),
@@ -393,7 +393,8 @@ test("active-product recovery keeps its larger image separate from carousel-size
     `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
   );
   assert.equal(await executor.loadProductImage(page, signal), main);
-  assert.equal(ctx.calls.length, 2);
+  assert.equal((await executor.loadProductGallery(page, signal)).items.length, 2);
+  assert.equal(ctx.calls.length, 1);
 });
 
 test("missing PDP imagery falls back only to the matching fresh normalized Shopify catalog image", async (t) => {
@@ -468,4 +469,67 @@ test("PDP gallery imagery stays preferred over the listing image when both are a
     await executor.loadProductImage(page, new AbortController().signal, 1200),
     `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
   );
+});
+
+test("gallery preserves native order and thumbnail/zoom assets, deduplicating responsive copies", async (t) => {
+  const ctx = setup(t, async () => response(html(page, `
+    <main-product update-url="true" product-url="/products/shade">
+      ${gallery()}${gallery()}
+      <swiper-container id="MediaGallery-template-thumbs-swiper-initial"><img src="${sourceMain.replace('width=1600', 'width=90')}"></swiper-container>
+      <swiper-container id="MediaGallery-template-main-swiper-zoom"><img src="${sourceMain.replace('width=1600', 'width=1800')}"></swiper-container>
+      <main-product product-url="/products/other">${gallery(`${origin}/cdn/shop/files/other.webp`)}</main-product>
+    </main-product>`)));
+  const result = await ctx.loadProductPageGallery(page, new AbortController().signal);
+  assert.equal(result.productPath, '/products/shade');
+  assert.equal(result.items.length, 2);
+  const [first, second] = result.items;
+  assert.equal(first.src, sourceMain.replace('width=1600', 'width=1200'));
+  assert.equal(first.thumbnailSrc, sourceMain.replace('width=1600', 'width=90'));
+  assert.equal(first.zoomSrc, sourceMain.replace('width=1600', 'width=1800'));
+  assert.equal(first.kind, 'product');
+  assert.equal(second.src, swatch);
+  assert.equal(ctx.calls.length, 1, 'Media URLs are extracted without fetching images');
+});
+
+test("only the matching primary product can supply gallery media", async (t) => {
+  const ctx = setup(t, async () => response(html(page,
+    `<main-product update-url="true" product-url="/products/other">${gallery()}</main-product>`)));
+  assert.equal(await ctx.loadProductPageGallery(page, new AbortController().signal), undefined);
+});
+
+test("native feature imagery updates only when enabled and never enters the shared static cache", async (t) => {
+  const feature = `${origin}/cdn/shop/files/motor.jpg?v=3&width=1500`;
+  const markup = html(page, gallery().replace(
+    '<swiper-slide><img data-feature-option-slide-image src=""></swiper-slide>',
+    `<swiper-slide data-feature-option-slide-holder class="hidden"><img data-feature-option-slide-image src="${feature}"></swiper-slide>`));
+  const ctx = setup(t, () => assert.fail('Current PDP must not fetch'), markup, page);
+  const read = () => ctx.readProductGallery(ctx.window.document, page);
+  assert.equal(read().items.length, 2, 'A hidden native feature must not appear');
+  const holder = ctx.window.document.querySelector('[data-feature-option-slide-holder]');
+  holder.classList.remove('hidden');
+  assert.equal(read().items[0].kind, 'feature');
+  assert.equal(read().items[0].src, feature.replace('1500', '1200'));
+  const executor = ctx.createStorefrontExecutor({execute: () => assert.fail('No catalog call')});
+  t.after(() => executor.dispose());
+  const signal = new AbortController().signal;
+  assert.equal((await executor.loadProductGallery(page, signal)).items.length, 3);
+  ctx.window.history.replaceState(null, '', '/cart');
+  ctx.window.document.body.innerHTML = '';
+  const restored = await executor.loadProductGallery(page, signal);
+  assert.equal(restored.items.length, 2, 'Path-only cache contains no configuration-specific image');
+  assert.equal(restored.items.every(item => item.kind === 'product'), true);
+});
+
+test("simultaneous thumbnail and active gallery requests share one fetched snapshot", async (t) => {
+  const ctx = setup(t);
+  const executor = ctx.createStorefrontExecutor({execute: () => assert.fail('No catalog call')});
+  t.after(() => executor.dispose());
+  const signal = new AbortController().signal;
+  const [image, result] = await Promise.all([
+    executor.loadProductImage(page, signal),
+    executor.loadProductGallery(page, signal),
+  ]);
+  assert.equal(image, main);
+  assert.equal(result.items.length, 2);
+  assert.equal(ctx.calls.length, 1);
 });

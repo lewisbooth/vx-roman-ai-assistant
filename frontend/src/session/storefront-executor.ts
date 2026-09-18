@@ -60,8 +60,10 @@ import {
 } from "../../../shared/measurements";
 import { applyMeasurements } from "../tools/measurements";
 import {
-  loadProductPageImage,
+  loadProductPageGallery,
   productImagePageUrl,
+  productImageWidth,
+  type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
 import {
@@ -125,9 +127,9 @@ export function createStorefrontExecutor(
     string,
     { product: CatalogProduct; messages: CatalogMessage[]; expiresAt: number }
   >();
-  const productImages = new Map<
+  const productGalleries = new Map<
     string,
-    { image: string | undefined; expiresAt: number }
+    { gallery: ProductGallerySnapshot | undefined; expiresAt: number }
   >();
 
   function requireCurrentStore() {
@@ -268,6 +270,66 @@ export function createStorefrontExecutor(
       }
       pump();
     });
+  }
+
+  function catalogGallery(pageUrl: string): ProductGallerySnapshot | undefined {
+    const now = Date.now();
+    for (const { product, expiresAt } of displayProducts.values()) {
+      if (expiresAt <= now || product.url !== pageUrl || !product.imageUrl)
+        continue;
+      return {
+        productPath: new URL(pageUrl).pathname,
+        items: [
+          {
+            id: `product:${product.imageUrl}`,
+            src: product.imageUrl,
+            thumbnailSrc: product.imageUrl,
+            zoomSrc: product.imageUrl,
+            alt: product.title,
+            kind: "product",
+          },
+        ],
+      };
+    }
+  }
+
+  async function loadProductGallery(url: string, signal: AbortSignal) {
+    requireCurrentStore();
+    signal.throwIfAborted();
+    const pageUrl = productImagePageUrl(url);
+    const cached = productGalleries.get(pageUrl);
+    if (cached && cached.expiresAt > Date.now())
+      return cached.gallery ?? catalogGallery(pageUrl);
+    return enqueue(
+      "image",
+      async (signal) => {
+        const cached = productGalleries.get(pageUrl);
+        if (cached && cached.expiresAt > Date.now())
+          return cached.gallery ?? catalogGallery(pageUrl);
+        const gallery = await loadProductPageGallery(pageUrl, signal);
+        requireCurrentStore();
+        signal.throwIfAborted();
+        const now = Date.now();
+        for (const [url, entry] of productGalleries)
+          if (entry.expiresAt <= now) productGalleries.delete(url);
+        productGalleries.delete(pageUrl);
+        // Cache product media once for cards and the stage. Native feature imagery
+        // belongs to the stage's live configuration snapshot, not a path-only cache.
+        productGalleries.set(pageUrl, {
+          gallery: gallery && {
+            ...gallery,
+            items: gallery.items.filter((item) => item.kind === "product"),
+          },
+          expiresAt: now + DISPLAY_CACHE_MS,
+        });
+        for (const url of productGalleries.keys()) {
+          if (productGalleries.size <= MAX_DISPLAY_PRODUCTS) break;
+          productGalleries.delete(url);
+        }
+        return gallery ?? catalogGallery(pageUrl);
+      },
+      signal,
+    );
   }
 
   async function fetchCatalog(
@@ -654,42 +716,11 @@ export function createStorefrontExecutor(
       signal: AbortSignal,
       maxWidth: 480 | 1200 = 480,
     ) {
-      requireCurrentStore();
-      signal.throwIfAborted();
-      const pageUrl = productImagePageUrl(url);
-      const key = `${pageUrl}#${maxWidth}`;
-      const catalogFallback = () => {
-        const now = Date.now();
-        for (const { product, expiresAt } of displayProducts.values())
-          if (expiresAt > now && product.url === pageUrl && product.imageUrl)
-            return product.imageUrl;
-      };
-      const cached = productImages.get(key);
-      if (cached && cached.expiresAt > Date.now())
-        return cached.image ?? catalogFallback();
-      return enqueue(
-        "image",
-        async (signal) => {
-          const cached = productImages.get(key);
-          if (cached && cached.expiresAt > Date.now())
-            return cached.image ?? catalogFallback();
-          const image = await loadProductPageImage(pageUrl, signal, maxWidth);
-          requireCurrentStore();
-          signal.throwIfAborted();
-          const now = Date.now();
-          for (const [url, entry] of productImages)
-            if (entry.expiresAt <= now) productImages.delete(url);
-          productImages.delete(key);
-          productImages.set(key, { image, expiresAt: now + DISPLAY_CACHE_MS });
-          for (const url of productImages.keys()) {
-            if (productImages.size <= MAX_DISPLAY_PRODUCTS) break;
-            productImages.delete(url);
-          }
-          return image ?? catalogFallback();
-        },
-        signal,
-      );
+      const gallery = await loadProductGallery(url, signal);
+      const image = gallery?.items.find((item) => item.kind === "product");
+      return image && productImageWidth(image.src, maxWidth);
     },
+    loadProductGallery,
     dispose() {
       disposed = true;
       for (const job of jobs) {
@@ -703,7 +734,7 @@ export function createStorefrontExecutor(
       display.length = 0;
       images.length = 0;
       displayProducts.clear();
-      productImages.clear();
+      productGalleries.clear();
     },
   };
 }

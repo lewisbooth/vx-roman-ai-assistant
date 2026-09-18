@@ -1,5 +1,22 @@
 const MAX_PAGE_BYTES = 2 * 1024 * 1024;
 const PAGE_TIMEOUT_MS = 5000;
+const MAX_GALLERY_IMAGES = 24;
+
+export interface ProductGalleryImage {
+  id: string;
+  src: string;
+  thumbnailSrc: string;
+  zoomSrc: string;
+  alt: string;
+  width?: number;
+  height?: number;
+  kind: "product" | "feature";
+}
+
+export interface ProductGallerySnapshot {
+  productPath: string;
+  items: ProductGalleryImage[];
+}
 
 export function productImagePageUrl(value: string): string {
   const url = new URL(value, window.location.origin);
@@ -18,53 +35,31 @@ export function productImagePageUrl(value: string): string {
   return url.href;
 }
 
-export function readProductMainImage(
-  source: ParentNode,
-  pageUrl: string,
-  maxWidth = 480,
-): string | undefined {
-  const roots = source.querySelectorAll("app-provider > main#main");
-  if (roots.length !== 1) return;
-  // These are the theme's initial PDP galleries, not swatches, zoom views,
-  // recommendation cards or the catalog's separate listing featured image.
-  const galleries = roots[0].querySelectorAll(
-    '[data-main-product-media-gallery] swiper-container[id$="-main-swiper-initial"]',
-  );
-  const images = new Set<string>();
-  for (const gallery of galleries) {
-    const image = gallery.querySelector<HTMLImageElement>(
-      'img[data-testid="pdp-product-image-main"]',
-    );
-    const src = image?.getAttribute("src");
-    if (!src || src.length > 2048) continue;
-    try {
-      // Resolve against the requested page, never remote <base> markup.
-      const url = new URL(src, pageUrl);
-      if (
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        url.hash ||
-        !(
-          (url.origin === window.location.origin &&
-            url.pathname.startsWith("/cdn/shop/")) ||
-          (url.origin === "https://cdn.shopify.com" &&
-            url.pathname.startsWith("/s/files/"))
-        )
-      )
-        continue;
-      images.add(url.href);
-    } catch {
-      // Unsupported media leaves the existing catalog image in place.
-    }
+function mediaUrl(src: string | null, pageUrl: string): string | undefined {
+  if (!src || src.length > 2048) return;
+  try {
+    // Resolve against the requested page, never a fetched <base> element.
+    const url = new URL(src, pageUrl);
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.hash &&
+      ((url.origin === window.location.origin &&
+        url.pathname.startsWith("/cdn/shop/")) ||
+        (url.origin === "https://cdn.shopify.com" &&
+          url.pathname.startsWith("/s/files/")))
+    )
+      return url.href;
+  } catch {
+    // An invalid display asset never becomes a browser request.
   }
-  // Responsive copies agree on the first image. Do not choose between
-  // conflicting product galleries or infer a URL from an image filename.
-  if (images.size !== 1) return;
-  const selected = new URL([...images][0]);
+}
+
+/** Reuse Shopify's existing transform without inventing a different asset. */
+export function productImageWidth(src: string, maxWidth: number): string {
+  const selected = new URL(src);
   const widths = selected.searchParams.getAll("width");
-  // The theme already uses Shopify's width transform. Keep that exact asset
-  // and version while avoiding a full PDP-sized download for a 176px card.
   if (
     widths.length === 1 &&
     /^\d+$/.test(widths[0]) &&
@@ -74,12 +69,143 @@ export function readProductMainImage(
   return selected.href;
 }
 
-/** Resolve the theme's first product image; never execute fetched page assets. */
-export async function loadProductPageImage(
+function assetId(src: string): string {
+  const url = new URL(src);
+  url.searchParams.delete("width");
+  return url.href;
+}
+
+function imageWidth(src: string): number {
+  const width = Number(new URL(src).searchParams.get("width"));
+  return width > 0 ? width : Infinity;
+}
+
+/** Theme order and media URLs, without mounting its slider or its scripts. */
+export function readProductGallery(
+  source: ParentNode,
+  pageUrl: string,
+): ProductGallerySnapshot | undefined {
+  const url = new URL(pageUrl, window.location.origin);
+  const productPath = /\/products\/[a-z0-9][a-z0-9-]*\/?$/i
+    .exec(url.pathname)?.[0]
+    .replace(/\/$/, "");
+  if (url.origin !== window.location.origin || !productPath) return;
+  const roots = source.querySelectorAll("app-provider > main#main");
+  if (roots.length !== 1) return;
+  const primary = roots[0].querySelectorAll('main-product[update-url="true"]');
+  if (
+    primary.length > 1 ||
+    (primary.length === 1 &&
+      primary[0].getAttribute("product-url") !== productPath)
+  )
+    return;
+  const root = primary[0] ?? roots[0];
+  const belongs = (element: Element) => {
+    const product = element.closest("main-product");
+    return !product || product === root;
+  };
+  const galleries = [
+    ...root.querySelectorAll(
+      '[data-main-product-media-gallery] swiper-container[id$="-main-swiper-initial"]',
+    ),
+  ].filter(belongs);
+  let productImages:
+    { image: HTMLImageElement; src: string; id: string }[] | undefined;
+  const features = new Map<
+    string,
+    { image: HTMLImageElement; src: string; id: string }
+  >();
+  for (const gallery of galleries) {
+    const images = [
+      ...gallery.querySelectorAll<HTMLImageElement>(
+        'img[data-testid="pdp-product-image-main"]',
+      ),
+    ].filter(belongs);
+    if (!images.length || images.length > MAX_GALLERY_IMAGES) return;
+    const entries = images.map((image) => {
+      const src = mediaUrl(image.getAttribute("src"), pageUrl);
+      return src ? { image, src, id: assetId(src) } : undefined;
+    });
+    if (entries.some((entry) => !entry)) return;
+    const unique = [
+      ...new Map(entries.map((entry) => [entry!.id, entry!])).values(),
+    ];
+    // Responsive copies must agree on product and order. Zoom/thumb copies
+    // supply sizes below, but never add swatches or recommended-product media.
+    if (
+      productImages &&
+      JSON.stringify(productImages.map((e) => e.id)) !==
+        JSON.stringify(unique.map((e) => e.id))
+    )
+      return;
+    productImages ??= unique;
+    for (const image of gallery.querySelectorAll<HTMLImageElement>(
+      "img[data-feature-option-slide-image]",
+    )) {
+      const holder = image.closest("[data-feature-option-slide-holder]");
+      if (
+        !holder ||
+        holder.matches('[hidden],[aria-hidden="true"],.hidden') ||
+        (holder as HTMLElement).style.display === "none"
+      )
+        continue;
+      const src = mediaUrl(image.getAttribute("src"), pageUrl);
+      if (src) features.set(assetId(src), { image, src, id: assetId(src) });
+    }
+  }
+  if (!productImages?.length) return;
+  const sizes = new Map<string, string[]>();
+  for (const image of root.querySelectorAll<HTMLImageElement>(
+    "swiper-container img[src]",
+  )) {
+    if (!belongs(image)) continue;
+    const container = image.closest("swiper-container");
+    if (!container?.id.match(/-(?:main|thumbs)-swiper-(?:initial|zoom)$/))
+      continue;
+    const src = mediaUrl(image.getAttribute("src"), pageUrl);
+    if (!src) continue;
+    const id = assetId(src);
+    const choices = sizes.get(id) ?? [];
+    choices.push(src);
+    sizes.set(id, choices);
+  }
+  const item = (
+    { image, src, id }: (typeof productImages)[number],
+    kind: ProductGalleryImage["kind"],
+  ): ProductGalleryImage => {
+    const choices = sizes.get(id) ?? [src];
+    const ordered = [...new Set(choices)].sort(
+      (a, b) => imageWidth(a) - imageWidth(b),
+    );
+    const width = Number(image.getAttribute("width"));
+    const height = Number(image.getAttribute("height"));
+    return {
+      id: `${kind}:${id}`,
+      src: productImageWidth(src, 1200),
+      thumbnailSrc: productImageWidth(ordered[0], 120),
+      zoomSrc: productImageWidth(ordered.at(-1)!, 2000),
+      alt: (image.getAttribute("alt") ?? "").trim().slice(0, 500),
+      ...(width > 0 && height > 0 ? { width, height } : {}),
+      kind,
+    };
+  };
+  return {
+    productPath,
+    items: [
+      // Only an unambiguous, currently enabled native feature slide can lead.
+      ...(features.size === 1
+        ? [item([...features.values()][0], "feature")]
+        : []),
+      ...productImages.map((image) => item(image, "product")),
+    ],
+  };
+}
+
+/** Read the selected product independently of the underlying page. */
+export async function loadProductPageGallery(
   input: string,
   signal: AbortSignal,
-  maxWidth: 480 | 1200 = 480,
-): Promise<string | undefined> {
+): Promise<ProductGallerySnapshot | undefined> {
   const pageUrl = productImagePageUrl(input);
   signal.throwIfAborted();
   const current =
@@ -87,8 +213,8 @@ export async function loadProductPageImage(
       window.location.pathname,
     );
   if (current?.[1] === new URL(pageUrl).pathname) {
-    const image = readProductMainImage(document, pageUrl, maxWidth);
-    if (image) return image;
+    const gallery = readProductGallery(document, pageUrl);
+    if (gallery) return gallery;
   }
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
@@ -140,7 +266,7 @@ export async function loadProductPageImage(
       .querySelector('link[rel="canonical"]')
       ?.getAttribute("href");
     if (!canonical || productImagePageUrl(canonical) !== pageUrl) return;
-    return readProductMainImage(template.content, pageUrl, maxWidth);
+    return readProductGallery(template.content, pageUrl);
   } catch {
     signal.throwIfAborted();
     // A display-only timeout/unavailable PDP must not hide its catalog card.

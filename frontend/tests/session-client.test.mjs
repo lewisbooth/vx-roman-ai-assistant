@@ -3457,6 +3457,30 @@ test("product images use their separate display owner and stop after client disp
   assert.equal(calls.length, 1);
 });
 
+test("active gallery loading uses the display executor and cannot outlive its conversation client", async (t) => {
+  const calls = [];
+  const gallery = { productPath: "/products/shade", items: [] };
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      loadProductGallery: async (...args) => {
+        calls.push(args);
+        return gallery;
+      },
+      execute: () => assert.fail("Gallery loading is not a model tool"),
+    },
+  });
+  await resume(ctx);
+  const controller = new ctx.window.AbortController();
+  const url = `${ctx.window.location.origin}/products/shade`;
+  assert.equal(await ctx.client.loadProductGallery(url, controller.signal), gallery);
+  assert.equal(calls[0][0], url);
+  assert.equal(calls[0][1], controller.signal);
+  ctx.client.dispose();
+  await assert.rejects(ctx.client.loadProductGallery(url, controller.signal), /Start a chat/);
+  assert.equal(calls.length, 1);
+});
+
 const measurementInput = {
   productPath: "/products/lottie",
   width: 300,

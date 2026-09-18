@@ -25,7 +25,7 @@
 .roman-product-stage-image img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .roman-product-stage-placeholder {
@@ -174,5 +174,180 @@
     border-radius: 0;
     padding: 0.4rem;
     font-size: 0.7rem;
+  }
+}
+
+@layer components {
+  .roman-product-gallery {
+    min-width: 0;
+  }
+  .roman-gallery-open {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: zoom-in;
+    touch-action: pan-y;
+    user-select: none;
+  }
+  .roman-gallery-enlarge {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    display: grid;
+    place-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #fffdf8ed;
+    box-shadow: 0 2px 14px #402b2b12;
+  }
+  .roman-product-gallery svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .roman-gallery-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin: 4px 0;
+    font:
+      12px/1.5 system-ui,
+      sans-serif;
+  }
+  .roman-gallery-controls button,
+  .roman-gallery-zoom header button {
+    display: grid;
+    place-content: center;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    color: #4e0e0e;
+    background: transparent;
+    cursor: pointer;
+  }
+  .roman-gallery-controls button:hover,
+  .roman-gallery-zoom header button:hover {
+    background: #ebe6dc;
+  }
+  .roman-gallery-open:focus-visible,
+  .roman-gallery-controls button:focus-visible,
+  .roman-gallery-thumbnails button:focus-visible,
+  .roman-gallery-zoom button:focus-visible {
+    outline: 2px solid #4e0e0e;
+    outline-offset: -3px;
+  }
+  .roman-gallery-thumbnails {
+    position: relative;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding: 2px;
+  }
+  .roman-gallery-thumbnails button {
+    width: 56px;
+    height: 64px;
+    flex: 0 0 56px;
+    padding: 2px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    overflow: hidden;
+    background: transparent;
+    cursor: pointer;
+  }
+  .roman-gallery-thumbnails button:hover,
+  .roman-gallery-thumbnails button[aria-pressed="true"] {
+    border-color: #4e0e0e;
+    background: #ebe6dc;
+  }
+  .roman-gallery-thumbnails img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    border-radius: 7px;
+  }
+  .roman-gallery-zoom {
+    box-sizing: border-box;
+    width: min(1000px, calc(100vw - 32px));
+    max-width: none;
+    max-height: calc(100dvh - 32px);
+    padding: 16px;
+    border: 1px solid #4e0e0e55;
+    border-radius: 20px;
+    background: #f7f5ef;
+    color: #4e0e0e;
+    box-shadow: 0 12px 80px #160b0b55;
+  }
+  .roman-gallery-zoom::backdrop {
+    background: #241717b3;
+  }
+  .roman-gallery-zoom header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    font:
+      16px/1.35 GelicaSite,
+      Georgia,
+      serif;
+    margin-bottom: 12px;
+  }
+  .roman-gallery-zoom-image {
+    display: grid;
+    place-items: center;
+    height: min(72dvh, 820px);
+    min-height: 160px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: #ebe6dc;
+  }
+  .roman-gallery-zoom-image img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  @media (max-width: 1023px) {
+    .roman-product-gallery > .roman-gallery-controls {
+      gap: 0;
+      justify-content: space-between;
+      font-size: 10px;
+    }
+    .roman-product-gallery > .roman-gallery-controls button {
+      width: 30px;
+      height: 44px;
+    }
+    .roman-gallery-enlarge {
+      right: 4px;
+      bottom: 4px;
+      width: 28px;
+      height: 28px;
+    }
+    .roman-gallery-thumbnails {
+      display: none;
+    }
+    .roman-gallery-zoom {
+      padding: 12px;
+    }
+    .roman-gallery-zoom-image {
+      height: 65dvh;
+    }
   }
 }
