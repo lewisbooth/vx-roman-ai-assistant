@@ -37,8 +37,14 @@ function readProductStage(path: string): ProductStageState | null {
 /** A display of the live theme, with no separate product/cart state or requests. */
 export function ProductStage({
   navigation,
+  selectedPath,
+  selectedTitle,
+  hidden = false,
 }: {
   navigation: StorefrontNavigation;
+  selectedPath: string;
+  selectedTitle: string;
+  hidden?: boolean;
 }) {
   const page = useSyncExternalStore(
     navigation.subscribe,
@@ -52,8 +58,7 @@ export function ProductStage({
     // Keep the preceding product visible while navigation resolves. It cannot
     // supply an active quote until the new page and its theme controls settle.
     if (page.pending) return;
-    if (!path) {
-      setProduct(null);
+    if (!path || path !== selectedPath) {
       return;
     }
     let disposed = false;
@@ -128,10 +133,13 @@ export function ProductStage({
       main.removeEventListener("change", schedule);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
     };
-  }, [path, page.url, page.pending]);
+  }, [path, page.url, page.pending, selectedPath]);
 
-  if (!product || (!page.pending && product.path !== path)) return null;
-  const configuration = page.pending ? null : product.configuration;
+  const display = product?.path === selectedPath ? product : null;
+  // Selection survives a temporary cart page, but only the matching live PDP
+  // can supply a current configuration or price. Never replay settings here.
+  const configuration =
+    !page.pending && path === selectedPath ? display?.configuration : null;
   const measurements = configuration?.measurements;
   const selected =
     configuration?.controls.flatMap((control) =>
@@ -147,21 +155,19 @@ export function ProductStage({
               : undefined,
         })),
     ) ?? [];
-  const image = product.image !== failedImage ? product.image : undefined;
+  const image = display?.image !== failedImage ? display?.image : undefined;
+  const title = display?.title || selectedTitle;
 
   return (
     <aside
       className="roman-product-stage"
       aria-label="Your selected product"
       aria-busy={page.pending}
+      hidden={hidden}
     >
       <div className="roman-product-stage-image">
         {image ? (
-          <img
-            src={image}
-            alt={product.title}
-            onError={() => setFailedImage(image)}
-          />
+          <img src={image} alt={title} onError={() => setFailedImage(image)} />
         ) : (
           <span className="roman-product-stage-placeholder">
             Your selection
@@ -177,7 +183,7 @@ export function ProductStage({
         <p className="roman-product-stage-eyebrow">
           {page.pending ? "Previously selected" : "Your selection"}
         </p>
-        <h2>{product.title}</h2>
+        <h2>{title}</h2>
         {configuration?.configuredPrice && (
           <p className="roman-product-stage-price">
             <span>{configuration.configuredPrice}</span> Current product quote

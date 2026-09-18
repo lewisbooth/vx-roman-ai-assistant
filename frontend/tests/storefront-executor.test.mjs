@@ -755,3 +755,26 @@ test("model navigation carries its restricted source through the storefront owne
     "navigated",
   );
 });
+
+
+test("show_view switches only Roman's view and validates its acknowledgement", async () => {
+  for (const view of ["chat", "cart", "gallery"]) {
+    const ctx = setup(async (name, args) => {
+      assert.equal(name, "show_view");
+      return { status: "shown", view: args.view };
+    });
+    assert.deepEqual(plain(await ctx.executor.execute("show_view", { view })), { status: "shown", view });
+    assert.deepEqual(plain(ctx.calls), [["show_view", { view }]]);
+    assert.equal(ctx.location.href, origin + "/");
+    ctx.executor.dispose();
+  }
+  for (const input of [{ view: "checkout" }, { path: "/cart" }, { view: "cart", path: "/cart" }]) {
+    const ctx = setup(() => assert.fail("Invalid view must not reach tools"));
+    await assert.rejects(async () => ctx.executor.execute("show_view", input));
+    assert.deepEqual(ctx.calls, []);
+    ctx.executor.dispose();
+  }
+  const mismatch = setup(async () => ({ status: "shown", view: "gallery" }));
+  await assert.rejects(mismatch.executor.execute("show_view", { view: "cart" }), /different Roman view/);
+  mismatch.executor.dispose();
+});

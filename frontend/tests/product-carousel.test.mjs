@@ -11,16 +11,16 @@ const bundle = await build({
       import { createRoot } from 'react-dom/client';
       import { flushSync } from 'react-dom';
       import { ProductCarousel } from './frontend/src/chat/ProductCarousel';
-      import { StorefrontLink } from './frontend/src/chat/StorefrontLink';
-      export function mount(container, navigate) {
+      export function mount(container, choose) {
         const root = createRoot(container);
         return {
           flush: flushSync,
           render(count = 6) { flushSync(() => root.render(<ProductCarousel>
             <ul className="roman-product-list">{Array.from({length: count}, (_, index) => <li key={index}>
-              <StorefrontLink url={'/products/blind-' + index} navigation={{navigate}} className="roman-product-card">
+              <article className="roman-product-card">
                 <img alt="" src="/fixture.jpg" /><span>Blind {index}</span>
-              </StorefrontLink>
+                <button type="button" className="roman-choose-blind" onClick={() => choose(index)}>Choose blind</button>
+              </article>
             </li>)}</ul>
           </ProductCarousel>)); },
           dispose() { flushSync(() => root.unmount()); },
@@ -54,8 +54,7 @@ function setup(
   const { window } = dom;
   const sizes = { width, content };
   const observers = [];
-  const navigation = [];
-  const nativeClicks = [];
+  const choices = [];
   const scrolling = [];
   const failures = [];
   const captured = new Set();
@@ -112,15 +111,6 @@ function setup(
         this.disconnected = true;
       }
     };
-  window.addEventListener("click", (event) => {
-    if (
-      event.composedPath().some((node) => node.tagName === "A") &&
-      !event.defaultPrevented
-    ) {
-      nativeClicks.push(event);
-      event.preventDefault(); // Avoid JSDOM's unsupported native navigation.
-    }
-  });
   const shadow = window.document
     .querySelector("roman-ai-assistant")
     .attachShadow({ mode: "open" });
@@ -129,8 +119,8 @@ function setup(
   window.eval(
     `${bundle.outputFiles[0].text};window.RomanCarouselTest=RomanCarouselTest;`,
   );
-  const view = window.RomanCarouselTest.mount(container, (href) =>
-    navigation.push(href),
+  const view = window.RomanCarouselTest.mount(container, (index) =>
+    choices.push(index),
   );
   let mounted = true;
   const dispose = () => {
@@ -174,7 +164,10 @@ function setup(
     target.dispatchEvent(event);
     return event;
   };
-  const click = (target = container.querySelector("a"), options = {}) => {
+  const click = (
+    target = container.querySelector(".roman-choose-blind"),
+    options = {},
+  ) => {
     const event = new window.MouseEvent("click", {
       bubbles: true,
       composed: true,
@@ -192,8 +185,7 @@ function setup(
     carousel,
     sizes,
     observers,
-    navigation,
-    nativeClicks,
+    choices,
     scrolling,
     captured,
     pointer,
@@ -243,14 +235,17 @@ test("overflow cues and accessible directional controls follow scrolling, resize
 test("a horizontal mouse drag from a card image scrolls and suppresses only its resulting click", async (t) => {
   const ctx = setup(t);
   const image = ctx.container.querySelector("img");
-  ctx.pointer("pointerdown", { target: image });
+  const choice = ctx.container.querySelector(".roman-choose-blind");
+  ctx.click(image);
+  assert.equal(ctx.choices.length, 0, "only Choose blind selects a product");
+  ctx.pointer("pointerdown", { target: choice });
   ctx.pointer("pointermove", { x: 195 });
   assert.equal(ctx.carousel.scrollLeft, 0);
   assert.equal(ctx.captured.size, 0);
   ctx.pointer("pointerup", { x: 195 });
-  ctx.click(image);
+  ctx.click(choice);
   assert.equal(
-    ctx.navigation.length,
+    ctx.choices.length,
     1,
     "sub-threshold movement stays an ordinary product click",
   );
@@ -263,22 +258,22 @@ test("a horizontal mouse drag from a card image scrolls and suppresses only its 
   ctx.pointer("pointermove", { x: 40 });
   assert.equal(ctx.carousel.scrollLeft, 160);
   ctx.pointer("pointerup", { x: 40 });
-  assert.equal(ctx.click(image).defaultPrevented, true);
-  assert.equal(ctx.navigation.length, 1);
+  assert.equal(ctx.click(choice).defaultPrevented, true);
+  assert.equal(ctx.choices.length, 1);
   assert.equal(ctx.captured.size, 0);
   assert.equal(ctx.carousel.dataset.dragging, undefined);
-  ctx.pointer("pointerdown", { target: image });
+  ctx.pointer("pointerdown", { target: choice });
   ctx.pointer("pointerup");
-  ctx.click(image);
-  assert.equal(ctx.navigation.length, 2, "a later click must not be swallowed");
+  ctx.click(choice);
+  assert.deepEqual(ctx.choices, [0, 0], "a later click must not be swallowed");
   await delay(0);
 });
 
 test("touch, vertical intent, modified clicks and keyboard activation keep their native behavior", async (t) => {
   const ctx = setup(t);
-  const link = ctx.container.querySelector("a");
+  const choice = ctx.container.querySelector(".roman-choose-blind");
   for (const pointerType of ["touch", "pen"]) {
-    ctx.pointer("pointerdown", { pointerType, target: link });
+    ctx.pointer("pointerdown", { pointerType, target: choice });
     assert.equal(
       ctx.pointer("pointermove", { pointerType, x: 20, y: 200 })
         .defaultPrevented,
@@ -298,16 +293,16 @@ test("touch, vertical intent, modified clicks and keyboard activation keep their
     false,
   );
   ctx.pointer("pointerup", { ctrlKey: true });
-  ctx.click(link, { ctrlKey: true });
-  assert.equal(
-    ctx.nativeClicks.length,
-    1,
-    "the modified click reaches the native navigation boundary",
-  );
-  assert.equal(ctx.navigation.length, 0);
+  assert.equal(ctx.click(choice, { ctrlKey: true }).defaultPrevented, false);
+  assert.deepEqual(ctx.choices, [0], "the modified click reaches the button");
   assert.equal(ctx.carousel.scrollLeft, 0);
-  ctx.click(link, { detail: 0 });
-  assert.equal(ctx.navigation.length, 1);
+  ctx.click(choice, { detail: 0 });
+  assert.equal(ctx.choices.length, 2);
+  ctx.pointer("pointerdown");
+  ctx.pointer("pointermove", { x: 20 });
+  ctx.pointer("pointerup");
+  assert.equal(ctx.click(choice, { detail: 0 }).defaultPrevented, false);
+  assert.equal(ctx.choices.length, 3, "keyboard activation survives a drag");
   const nativeDrag = new ctx.window.Event("dragstart", {
     bubbles: true,
     cancelable: true,
@@ -344,7 +339,7 @@ for (const reason of [
     if (reason === "unmount") assert.equal(ctx.observers[0].disconnected, true);
     else {
       ctx.click();
-      assert.equal(ctx.navigation.length, 1);
+      assert.deepEqual(ctx.choices, [0]);
     }
     await delay(0);
   });
@@ -356,7 +351,7 @@ test("a carousel with no overflow does not convert product clicks to drags", asy
   ctx.pointer("pointermove", { x: 20 });
   ctx.pointer("pointerup");
   ctx.click();
-  assert.equal(ctx.navigation.length, 1);
+  assert.deepEqual(ctx.choices, [0]);
   assert.equal(ctx.captured.size, 0);
   await delay(0);
 });
@@ -381,7 +376,7 @@ test("leaving before the drag threshold retires the candidate while captured dra
   assert.equal(ctx.captured.size, 0);
   ctx.pointer("pointerup");
   ctx.click();
-  assert.equal(ctx.navigation.length, 1);
+  assert.deepEqual(ctx.choices, [0]);
   ctx.pointer("pointerdown");
   ctx.pointer("pointermove", { x: 100 });
   ctx.carousel.dispatchEvent(new ctx.window.Event("pointerleave"));

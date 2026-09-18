@@ -37,9 +37,7 @@ import {
 import type { ModelUsageUpdate } from "../usage/contracts";
 import {
   productGuidesToolDefinition,
-  showGuidesToolDefinition,
   parseProductGuidesCall,
-  parseGuideSelection,
   parseProductGuideRead,
   type ProductGuideKind,
   type ProductGuide,
@@ -47,6 +45,11 @@ import {
 } from "../../shared/product-guides";
 import { ROMAN_TEXT_PROMPT } from "../prompts/text.server";
 import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
+import {
+  parseViewCall,
+  parseViewResult,
+  showViewToolDefinition,
+} from "../../shared/assistant-view";
 import {
   readProductGuideFiles,
   type ProductGuideFiles,
@@ -65,8 +68,6 @@ import {
   parseProductSelection,
   showProductsDefinition,
   type ProductPresentation,
-  type GuidePresentation,
-  type LibraryGuidePresentation,
   type QuestionPresentation,
   type CachedGuideSource,
 } from "./presentation.server";
@@ -84,9 +85,6 @@ import {
 } from "../../shared/store-support";
 import {
   readLibraryGuidesToolDefinition,
-  showLibraryGuideToolDefinition,
-  parseLibraryGuideSelection,
-  type selectLibraryGuide,
   parseLibraryReadCall,
   type LibraryInventory,
   type LibrarySourceReceipt,
@@ -105,8 +103,6 @@ export interface ModelReply {
   model: string;
   serviceTier?: string;
   presentation?: ProductPresentation;
-  guidePresentation?: GuidePresentation;
-  libraryGuidePresentation?: LibraryGuidePresentation;
   questionPresentation?: QuestionPresentation;
   cachedGuideSource?: CachedGuideSource;
 }
@@ -131,9 +127,6 @@ export interface LibraryReuse {
     signal: AbortSignal,
     attachedUrls?: ReadonlySet<string>,
   ): Promise<LibraryReadResult>;
-  present(
-    call: ReturnType<typeof parseLibraryGuideSelection>,
-  ): ReturnType<typeof selectLibraryGuide>;
   bind(
     source: LibrarySourceReceipt,
     productPath?: string,
@@ -264,9 +257,6 @@ export async function generateReply(
   };
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
-  let guidePresentationAttempted = false;
-  let guidePresentation: GuidePresentation | undefined;
-  let libraryGuidePresentation: LibraryGuidePresentation | undefined;
   let questionPresentationAttempted = false;
   let questionPresentation: QuestionPresentation | undefined;
   const availableGuides = new Map<
@@ -275,23 +265,14 @@ export async function generateReply(
   >();
   let measurementProductPath: string | undefined;
   const availableProducts = new Map<string, string>();
-  let productChoicePending = false;
-  const productChoiceQuestion = () => {
-    if (!productChoicePending || !presentation) return;
-    const question = "Which of these products would you like to continue with?";
-    try {
-      // Preserve exact catalog identity; never truncate two names into an
-      // ambiguous answer or silently omit cards to fit the four choices.
-      return parseQuestionSelection({
-        question,
-        answers: [
-          ...presentation.productIds.map((id) => availableProducts.get(id)),
-          "A different blind",
-        ],
-      });
-    } catch {
-      return { question, answers: ["Help me choose", "A different blind"] };
-    }
+  let browsingPending = false;
+  const browsingQuestion = () => {
+    if (!browsingPending || !presentation) return;
+    // Product selection belongs to each card, regardless of carousel size.
+    return {
+      question: "Would you like to explore more options?",
+      answers: ["Show me more", "Different colours", "Help me narrow it down"],
+    };
   };
   // Original files stay server-side; a verified product session can reuse them.
   const attachedGuideUrls = new Set<string>();
@@ -343,13 +324,10 @@ export async function generateReply(
       ? [
           ...catalogToolDefinitions,
           navigationToolDefinition,
+          showViewToolDefinition,
           productGuidesToolDefinition,
           ...(libraryReuse
-            ? [
-                guideLibraryToolDefinition,
-                readLibraryGuidesToolDefinition,
-                showLibraryGuideToolDefinition,
-              ]
+            ? [guideLibraryToolDefinition, readLibraryGuidesToolDefinition]
             : []),
           storeSupportToolDefinition,
           ...measurementToolDefinitions,
@@ -357,7 +335,6 @@ export async function generateReply(
           ...productConfigurationToolDefinitions,
           applyMeasurementsToolDefinition,
           showProductsDefinition,
-          showGuidesToolDefinition,
         ]
       : []),
     askQuestionToolDefinition,
@@ -402,8 +379,6 @@ export async function generateReply(
       if (name === "ask_question" || name === "ask_measurement")
         return !questionPresentationAttempted;
       if (name === "show_products") return !presentationAttempted;
-      if (name === "show_guides" || name === "show_library_guide")
-        return !guidePresentationAttempted;
       return withinToolBudget(name) && canMutate(name);
     });
     const usageId = randomUUID();
@@ -623,7 +598,7 @@ export async function generateReply(
       // These are new customer intents, never inferred consent or replayed work.
       const nextQuestion = questionPresentation ?? {
         callId: `next-actions-${randomUUID()}`,
-        ...(productChoiceQuestion() ?? {
+        ...(browsingQuestion() ?? {
           question: "What would you like to do next?",
           answers: [...ROMAN_WELCOME_QUESTION.answers],
         }),
@@ -638,8 +613,6 @@ export async function generateReply(
         model: completed.model,
         serviceTier: completed.service_tier ?? undefined,
         ...(presentation ? { presentation } : {}),
-        ...(guidePresentation ? { guidePresentation } : {}),
-        ...(libraryGuidePresentation ? { libraryGuidePresentation } : {}),
         questionPresentation: nextQuestion,
         ...(cachedGuideSource ? { cachedGuideSource } : {}),
       };
@@ -686,16 +659,24 @@ export async function generateReply(
               ? parseMeasurementQuestionSelection(JSON.parse(call.arguments))
               : parseQuestionSelection(JSON.parse(call.arguments));
           if (
-            (selection.question === ROMAN_WELCOME_QUESTION.question ||
+            ((selection.question === ROMAN_WELCOME_QUESTION.question ||
               selection.question === "What would you like to do next?") &&
-            selection.answers.length ===
-              ROMAN_WELCOME_QUESTION.answers.length &&
-            selection.answers.every(
-              (answer, index) =>
-                answer === ROMAN_WELCOME_QUESTION.answers[index],
-            )
+              selection.answers.length ===
+                ROMAN_WELCOME_QUESTION.answers.length &&
+              selection.answers.every(
+                (answer, index) =>
+                  answer === ROMAN_WELCOME_QUESTION.answers[index],
+              )) ||
+            (browsingPending &&
+              presentation?.productIds.some((id) =>
+                selection.answers.some(
+                  (answer) =>
+                    answer.toLocaleLowerCase() ===
+                    availableProducts.get(id)?.toLocaleLowerCase(),
+                ),
+              ))
           )
-            selection = productChoiceQuestion() ?? selection;
+            selection = browsingQuestion() ?? selection;
           if (!call.call_id || call.call_id.length > 200)
             throw new Error("Invalid question presentation call ID.");
           if (call.name === "ask_question" && selection.measurement)
@@ -762,13 +743,12 @@ export async function generateReply(
           (resumeQuestion || questionPresentation.measurement)
         ) {
           const measurement = questionPresentation.measurement;
-          // A presentation may precede the terminal numeric tool by a round.
+          // The guide read may precede the terminal numeric tool by a round.
           // Retain its actual short introduction, never earlier tool narration
-          // or an invented introduction when an existing card is shown again.
+          // or an invented introduction while reusing an earlier source.
           const guideIntro =
             measurement &&
-            (guidePresentation?.productPath === measurement.productPath ||
-              libraryGuidePresentation)
+            (availableGuides.has(measurement.productPath) || libraryBound)
               ? (accumulated.match(
                   /(?:^|[.!?]\s+|\n\s*)(Let['’]s walk through the (?:(?:measuring|fitting) guide|measuring and fitting guides)\.)(?=\s|$)/,
                 )?.[1] ?? "")
@@ -816,88 +796,10 @@ export async function generateReply(
               model: completed.model,
               serviceTier: completed.service_tier ?? undefined,
               ...(presentation ? { presentation } : {}),
-              ...(guidePresentation ? { guidePresentation } : {}),
-              ...(libraryGuidePresentation ? { libraryGuidePresentation } : {}),
               questionPresentation,
               ...(cachedGuideSource ? { cachedGuideSource } : {}),
             };
           }
-        }
-        input.push({
-          type: "function_call_output",
-          call_id: call.call_id,
-          output: JSON.stringify(outcome),
-        });
-        continue;
-      }
-      if (call.name === "show_library_guide") {
-        if (guidePresentationAttempted)
-          throw new Error(
-            "Roman reached the guide presentation limit for this reply.",
-          );
-        guidePresentationAttempted = true;
-        let output: unknown;
-        try {
-          if (!libraryReuse || !call.call_id || call.call_id.length > 200)
-            throw new Error("Library presentation is unavailable.");
-          const selection = parseLibraryGuideSelection(
-            JSON.parse(call.arguments),
-          );
-          const selected = libraryReuse.present(selection);
-          libraryGuidePresentation = { callId: call.call_id, ...selection };
-          output = {
-            selectedGuideId: selected.guide.id,
-            instruction:
-              "The selected PDF card will appear in chat. Continue to the next useful question without duplicating its link or narrating document access.",
-          };
-        } catch {
-          output = {
-            error:
-              "No library guide card was selected. Select a matching, previously read PDF from a current discovery. Do not invent links or claim the card appeared.",
-          };
-        }
-        input.push({
-          type: "function_call_output",
-          call_id: call.call_id,
-          output: JSON.stringify(output),
-        });
-        continue;
-      }
-      if (call.name === "show_guides") {
-        if (guidePresentationAttempted)
-          throw new Error(
-            "Roman reached the guide presentation limit for this reply.",
-          );
-        guidePresentationAttempted = true;
-        let outcome:
-          | { productPath: string; selectedKinds: ProductGuideKind[] }
-          | { error: string };
-        try {
-          const selection = parseGuideSelection(JSON.parse(call.arguments));
-          const source = availableGuides.get(selection.productPath);
-          if (
-            !call.call_id ||
-            call.call_id.length > 200 ||
-            !source ||
-            !selection.kinds.every((kind) => source.kinds.includes(kind))
-          )
-            throw new Error(
-              "Select only original guide kinds supplied for this product, including cached documents.",
-            );
-          guidePresentation = {
-            callId: call.call_id,
-            sourceCallId: source.sourceCallId,
-            ...selection,
-          };
-          outcome = {
-            productPath: selection.productPath,
-            selectedKinds: selection.kinds,
-          };
-        } catch {
-          outcome = {
-            error:
-              "No guide cards were selected. First open the verified product and read its current guide links with get_product_guides, then select only returned guide kinds. Do not invent URLs or claim that instructions were read.",
-          };
         }
         input.push({
           type: "function_call_output",
@@ -926,11 +828,11 @@ export async function generateReply(
               "Products must come from this reply's catalog results.",
             );
           presentation = { callId: call.call_id, productIds };
-          productChoicePending = productIds.length > 1;
+          browsingPending = true;
           outcome = {
             selectedProductIds: [...productIds],
             instruction:
-              "If choosing a product is the next unresolved decision, call ask_question with these displayed products as concise choices plus an alternative, within four answers. Preserve the current task instead of offering a generic capability menu. If the product is already chosen, ask only the actual next unresolved question.",
+              "Each displayed card has a Choose blind button. Call ask_question for useful browsing refinements such as Show me more, Different colours or an unresolved requirement, not product-name choices or a generic capability menu. If replacing the active blind is awaiting confirmation, ask its Yes/No question instead. If the product is already chosen, ask only the actual next unresolved question.",
           };
         } catch {
           outcome = {
@@ -1016,7 +918,7 @@ export async function generateReply(
         });
         continue;
       }
-      // Guide cards may refer to a previous product; a numeric input may not.
+      // A numeric input must be bound to the current product.
       if (call.name === "navigate") {
         currentConfiguration = undefined;
         if (formProductPath) formChangesBlocked = true;
@@ -1042,43 +944,48 @@ export async function generateReply(
         if (call.name === "get_product_guides")
           requestedGuides = parseProductGuideRead(argumentsValue);
         const parsed =
-          call.name === "discover_guides"
-            ? {
-                name: call.name,
-                arguments: parseGuideLibraryCall(argumentsValue),
-              }
-            : call.name === "get_store_support"
+          call.name === "show_view"
+            ? { name: call.name, arguments: parseViewCall(argumentsValue) }
+            : call.name === "discover_guides"
               ? {
                   name: call.name,
-                  arguments: parseStoreSupportCall(argumentsValue),
+                  arguments: parseGuideLibraryCall(argumentsValue),
                 }
-              : call.name === "get_product_guides"
+              : call.name === "get_store_support"
                 ? {
                     name: call.name,
-                    // The browser only discovers links; PDF selection is server-owned.
-                    arguments: { productPath: requestedGuides!.productPath },
+                    arguments: parseStoreSupportCall(argumentsValue),
                   }
-                : call.name === "navigate"
+                : call.name === "get_product_guides"
                   ? {
-                      name: "navigate",
-                      arguments: parseNavigationCall(argumentsValue),
+                      name: call.name,
+                      // The browser only discovers links; PDF selection is server-owned.
+                      arguments: { productPath: requestedGuides!.productPath },
                     }
-                  : isCartTool(call.name)
-                    ? parseCartCall(call.name, argumentsValue)
-                    : isProductConfigurationTool(call.name)
-                      ? parseProductConfigurationCall(call.name, argumentsValue)
-                      : call.name === "apply_measurements"
-                        ? {
-                            name: call.name,
-                            arguments: parseMeasurementCall(
-                              "get_measurements",
-                              argumentsValue,
-                            ).arguments,
-                          }
-                        : call.name === "get_measurements" ||
-                            call.name === "set_measurements"
-                          ? parseMeasurementCall(call.name, argumentsValue)
-                          : parseCatalogCall(call.name, argumentsValue);
+                  : call.name === "navigate"
+                    ? {
+                        name: "navigate",
+                        arguments: parseNavigationCall(argumentsValue),
+                      }
+                    : isCartTool(call.name)
+                      ? parseCartCall(call.name, argumentsValue)
+                      : isProductConfigurationTool(call.name)
+                        ? parseProductConfigurationCall(
+                            call.name,
+                            argumentsValue,
+                          )
+                        : call.name === "apply_measurements"
+                          ? {
+                              name: call.name,
+                              arguments: parseMeasurementCall(
+                                "get_measurements",
+                                argumentsValue,
+                              ).arguments,
+                            }
+                          : call.name === "get_measurements" ||
+                              call.name === "set_measurements"
+                            ? parseMeasurementCall(call.name, argumentsValue)
+                            : parseCatalogCall(call.name, argumentsValue);
         if (!canMutate(parsed.name))
           throw new Error(
             "This storefront change is not available in this reply.",
@@ -1187,6 +1094,11 @@ export async function generateReply(
             "productPath" in outcome &&
             outcome.productPath === formProductPath
           );
+        if (parsed.name === "show_view" && !("error" in outcome)) {
+          const shown = parseViewResult(outcome);
+          if (shown.view !== parseViewCall(parsed.arguments).view)
+            throw new Error("The browser showed a different Roman view.");
+        }
         if ("products" in outcome)
           for (const product of outcome.products)
             availableProducts.set(product.id, product.title);
@@ -1198,7 +1110,7 @@ export async function generateReply(
             isCartMutation(parsed.name)) &&
           !("error" in outcome)
         )
-          productChoicePending = false;
+          browsingPending = false;
       } catch {
         signal.throwIfAborted();
         if (
@@ -1221,9 +1133,11 @@ export async function generateReply(
                   ? "The measurement draft could not be read or saved. Do not claim dimensions were saved or applied."
                   : call.name === "get_product_guides"
                     ? "The product's current guide links could not be verified. Do not invent a guide URL, display unavailable guides or claim its PDF instructions were read."
-                    : call.name === "navigate"
-                      ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
-                      : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
+                    : call.name === "show_view"
+                      ? "Roman's requested view could not be confirmed. Do not claim the view changed or navigate the storefront as a substitute."
+                      : call.name === "navigate"
+                        ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
+                        : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
         };
       }
       if (
@@ -1334,9 +1248,6 @@ export async function generateReply(
           onText("");
           questionPresentation = undefined;
           questionPresentationAttempted = false;
-          guidePresentation = undefined;
-          libraryGuidePresentation = undefined;
-          guidePresentationAttempted = false;
           onGuideReading?.(undefined);
           console.warn("[Roman] Product guides could not be read.", {
             reason: read.reason,

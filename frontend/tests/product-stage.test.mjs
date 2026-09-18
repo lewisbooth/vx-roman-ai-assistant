@@ -10,10 +10,15 @@ const bundle = await build({
     contents: `
       import { createRoot } from 'react-dom/client';
       import { flushSync } from 'react-dom';
+      import { useSyncExternalStore } from 'react';
       import { ProductStage } from './frontend/src/chat/ProductStage';
+      function Stage({navigation}) {
+        const page = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot);
+        return <ProductStage navigation={navigation} selectedPath={page.selectedPath} selectedTitle="Selected blind" />;
+      }
       export function mount(container, navigation) {
         const root = createRoot(container);
-        flushSync(() => root.render(<ProductStage navigation={navigation} />));
+        flushSync(() => root.render(<Stage navigation={navigation} />));
         return () => flushSync(() => root.unmount());
       }
     `,
@@ -73,7 +78,12 @@ async function setup(t) {
         }
       },
     );
-  let snapshot = { url: window.location.href, pending: false, error: null };
+  let snapshot = {
+    url: window.location.href,
+    pending: false,
+    error: null,
+    selectedPath: "/products/linen",
+  };
   const listeners = new Set();
   const navigation = {
     getSnapshot: () => snapshot,
@@ -99,7 +109,10 @@ async function setup(t) {
     window.close();
     assert.deepEqual(errors, []);
   });
-  await until(() => container.querySelector("h2"), "Stage should read the PDP");
+  await until(
+    () => container.querySelector(".roman-product-stage-price"),
+    "Stage should read the PDP",
+  );
   return {
     window,
     container,
@@ -112,7 +125,12 @@ async function setup(t) {
     replace(path, title) {
       window.history.pushState({}, "", path);
       window.document.querySelector("main").innerHTML = markup(title);
-      snapshot = { url: window.location.href, pending: false, error: null };
+      snapshot = {
+        url: window.location.href,
+        pending: false,
+        error: null,
+        selectedPath: path,
+      };
       listeners.forEach((fn) => fn());
     },
   };
@@ -187,8 +205,13 @@ test("navigation keeps a marked prior selection with no quote, restores cancella
   ctx.window.history.pushState({}, "", "/cart");
   ctx.update({ url: ctx.window.location.href });
   await until(
-    () => !ctx.container.querySelector("aside"),
-    "Cart does not keep a misleading product stage",
+    () => !ctx.container.querySelector(".roman-product-stage-price"),
+    "Native cart must not retain a stale quote",
+  );
+  assert.match(ctx.container.textContent, /Soft sage blind/);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-configuration"),
+    null,
   );
 });
 

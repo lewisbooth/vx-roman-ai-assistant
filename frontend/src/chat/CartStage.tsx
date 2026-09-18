@@ -4,22 +4,22 @@ import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { getCart } from "../tools/cart";
 
-/** A cart is visible only after an explicit cart navigation, never on addition. */
+/** Roman's Cart view reads Shopify without navigating the underlying theme. */
 export function CartStage({
   navigation,
   session,
+  visible,
 }: {
   navigation: StorefrontNavigation;
   session: ConversationClient;
+  visible: boolean;
 }) {
   const page = useSyncExternalStore(
     navigation.subscribe,
     navigation.getSnapshot,
   );
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
-  const requested = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?cart\/?$/i.test(
-    new URL(page.url, window.location.origin).pathname,
-  );
+  const requested = visible;
   const [cart, setCart] = useState<CartSnapshot>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);

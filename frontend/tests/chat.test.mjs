@@ -58,6 +58,7 @@ async function setup(t, options = {}) {
     },
   );
   const { window } = dom;
+  Object.assign(window, { Request, Response, Headers });
   const errors = [];
   window.console.error = (...args) => errors.push(args);
   options.beforeImport?.(window);
@@ -75,6 +76,7 @@ async function setup(t, options = {}) {
   const startVoiceCalls = [];
   const stopVoiceCalls = [];
   const voiceAnswers = [];
+  const voiceChoices = [];
   const muteCalls = [];
   const productCalls = [];
   const navigationCalls = [];
@@ -107,6 +109,10 @@ async function setup(t, options = {}) {
     sendVoiceAnswer: async (questionId, answer) => {
       voiceAnswers.push({ questionId, answer });
       await options.onVoiceAnswer?.(questionId, answer, window);
+    },
+    sendVoiceProductChoice: async (carouselId, product) => {
+      voiceChoices.push({ carouselId, product });
+      await options.onVoiceChoice?.(carouselId, product);
     },
     end: async () => {
       endCalls.push("end");
@@ -217,6 +223,7 @@ async function setup(t, options = {}) {
     startVoiceCalls,
     stopVoiceCalls,
     voiceAnswers,
+    voiceChoices,
     muteCalls,
     productCalls,
     navigationCalls,
@@ -331,7 +338,7 @@ test("composer Start voice remains disabled during restoration, accepted-request
     });
 });
 
-test("saved guide cards open verified PDFs separately without fetching products, navigating or stopping voice", async (t) => {
+test("saved guide records stay hidden without fetching products, navigating or stopping voice", async (t) => {
   const fetches = [];
   const guides = [
     {
@@ -347,7 +354,7 @@ test("saved guide cards open verified PDFs separately without fetching products,
     beforeImport: (window) => {
       window.fetch = (...args) => {
         fetches.push(args);
-        throw new Error("Guide cards must not fetch PDF content");
+        throw new Error("Hidden guides must not fetch PDF content");
       };
     },
     state: {
@@ -374,22 +381,12 @@ test("saved guide cards open verified PDFs separately without fetching products,
       },
     },
   });
-  const list = ctx.container.querySelector('[aria-label="Product guides"]');
-  const links = [...list.querySelectorAll("a")];
-  assert.equal(links.length, 2);
-  assert.match(links[0].textContent, /Measuring guide/);
-  assert.match(links[1].textContent, /Fitting guide/);
-  for (const [index, link] of links.entries()) {
-    assert.equal(link.href, guides[index].url);
-    assert.equal(link.target, "_blank");
-    assert.equal(link.rel, "noopener noreferrer");
-    link.addEventListener("click", (event) => event.preventDefault(), {
-      once: true,
-    });
-    link.dispatchEvent(
-      new ctx.window.MouseEvent("click", { bubbles: true, cancelable: true }),
-    );
-  }
+  assert.equal(ctx.container.querySelector(".roman-timeline > li"), null);
+  assert.equal(ctx.container.querySelector(".roman-timeline a"), null);
+  assert.doesNotMatch(
+    ctx.container.textContent,
+    /Measuring guide|Fitting guide/,
+  );
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.productCalls, []);
   assert.deepEqual(fetches, []);
@@ -400,7 +397,7 @@ test("saved guide cards open verified PDFs separately without fetching products,
   assert.match(ctx.voiceDock.textContent, /Voice is on.*Stop voice/);
 });
 
-test("malformed or foreign guide records never become active chat links", async (t) => {
+test("malformed or foreign historical guide records create no customer warning or empty row", async (t) => {
   const ctx = await setup(t, {
     state: {
       conversation: {
@@ -430,8 +427,8 @@ test("malformed or foreign guide records never become active chat links", async 
       },
     },
   });
-  assert.equal(ctx.container.querySelectorAll(".roman-guide-card").length, 0);
-  assert.match(ctx.container.textContent, /product guides are unavailable/);
+  assert.equal(ctx.container.querySelector(".roman-timeline > li"), null);
+  assert.doesNotMatch(ctx.container.textContent, /guides are unavailable/);
 });
 
 test("cart approvals share the question panel in both locations without changing shopper decisions", async (t) => {
@@ -1197,7 +1194,7 @@ function productsMessage() {
       {
         type: "products",
         version: 1,
-        invocationId: "catalog-one",
+        invocationId: "f186c886-e2ae-4c34-9bad-904ab4b3cf01",
         productIds: ["gid://shopify/Product/123"],
       },
     ],
@@ -1285,7 +1282,7 @@ const catalog = {
   messages: [],
 };
 
-test("product references load live cards once across snapshot refreshes and use storefront navigation", async (t) => {
+test("product references hydrate once and Choose blind submits intent without navigating directly", async (t) => {
   let resolve;
   const pending = new Promise((done) => {
     resolve = done;
@@ -1329,7 +1326,7 @@ test("product references load live cards once across snapshot refreshes and use 
     "New part and ID-array identities must not remount loaded cards",
   );
   assert.doesNotMatch(ctx.container.textContent, /Loading products/);
-  assert.equal(card.href, catalog.products[0].url);
+  assert.equal(card.querySelector("a"), null);
   assert.equal(card.querySelector("img").src, catalog.products[0].imageUrl);
   assert.equal(card.querySelector("img").getAttribute("loading"), "lazy");
   assert.match(card.textContent, /Lottie Roman blind/);
@@ -1342,17 +1339,12 @@ test("product references load live cards once across snapshot refreshes and use 
     bubbles: true,
     cancelable: true,
   });
-  card.dispatchEvent(click);
-  assert.equal(click.defaultPrevented, true);
-  assert.deepEqual(ctx.navigationCalls, [catalog.products[0].url]);
-  const modified = new ctx.window.MouseEvent("click", {
-    bubbles: true,
-    cancelable: true,
-    ctrlKey: true,
-  });
-  card.dispatchEvent(modified);
-  assert.equal(modified.defaultPrevented, false);
-  assert.equal(ctx.navigationCalls.length, 1);
+  card.querySelector("button").dispatchEvent(click);
+  await until(() => ctx.calls.length === 1, "Choice should be sent to Roman");
+  assert.deepEqual(ctx.calls, [
+    "Choose Lottie Roman blind (/products/lottie).",
+  ]);
+  assert.deepEqual(ctx.navigationCalls, []);
 });
 
 test("product cards show only the selected IDs in their recommendation order", async (t) => {
@@ -1388,12 +1380,70 @@ test("product cards show only the selected IDs in their recommendation order", a
   assert.deepEqual(ctx.productCalls, [selected.parts[1].productIds]);
   assert.deepEqual(
     [...ctx.container.querySelectorAll(".roman-product-card")].map(
-      (card) => card.href,
+      (card) => card.querySelector(".roman-product-title").textContent,
     ),
-    [second.url, catalog.products[0].url],
+    [second.title, catalog.products[0].title],
   );
   assert.doesNotMatch(ctx.container.textContent, /An unrelated catalog match/);
   assert.match(ctx.container.textContent, /One selected item is unavailable/);
+});
+
+test("choosing a blind in voice sends one selection without stopping voice or navigating", async (t) => {
+  let release;
+  const ctx = await setup(t, {
+    state: {
+      conversation: activeConversation([productsMessage()]),
+      voice: { status: "active", muted: false, error: null },
+    },
+    onLoadProducts: () => catalog,
+    onVoiceChoice: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-choose-blind"),
+    "Choice is loaded",
+  );
+  const button = ctx.container.querySelector(".roman-choose-blind");
+  button.click();
+  button.click();
+  await until(() => ctx.voiceChoices.length, "Voice accepts choice");
+  assert.equal(ctx.voiceChoices.length, 1);
+  assert.equal(ctx.voiceChoices[0].product.id, catalog.products[0].id);
+  assert.deepEqual(ctx.stopVoiceCalls, []);
+  assert.deepEqual(ctx.navigationCalls, []);
+  assert.deepEqual(ctx.calls, []);
+  assert.ok(ctx.container.querySelector(".roman-voice-composer"));
+  release();
+});
+
+test("a failed product selection stays retryable with an actionable error", async (t) => {
+  let attempts = 0;
+  const ctx = await setup(t, {
+    state: { conversation: activeConversation([productsMessage()]) },
+    onLoadProducts: () => catalog,
+    onSend: (_text, window) => {
+      if (++attempts === 1)
+        throw new window.Error("Please reconnect and retry.");
+    },
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-choose-blind"),
+    "Choice is loaded",
+  );
+  ctx.container.querySelector(".roman-choose-blind").click();
+  await until(
+    () => ctx.container.querySelector('[role="alert"]'),
+    "Selection error appears",
+  );
+  assert.match(
+    ctx.container.querySelector('[role="alert"]').textContent,
+    /Please reconnect/,
+  );
+  ctx.container.querySelector(".roman-choose-blind").click();
+  await until(() => attempts === 2, "Selection is retryable");
+  assert.deepEqual(ctx.navigationCalls, []);
 });
 
 test("unrelated lookup matches cannot replace an unavailable selected product", async (t) => {
@@ -1505,10 +1555,12 @@ test("only Roman navigation uses a notification; manual visits stay hidden and l
   assert.equal(entries[0].textContent, "Roman navigated to Lottie <img src=x>");
   assert.equal(entries[0].querySelector("img"), null);
   assert.equal(entries[1].querySelector("a"), null);
-  entries[0].querySelector("a").click();
-  assert.deepEqual(ctx.navigationCalls, [
-    "https://hd-dev-single.myshopify.com/products/lottie",
-  ]);
+  assert.equal(
+    entries[0].querySelector("a"),
+    null,
+    "Historical navigation cannot bypass a new product choice confirmation",
+  );
+  assert.deepEqual(ctx.navigationCalls, []);
 });
 
 test("saved cart additions render product and submitted dimensions with a working cart link", async (t) => {
@@ -1563,9 +1615,13 @@ test("saved cart additions render product and submitted dimensions with a workin
   );
   assert.equal(entries[0].querySelector("img"), null);
   entries[0].querySelector("a").click();
-  assert.deepEqual(ctx.navigationCalls, [
-    "https://hd-dev-single.myshopify.com/cart",
-  ]);
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-view-nav a[aria-current]")
+        ?.textContent === "Cart",
+    "Cart opens inside Roman",
+  );
+  assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.productCalls, []);
   assert.equal(ctx.container.querySelector(".roman-tool-approval"), null);
 });
@@ -1598,9 +1654,13 @@ test("saved sample additions render as samples rather than full products", async
   );
   assert.equal(entry?.querySelector("img"), null);
   entry?.querySelector("a")?.click();
-  assert.deepEqual(ctx.navigationCalls, [
-    "https://hd-dev-single.myshopify.com/cart",
-  ]);
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-view-nav a[aria-current]")
+        ?.textContent === "Cart",
+    "Cart opens inside Roman",
+  );
+  assert.deepEqual(ctx.navigationCalls, []);
 });
 
 test("voice lifecycle events remain chronological context and do not retire a pending follow-up", async (t) => {
@@ -2297,7 +2357,7 @@ test("easy answers render once beneath all cards with a labelled literal questio
     ctx.container.querySelector(".roman-response-dock").contains(widget),
     "Question must follow all cards",
   );
-  assert.ok(parts.querySelector(".roman-guides"));
+  assert.equal(parts.querySelector('a[href*=".pdf"]'), null);
   assert.equal(widget.querySelector("p").textContent, row.parts[0].question);
   assert.equal(
     widget.getAttribute("aria-labelledby"),

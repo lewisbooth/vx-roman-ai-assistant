@@ -230,84 +230,11 @@ test("selection cannot inject URLs, unknown IDs or another conversation's discov
   assert.equal(state.calls.length, 0);
 });
 
-test("guide-card selection requires a scoped successful read and returns a detached exact source without another download", async () => {
-  const state = setup();
-  const saved = state.save();
-  const selection = { discoveryId: saved.discoveryId, guideId: guideId(1) };
-  const select = (input = selection, id = state.id, shop = origin) =>
-    state.api.selectLibraryGuide(id, shop, input);
-  assert.throws(() => select(), /no current verified read/);
-  await state.read(saved);
-  const selected = select();
-  assert.deepEqual(plain(selected.guide), discovery().guides[0]);
-  assert.deepEqual(plain(selected.source), {
-    ...plain(saved.source),
-    guideIds: [guideId(1)],
-  });
-  selected.guide.title = "Changed by caller";
-  selected.source.guideIds.length = 0;
-  assert.deepEqual(plain(select().guide), discovery().guides[0]);
-  assert.deepEqual(plain(select().source.guideIds), [guideId(1)]);
-  for (const input of [
-    { ...selection, guideId: guideId(2) },
-    { ...selection, guideId: guideId(99) },
-    { ...selection, discoveryId: randomUUID() },
-  ])
-    assert.throws(() => select(input), /no current verified read/);
-  assert.throws(
-    () => select(selection, randomUUID()),
-    /no current verified read/,
-  );
-  assert.throws(
-    () => select(selection, state.id, "https://another-store.test"),
-    /no current verified read/,
-  );
-  assert.equal(state.calls.length, 1);
-  state.advance(state.api.LIBRARY_SESSION_TTL_MS);
-  assert.throws(() => select(), /no current verified read/);
-  assert.equal(state.calls.length, 1);
-});
 
-test("guide-card arguments cannot supply a URL or replace a discovery identifier", () => {
-  const state = setup();
-  const saved = state.save();
-  const selection = { discoveryId: saved.discoveryId, guideId: guideId(1) };
-  for (const input of [
-    { ...selection, url: discovery().guides[0].url },
-    { ...selection, guideId: discovery().guides[0].url },
-    { guideId: selection.guideId },
-    { ...selection, discoveryId: "invented" },
-  ])
-    assert.throws(
-      () => state.api.parseLibraryGuideSelection(input),
-      /Select one previously read/,
-    );
-  assert.equal(state.calls.length, 0);
-});
 
-test("a failed refresh revokes guide-card eligibility instead of presenting the older PDF", async () => {
-  let available = true;
-  const state = setup(async () =>
-    available ? response() : new Response(null, { status: 404 }),
-  );
-  const saved = state.save();
-  const input = { discoveryId: saved.discoveryId, guideId: guideId(1) };
-  await state.read(saved);
-  assert.equal(
-    state.api.selectLibraryGuide(state.id, origin, input).guide.id,
-    guideId(1),
-  );
-  available = false;
-  assert.equal(
-    (await state.read(saved, [guideId(1)], { refresh: true })).status,
-    "unavailable",
-  );
-  assert.throws(
-    () => state.api.selectLibraryGuide(state.id, origin, input),
-    /no current verified read/,
-  );
-  assert.equal(state.calls.length, 2);
-});
+
+
+
 
 test("receipt validation binds fixed source pages, authentic source IDs and immutable expiry", () => {
   const state = setup();
@@ -618,14 +545,7 @@ test("the attachment budget rejects verified URLs before downloading or authoriz
   });
   assert.deepEqual([...attachedUrls], before);
   assert.equal(state.calls.length, 0);
-  assert.throws(
-    () =>
-      state.api.selectLibraryGuide(state.id, origin, {
-        discoveryId: saved.discoveryId,
-        guideId: guideId(1),
-      }),
-    /no current verified read/,
-  );
+
   assert.throws(
     () =>
       state.api.bindLibrarySource(
@@ -659,11 +579,5 @@ test("the attachment budget rejects verified URLs before downloading or authoriz
     1,
     "A denied refresh neither evicts nor downloads the prior valid original",
   );
-  assert.equal(
-    state.api.selectLibraryGuide(state.id, origin, {
-      discoveryId: saved.discoveryId,
-      guideId: guideId(1),
-    }).guide.id,
-    guideId(1),
-  );
+
 });

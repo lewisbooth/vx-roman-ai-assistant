@@ -8,6 +8,8 @@ import { createAssistantTools } from "./tools";
 import { createConversationClient } from "./session/client";
 import { createStorefrontExecutor } from "./session/storefront-executor";
 import { createJourneyObserver } from "./session/journey";
+import { createVoiceAutostart } from "./session/voice-autostart";
+import { isConversationStorefront } from "../../shared/storefronts";
 import styles from "./styles.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
@@ -29,14 +31,23 @@ export function mountAssistant(
     resolveReady = resolve;
     rejectReady = reject;
   });
+  let router: ReturnType<typeof createAssistantRouter> | undefined;
   const navigation = createStorefrontNavigation(host);
-  const tools = createAssistantTools(host, navigation, (name, input, signal) =>
-    session.executeMeasurements(name, input, signal),
+  const tools = createAssistantTools(
+    host,
+    navigation,
+    (name, input, signal) => session.executeMeasurements(name, input, signal),
+    async (view) => {
+      if (!router) throw new Error("Roman is still loading. Please try again.");
+      await router.navigate(view === "chat" ? "/" : `/${view}`);
+    },
   );
   const executor = createStorefrontExecutor(tools);
   const session = createConversationClient(executor);
   const stopJourney = createJourneyObserver(session, navigation);
-  let router: ReturnType<typeof createAssistantRouter> | undefined;
+  const voiceAutostart = isConversationStorefront(window.location.origin)
+    ? createVoiceAutostart(session)
+    : undefined;
   let root: Root | undefined;
   let disposed = false;
   let readyTimer: number | undefined;
@@ -97,6 +108,7 @@ export function mountAssistant(
     tools.dispose();
     executor.dispose();
     stopJourney();
+    voiceAutostart?.dispose();
     session.dispose();
     stopVoiceDock();
     onSessionChange(false);
@@ -111,6 +123,7 @@ export function mountAssistant(
       if (!disposed) {
         sidebarOpen = open;
         syncVoiceDock();
+        voiceAutostart?.setOpen(open);
       }
     },
     dispose() {
@@ -124,6 +137,7 @@ export function mountAssistant(
       tools.dispose();
       executor.dispose();
       stopJourney();
+      voiceAutostart?.dispose();
       session.dispose();
       stopVoiceDock();
       onSessionChange(false);

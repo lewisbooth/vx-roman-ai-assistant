@@ -12,6 +12,7 @@ import {
   type ToolClaim,
 } from "../../../shared/conversation";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
+import { parseViewCall } from "../../../shared/assistant-view";
 import { parseGuideLibraryCall } from "../../../shared/guide-library";
 import { parseStoreSupportCall } from "../../../shared/store-support";
 import {
@@ -45,7 +46,15 @@ import {
   parseQuestionAnswerReference,
   parseQuestionPart,
   type QuestionAnswerReference,
+  type VoiceSelectionInput,
 } from "../../../shared/questions";
+import {
+  parseProductChoice,
+  parseProductChoiceReference,
+  productChoiceText,
+  type ProductChoiceReference,
+} from "../../../shared/product-choice";
+import type { CatalogProduct } from "../../../shared/catalog";
 import type {
   createStorefrontExecutor,
   BrowserToolResult,
@@ -54,6 +63,7 @@ import type {
 import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
 import { createVoiceConnection } from "./voice-connection";
+import { setVoiceAutostartPreference } from "./voice-preference";
 import {
   DEFAULT_LIVE_VOICE,
   isLiveVoice,
@@ -102,6 +112,15 @@ function validGuidePart(value: unknown) {
 function validQuestionPart(value: unknown) {
   try {
     parseQuestionPart(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validProductChoice(value: unknown) {
+  try {
+    parseProductChoiceReference(value);
     return true;
   } catch {
     return false;
@@ -231,6 +250,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
       try {
         const name = String(tool.name);
         if (tool.name === "navigate") parseNavigationCall(tool.arguments);
+        else if (tool.name === "show_view") parseViewCall(tool.arguments);
         else if (isCartTool(String(tool.name)))
           parseCartCall(String(tool.name), tool.arguments);
         else if (tool.name === "apply_measurements")
@@ -273,7 +293,11 @@ function snapshot(value: unknown): value is ConversationSnapshot {
               typeof part.text === "string" &&
               (part.questionAnswer === undefined ||
                 (message.role === "user" &&
-                  validQuestionAnswer(part.questionAnswer)))) ||
+                  validQuestionAnswer(part.questionAnswer))) &&
+              (part.productChoice === undefined ||
+                (message.role === "user" &&
+                  part.questionAnswer === undefined &&
+                  validProductChoice(part.productChoice)))) ||
               (part.type === "guides" && validGuidePart(part)) ||
               (part.type === "question" && validQuestionPart(part)) ||
               (part.type === "voice_event" &&
@@ -330,6 +354,7 @@ function pendingUserMessage(
   requestId: string,
   text: string,
   questionAnswer?: QuestionAnswerReference,
+  productChoice?: ProductChoiceReference,
 ): ConversationMessage {
   return {
     id: requestId,
@@ -337,7 +362,12 @@ function pendingUserMessage(
     role: "user",
     status: "pending",
     parts: [
-      { type: "text", text, ...(questionAnswer ? { questionAnswer } : {}) },
+      {
+        type: "text",
+        text,
+        ...(questionAnswer ? { questionAnswer } : {}),
+        ...(productChoice ? { productChoice } : {}),
+      },
     ],
     createdAt: new Date().toISOString(),
   };
@@ -394,12 +424,8 @@ export function createConversationClient(
     }
   >();
   let uncertainSubmission: { requestId: string; text: string } | null = null;
-  let uncertainVoiceAnswer: {
-    requestId: string;
-    voiceId: string;
-    questionId: string;
-    answer: string;
-  } | null = null;
+  let uncertainVoiceAnswer: (VoiceSelectionInput & { voiceId: string }) | null =
+    null;
   let uncertainMeasurement: { requestId: string; key: string } | null = null;
   const listeners = new Set<() => void>();
   const lifetime = new AbortController();
@@ -892,29 +918,35 @@ export function createConversationClient(
                 )
               : tool.name === "navigate"
                 ? await executor!.execute("navigate", tool.arguments, signal)
-                : tool.name === "get_product_guides" ||
-                    tool.name === "discover_guides" ||
-                    tool.name === "get_store_support"
-                  ? await executor!.execute(tool.name, tool.arguments, signal)
-                  : tool.name === "get_cart" ||
-                      tool.name === "add_to_cart" ||
-                      tool.name === "add_sample_to_cart"
+                : tool.name === "show_view"
+                  ? await executor!.execute("show_view", tool.arguments, signal)
+                  : tool.name === "get_product_guides" ||
+                      tool.name === "discover_guides" ||
+                      tool.name === "get_store_support"
                     ? await executor!.execute(tool.name, tool.arguments, signal)
-                    : tool.name === "get_product_configuration" ||
-                        tool.name === "configure_product"
+                    : tool.name === "get_cart" ||
+                        tool.name === "add_to_cart" ||
+                        tool.name === "add_sample_to_cart"
                       ? await executor!.execute(
                           tool.name,
                           tool.arguments,
                           signal,
                         )
-                      : await executor!.execute(
-                          tool.name as
-                            | "search_products"
-                            | "get_product"
-                            | "lookup_catalog",
-                          tool.arguments,
-                          signal,
-                        ),
+                      : tool.name === "get_product_configuration" ||
+                          tool.name === "configure_product"
+                        ? await executor!.execute(
+                            tool.name,
+                            tool.arguments,
+                            signal,
+                          )
+                        : await executor!.execute(
+                            tool.name as
+                              | "search_products"
+                              | "get_product"
+                              | "lookup_catalog",
+                            tool.arguments,
+                            signal,
+                          ),
         };
       } catch (error) {
         attempt.outcome = {
@@ -1099,6 +1131,31 @@ export function createConversationClient(
   }
 
   async function sendVoiceAnswer(questionId: string, answer: string) {
+    return sendVoiceSelection({ questionId, answer });
+  }
+
+  async function sendVoiceProductChoice(
+    carouselId: string,
+    product: Pick<CatalogProduct, "id" | "title" | "url">,
+  ) {
+    const url = new URL(product.url, window.location.origin);
+    if (url.origin !== window.location.origin || url.username || url.password)
+      throw new Error("Choose a product from this storefront.");
+    return sendVoiceSelection(
+      parseProductChoice({
+        carouselId,
+        productId: product.id,
+        title: product.title,
+        productPath: url.pathname,
+      }),
+    );
+  }
+
+  async function sendVoiceSelection(
+    selection:
+      | { questionId: string; answer: string }
+      | import("../../../shared/product-choice").ProductChoice,
+  ) {
     if (disposed) throw new Error("Roman has been removed.");
     const id = voiceId;
     const startedEpoch = epoch;
@@ -1121,10 +1178,38 @@ export function createConversationClient(
       window.location.pathname,
     );
     if (
-      question?.invocationId !== questionId ||
-      !isQuestionAnswer(question, answer)
+      "questionId" in selection &&
+      (question?.invocationId !== selection.questionId ||
+        !isQuestionAnswer(question, selection.answer))
     )
       throw new Error("This question is no longer waiting for that answer.");
+    if (
+      "carouselId" in selection &&
+      !state.conversation.messages.some(
+        (message) =>
+          message.status === "complete" &&
+          ["assistant", "context"].includes(message.role) &&
+          message.parts.some(
+            (part) =>
+              part.type === "products" &&
+              part.invocationId === selection.carouselId &&
+              part.productIds.includes(selection.productId),
+          ),
+      )
+    )
+      throw new Error(
+        "Choose a product shown in this conversation's carousel.",
+      );
+    const answer =
+      "questionId" in selection
+        ? selection.answer
+        : productChoiceText(selection);
+    const provenance =
+      "questionId" in selection
+        ? { questionId: selection.questionId, voiceId: id }
+        : undefined;
+    const productProvenance =
+      "carouselId" in selection ? { ...selection, voiceId: id } : undefined;
     const current = () =>
       !disposed &&
       !ending &&
@@ -1133,30 +1218,34 @@ export function createConversationClient(
       voiceId === id;
     const submission =
       uncertainVoiceAnswer?.voiceId === id &&
-      uncertainVoiceAnswer.questionId === questionId &&
-      uncertainVoiceAnswer.answer === answer
+      Object.entries(selection).every(
+        ([key, value]) =>
+          (uncertainVoiceAnswer as unknown as Record<string, unknown>)[key] ===
+          value,
+      )
         ? uncertainVoiceAnswer
         : {
             requestId: window.crypto.randomUUID(),
             voiceId: id,
-            questionId,
-            answer,
+            clientId,
+            ...selection,
           };
     uncertainVoiceAnswer = submission;
     update({
       pending: true,
       error: null,
-      optimisticMessage: pendingUserMessage(submission.requestId, answer, {
-        questionId,
-        voiceId: id,
-      }),
+      optimisticMessage: pendingUserMessage(
+        submission.requestId,
+        answer,
+        provenance,
+        productProvenance,
+      ),
     });
     try {
       await api(`/voice/${id}/answers`, {
         clientId,
         requestId: submission.requestId,
-        questionId,
-        answer,
+        ...selection,
       });
       if (!current()) return;
       uncertainVoiceAnswer = null;
@@ -1185,8 +1274,12 @@ export function createConversationClient(
                   (part) =>
                     part.type === "text" &&
                     part.text === answer &&
-                    part.questionAnswer?.questionId === questionId &&
-                    part.questionAnswer.voiceId === id,
+                    ("questionId" in selection
+                      ? part.questionAnswer?.questionId ===
+                          selection.questionId &&
+                        part.questionAnswer.voiceId === id
+                      : JSON.stringify(part.productChoice) ===
+                        JSON.stringify(productProvenance)),
                 ),
             )
           ) {
@@ -1410,6 +1503,7 @@ export function createConversationClient(
 
   return {
     sendVoiceAnswer,
+    sendVoiceProductChoice,
     getSnapshot: () => state,
     subscribe(listener) {
       listeners.add(listener);
@@ -1641,15 +1735,22 @@ export function createConversationClient(
       if (approvalChoice?.id === invocationId && typeof confirmed === "boolean")
         approvalChoice.resolve(confirmed);
     },
-    startVoice,
+    startVoice() {
+      setVoiceAutostartPreference(true);
+      return startVoice();
+    },
     setVoice,
-    stopVoice,
+    stopVoice() {
+      setVoiceAutostartPreference(false);
+      return stopVoice();
+    },
     setVoiceMuted(muted) {
       if (state.voice.status !== "active") return;
       voiceConnection?.setMuted(muted);
       update({ voice: { ...state.voice, muted } });
     },
     async end() {
+      setVoiceAutostartPreference(false);
       if (!access || disposed || ending) return;
       ending = true;
       closeVoiceLocally();

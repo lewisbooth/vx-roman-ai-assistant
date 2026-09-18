@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import type { StorefrontNavigation } from "../navigation/shared";
-import { StorefrontLink } from "./StorefrontLink";
+import { isPdfLink, StorefrontLink } from "./StorefrontLink";
 import { bufferIncompleteMarkdownLinks } from "./streaming-markdown";
 
 const allowedElements = [
@@ -28,8 +28,52 @@ const allowedElements = [
 type MarkdownNode = {
   type: string;
   value?: string;
+  url?: string;
+  identifier?: string;
   children?: MarkdownNode[];
 };
+
+/** Remove source links with their captions, including saved replies from the old UI. */
+function remarkHidePdfLinks() {
+  return function transform(root: MarkdownNode) {
+    const pdfReferences = new Set<string>();
+    function collect(node: MarkdownNode) {
+      if (node.type === "definition" && node.url && isPdfLink(node.url))
+        pdfReferences.add(node.identifier!);
+      node.children?.forEach(collect);
+    }
+    collect(root);
+
+    function keep(node: MarkdownNode): boolean {
+      if (
+        (node.url && isPdfLink(node.url)) ||
+        (node.type === "linkReference" && pdfReferences.has(node.identifier!))
+      )
+        return false;
+      if (node.type === "text") {
+        const previous = node.value ?? "";
+        node.value = previous.replace(
+          /(?:https?:\/\/|\/cdn\/shop\/files\/)[^\s<>]+/gi,
+          (url) => (isPdfLink(url.replace(/[),.;!?]+$/, "")) ? "" : url),
+        );
+        return node.value === previous || !!node.value.trim();
+      }
+      if (node.children) {
+        const previousLength = node.children.length;
+        node.children = node.children.filter(keep);
+        return (
+          node.children.length === previousLength ||
+          node.children.some(
+            (child) =>
+              child.type !== "text" || /[\p{L}\p{N}]/u.test(child.value ?? ""),
+          )
+        );
+      }
+      return true;
+    }
+    keep(root);
+  };
+}
 
 function proseLines(children: MarkdownNode[]): MarkdownNode[][] {
   const lines: MarkdownNode[][] = [[]];
@@ -91,7 +135,7 @@ function remarkProseParagraphs() {
   };
 }
 
-const remarkPlugins = [remarkProseParagraphs];
+const remarkPlugins = [remarkHidePdfLinks, remarkProseParagraphs];
 
 export const RichText = memo(function RichText({
   text,

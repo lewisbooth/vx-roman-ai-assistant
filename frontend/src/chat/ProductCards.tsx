@@ -5,28 +5,52 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { CatalogResult } from "../../../shared/catalog";
-import type { StorefrontNavigation } from "../navigation/shared";
+import type { CatalogResult, CatalogProduct } from "../../../shared/catalog";
 import type { ConversationClient } from "../session/types";
-import { StorefrontLink } from "./StorefrontLink";
 import { ProductImage } from "./ProductImage";
 import { ProductCarousel } from "./ProductCarousel";
 
 export function ProductCards({
   productIds,
+  carouselId,
   session,
-  navigation,
+  onChoose,
+  disabled,
   onContentChange,
 }: {
   productIds: readonly string[];
+  carouselId: string;
   session: ConversationClient;
-  navigation: StorefrontNavigation;
+  onChoose?: (carouselId: string, product: CatalogProduct) => Promise<void>;
+  disabled?: boolean;
   onContentChange: () => void;
 }) {
   const ids = productIds.join(",");
   const [result, setResult] = useState<CatalogResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [choosing, setChoosing] = useState(false);
+  const [choiceError, setChoiceError] = useState<string>();
+  const choosingRef = useRef(false);
+
+  async function choose(product: CatalogProduct) {
+    if (!onChoose || disabled || choosingRef.current) return;
+    choosingRef.current = true;
+    setChoosing(true);
+    setChoiceError(undefined);
+    try {
+      await onChoose(carouselId, product);
+    } catch (cause) {
+      setChoiceError(
+        cause instanceof Error
+          ? cause.message
+          : "Please try choosing this blind again.",
+      );
+    } finally {
+      choosingRef.current = false;
+      setChoosing(false);
+    }
+  }
   const target = useRef<HTMLDivElement>(null);
   const [nearby, setNearby] = useState(() => !window.IntersectionObserver);
 
@@ -110,11 +134,7 @@ export function ProductCards({
           <ul className="roman-product-list">
             {result.products.map((product) => (
               <li key={product.id}>
-                <StorefrontLink
-                  url={product.url}
-                  navigation={navigation}
-                  className="roman-product-card"
-                >
+                <article className="roman-product-card">
                   <ProductImage
                     productUrl={product.url}
                     fallback={product.imageUrl}
@@ -127,7 +147,16 @@ export function ProductCards({
                       {product.priceLabel}
                     </span>
                   )}
-                </StorefrontLink>
+                  <button
+                    type="button"
+                    className="roman-choose-blind"
+                    disabled={!onChoose || disabled || choosing}
+                    aria-label={`Choose ${product.title}`}
+                    onClick={() => void choose(product)}
+                  >
+                    Choose blind <span aria-hidden="true">→</span>
+                  </button>
+                </article>
               </li>
             ))}
           </ul>
@@ -135,6 +164,11 @@ export function ProductCards({
       ) : (
         <p className="roman-products-status">
           These products are no longer available.
+        </p>
+      )}
+      {choiceError && (
+        <p role="alert" className="roman-chat-error">
+          {choiceError}
         </p>
       )}
       {result.messages.map((message, index) => (

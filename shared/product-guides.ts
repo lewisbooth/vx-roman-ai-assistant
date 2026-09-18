@@ -45,28 +45,6 @@ export const productGuidesToolDefinition = {
   },
 } as const;
 
-export const showGuidesToolDefinition = {
-  type: "function",
-  name: "show_guides",
-  description:
-    "Show measuring and/or fitting PDF links for one product from this turn's read or the verified cached prior-read inventory. Choose only verified kinds matched to that exact product and relevant to the current request, and call at most once per reply. At the start of guided measuring, show the matching measuring guide and continue with the first needed question in the same reply. Otherwise show cards when helpful or requested; do not repeat unchanged cards on each follow-up. Displaying a link does not validate measurements or mean its PDF is attached to this turn.",
-  strict: true,
-  parameters: {
-    type: "object",
-    properties: {
-      productPath: productPathSchema,
-      kinds: {
-        type: "array",
-        items: { type: "string", enum: kinds },
-        minItems: 1,
-        maxItems: 2,
-      },
-    },
-    required: ["productPath", "kinds"],
-    additionalProperties: false,
-  },
-} as const;
-
 function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("Product guides must be an object.");

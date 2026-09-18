@@ -507,10 +507,6 @@ test("model PDF reads validate refresh without widening link presentation or bro
     "kinds",
     "refresh",
   ]);
-  assert.deepEqual(plain(api.showGuidesToolDefinition.parameters.required), [
-    "productPath",
-    "kinds",
-  ]);
 });
 
 test("PDF URL validation requires an exact supported storefront or Shopify CDN path and clean version query", (t) => {

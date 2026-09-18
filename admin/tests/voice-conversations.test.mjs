@@ -455,12 +455,16 @@ test("text, exact voice captions and journey observations share one ordered hist
   const next = await conversation.beginTurn(id, textInput("What next?"));
   assert.deepEqual(
     next.history.map((entry) => entry.role),
-    ["user", "assistant", "user", "user", "user", "assistant", "user"],
+    ["user", "assistant", "user", "user", "user", "assistant", "user", "user"],
   );
   assert.deepEqual(
     next.history
       .map((entry) => entry.text)
-      .filter((text) => !text.startsWith("Untrusted")),
+      .filter(
+        (text) =>
+          !text.startsWith("Untrusted") &&
+          !text.startsWith("Current Roman shopping state"),
+      ),
     [
       "I want blackout.",
       "Which window?",
@@ -473,6 +477,10 @@ test("text, exact voice captions and journey observations share one ordered hist
   assert.match(
     next.history[3].text,
     /Untrusted storefront observations.*Blackout roller/,
+  );
+  assert.match(
+    next.history.at(-1).text,
+    /Current Roman shopping state.*"activeBlind":null.*"backgroundPage"/,
   );
   state = await conversation.getSnapshot(id);
   assert.equal(state.messages[2].id, width.id);
@@ -932,26 +940,13 @@ for (const widgetKinds of [
     }
   });
 
-test("combined voice products, guides and question persist after captions without crossing later customer replies", async () => {
+test("combined voice products and question persist after captions without crossing later customer replies", async () => {
   const session = await startVoice();
-  await caption(session, "Show this blind and its guides.", 0);
+  await caption(session, "Show me this blind.", 0);
   const turn = await conversation.beginTurn(id, textInput(""), session.id);
   const productIds = ["gid://shopify/Product/123"];
-  const productPath = "/products/shade";
-  const guides = [
-    {
-      kind: "fitting",
-      url: "https://hd-dev-single.myshopify.com/cdn/shop/files/fitting.pdf?v=123",
-    },
-  ];
   for (const [providerCallId, name, args, result] of [
     ["lookup", "lookup_catalog", { ids: productIds }, { productIds }],
-    [
-      "guides",
-      "get_product_guides",
-      { productPath },
-      { productIds: [], outcome: { status: "found", productPath, guides } },
-    ],
   ]) {
     const tool = await conversation.createToolInvocation(id, turn.assistantId, {
       providerCallId,
@@ -970,37 +965,24 @@ test("combined voice products, guides and question persist after captions withou
     text: "UNSPOKEN_BRIEFING",
     voiceId: session.id,
     presentation: { callId: "show-products", productIds },
-    guidePresentation: {
-      callId: "show-guides",
-      sourceCallId: "guides",
-      productPath,
-      kinds: ["fitting"],
-    },
     questionPresentation: {
       callId: "ask-question",
       question: "Which room?",
       answers: ["Bedroom", "Kitchen"],
     },
   });
-  const spoken = await caption(
-    session,
-    "Here is the blind and its fitting guide link.",
-    200,
-    "assistant",
-  );
+  const spoken = await caption(session, "Here is the blind.", 200, "assistant");
   const snapshot = await conversation.getSnapshot(id);
   const widget = snapshot.messages.at(-1);
   assert.equal(snapshot.messages.at(-2).id, spoken.id);
   assert.equal(widget.id, turn.assistantId);
   assert.deepEqual(
     widget.parts.map((part) => part.type),
-    ["products", "guides", "question"],
+    ["products", "question"],
   );
-  assert.deepEqual(widget.parts[1].guides, guides);
   assert.deepEqual(widget.parts[0].voiceReply, widget.parts[1].voiceReply);
-  assert.deepEqual(widget.parts[0].voiceReply, widget.parts[2].voiceReply);
   const history = await conversation.getModelHistory(id);
-  assert.match(history.at(-2).text, /"type":"guides"/);
+  assert.match(history.at(-2).text, /"type":"products"/);
   assert.deepEqual(history.at(-1), {
     role: "user",
     source: "roman_question",
@@ -1459,7 +1441,7 @@ test("a selected voice answer saves customer text, retires its question and leav
     },
   ]);
   assert.equal(snapshot.messages.at(-1).id, input.requestId);
-  assert.deepEqual((await conversation.getModelHistory(id)).at(-1), {
+  assert.deepEqual((await conversation.getModelHistory(id)).at(-2), {
     role: "user",
     text: "Bedroom",
   });
@@ -1472,6 +1454,100 @@ test("a selected voice answer saves customer text, retires its question and leav
   assert.equal(after.pendingRequestId, null);
   assert.equal(await database.conversationMessage.count(), messagesBefore + 1);
   assert.equal(await database.voiceTranscript.count(), captionsBefore);
+});
+
+test("voice product choices bind to a saved carousel, persist once and reconcile after voice ends", async () => {
+  const { session, question } = await questionDuringVoice();
+  const snapshot = await conversation.getSnapshot(id);
+  const message = snapshot.messages.find((row) =>
+    row.parts.some(
+      (part) =>
+        part.type === "question" && part.invocationId === question.invocationId,
+    ),
+  );
+  const choice = {
+    carouselId: randomUUID(),
+    productId: "gid://shopify/Product/123",
+    title: "Green roller blind",
+    productPath: "/products/green-roller",
+  };
+  await database.conversationMessage.update({
+    where: { id: message.id },
+    data: {
+      partsJson: JSON.stringify([
+        ...message.parts,
+        {
+          type: "products",
+          version: 1,
+          invocationId: choice.carouselId,
+          productIds: [choice.productId],
+        },
+      ]),
+    },
+  });
+  const input = { clientId, requestId: randomUUID(), ...choice };
+  for (const changed of [
+    { carouselId: randomUUID() },
+    { productId: "gid://shopify/Product/999" },
+  ])
+    await assert.rejects(
+      conversation.appendVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 409 },
+    );
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      clientId: randomUUID(),
+    }),
+    { status: 404 },
+  );
+  const receipt = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  assert.equal(receipt.created, true);
+  assert.deepEqual(receipt.productChoice, choice);
+  const accepted = await conversation.getSnapshot(id);
+  assert.equal(accepted.voice.status, "active");
+  assert.equal(accepted.busy, false);
+  assert.equal(load().latestQuestion(accepted.messages), undefined);
+  assert.deepEqual(accepted.messages.at(-1).parts, [
+    {
+      type: "text",
+      text: "Choose Green roller blind (/products/green-roller).",
+      productChoice: { ...choice, voiceId: session.id },
+    },
+  ]);
+  assert.deepEqual((await conversation.getModelHistory(id)).at(-1), {
+    role: "user",
+    text: receipt.answer,
+  });
+  for (const changed of [
+    { title: "Forged title" },
+    { productPath: "/products/different" },
+  ])
+    await assert.rejects(
+      conversation.findVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 400 },
+    );
+  await voice.closeVoiceSession(id, session.id, clientId);
+  assert.deepEqual(
+    await load().conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { ...receipt, created: false },
+  );
+  assert.equal(
+    await database.conversationMessage.count({
+      where: { id: input.requestId },
+    }),
+    1,
+  );
 });
 
 test("concurrent retries persist one answer receipt and a second choice cannot answer the same question", async () => {

@@ -1,8 +1,16 @@
-import type { ReactNode } from "react";
-import { parseProductGuideUrl } from "../../../shared/product-guides";
+import { useContext, type ReactNode } from "react";
+import { RomanViewContext } from "./views";
 import type { StorefrontNavigation } from "../navigation/shared";
-import { GuideLink } from "./GuideLink";
 import { readStoreSupport } from "../tools/store-support";
+
+/** PDF sources stay in model context and the admin audit, never customer links. */
+export function isPdfLink(url: string): boolean {
+  try {
+    return /\.pdf$/i.test(new URL(url, window.location.origin).pathname);
+  } catch {
+    return false;
+  }
+}
 
 export function StorefrontLink({
   url,
@@ -15,20 +23,15 @@ export function StorefrontLink({
   className?: string;
   children: ReactNode;
 }) {
-  try {
-    const guideUrl = parseProductGuideUrl(url, window.location.origin);
-    return (
-      <GuideLink url={guideUrl} className={className}>
-        {children}
-      </GuideLink>
-    );
-  } catch {
-    // Ordinary pages retain in-place navigation. Only verified guide locations
-    // and the native footer's exact support destination may leave the storefront.
-  }
+  const showView = useContext(RomanViewContext);
+  if (isPdfLink(url)) return null;
   let href: string | undefined;
   try {
     const target = new URL(url, window.location.origin);
+    // Product choice goes through Roman so a replacement can be confirmed.
+    // Old prose links and navigation events cannot bypass that conversation.
+    if (/(?:^|\/)(?:products|collections)(?:\/|$)/i.test(target.pathname))
+      return <span className={className}>{children}</span>;
     if (
       target.origin === window.location.origin &&
       /^https?:$/.test(target.protocol) &&
@@ -72,6 +75,15 @@ export function StorefrontLink({
         )
           return;
         event.preventDefault();
+        if (
+          showView &&
+          /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?cart\/?$/i.test(
+            new URL(href).pathname,
+          )
+        ) {
+          showView("cart");
+          return;
+        }
         void navigation.navigate(href);
       }}
     >

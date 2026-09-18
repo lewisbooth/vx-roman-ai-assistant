@@ -1393,6 +1393,39 @@ test("a selected answer supplies bounded factual context before one continuation
   assert.equal(app.timers.size, 0);
 });
 
+test("a chosen carousel product supplies quoted reference context before one safeguarded live continuation", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const choice = {
+    carouselId: "33333333-3333-4333-8333-333333333333",
+    productId: "gid://shopify/Product/123",
+    title: "Green roller blind",
+    productPath: "/products/green-roller",
+  };
+  const sending = provider.appendProductChoice(choice);
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].type, "session.thinking.append");
+  assert.match(
+    socket.sent[0].content,
+    /quoted customer reference data; verify the product/,
+  );
+  assert.match(socket.sent[0].content, /Green roller blind/);
+  socket.ack();
+  await flush();
+  assert.equal(socket.sent.length, 2);
+  assert.equal(socket.sent[1].type, "session.commentary.append");
+  assert.match(socket.sent[1].content, /replacement-confirmation rules/);
+  assert.match(socket.sent[1].content, /does not authorize cart actions/);
+  socket.ack();
+  await sending;
+  assert.deepEqual(app.events, []);
+  await assert.rejects(
+    provider.appendProductChoice({ ...choice, productPath: "/cart/add" }),
+  );
+  assert.equal(socket.sent.length, 2);
+});
+
 test("an unacknowledged or interrupted answer does not send a later continuation cue", async () => {
   for (const failure of ["timeout", "abort"]) {
     const app = setup();

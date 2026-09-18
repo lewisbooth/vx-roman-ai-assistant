@@ -1,6 +1,11 @@
 import { parseCatalogResult, type CatalogResult } from "../../shared/catalog";
 import { parseCatalogCall } from "../../shared/catalog-tools";
 import {
+  parseViewCall,
+  parseViewResult,
+  type ViewResult,
+} from "../../shared/assistant-view";
+import {
   parseNavigationCall,
   parseNavigationResult,
   type NavigationResult,
@@ -54,6 +59,7 @@ import {
 export type BrowserToolOutcome =
   | CatalogResult
   | NavigationResult
+  | ViewResult
   | CartToolResult
   | ApplyMeasurementsResult
   | ProductGuidesResult
@@ -98,33 +104,35 @@ export async function requestBrowserTool(
   signal: AbortSignal,
 ): Promise<BrowserToolOutcome> {
   const call =
-    name === "discover_guides"
-      ? {
-          name: "discover_guides" as const,
-          arguments: parseGuideLibraryCall(input),
-        }
-      : name === "get_store_support"
+    name === "show_view"
+      ? { name: "show_view" as const, arguments: parseViewCall(input) }
+      : name === "discover_guides"
         ? {
-            name: "get_store_support" as const,
-            arguments: parseStoreSupportCall(input),
+            name: "discover_guides" as const,
+            arguments: parseGuideLibraryCall(input),
           }
-        : name === "get_product_guides"
+        : name === "get_store_support"
           ? {
-              name: "get_product_guides" as const,
-              arguments: parseProductGuidesCall(input),
+              name: "get_store_support" as const,
+              arguments: parseStoreSupportCall(input),
             }
-          : name === "apply_measurements"
-            ? await resolveMeasurements(conversationId, input)
-            : name === "navigate"
-              ? {
-                  name: "navigate" as const,
-                  arguments: parseNavigationCall(input),
-                }
-              : isCartTool(name)
-                ? parseCartCall(name, input)
-                : isProductConfigurationTool(name)
-                  ? parseProductConfigurationCall(name, input)
-                  : parseCatalogCall(name, input);
+          : name === "get_product_guides"
+            ? {
+                name: "get_product_guides" as const,
+                arguments: parseProductGuidesCall(input),
+              }
+            : name === "apply_measurements"
+              ? await resolveMeasurements(conversationId, input)
+              : name === "navigate"
+                ? {
+                    name: "navigate" as const,
+                    arguments: parseNavigationCall(input),
+                  }
+                : isCartTool(name)
+                  ? parseCartCall(name, input)
+                  : isProductConfigurationTool(name)
+                    ? parseProductConfigurationCall(name, input)
+                    : parseCatalogCall(name, input);
   signal.throwIfAborted();
   if (waiting.has(conversationId))
     throw new Error("A storefront action is already running.");
@@ -229,7 +237,11 @@ export async function submitBrowserToolResult(
         : { error };
   } else {
     try {
-      if (context.name === "discover_guides") {
+      if (context.name === "show_view") {
+        outcome = parseViewResult(result);
+        if (outcome.view !== context.arguments.view)
+          throw new Error("The browser showed a different Roman view.");
+      } else if (context.name === "discover_guides") {
         outcome = parseGuideLibraryResult(result, context.origin);
         if (outcome.library !== context.arguments.library)
           throw new Error("The guide library belongs to another page.");
@@ -273,6 +285,7 @@ export async function submitBrowserToolResult(
               : [],
           ...(isCartTool(context.name) ||
           context.name === "navigate" ||
+          context.name === "show_view" ||
           context.name === "apply_measurements" ||
           context.name === "get_product_guides" ||
           context.name === "discover_guides" ||
@@ -283,6 +296,7 @@ export async function submitBrowserToolResult(
                   | CartToolResult
                   | ApplyMeasurementsResult
                   | NavigationResult
+                  | ViewResult
                   | ProductGuidesResult
                   | GuideLibraryResult
                   | StoreSupportResult

@@ -12,7 +12,7 @@ const bundle = await build({
       export { ROMAN_HANDOFF_GUIDANCE } from './admin/prompts/knowledge-base/handoff';
       export { ROMAN_PREAMBLE, ROMAN_WELCOME_INTRO, ROMAN_WELCOME_QUESTION } from './admin/prompts/shared.server';
       export { ROMAN_VOICE_BRIEFING_PROMPT, ROMAN_VOICE_OPENING_PROMPTS, romanVoicePrompt } from './admin/prompts/voice.server';
-      export { productGuidesToolDefinition, showGuidesToolDefinition } from './shared/product-guides';
+      export { productGuidesToolDefinition } from './shared/product-guides';
       export { catalogToolDefinitions } from './shared/catalog-tools';
       export { storeSupportToolDefinition } from './shared/store-support';
     `,
@@ -39,7 +39,6 @@ const {
   ROMAN_VOICE_OPENING_PROMPTS,
   romanVoicePrompt,
   productGuidesToolDefinition,
-  showGuidesToolDefinition,
   catalogToolDefinitions,
   storeSupportToolDefinition,
 } = module.exports;
@@ -241,15 +240,15 @@ test("both backend modes use concise card recommendations and optional answer ch
     assert.match(prompt, /Free-text and spoken answers are equally valid/);
     assert.match(
       prompt,
-      /Call ask_question after selecting any carousel or guide cards/,
+      /Call ask_question after selecting any carousel/,
     );
     assert.match(
       prompt,
-      /When it succeeds, keep a written text reply to a concise overview and do not end it with a question/,
+      /Keep other written text to a concise useful overview or confirmed outcome/,
     );
     assert.match(
       prompt,
-      /A voice briefing instead supplies the displayed question once, with its exact wording, for Roman to say after the concise overview/,
+      /A voice briefing supplies the displayed question once, with its exact wording, after that overview/,
     );
     assert.match(
       prompt,
@@ -282,7 +281,7 @@ test("both backend modes use concise card recommendations and optional answer ch
 test("text leaves a displayed question to its widget while voice says it once", () => {
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /When referring to a product without a carousel, link its name/,
+    /Refer to products by their verified names without Markdown links or raw URLs/,
   );
   assert.doesNotMatch(ROMAN_TEXT_PROMPT, /link each product name/);
   assert.match(
@@ -311,7 +310,7 @@ test("text leaves a displayed question to its widget while voice says it once", 
     live,
     /Delegate a choice-based clarification so its quick answers can appear/,
   );
-  assert.match(live, /carousels, on-screen answer choices or navigation/);
+  assert.match(live, /carousels, on-screen answer choices, Chat\/Cart\/Gallery views or navigation/);
   assert.match(
     live,
     /say its displayed question once, with its exact wording, after the overview/,
@@ -367,48 +366,38 @@ test("functional filters preserve unknown colour preferences and limited catalog
     );
     assert.match(
       prompt,
-      /A raw catalog count, casual product mention or unvetted choice is not enough/,
+      /A recommendation, even a single result, is not a customer selection/,
     );
   }
 });
 
-test("a selected sole recommendation opens its verified PDP before a follow-up in text and voice", () => {
-  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(
-      prompt,
-      /proactively open the product detail page in the same turn when either the customer explicitly selected or preferred one product, or you deliberately present exactly one specific, verified product as the sole recommendation/,
-    );
-    assert.match(
-      prompt,
-      /Navigate before continuing with a fitting or preference question/,
-    );
-    assert.match(
-      prompt,
-      /A raw catalog count, casual product mention or unvetted choice is not enough/,
-    );
-    assert.match(
-      prompt,
-      /do not navigate if it already identifies that product page/,
-    );
-    assert.match(
-      prompt,
-      /Respect requests to stay in chat, continue comparing or decline navigation/,
-    );
+test("explicit product choices load once and replacements require conversational confirmation in every channel", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
+    assert.match(prompt, /A recommendation, even a single result, is not a customer selection/);
+    assert.match(prompt, /With no active blind, load the customer's explicit choice without an extra confirmation/);
+    assert.match(prompt, /first call ask_question to name the proposed replacement with Yes, change blind and No, keep this blind/);
+    assert.match(prompt, /Keep the current blind unchanged until the customer confirms that replacement/);
+    assert.match(prompt, /declining preserves the current blind and configuration/);
+    assert.match(prompt, /do not carry old measurements or purchase consent into the replacement/);
+    assert.match(prompt, /not a manual page visit or hidden PDP alone/);
+    assert.match(prompt, /Ending the chat unloads that active blind/);
+    assert.doesNotMatch(prompt, /proactively open the product detail page|one deliberately selected, verified recommendation|When presenting exactly one specific selected recommendation/);
   }
-  assert.match(
-    ROMAN_TEXT_PROMPT,
-    /If presenting one selected recommendation, navigate to its verified PDP in that same turn before continuing with any fitting or preference question/,
-  );
-  const live = romanVoicePrompt("marin");
-  assert.match(
-    live,
-    /When presenting exactly one specific selected recommendation, delegate so Terra navigates to its verified PDP in that same turn/,
-  );
-  assert.match(
-    live,
-    /A raw single search result is not a selected recommendation/,
-  );
-  assert.match(live, /Respect a request to stay in chat or keep comparing/);
+  assert.match(ROMAN_TEXT_PROMPT, /A first choice still needs a successful navigate result even when that hidden PDP is already loaded/);
+  assert.match(ROMAN_TEXT_PROMPT, /Skip redundant navigation only when this blind is already active/);
+});
+
+test("recommendation discovery asks only missing room and requirements and preserves direct product intent", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /Before recommending products, establish which room the customer is shopping for and their main requirements/);
+    assert.match(prompt, /Reuse details already supplied; ask only for what is missing, one useful quick-answer question at a time/);
+    assert.match(prompt, /A room alone does not imply blackout, moisture resistance or another requirement/);
+    assert.match(prompt, /Do not run a fixed checklist or delay recommendations when the room and relevant needs are already clear/);
+    assert.match(prompt, /A direct request to choose or configure a specific blind, revisit known cards, or answer a factual question is not a new recommendation intake/);
+    assert.match(prompt, /A request to see more preserves the established room, requirements and filters rather than restarting intake/);
+    assert.doesNotMatch(prompt, /Search with what you already know instead of putting another question/);
+  }
+  assert.match(romanVoicePrompt("marin"), /Before new recommendations, establish the room and main requirements/);
 });
 
 test("all advisor channels keep browsing and configuration inside Roman and only show a requested cart", () => {
@@ -432,7 +421,7 @@ test("all advisor channels keep browsing and configuration inside Roman and only
     );
     assert.match(
       prompt,
-      /Show or navigate to the cart only when the customer explicitly asks to view it/,
+      /Use show_view to open Cart or Gallery only when the customer asks to see that view/,
     );
     assert.match(
       prompt,
@@ -519,7 +508,7 @@ test("text and voice backend guidance require original PDF evidence and stop uns
     );
     assert.match(
       prompt,
-      /Do not repeat unchanged guide cards on each follow-up/,
+      /Reuse established grounded steps, consulting originals again only when needed/,
     );
     assert.doesNotMatch(prompt, /cannot read the PDF|tools verify links only/);
   }
@@ -598,7 +587,7 @@ test("guide mismatches affect only the current requested measuring or fitting st
     );
     assert.match(
       prompt,
-      /matched to this product that are relevant to the current request/,
+      /Guides must match this product family and mount/,
     );
   }
   const live = romanVoicePrompt("marin");
@@ -719,10 +708,6 @@ test("on-demand guide loading separates reusable grounded steps from unseen or u
     productGuidesToolDefinition.description,
     /routine follow-ups can reuse instructions grounded in its prior verified read, without calling this tool on every reply or voice connection/,
   );
-  assert.match(
-    showGuidesToolDefinition.description,
-    /from this turn's read or the verified cached prior-read inventory/,
-  );
 });
 
 test("failed PDP guidance checks the relevant library without eager PDFs or bypassing product suitability", () => {
@@ -738,7 +723,7 @@ test("failed PDP guidance checks the relevant library without eager PDFs or bypa
       /If the returned text lacks a necessary illustrated detail, read a relevant PDF or explain what cannot be verified/,
       /Without a chosen product, use supported general guidance and clarification, but do not collect or apply product-specific order dimensions/,
       /Library sources and product-linked sources have separate provenance/,
-      /show_guides is only for PDP documents/,
+      /Library sources and product-linked sources have separate provenance/,
       /A valid library prior-read receipt supports already-grounded follow-ups for the same uninterrupted product visit without rereading originals/,
       /only after the relevant library also cannot establish the method should you explain the remaining limitation/,
     ])
@@ -769,75 +754,49 @@ test("measuring branches retain their source without allowing a repeated request
   }
 });
 
-test("first guide sharing has a brief introduction before its card and first question in the same reply", () => {
+test("the first guide introduces grounded help and its first question without PDF presentation", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(
-      prompt,
-      /establish the matching requested guide through a read or valid prior-read provenance, then give one short introduction before its guide card/,
-    );
-    assert.match(
-      prompt,
-      /"Let's walk through the measuring guide\." or "Let's walk through the fitting guide\."/,
-    );
-    assert.match(
-      prompt,
-      /For PDP sources call show_guides and ask the first needed step question in that same reply; do not spend a separate turn announcing the guide/,
-    );
-    assert.match(
-      prompt,
-      /Put this introduction in text before the card and question widget, and retain it in the voice briefing; do not repeat it on later steps/,
-    );
-    assert.match(
-      prompt,
-      /ordinary numeric question needs no extra prose beyond a first guide-sharing introduction when applicable/,
-    );
+    assert.match(prompt, /establish the matching requested guide through a read or valid prior-read provenance, then give one short introduction/);
+    assert.match(prompt, /"Let's walk through the measuring guide\." or "Let's walk through the fitting guide\."/);
+    assert.match(prompt, /Ask the first needed step question in that same reply; do not spend a separate turn announcing the guide/);
+    assert.match(prompt, /Put this introduction before the question widget, and retain it in the voice briefing; do not repeat it on later steps/);
+    assert.match(prompt, /ordinary numeric question needs no extra prose beyond a first guide introduction when applicable/);
+    assert.match(prompt, /Never display PDF links or cards/);
   }
-  assert.match(
-    romanVoicePrompt("marin"),
-    /once before its step instructions and question; omit that introduction on later steps/,
-  );
-  assert.match(
-    ROMAN_VOICE_BRIEFING_PROMPT,
-    /Retain the one short guide-sharing introduction when the flow's first matched guide is displayed, without repeating it at later steps or when switching library sources/,
-  );
+  assert.match(romanVoicePrompt("marin"), /once before its step instructions and question; omit that introduction on later steps/);
+  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Retain the one short guide introduction when the flow's first matched guide is established/);
 });
 
-test("library guide sharing waits for a matching family and does not restart the flow on every source or reply", () => {
+test("library guidance waits for a matching family and reuses sources without repeated links", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(prompt, /Resolve an unknown blind family or source match first; do not introduce or link a provisional guide while that choice is unresolved/);
-    assert.match(prompt, /On later steps, give only the next useful explanation or question; do not repeat the introduction or unchanged guide link/);
-    assert.match(prompt, /A changed relevant source may be linked once without restarting the introduction; show an unchanged link again only if the customer requests it/);
+    assert.match(prompt, /Resolve an unknown blind family or source match first; do not introduce a provisional guide while that choice is unresolved/);
+    assert.match(prompt, /On later steps, give only the next useful explanation or question/);
     assert.match(prompt, /A new reply, source lookup or voice restart does not restart this introduction/);
-    assert.doesNotMatch(prompt, /For a library source, share its verified page\/PDF Markdown link with/);
+    assert.match(prompt, /A valid library prior-read receipt supports already-grounded follow-ups/);
+    assert.doesNotMatch(prompt, /call show_library_guide|call show_guides|a Markdown link|source may be linked/);
   }
-  const live = romanVoicePrompt("marin");
-  assert.match(live, /Once the blind family and applicable source are established, start the flow/);
-  assert.match(live, /This applies to PDP and library sources alike: do not introduce a provisional guide while the blind family is unresolved/);
-  assert.match(live, /A source change or voice restart does not restart the introduction/);
+  assert.match(romanVoicePrompt("marin"), /This applies to PDP and library sources alike: do not introduce a provisional guide while the blind family is unresolved/);
 });
 
-test("library cards are canonical in both modes and source-link fallback stays neutral", () => {
+test("all channels keep original PDF evidence in the background without source-link narration", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(prompt, /After reading and matching a selected library PDF, call show_library_guide with its discovery and guide IDs/);
-    assert.match(prompt, /do not duplicate a successful card with a Markdown link/);
-    assert.doesNotMatch(prompt, /A library source uses its neutral Markdown link in place of a card/);
+    assert.match(prompt, /do not post PDF cards, inline guide links or raw PDF URLs/);
+    assert.match(prompt, /Read a selected original only for a new or uncertain detail, not each turn/);
+    assert.doesNotMatch(prompt, /show_library_guide|show_guides/);
   }
-  assert.match(ROMAN_TEXT_PROMPT, /Only when the customer specifically requests the source link and a card is unavailable/);
-  assert.match(ROMAN_TEXT_PROMPT, /put \[Measuring guide\]\(URL\) on its own paragraph, copying the verified URL exactly/);
-  assert.match(ROMAN_TEXT_PROMPT, /Never print a raw guide URL, use an "Open\/read\/load\/fetch\.\.\." link label or narrate document access/);
-  assert.match(ROMAN_TEXT_PROMPT, /the link is an optional reference, not a step the customer must complete/);
-  assert.match(romanVoicePrompt("marin"), /Do not tell the customer to open or read the guide as a routine step, or narrate loading or fetching it/);
+  assert.match(ROMAN_TEXT_PROMPT, /Do not output PDF links, guide cards, raw guide URLs or instructions to open\/read\/load a document/);
+  assert.match(romanVoicePrompt("marin"), /PDF links and cards are not shown; Roman uses the original source in the background/);
   assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Do not add instructions to open or read a guide; the customer can continue without opening it/);
-  assert.match(romanVoicePrompt("marin"), /the backend uses show_library_guide so the same source remains visible beside the voice transcript/);
 });
 
-test("an unresolved product choice keeps the active flow and offers the displayed products instead of generic capabilities", () => {
+test("carousel questions refine browsing while card buttons select products", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(prompt, /If the next unresolved step is choosing a product, call ask_question with the displayed products as answer choices/);
-    assert.match(prompt, /For three products, offer those three choices and A different blind/);
-    assert.match(prompt, /Keep the current measuring, fitting or shopping goal; do not replace this pending decision with the generic capability menu/);
-    assert.match(prompt, /If the customer already chose a product, continue its actual next step instead of asking them to choose again/);
-    assert.match(prompt, /Resolve a meaningful pending product, fit or configuration decision before suggesting a new task/);
+    assert.match(prompt, /The cards own product selection through Choose blind/);
+    assert.match(prompt, /Use ask_question for browsing or refinement, such as Show me more, Different colours or a useful unresolved requirement/);
+    assert.match(prompt, /never repeat displayed product names as answer choices/);
+    assert.match(prompt, /If a blind replacement awaits confirmation, that Yes\/No question takes priority over refinement/);
+    assert.match(prompt, /Keep the current measuring, fitting or shopping goal; do not replace ongoing browsing with the generic capability menu/);
+    assert.doesNotMatch(prompt, /For three products, offer those three choices|displayed products as answer choices/);
   }
 });
 
@@ -879,11 +838,11 @@ test("guided measuring checks relevant guide conditions before requesting dimens
   }
 });
 
-test("guided measuring shows the matching guide and collects one labelled reading in clear units", () => {
+test("guided measuring reads the matching guide and collects one labelled reading in clear units", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
-      /For PDP sources call show_guides and ask the first needed step question in that same reply/,
-      /Select only kinds read now or covered by valid prior-read provenance and matched to this product/,
+      /Ask the first needed step question in that same reply/,
+      /establish the matching requested guide through a read or valid prior-read provenance/,
       /Before requesting any numeric measurement, including clearance, use ask_question to offer "cm", "mm" and "in" unless the customer has already clearly supplied their units/,
       /call ask_measurement for one needed reading at a time with \{question, instructions, productPath, label, unit\}/,
       /verified current productPath, unit mm\/cm\/in and a precise label/,
@@ -964,7 +923,7 @@ test("numeric questions normally finish directly but preserve outcomes and instr
     );
     assert.match(
       prompt,
-      /Finish necessary reads, checks and guide cards before calling it; an ordinary numeric question needs no extra prose/,
+      /Finish necessary reads and checks before calling it; an ordinary numeric question needs no extra prose/,
     );
     assert.match(
       prompt,
@@ -1417,7 +1376,7 @@ test("substantive completions invite one natural next step without inventing mea
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /If a widget cannot be presented, keep the response concise and let the application supply its fallback choices; do not add another written question/,
+    /Leave the written question to the answer widget, including an application-supplied fallback; do not add a second question in the prose/,
   );
   assert.match(
     romanVoicePrompt("marin"),
@@ -1563,7 +1522,7 @@ test("confirmed input entry stays concise but never launders unsupported fitting
   );
 });
 
-test("guide tool descriptions distinguish reading current documents from displaying their links", () => {
+test("guide read description preserves source selection, reuse and safety", () => {
   const read = productGuidesToolDefinition.description;
   assert.match(
     read,
@@ -1593,20 +1552,19 @@ test("guide tool descriptions distinguish reading current documents from display
     "boolean",
   );
   assert.doesNotMatch(read, /does not read the PDFs/);
-  assert.match(
-    showGuidesToolDefinition.description,
-    /do not repeat unchanged cards on each follow-up/,
-  );
-  assert.match(
-    showGuidesToolDefinition.description,
-    /Displaying a link does not validate measurements or mean its PDF is attached to this turn/,
-  );
-  assert.match(
-    showGuidesToolDefinition.description,
-    /Choose only verified kinds matched to that exact product and relevant to the current request/,
-  );
-  assert.match(
-    showGuidesToolDefinition.description,
-    /At the start of guided measuring, show the matching measuring guide and continue with the first needed question in the same reply/,
-  );
+});
+
+
+test("the canonical shopping policy appears once in each advisor channel and retains navigation edge cases", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
+    assert.equal(prompt.split("Visible views and background pages have separate owners.").length - 1, 1);
+    assert.equal(prompt.split("When the customer chooses a different blind while one is active").length - 1, 1);
+    assert.doesNotMatch(prompt, /## Navigation/);
+    assert.match(prompt, /A first choice still needs a successful navigate result even when that hidden PDP is already loaded/);
+    assert.match(prompt, /Skip redundant navigation only when this blind is already active and the latest supplied page observation identifies its PDP/);
+    assert.match(prompt, /Choosing the already active blind needs no replacement confirmation/);
+    assert.match(prompt, /Never guess a product URL/);
+    assert.match(prompt, /return to the store by closing Roman/);
+    assert.match(prompt, /Model navigation rejects redirects and unsafe theme swaps without reloading/);
+  }
 });

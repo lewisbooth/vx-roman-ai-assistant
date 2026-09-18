@@ -1,4 +1,5 @@
 .cache
+.nvimlog
 build
 node_modules
 .git

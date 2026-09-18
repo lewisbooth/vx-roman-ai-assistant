@@ -10,10 +10,15 @@ const bundle = await build({
     contents: `
       import { createRoot } from 'react-dom/client';
       import { flushSync } from 'react-dom';
+      import { useSyncExternalStore } from 'react';
       import { CartStage } from './frontend/src/chat/CartStage';
+      function Cart({navigation, session}) {
+        const page = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot);
+        return <CartStage navigation={navigation} session={session} visible={page.cartVisible} />;
+      }
       export function mount(container, navigation, session) {
         const root = createRoot(container);
-        flushSync(() => root.render(<CartStage navigation={navigation} session={session} />));
+        flushSync(() => root.render(<Cart navigation={navigation} session={session} />));
         return () => flushSync(() => root.unmount());
       }
     `,
@@ -54,11 +59,11 @@ async function until(condition, message) {
   assert.fail(message);
 }
 
-function setup(t, path = "/products/linen") {
+function setup(t, view = "chat") {
   const dom = new JSDOM(
     "<!doctype html><roman-ai-assistant></roman-ai-assistant>",
     {
-      url: `https://shop.example${path}`,
+      url: "https://shop.example/products/linen",
       runScripts: "outside-only",
       pretendToBeVisual: true,
     },
@@ -86,7 +91,12 @@ function setup(t, path = "/products/linen") {
     );
   const navigationListeners = new Set(),
     sessionListeners = new Set();
-  let page = { url: window.location.href, pending: false, error: null };
+  let page = {
+    url: window.location.href,
+    pending: false,
+    error: null,
+    cartVisible: view === "cart",
+  };
   let state = { conversation: { messages: [], tools: [] } };
   const navigation = {
     getSnapshot: () => page,
@@ -128,9 +138,8 @@ function setup(t, path = "/products/linen") {
     dispose,
     navigationListeners,
     sessionListeners,
-    navigate(path, pending = false) {
-      if (!pending) window.history.pushState({}, "", path);
-      page = { ...page, url: window.location.href, pending };
+    show(view) {
+      page = { ...page, cartVisible: view === "cart" };
       navigationListeners.forEach((fn) => fn());
     },
     update(conversation) {
@@ -143,7 +152,7 @@ function setup(t, path = "/products/linen") {
   };
 }
 
-test("cart appears and reads only on a requested cart page, never on product additions", async (t) => {
+test("cart appears and reads only on the requested Roman cart view, never on product additions", async (t) => {
   const ctx = setup(t);
   ctx.update({
     messages: [
@@ -153,7 +162,7 @@ test("cart appears and reads only on a requested cart page, never on product add
   await delay(20);
   assert.equal(ctx.calls.length, 0);
   assert.equal(ctx.container.textContent, "");
-  ctx.navigate("/cart");
+  ctx.show("cart");
   await until(() => ctx.calls.length === 1, "Requested cart should read once");
   assert.equal(ctx.calls[0].url, "https://shop.example/cart.js");
   assert.equal(ctx.calls[0].options.credentials, "same-origin");
@@ -173,7 +182,7 @@ test("cart appears and reads only on a requested cart page, never on product add
 });
 
 test("streaming prose does not repeatedly reload an unchanged cart", async (t) => {
-  const ctx = setup(t, "/cart");
+  const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial cart read");
   ctx.calls[0].complete();
   await until(
@@ -196,7 +205,7 @@ test("streaming prose does not repeatedly reload an unchanged cart", async (t) =
 });
 
 test("native cart changes and completed cart tools refresh the display without racing a mutation", async (t) => {
-  const ctx = setup(t, "/cart");
+  const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial cart read");
   ctx.calls[0].complete();
   await until(
@@ -249,9 +258,9 @@ test("native cart changes and completed cart tools refresh the display without r
 });
 
 test("leaving cart cancels its read and a late response cannot overwrite a future cart", async (t) => {
-  const ctx = setup(t, "/cart");
+  const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial request started");
-  ctx.navigate("/products/another");
+  ctx.show("chat");
   await until(
     () => ctx.calls[0].options.signal.aborted,
     "Obsolete read aborted",
@@ -259,7 +268,7 @@ test("leaving cart cancels its read and a late response cannot overwrite a futur
   ctx.calls[0].complete();
   await delay(10);
   assert.equal(ctx.container.textContent, "");
-  ctx.navigate("/cart");
+  ctx.show("cart");
   await until(
     () => ctx.calls.length === 2,
     "Returning starts a fresh cart read",
@@ -278,7 +287,7 @@ test("leaving cart cancels its read and a late response cannot overwrite a futur
 });
 
 test("malformed currency becomes a retryable cart error, not a conversation render crash", async (t) => {
-  const ctx = setup(t, "/cart");
+  const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial request started");
   ctx.calls[0].complete({ ...exampleCart, currency: "not-a-currency" });
   await until(
@@ -295,7 +304,7 @@ test("malformed currency becomes a retryable cart error, not a conversation rend
 });
 
 test("unmount cancels pending cart work and removes store subscriptions", async (t) => {
-  const ctx = setup(t, "/cart");
+  const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial request started");
   ctx.dispose();
   assert.equal(ctx.calls[0].options.signal.aborted, true);

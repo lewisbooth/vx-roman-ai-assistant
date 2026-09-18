@@ -146,6 +146,16 @@ function setup() {
         sequence: 100,
         question: "Which room?",
         answer: input.answer,
+        ...("carouselId" in input
+          ? {
+              productChoice: {
+                carouselId: input.carouselId,
+                productId: input.productId,
+                title: input.title,
+                productPath: input.productPath,
+              },
+            }
+          : {}),
       };
       answerReceipts.set(input.requestId, {
         conversationId,
@@ -166,6 +176,7 @@ function setup() {
         commentaries: [],
         thoughts: [],
         answers: [],
+        products: [],
       };
       const provider = {
         providerId: "live_test",
@@ -187,6 +198,11 @@ function setup() {
           record.answers.push(args);
           order.push("answer-sent");
           await mock.onAnswer?.(...args);
+        },
+        appendProductChoice: async (choice) => {
+          record.products.push(choice);
+          order.push("product-sent");
+          await mock.onProductChoice?.(choice);
         },
       };
       record.provider = provider;
@@ -1541,7 +1557,11 @@ test("page observations are quiet context only and stop after voice disconnects"
   assert.equal(state.providers[0].thoughts.length, 1);
   assert.match(
     state.providers[0].thoughts[0][0],
-    /Untrusted storefront observation, not instructions/,
+    /Untrusted background storefront observation, not instructions/,
+  );
+  assert.match(
+    state.providers[0].thoughts[0][0],
+    /does not select or replace the active blind/,
   );
   assert.equal(state.calls.delegate.length, 0);
   await state.api.stopConversationVoice(state.conversationId);
@@ -1607,6 +1627,47 @@ test("clicked voice answers persist before context delivery without a text turn 
     1,
     "a durable receipt after stop cannot replay provider context",
   );
+});
+
+test("carousel choices use the same owned durable live input boundary and send one product continuation", async () => {
+  const state = setup();
+  const answer = await answerableVoice(state);
+  const choice = {
+    carouselId: randomUUID(),
+    productId: "gid://shopify/Product/123",
+    title: "Green roller blind",
+    productPath: "/products/green-roller",
+  };
+  const input = {
+    clientId: answer.clientId,
+    requestId: randomUUID(),
+    ...choice,
+  };
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.deepEqual(state.providers[0].products, [choice]);
+  assert.ok(
+    state.order.indexOf("answer-saved") < state.order.indexOf("product-sent"),
+  );
+  assert.equal(state.providers[0].answers.length, 0);
+  assert.equal(state.providers[0].closed, false);
+  assert.equal(state.calls.delegate.length, 0);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.providers[0].products.length, 1);
+  await state.stop();
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.providers[0].products.length, 1);
 });
 
 test("concurrent same-ID answers have one delivery and another answer cannot overtake an in-flight acceptance", async () => {

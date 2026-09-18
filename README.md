@@ -12,7 +12,7 @@ Two React Router apps with Tailwind CSS 4 share one npm installation and lockfil
 | [admin/](admin/README.md)                                             | Embedded admin console, authentication, webhooks and backend | Local Docker; same image on Azure later   |
 | [extensions/vx-roman-ai-assistant/](extensions/vx-roman-ai-assistant) | Liquid app embed and asset loader                            | Shopify                                   |
 
-Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation and voice models persist customer chat and captions. AI credentials and privileged calls belong on the admin/backend server. OpenAI hosts the models; browser voice audio travels directly over WebRTC. Roman stores captions, not audio. Start voice explicitly after a full page load; in-place navigation and closing the assistant retain an active connection.
+Root `shared/` contains browser-safe code used by both apps; `prisma/` owns persistence and migrations. Prisma's `Session` stores Shopify authentication; separate conversation and voice models persist customer chat and captions. AI credentials and privileged calls belong on the admin/backend server. OpenAI hosts the models; browser voice audio travels directly over WebRTC. Roman stores captions, not audio. Opening Roman attempts voice by default, subject to microphone permission; ending voice opts into text for this tab. In-place navigation, internal Chat/Cart/Gallery views and closing the assistant retain an active connection.
 
 ## Setup and development
 
@@ -70,6 +70,8 @@ After adding the app-proxy scope, open Roman in each development store's Shopify
 **Run the admin/backend separately** using the [Docker instructions](admin/README.md). It runs locally now; the same image can run on one Azure VM later. Shopify CLI does not host that server. Local Docker development uses an HTTPS tunnel, matching `SHOPIFY_APP_URL` in `.env`, and ignored `shopify.app.local.toml` selected with `shopify app config use local`. Publish that configuration explicitly with `npm run deploy -- --config local`; keep Docker and the tunnel running while using the embedded admin. The checked-in `shopify.app.toml` retains placeholder URLs until a stable host is available. Retain the database volume across deployments. Pushing to GitHub alone publishes neither app.
 
 ### Roll back the fullscreen experiment
+
+The refinement starting point is also preserved: source tag `roman-before-fullscreen-refinement-20260918` (`937c303`), Docker image `roman-ai-admin:before-fullscreen-refinement-20260918`, and Shopify version `vx-roman-ai-assistant-20260917-fullscreen`. Use these names in the commands below to restore the first fullscreen demo instead of the older sidebar.
 
 The source tag `roman-before-fullscreen-20260917` preserves the previous assistant at `4029e35`. The previous Docker image is retained locally as `roman-ai-admin:before-fullscreen-20260917`. No database schema changed; retain the current volume and customer conversations.
 

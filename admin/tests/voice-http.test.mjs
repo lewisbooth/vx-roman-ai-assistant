@@ -534,6 +534,46 @@ test("voice answer authorizes independently, sends only a validated selection an
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), ORIGIN);
 });
 
+test("voice product choices accept a bounded carousel reference and reject extra or unsafe fields", async () => {
+  const choice = {
+    clientId: CLIENT_ID,
+    requestId: REQUEST_ID,
+    carouselId: ANSWER.questionId,
+    productId: "gid://shopify/Product/123",
+    title: "Green roller blind",
+    productPath: "/products/green-roller",
+  };
+  const env = setup();
+  assert.equal(
+    (await run(env, "answers", request("answers", { body: choice }))).status,
+    200,
+  );
+  assert.deepEqual(env.calls.answers, [[ID, VOICE_ID, choice]]);
+  for (const changed of [
+    { productPath: "/cart/add" },
+    { productPath: "https://foreign.test/products/example" },
+    { title: "x".repeat(201) },
+    { productId: "123" },
+    { carouselId: "bad" },
+    { questionId: ANSWER.questionId },
+    { confirmed: true },
+    { clientId: "bad" },
+  ]) {
+    const invalid = setup();
+    assert.equal(
+      (
+        await run(
+          invalid,
+          "answers",
+          request("answers", { body: { ...choice, ...changed } }),
+        )
+      ).status,
+      400,
+    );
+    assert.equal(invalid.calls.answers.length, 0);
+  }
+});
+
 test("voice answers reject forged fields, invalid IDs and non-offered input shapes before service work", async () => {
   for (const body of [
     {},

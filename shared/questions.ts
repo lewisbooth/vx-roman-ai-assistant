@@ -1,4 +1,5 @@
 import type { ConversationMessage } from "./conversation";
+import type { ProductChoice } from "./product-choice";
 import { parseProductPath, productPathSchema } from "./product-path";
 
 // Accepted for answers and durable receipts from already-open clients. New
@@ -24,6 +25,10 @@ export interface VoiceAnswerInput extends QuestionAnswerReference {
   answer: string;
 }
 
+export type VoiceSelectionInput =
+  | Omit<VoiceAnswerInput, "voiceId">
+  | ({ clientId: string; requestId: string } & ProductChoice);
+
 export interface QuestionSelection {
   question: string;
   answers: string[];
@@ -43,7 +48,7 @@ export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Use an answer widget for every completed substantive reply: choose a contextual clarification or next step, including after a flow completes, without requiring a catalog call or completed action. Fall back to Help me measure, Explore products and Find my style when no more specific next action fits. Use ask_measurement for an individual guided numeric measurement. For open-ended details, offer useful examples or a Not sure choice without limiting typed or spoken answers; never invent numeric readings or imply an action was approved. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. After product suggestions, give a brief overview, show the selected carousel, then use this tool for the next useful choice instead of duplicating product descriptions in a long list. Call once per reply, choosing either ask_question or ask_measurement. When this tool succeeds, keep a written text reply to its concise overview and do not end it with a question, repeat this question, or add a differently worded follow-up: the widget owns the one written question. If neither answer-request tool succeeds, keep the written reply to the useful outcome; the application supplies fallback choices without another written question. In a voice briefing, provide this exact question once after the overview for Roman to say aloud, without adding or rewording another question. The customer can answer by clicking, speaking or writing their own reply. Answers are customer input; the widget does not execute actions or bypass action-specific safeguards.",
+    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Use an answer widget for every completed substantive reply: choose a contextual clarification or next step, including after a flow completes, without requiring a catalog call or completed action. Fall back to Help me measure, Explore products and Find my style when no more specific next action fits. Use ask_measurement for an individual guided numeric measurement. For open-ended details, offer useful examples or a Not sure choice without limiting typed or spoken answers; never invent numeric readings or imply an action was approved. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. Before new recommendations, ask the missing room or main requirements unless already known. After product suggestions, give a brief overview, show the carousel, then use this tool for refinement such as Show me more or Different colours. The cards' Choose blind buttons select products; do not list those product names again as answers. If a customer chooses a different active blind, use Yes, change blind and No, keep this blind before replacement. Call once per reply, choosing either ask_question or ask_measurement. When this tool succeeds, keep a written text reply to its concise overview and do not end it with a question, repeat this question, or add a differently worded follow-up: the widget owns the one written question. If neither answer-request tool succeeds, keep the written reply to the useful outcome; the application supplies fallback choices without another written question. In a voice briefing, provide this exact question once after the overview for Roman to say aloud, without adding or rewording another question. The customer can answer by clicking, speaking or writing their own reply. Answers are customer input; the widget does not execute actions or bypass action-specific safeguards.",
   strict: true,
   parameters: {
     type: "object",

@@ -10,8 +10,6 @@ import {
 } from "../../shared/store-support";
 import {
   parseLibrarySourceReceipt,
-  parseLibraryGuideSelection,
-  selectLibraryGuide,
   readBoundLibrarySource,
   type BoundLibrarySource,
   type LibrarySourceReceipt,
@@ -43,15 +41,27 @@ import type {
   ToolClaimInput,
 } from "../../shared/conversation";
 import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
+import { activeProduct } from "../../shared/active-product";
 import {
   isQuestionAnswer,
   latestQuestion,
   parseQuestionAnswerReference,
   parseQuestionPart,
   parseQuestionSelection,
-  type VoiceAnswerInput,
+  type VoiceSelectionInput,
 } from "../../shared/questions";
+import {
+  parseProductChoiceReference,
+  parseProductChoice,
+  productChoiceText,
+  type ProductChoice,
+} from "../../shared/product-choice";
 import { parseCatalogCall } from "../../shared/catalog-tools";
+import {
+  parseViewCall,
+  parseViewResult,
+  type ViewResult,
+} from "../../shared/assistant-view";
 import {
   parseNavigationCall,
   parseNavigationResult,
@@ -87,7 +97,6 @@ import { parseVoiceEventPart } from "../../shared/voice";
 import {
   parseProductGuidesCall,
   parseProductGuidesResult,
-  parseGuideSelection,
   parseGuidePart,
   type ProductGuidesResult,
 } from "../../shared/product-guides";
@@ -109,8 +118,6 @@ import type { ModelMessage } from "./history.server";
 import {
   parseProductSelection,
   type ProductPresentation,
-  type GuidePresentation,
-  type LibraryGuidePresentation,
   type QuestionPresentation,
   type CachedGuideSource,
 } from "./presentation.server";
@@ -160,6 +167,14 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
         part.questionAnswer !== undefined
       ) {
         parseQuestionAnswerReference(part.questionAnswer);
+        continue;
+      }
+      if (
+        message.role === "user" &&
+        Object.keys(part).length === 3 &&
+        part.productChoice !== undefined
+      ) {
+        parseProductChoiceReference(part.productChoice);
         continue;
       }
     }
@@ -250,6 +265,7 @@ function storedBrowserCall(
 ): { name: BrowserToolName; arguments: Record<string, unknown> } {
   if (name === "navigate")
     return { name, arguments: parseNavigationCall(input) };
+  if (name === "show_view") return { name, arguments: parseViewCall(input) };
   if (name === "get_product_guides")
     return { name, arguments: parseProductGuidesCall(input) };
   if (name === "discover_guides")
@@ -583,6 +599,7 @@ function requireActive(conversation: Conversation) {
 }
 
 function modelHistory(conversation: StoredConversation): ModelMessage[] {
+  const timeline = conversationTimeline(conversation);
   const recentCartResults = conversation.toolInvocations
     .filter(
       (tool) =>
@@ -592,7 +609,7 @@ function modelHistory(conversation: StoredConversation): ModelMessage[] {
         (tool.status === "complete" || tool.status === "failed"),
     )
     .slice(-8);
-  return conversationTimeline(conversation).flatMap((message) => {
+  const history = timeline.flatMap((message) => {
     if (message.status === "pending") return [];
     const content = message.parts;
     const text = (message.status === "complete" ? content : [])
@@ -674,6 +691,30 @@ function modelHistory(conversation: StoredConversation): ModelMessage[] {
         })),
     ];
   });
+  const backgroundPage = timeline
+    .flatMap((message) => message.parts)
+    .filter((part) => part.type === "page_view" || part.type === "navigation")
+    .at(-1);
+  // Keep the selected blind explicit at the tail so a long voice-history
+  // truncation cannot turn the currently hidden PDP into a fresh selection.
+  if (backgroundPage)
+    history.push({
+      role: "user",
+      text: `Current Roman shopping state (application state, not a new customer request; quoted titles and paths are reference data): ${JSON.stringify(
+        {
+          activeBlind:
+            activeProduct({
+              status: conversation.status === "active" ? "active" : "ended",
+              messages: timeline,
+            }) ?? null,
+          backgroundPage: {
+            title: backgroundPage.title,
+            path: backgroundPage.path,
+          },
+        },
+      )}. Only activeBlind is selected for this conversation. Background page observations alone never select or replace a blind.`,
+    });
+  return history;
 }
 
 function tokenHash(token: string): string {
@@ -828,7 +869,7 @@ export async function getModelHistory(id: string) {
   return modelHistory(await loadConversation(prisma, id));
 }
 
-type VoiceQuestionAnswerInput = Omit<VoiceAnswerInput, "voiceId">;
+type VoiceQuestionAnswerInput = VoiceSelectionInput;
 
 export interface VoiceQuestionAnswerReceipt {
   created: boolean;
@@ -836,6 +877,7 @@ export interface VoiceQuestionAnswerReceipt {
   sequence: number;
   question: string;
   answer: string;
+  productChoice?: ProductChoice;
 }
 
 function validateVoiceQuestionAnswer(
@@ -851,21 +893,64 @@ function validateVoiceQuestionAnswer(
     !input ||
     typeof input !== "object" ||
     Array.isArray(input) ||
-    Object.keys(input).length !== 4 ||
     typeof input.clientId !== "string" ||
     !uuidPattern.test(input.clientId) ||
     typeof input.requestId !== "string" ||
-    !uuidPattern.test(input.requestId) ||
-    typeof input.questionId !== "string" ||
-    !uuidPattern.test(input.questionId) ||
-    typeof input.answer !== "string" ||
-    !input.answer.trim() ||
-    input.answer.length > 80
+    !uuidPattern.test(input.requestId)
   )
     throw new ConversationError(
       400,
       "Choose a valid answer to Roman's question.",
     );
+  try {
+    if ("carouselId" in input) {
+      if (Object.keys(input).length !== 6)
+        throw new Error("Invalid product selection.");
+      parseProductChoice({
+        carouselId: input.carouselId,
+        productId: input.productId,
+        title: input.title,
+        productPath: input.productPath,
+      });
+    } else if (
+      Object.keys(input).length !== 4 ||
+      typeof input.questionId !== "string" ||
+      !uuidPattern.test(input.questionId) ||
+      typeof input.answer !== "string" ||
+      !input.answer.trim() ||
+      input.answer.length > 80
+    )
+      throw new Error("Invalid selected answer.");
+  } catch {
+    throw new ConversationError(
+      400,
+      "Choose a valid answer or carousel product.",
+    );
+  }
+}
+
+function selectedCarouselProduct(
+  conversation: StoredConversation,
+  input: ProductChoice,
+): ProductChoice {
+  const found = conversation.messages.some(
+    (message) =>
+      message.status === "complete" &&
+      ["assistant", "context"].includes(message.role) &&
+      parts(message, conversation.origin).some(
+        (part) =>
+          part.type === "products" &&
+          part.invocationId === input.carouselId &&
+          part.productIds.includes(input.productId),
+      ),
+  );
+  if (!found)
+    throw new ConversationError(
+      409,
+      "Choose a product shown in this conversation's carousel.",
+    );
+  const { carouselId, productId, title, productPath } = input;
+  return { carouselId, productId, title, productPath };
 }
 
 async function voiceQuestionAnswerReceipt(
@@ -896,6 +981,29 @@ async function voiceQuestionAnswerReceipt(
       ? parts(existing, conversation.origin)
       : [];
   const part = saved[0];
+  if ("carouselId" in input) {
+    const choice = selectedCarouselProduct(conversation, input);
+    if (
+      !existing ||
+      saved.length !== 1 ||
+      part?.type !== "text" ||
+      part.text !== productChoiceText(choice) ||
+      JSON.stringify(part.productChoice) !==
+        JSON.stringify({ ...choice, voiceId })
+    )
+      throw new ConversationError(
+        400,
+        "This request ID was already used for a different selection.",
+      );
+    return {
+      created: false,
+      messageId: existing.id,
+      sequence: existing.sequence,
+      question: "",
+      answer: part.text,
+      productChoice: choice,
+    };
+  }
   if (
     !existing ||
     saved.length !== 1 ||
@@ -982,10 +1090,15 @@ export async function appendVoiceQuestionAnswer(
         409,
         "Wait for Roman's current reply before choosing an answer.",
       );
+    const choice =
+      "carouselId" in input
+        ? selectedCarouselProduct(conversation, input)
+        : undefined;
     const question = latestQuestion(conversationTimeline(conversation));
     if (
-      question?.invocationId !== input.questionId ||
-      !isQuestionAnswer(question, input.answer)
+      !("carouselId" in input) &&
+      (question?.invocationId !== input.questionId ||
+        !isQuestionAnswer(question, input.answer))
     )
       throw new ConversationError(
         409,
@@ -995,7 +1108,8 @@ export async function appendVoiceQuestionAnswer(
       (message) =>
         message.role === "user" &&
         parts(message, conversation.origin).some(
-          (part) => part.type === "text" && part.questionAnswer,
+          (part) =>
+            part.type === "text" && (part.questionAnswer || part.productChoice),
         ),
     ).length;
     if (answerCount >= maxVoiceQuestionAnswers)
@@ -1028,8 +1142,11 @@ export async function appendVoiceQuestionAnswer(
         partsJson: JSON.stringify([
           {
             type: "text",
-            text: input.answer,
-            questionAnswer: { questionId: input.questionId, voiceId },
+            text:
+              "carouselId" in input ? productChoiceText(input) : input.answer,
+            ...("carouselId" in input
+              ? { productChoice: { ...choice, voiceId } }
+              : { questionAnswer: { questionId: input.questionId, voiceId } }),
           },
         ]),
         createdAt: now,
@@ -1040,8 +1157,9 @@ export async function appendVoiceQuestionAnswer(
       created: true,
       messageId: input.requestId,
       sequence: conversation.nextSequence,
-      question: question.question,
-      answer: input.answer,
+      question: choice ? "" : (question?.question ?? ""),
+      answer: "carouselId" in input ? productChoiceText(input) : input.answer,
+      ...(choice ? { productChoice: choice } : {}),
     };
   });
 }
@@ -1053,6 +1171,7 @@ export async function getBrowserToolContext(id: string, invocationId: string) {
     !isCartTool(tool.name) &&
     ![
       "navigate",
+      "show_view",
       "search_products",
       "get_product",
       "lookup_catalog",
@@ -1393,8 +1512,6 @@ export async function finishTurn(
     serviceTier?: string;
     voiceId?: string;
     presentation?: ProductPresentation;
-    guidePresentation?: GuidePresentation;
-    libraryGuidePresentation?: LibraryGuidePresentation;
     questionPresentation?: QuestionPresentation;
     cachedGuideSource?: CachedGuideSource;
     resumeQuestionId?: string;
@@ -1533,154 +1650,6 @@ export async function finishTurn(
           : {}),
       });
     }
-    if (result.guidePresentation && result.libraryGuidePresentation)
-      throw new ConversationError(
-        400,
-        "Select one guide presentation per reply.",
-      );
-    if (result.status === "complete" && result.guidePresentation) {
-      const selected = result.guidePresentation;
-      let selection;
-      try {
-        selection = parseGuideSelection({
-          productPath: selected.productPath,
-          kinds: selected.kinds,
-        });
-      } catch {
-        throw new ConversationError(400, "Invalid guide selection.");
-      }
-      if (
-        typeof selected.callId !== "string" ||
-        !selected.callId ||
-        selected.callId.length > 200 ||
-        typeof selected.sourceCallId !== "string" ||
-        !selected.sourceCallId ||
-        selected.sourceCallId.length > 200
-      )
-        throw new ConversationError(400, "Invalid guide presentation source.");
-      const found = guideSourceResult(
-        conversation,
-        assistantId,
-        selected.sourceCallId,
-        selection.productPath,
-        result.cachedGuideSource,
-      );
-      if (
-        selection.kinds.some(
-          (kind) => !found.guides.some((guide) => guide.kind === kind),
-        )
-      )
-        throw new ConversationError(
-          400,
-          "Select only verified guide kinds for this product.",
-        );
-      const presentation = await transaction.toolInvocation.create({
-        data: {
-          id: randomUUID(),
-          conversationId: id,
-          assistantId,
-          providerCallId: selected.callId,
-          name: "show_guides",
-          argumentsJson: JSON.stringify({
-            ...selection,
-            sourceCallId: selected.sourceCallId,
-          }),
-          status: "complete",
-          completedAt: new Date(),
-        },
-      });
-      content.push(
-        parseGuidePart(
-          {
-            type: "guides",
-            version: 1,
-            invocationId: presentation.id,
-            productPath: selection.productPath,
-            guides: selection.kinds.map((kind) =>
-              found.guides.find((guide) => guide.kind === kind)!,
-            ),
-            ...(message.role === "context" && result.voiceId
-              ? {
-                  voiceReply: {
-                    voiceId: result.voiceId,
-                    afterSequence: conversation.nextSequence,
-                  },
-                }
-              : {}),
-          },
-          conversation.origin,
-        ),
-      );
-    }
-    if (result.status === "complete" && result.libraryGuidePresentation) {
-      const selected = result.libraryGuidePresentation;
-      let selection;
-      let resolved;
-      try {
-        selection = parseLibraryGuideSelection({
-          discoveryId: selected.discoveryId,
-          guideId: selected.guideId,
-        });
-        resolved = selectLibraryGuide(id, conversation.origin, selection);
-      } catch {
-        throw new ConversationError(
-          400,
-          "Select a previously read library PDF from this conversation.",
-        );
-      }
-      if (
-        typeof selected.callId !== "string" ||
-        !selected.callId ||
-        selected.callId.length > 200
-      )
-        throw new ConversationError(
-          400,
-          "Invalid library guide presentation call ID.",
-        );
-      const found = verifiedLibrarySource(
-        conversation,
-        assistantId,
-        resolved.source,
-      );
-      const guide = found.guides.find(({ id }) => id === selection.guideId);
-      if (!guide || guide.url !== resolved.guide.url)
-        throw new ConversationError(
-          400,
-          "The library guide does not match its source.",
-        );
-      const presentation = await transaction.toolInvocation.create({
-        data: {
-          id: randomUUID(),
-          conversationId: id,
-          assistantId,
-          providerCallId: selected.callId,
-          name: "show_library_guide",
-          argumentsJson: JSON.stringify(selection),
-          status: "complete",
-          completedAt: new Date(),
-        },
-      });
-      content.push(
-        parseGuidePart(
-          {
-            type: "guides",
-            version: 2,
-            invocationId: presentation.id,
-            libraryPagePath: found.pagePath,
-            guides: [{ kind: "measuring", url: guide.url }],
-            ...(message.role === "context" && result.voiceId
-              ? {
-                  voiceReply: {
-                    voiceId: result.voiceId,
-                    afterSequence: conversation.nextSequence,
-                  },
-                }
-              : {}),
-          },
-          conversation.origin,
-        ),
-      );
-    }
     if (result.status === "complete" && result.questionPresentation) {
       const selected = result.questionPresentation;
       let selection;
@@ -1713,14 +1682,20 @@ export async function finishTurn(
             selection.measurement.productPath,
             selected.librarySource,
           );
-        else
-          guideSourceResult(
+        else {
+          const source = guideSourceResult(
             conversation,
             assistantId,
             selected.sourceCallId,
             selection.measurement.productPath,
             result.cachedGuideSource,
           );
+          if (!source.guides.some((guide) => guide.kind === "measuring"))
+            throw new ConversationError(
+              400,
+              "A numeric measurement needs a verified measuring guide.",
+            );
+        }
       } else if (
         selected.sourceCallId !== undefined ||
         selected.librarySource !== undefined
@@ -2202,6 +2177,7 @@ export async function completeToolInvocation(
       | StoredActionResult
       | ProductGuidesResult
       | NavigationResult
+      | ViewResult
       | GuideLibraryResult
       | StoreSupportResult;
   },
@@ -2230,6 +2206,7 @@ export async function completeToolInvocation(
     const persistsOutcome =
       isCartTool(tool.name) ||
       tool.name === "navigate" ||
+      tool.name === "show_view" ||
       tool.name === "apply_measurements" ||
       tool.name === "get_product_guides" ||
       tool.name === "discover_guides" ||
@@ -2240,16 +2217,28 @@ export async function completeToolInvocation(
         ? isStorefrontMutation(tool.name) && error
           ? interruptedActionResult(tool, true)
           : undefined
-        : tool.name === "discover_guides"
-          ? parseGuideLibraryResult(result.outcome, conversation.origin)
-          : tool.name === "get_store_support"
-            ? parseStoreSupportResult(result.outcome, conversation.origin)
-            : tool.name === "get_product_guides"
-              ? parseProductGuidesResult(result.outcome, conversation.origin)
-              : tool.name === "navigate"
-                ? parseNavigationResult(result.outcome)
-                : storedActionResult(tool, result.outcome)
+        : tool.name === "show_view"
+          ? parseViewResult(result.outcome)
+          : tool.name === "discover_guides"
+            ? parseGuideLibraryResult(result.outcome, conversation.origin)
+            : tool.name === "get_store_support"
+              ? parseStoreSupportResult(result.outcome, conversation.origin)
+              : tool.name === "get_product_guides"
+                ? parseProductGuidesResult(result.outcome, conversation.origin)
+                : tool.name === "navigate"
+                  ? parseNavigationResult(result.outcome)
+                  : storedActionResult(tool, result.outcome)
       : undefined;
+    if (
+      tool.name === "show_view" &&
+      outcome &&
+      "view" in outcome &&
+      outcome.view !== parseViewCall(JSON.parse(tool.argumentsJson)).view
+    )
+      throw new ConversationError(
+        400,
+        "The browser showed a different Roman view.",
+      );
     if (
       tool.name === "get_product_guides" &&
       outcome &&

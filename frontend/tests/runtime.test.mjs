@@ -36,6 +36,7 @@ function setup(t, initialTime = 0) {
     },
   );
   const { window } = dom;
+  Object.assign(window, { Request, Response, Headers });
   let now = initialTime;
   let nextTimer = 900000;
   const timers = new Map();
@@ -181,6 +182,48 @@ test("runtime reports confirmed conversation activity, not an open panel or save
   );
   mounted.runtime.dispose();
   assert.equal(activity.at(-1), false);
+});
+
+test("opening requests microphone once and permission denial leaves text usable without creating a session", async (t) => {
+  const ctx = setup(t, 1000);
+  let permissionRequests = 0;
+  let requests = 0;
+  Object.defineProperty(ctx.window.navigator, "mediaDevices", {
+    value: {
+      async getUserMedia() {
+        permissionRequests++;
+        throw new Error("Permission denied");
+      },
+    },
+    configurable: true,
+  });
+  ctx.window.RTCPeerConnection = class {};
+  ctx.window.fetch = async () => {
+    requests++;
+    throw new Error("Permission must precede conversation bootstrap");
+  };
+  const mounted = ctx.mount(0);
+  await until(() => mounted.state === "ready", "runtime did not mount");
+  assert.equal(
+    permissionRequests,
+    0,
+    "closed restoration must not request microphone",
+  );
+  mounted.runtime.setOpen(true);
+  await until(
+    () => ctx.container.textContent.includes("Allow microphone access"),
+    "permission failure was not explained",
+  );
+  const textarea = ctx.container.querySelector(".roman-composer textarea");
+  assert.ok(textarea);
+  assert.equal(textarea.disabled, false);
+  assert.equal(textarea.readOnly, false);
+  assert.equal(requests, 0);
+  mounted.runtime.setOpen(false);
+  mounted.runtime.setOpen(true);
+  await delay(0);
+  assert.equal(permissionRequests, 1);
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
 });
 
 test("a fast cached runtime waits until one second from loading start and React commit", async (t) => {

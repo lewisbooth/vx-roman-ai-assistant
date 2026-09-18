@@ -2,13 +2,13 @@ import type { ConversationMessage } from "../../../shared/conversation";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { ProductCards } from "./ProductCards";
-import { GuideCards } from "./GuideCards";
 import { RichText } from "./RichText";
 import { StorefrontLink } from "./StorefrontLink";
 import { Question } from "./Question";
 import type { QuestionPart } from "../../../shared/questions";
 import { VOICE_EVENT_LABELS } from "../../../shared/voice";
 import { voiceQuestionCaptions } from "./voice-question-captions";
+import type { CatalogProduct } from "../../../shared/catalog";
 
 export function Timeline({
   messages,
@@ -20,6 +20,7 @@ export function Timeline({
   voice = false,
   onAnswer,
   questionDock,
+  onChooseProduct,
 }: {
   messages: readonly ConversationMessage[];
   session: ConversationClient;
@@ -30,6 +31,10 @@ export function Timeline({
   voice?: boolean;
   onAnswer?: (part: QuestionPart, answer: string) => Promise<void>;
   questionDock?: HTMLElement | null;
+  onChooseProduct?: (
+    carouselId: string,
+    product: CatalogProduct,
+  ) => Promise<void>;
 }) {
   const captions = voiceQuestionCaptions(messages);
   // Keep the current question below every widget and later journey event.
@@ -37,10 +42,15 @@ export function Timeline({
   const rows = messages.flatMap((message) => {
     const questions = message.parts.filter((part) => part.type === "question");
     const parts = message.parts
-      .filter((part) => part.type !== "question" && part.type !== "page_view")
+      .filter(
+        (part) =>
+          part.type !== "question" &&
+          part.type !== "page_view" &&
+          part.type !== "guides",
+      )
       .filter((part) => part.type !== "voice" || captions.get(part));
     return [
-      ...(parts.length || message.status !== "complete"
+      ...(parts.length || message.status === "failed"
         ? [{ ...message, parts }]
         : []),
       ...questions.map((part) => ({
@@ -176,14 +186,14 @@ export function Timeline({
                     <p className="roman-message-text">{captions.get(part)}</p>
                   </div>
                 );
-              if (part.type === "guides")
-                return <GuideCards key={part.invocationId} part={part} />;
               return (
                 <ProductCards
                   key={part.invocationId}
                   productIds={part.productIds}
+                  carouselId={part.invocationId}
                   session={session}
-                  navigation={navigation}
+                  onChoose={onChooseProduct}
+                  disabled={questionDisabled || message.status !== "complete"}
                   onContentChange={onContentChange}
                 />
               );

@@ -14,11 +14,21 @@ import { parseGuideLibraryCall } from "../../../shared/guide-library";
 import { parseStoreSupportCall } from "../../../shared/store-support";
 import { parseProductGuidesCall } from "../../../shared/product-guides";
 import {
+  parseViewCall,
+  type AssistantView,
+} from "../../../shared/assistant-view";
+import {
   parseMeasurementCall,
   type MeasurementToolResult,
 } from "../../../shared/measurements";
 
 export const toolDefinitions = [
+  {
+    name: "show_view",
+    description:
+      "Show Chat, Cart or Gallery inside Roman without navigating Shopify.",
+    example: { view: "cart" },
+  },
   {
     name: "discover_guides",
     description:
@@ -169,6 +179,7 @@ export function createAssistantTools(
   host: HTMLElement,
   navigation: StorefrontNavigation,
   accessMeasurements?: MeasurementAccess,
+  showView?: (view: AssistantView) => Promise<void>,
 ) {
   let active: AbortController | undefined;
   let disposed = false;
@@ -240,6 +251,13 @@ export function createAssistantTools(
               "Live Shopify tools run on the installed storefront. The local preview has no Shopify session.",
             );
           switch (name) {
+            case "show_view": {
+              const { view } = parseViewCall(input);
+              if (!showView)
+                throw new Error("Roman's view navigation is unavailable.");
+              await showView(view);
+              return { status: "shown", view };
+            }
             case "discover_guides": {
               const call = parseGuideLibraryCall(input);
               return discoverGuides(call.library, request.signal);

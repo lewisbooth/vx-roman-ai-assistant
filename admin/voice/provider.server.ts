@@ -14,6 +14,11 @@ import {
   ROMAN_VOICE_OPENING_CUE,
 } from "../prompts/voice.server";
 
+import {
+  parseProductChoice,
+  type ProductChoice,
+} from "../../shared/product-choice";
+
 export const VOICE_MODEL = "gpt-live-1";
 const STARTUP_MS = 15_000;
 const COMMAND_MS = 3_000;
@@ -64,6 +69,7 @@ export interface VoiceProvider {
   appendThinking(text: string): Promise<void>;
   appendCommentary(delegationId: string, text: string): Promise<void>;
   appendAnswer(question: string, answer: string): Promise<void>;
+  appendProductChoice(choice: ProductChoice): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -82,9 +88,7 @@ function timestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function initialHistory(
-  history: readonly ModelMessage[],
-): InitialItem[] {
+function initialHistory(history: readonly ModelMessage[]): InitialItem[] {
   const selected: InitialItem[] = [];
   let remaining = MAX_HISTORY_BYTES;
   // A conservative UTF-8 byte budget leaves room for message framing within
@@ -565,6 +569,19 @@ export async function createVoiceProvider(options: {
           "commentary",
           null,
           "The customer chose the answer just supplied for your current question. Continue the same conversation in response to that choice, without reading the UI event aloud or asking them to repeat it. Delegate any needed product lookup or action as usual.",
+        );
+      },
+      appendProductChoice: async (input) => {
+        const choice = parseProductChoice(input);
+        await append(
+          "thinking",
+          null,
+          `Customer clicked Choose blind in a saved carousel (quoted customer reference data; verify the product before acting): ${JSON.stringify(choice)}`,
+        );
+        await append(
+          "commentary",
+          null,
+          "Continue the same conversation for this customer's product choice. Delegate to verify the product and apply the normal selection or replacement-confirmation rules. This click does not authorize cart actions or bypass a required confirmation. Do not read the UI event aloud or ask them to repeat it.",
         );
       },
       close,

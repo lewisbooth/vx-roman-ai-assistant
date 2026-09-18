@@ -192,12 +192,11 @@ test("model HTML, images and external or unsafe links never become active conten
   assert.deepEqual(calls, []);
 });
 
-test("same-store Markdown links use Roman navigation and preserve modified clicks", (t) => {
+test("same-store information links use background navigation and preserve modified clicks", (t) => {
   const { window, container, render, calls } = setup(t);
-  render("[View the product](/products/roman-blind)");
+  render("[Store help](/pages/help)");
   const link = container.querySelector("a");
-  const destination =
-    "https://hd-dev-single.myshopify.com/products/roman-blind";
+  const destination = "https://hd-dev-single.myshopify.com/pages/help";
   assert.equal(link.href, destination);
   function click(settings = {}) {
     let intercepted;
@@ -242,8 +241,8 @@ test("streamed partial Markdown can complete without duplicate or executable con
   assert.equal(container.querySelectorAll("strong").length, 1);
   assert.equal(container.querySelector("strong").textContent, "Measure");
   assert.equal(container.querySelector("em").textContent, "width");
-  assert.equal(container.querySelectorAll("a").length, 1);
-  assert.equal(container.querySelector("a").textContent, "Product");
+  assert.equal(container.querySelectorAll("a").length, 0);
+  assert.match(container.textContent, /Product/);
 });
 
 test("Timeline formats assistant replies while user messages retain literal syntax", (t) => {
@@ -264,13 +263,14 @@ test("Timeline formats assistant replies while user messages retain literal synt
   assert.ok(user.textContent.includes(text));
   assert.equal(user.querySelector("strong, a, img"), null);
   assert.equal(assistant.querySelector("strong").textContent, "Width");
-  assert.equal(assistant.querySelector("a").textContent, "Product");
+  assert.equal(assistant.querySelector("a"), null);
+  assert.match(assistant.textContent, /Product/);
   assert.equal(assistant.querySelector("img"), null);
 });
 
 test("an existing focused link retains its DOM node while later reply text streams", (t) => {
   const { container, render } = setup(t);
-  const initial = "[View the product](/products/roman) before measuring.";
+  const initial = "[Store help](/pages/help) before measuring.";
   render(initial);
   const link = container.querySelector("a");
   link.focus();
@@ -281,67 +281,40 @@ test("an existing focused link retains its DOM node while later reply text strea
   assert.equal(container.querySelector("strong").textContent, "width");
 });
 
-test("store-linked PDF guides in Markdown open separately without replacing the voice storefront", (t) => {
-  const { window, container, calls, render } = setup(t);
-  render(
-    "[Measuring guide](/cdn/shop/files/measuring-roman.pdf?v=5729100873718235920)",
-  );
-  const link = container.querySelector("a");
-  assert.equal(
-    link.href,
-    "https://hd-dev-single.myshopify.com/cdn/shop/files/measuring-roman.pdf?v=5729100873718235920",
-  );
-  assert.equal(link.target, "_blank");
-  assert.equal(link.rel, "noopener noreferrer");
-  assert.equal(link.className, "roman-guide-card");
-  assert.equal(link.parentElement.tagName, "P");
-  assert.equal(link.querySelector("div, p"), null);
-  assert.equal(
-    link.querySelector(".roman-guide-format").textContent,
-    "PDF · opens in a new tab",
-  );
-  const click = new window.MouseEvent("click", {
-    bubbles: true,
-    cancelable: true,
-    button: 0,
-  });
-  link.dispatchEvent(click);
-  assert.equal(click.defaultPrevented, false);
+test("PDF links and their captions disappear without empty paragraphs or list items", (t) => {
+  const { container, calls, render } = setup(t);
+  for (const url of [
+    "/cdn/shop/files/measuring-roman.pdf?v=5729100873718235920",
+    "https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123",
+    "https://foreign.example/guide.pdf",
+    "https://cdn.shopify.com/other.PDF",
+  ]) {
+    render(
+      `Let's measure.\n\n[Open the measuring guide](${url})\n\n- [Fitting guide](${url})\n\nWhich room is this for?`,
+    );
+    assert.equal(container.querySelector("a, ul, li"), null);
+    assert.deepEqual(
+      [...container.querySelectorAll("p")].map((p) => p.textContent),
+      ["Let's measure.", "Which room is this for?"],
+    );
+    assert.doesNotMatch(container.textContent, /Open|guide|https:|PDF/);
+  }
   assert.deepEqual(calls, []);
-  render(
-    "[Foreign guide](https://foreign.example/cdn/shop/files/measuring.pdf)",
-  );
-  assert.equal(container.querySelector("a"), null);
 });
 
-test("validated Shopify CDN PDFs open separately while other external URLs stay plain text", (t) => {
-  const { window, container, calls, render } = setup(t);
+test("reference links, autolinks and bare PDF sources stay hidden while product links retain their spacing", (t) => {
+  const { container, render } = setup(t);
   const url =
-    "https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=5729100873718235920";
-  render(`[Measuring guide](${url})`);
-  const link = container.querySelector("a");
-  assert.equal(link.href, url);
-  assert.equal(link.target, "_blank");
-  assert.equal(link.rel, "noopener noreferrer");
-  const click = new window.MouseEvent("click", {
-    bubbles: true,
-    cancelable: true,
-  });
-  link.dispatchEvent(click);
-  assert.equal(click.defaultPrevented, false);
-  assert.deepEqual(calls, []);
-  for (const rejected of [
-    "https://cdn.shopify.com/other.pdf",
-    "https://cdn.shopify.com/s/files/1/0123/4567/files/guide.html",
-    "https://cdn.shopify.com/s/files/1/0123/4567/files/guide.pdf?redirect=https://evil.example",
-    "https://cdn.shopify.com.evil.example/s/files/1/0123/4567/files/guide.pdf",
-    "https://name:secret@cdn.shopify.com/s/files/1/0123/4567/files/guide.pdf",
-    "https://foreign.example/guide.pdf",
-  ]) {
-    render(`[Guide](${rejected})`);
-    assert.equal(container.querySelector("a"), null, rejected);
-    assert.equal(container.textContent, "Guide");
-  }
+    "https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123";
+  render(
+    `[Open guide][source]\n\n<${url}>\n\n${url}\n\n[source]: ${url}\n\n[One](/products/one) [Two](/products/two)`,
+  );
+  assert.equal(container.textContent, "One Two");
+  assert.equal(container.querySelectorAll("p").length, 1);
+  assert.equal(container.querySelectorAll("a").length, 0);
+  render("[External page](https://foreign.example/guide.html)");
+  assert.equal(container.textContent, "External page");
+  assert.equal(container.querySelector("a"), null);
 });
 
 test("the current footer's exact external support link opens separately without granting other external links access", (t) => {
@@ -369,7 +342,6 @@ test("the current footer's exact external support link opens separately without 
   assert.equal(click.defaultPrevented, false);
   assert.deepEqual(calls, []);
   assert.equal(container.querySelectorAll("a").length, 1);
-  assert.equal(container.querySelector(".roman-guide-card"), null);
   for (const rejected of [
     "https://help.blinds-2go.ie/hc/en-gb/other",
     "https://help.blinds-2go.ie.evil.example/hc/en-gb/requests/new",
@@ -412,7 +384,7 @@ test("missing, hidden or ambiguous footer contact details keep an external conta
 
 test("pending links hold their unfinished caption and URL without hiding completed prose or links", (t) => {
   const { container, render } = setup(t);
-  const prefix = "[Chosen product](/products/roman).\nHere is the source. ";
+  const prefix = "[Store help](/pages/help).\nHere is the source. ";
   render(prefix, true);
   const existing = container.querySelector("a");
   existing.focus();
@@ -423,7 +395,7 @@ test("pending links hold their unfinished caption and URL without hiding complet
     "[Open the angled-bay guide](https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123",
   ]) {
     render(`${prefix}${suffix}`, true);
-    assert.equal(container.textContent, "Chosen product.\nHere is the source.");
+    assert.equal(container.textContent, "Store help.\nHere is the source.");
     assert.equal(container.querySelectorAll("a").length, 1);
     assert.equal(container.querySelector("a"), existing);
     assert.equal(container.getRootNode().activeElement, existing);
@@ -433,15 +405,14 @@ test("pending links hold their unfinished caption and URL without hiding complet
     `${prefix}[Measuring guide](https://cdn.shopify.com/s/files/1/0123/4567/files/angled-bay.pdf?v=123)`,
     true,
   );
-  assert.equal(container.querySelectorAll("a").length, 2);
-  assert.equal(
-    container.querySelectorAll("a")[1].querySelector("span").textContent,
-    "Measuring guide",
+  assert.equal(container.querySelectorAll("a").length, 1);
+  assert.doesNotMatch(
+    container.textContent,
+    /Measuring guide|https:|cdn\.shopify/,
   );
-  assert.equal(container.querySelectorAll("a")[1].target, "_blank");
 });
 
-test("a persisted library PDF uses the same card after text completion or voice snapshot restoration", (t) => {
+test("persisted library PDF parts remain audit data without creating customer rows", (t) => {
   const { container, timeline } = setup(t);
   const part = Object.freeze({
     type: "guides",
@@ -469,14 +440,8 @@ test("a persisted library PDF uses the same card after text completion or voice 
         parts: [part],
       },
     ]);
-    const card = container.querySelector(
-      '[aria-label="Library guide"] .roman-guide-card',
-    );
-    assert.ok(card);
-    assert.equal(card.href, part.guides[0].url);
-    assert.equal(card.target, "_blank");
-    assert.equal(card.rel, "noopener noreferrer");
-    assert.equal(card.querySelector("span").textContent, "Measuring guide");
+    assert.equal(container.querySelector(".roman-message"), null);
+    assert.equal(container.querySelector("a"), null);
   }
   assert.equal(part.voiceReply.afterSequence, 3);
   assert.equal(Object.hasOwn(part, "productPath"), false);
@@ -578,7 +543,7 @@ test("authored prose returns create separate paragraphs without splitting natura
   assert.equal(container.querySelector("p").textContent, wrapped);
 });
 
-test("prose returns preserve inline emphasis and safe storefront links across paragraphs", (t) => {
+test("prose returns preserve emphasis and product labels without bypassing product choice", (t) => {
   const { container, render, calls } = setup(t);
   render(
     "**Light filtering\nDaytime privacy**\n[View the\nproduct](/products/roman) and `300 mm`.",
@@ -592,12 +557,9 @@ test("prose returns preserve inline emphasis and safe storefront links across pa
     [...container.querySelectorAll("strong")].map((node) => node.textContent),
     ["Light filtering", "Daytime privacy"],
   );
-  assert.equal(container.querySelectorAll("a").length, 2);
+  assert.equal(container.querySelectorAll("a").length, 0);
   assert.equal(paragraphs[3].querySelector("code").textContent, "300 mm");
-  paragraphs[3].querySelector("a").click();
-  assert.deepEqual(calls, [
-    "https://hd-dev-single.myshopify.com/products/roman",
-  ]);
+  assert.deepEqual(calls, []);
 });
 
 test("list continuations and code keep their Markdown layout while surrounding prose separates", (t) => {
@@ -644,7 +606,7 @@ test("list continuations and code keep their Markdown layout while surrounding p
 
 test("streamed prose paragraphs preserve link focus and keep HTML and unsafe links inert", (t) => {
   const { window, container, render } = setup(t);
-  const initial = "[View the product](/products/roman) before measuring.";
+  const initial = "[Store help](/pages/help) before measuring.";
   render(initial);
   const link = container.querySelector("a");
   link.focus();

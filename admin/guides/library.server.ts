@@ -44,43 +44,6 @@ export const readLibraryGuidesToolDefinition = {
   },
 } as const;
 
-export const showLibraryGuideToolDefinition = {
-  type: "function",
-  name: "show_library_guide",
-  description:
-    "Show a PDF guide card in the chat after selecting and reading the library guide that matches the customer's blind type and measuring case. Use its discovery ID and guide ID, never a URL. Readable does not mean suitable: first assess its contents. Show the selected guide once when starting its flow, when changing to a relevant new source, or when the customer asks to see it again. Do not repeat unchanged cards on each step. Shares the one-guide-presentation budget with show_guides.",
-  strict: true,
-  parameters: {
-    type: "object",
-    properties: {
-      discoveryId: { type: "string", pattern: uuid.source },
-      guideId: { type: "string", pattern: guideId.source },
-    },
-    required: ["discoveryId", "guideId"],
-    additionalProperties: false,
-  },
-} as const;
-
-export interface LibraryGuideSelection {
-  discoveryId: string;
-  guideId: string;
-}
-
-export function parseLibraryGuideSelection(
-  input: unknown,
-): LibraryGuideSelection {
-  const value = object(input);
-  if (
-    Object.keys(value).length !== 2 ||
-    typeof value.discoveryId !== "string" ||
-    !uuid.test(value.discoveryId) ||
-    typeof value.guideId !== "string" ||
-    !guideId.test(value.guideId)
-  )
-    throw new Error("Select one previously read library guide by its IDs.");
-  return { discoveryId: value.discoveryId, guideId: value.guideId };
-}
-
 export function parseLibraryReadCall(input: unknown): {
   discoveryId: string;
   guideIds: string[];
@@ -325,30 +288,6 @@ export function readLibraryInventory(
 export function clearLibrarySession(conversationId: string): void {
   for (const [id, entry] of entries)
     if (entry.conversationId === conversationId) entries.delete(id);
-}
-
-/** Resolves a display choice without attaching, downloading or rereading a PDF. */
-export function selectLibraryGuide(
-  conversationId: string,
-  origin: string,
-  input: LibraryGuideSelection,
-) {
-  scope(conversationId, origin);
-  expire();
-  const selection = parseLibraryGuideSelection(input);
-  const entry = entries.get(selection.discoveryId);
-  const guide = entry?.discovery.guides.find(
-    ({ id }) => id === selection.guideId,
-  );
-  if (
-    !entry ||
-    !guide ||
-    entry.conversationId !== conversationId ||
-    entry.origin !== origin ||
-    !entry.readIds.has(guide.id)
-  )
-    throw new Error("The selected library PDF has no current verified read.");
-  return { guide: { ...guide }, source: receipt(entry, [guide.id]) };
 }
 
 function sourceEntry(

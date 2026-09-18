@@ -2424,6 +2424,43 @@ async function activeVoice(ctx, conversation = empty) {
   return voice;
 }
 
+test("explicit End voice and End chat preserve text mode while manual voice start clears that tab preference", async (t) => {
+  const key = "roman:voice-autostart";
+  const ctx = setup(t, { mediaOptions: {} });
+  ctx.window.sessionStorage.setItem(key, "off");
+  const voice = await activeVoice(ctx);
+  assert.equal(ctx.window.sessionStorage.getItem(key), null);
+  const stopping = ctx.client.stopVoice();
+  assert.equal(ctx.window.sessionStorage.getItem(key), "off");
+  ctx.respond(3, {
+    ...empty,
+    revision: 2,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  assert.equal(ctx.window.sessionStorage.getItem(key), "off");
+  const ending = ctx.client.end();
+  ctx.respond(4, { ...empty, status: "ended", revision: 3 });
+  await ending;
+  assert.equal(ctx.window.sessionStorage.getItem(key), "off");
+  const another = setup(t, {
+    mediaOptions: {},
+    url: "https://unsupported.example/",
+  });
+  another.window.sessionStorage.setItem(key, "off");
+  await assert.rejects(
+    another.client.startVoice(),
+    /installed development storefronts/,
+  );
+  assert.equal(another.window.sessionStorage.getItem(key), null);
+  another.client.dispose();
+  assert.equal(
+    another.window.sessionStorage.getItem(key),
+    null,
+    "internal disposal is not a customer opt-out",
+  );
+});
+
 const voiceQuestionId = "33333333-3333-4333-8333-333333333333";
 const voiceQuestion = {
   ...empty,
@@ -2521,6 +2558,74 @@ test("suggested voice answers preserve media and mute, persist once and reject d
     /no longer waiting/,
   );
   assert.equal(ctx.calls.length, 4);
+});
+
+test("choosing a saved carousel product is immediate customer input without closing voice", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const carousel = structuredClone(voiceQuestion);
+  const choice = {
+    carouselId: "44444444-4444-4444-8444-444444444444",
+    productId: "gid://shopify/Product/123",
+    title: "Green roller blind",
+    productPath: "/products/green-roller",
+  };
+  carousel.messages[0].parts.unshift({
+    type: "products",
+    version: 1,
+    invocationId: choice.carouselId,
+    productIds: [choice.productId],
+  });
+  const voice = await activeVoice(ctx, carousel);
+  ctx.client.setVoiceMuted(true);
+  const product = {
+    id: choice.productId,
+    title: choice.title,
+    url: `https://hd-dev-single.myshopify.com${choice.productPath}`,
+  };
+  await assert.rejects(
+    ctx.client.sendVoiceProductChoice(choice.carouselId, {
+      ...product,
+      id: "gid://shopify/Product/999",
+    }),
+    /shown in this conversation/,
+  );
+  await assert.rejects(
+    ctx.client.sendVoiceProductChoice(choice.carouselId, {
+      ...product,
+      url: "https://foreign.test/products/green-roller",
+    }),
+    /this storefront/,
+  );
+  assert.equal(ctx.calls.length, 3);
+  const sending = ctx.client.sendVoiceProductChoice(choice.carouselId, product);
+  const call = ctx.calls[3];
+  assert.deepEqual(
+    { ...call.body },
+    { clientId: voice.clientId, requestId: call.body.requestId, ...choice },
+  );
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.equal(
+    optimistic.parts[0].text,
+    "Choose Green roller blind (/products/green-roller).",
+  );
+  assert.equal(optimistic.parts[0].productChoice.voiceId, voice.id);
+  await assert.rejects(
+    ctx.client.sendVoiceProductChoice(choice.carouselId, product),
+    /finished replying/,
+  );
+  ctx.respond(3, {
+    ...carousel,
+    revision: 2,
+    voice,
+    messages: [...carousel.messages, { ...optimistic, status: "complete" }],
+  });
+  await sending;
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.media.peers[0].closed, undefined);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
 });
 
 test("measurement widget answers retain live audio, exact units and retry identity", async (t) => {

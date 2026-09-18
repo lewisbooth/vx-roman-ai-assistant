@@ -1,3 +1,5 @@
+import type { ProductChoiceReference } from "./product-choice";
+
 export type MessageStatus = "pending" | "complete" | "failed";
 
 import type {
@@ -20,6 +22,7 @@ export interface TextPart {
   text: string;
   /** A real customer selection during voice, never an audio transcript. */
   questionAnswer?: QuestionAnswerReference;
+  productChoice?: ProductChoiceReference;
 }
 
 export interface ProductListPart {
@@ -90,6 +93,7 @@ export type BrowserToolName =
   | CartToolName
   | ProductConfigurationToolName
   | "navigate"
+  | "show_view"
   | "apply_measurements"
   | "get_product_guides"
   | "discover_guides"

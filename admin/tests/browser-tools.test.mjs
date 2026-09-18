@@ -732,6 +732,31 @@ test("a browser cannot submit a navigation result for a catalog invocation", asy
   assert.equal(env.calls.complete.length, 0);
 });
 
+test("show_view validates the requested view and persists only its acknowledged outcome", async () => {
+  const env = setup();
+  env.mock.toolName = "show_view";
+  env.mock.toolArguments = { view: "cart" };
+  const pending = env.api.requestBrowserTool(
+    "conversation-1", "assistant-1", "view-1", "show_view",
+    { view: "cart" }, new AbortController().signal,
+  );
+  await flush();
+  for (const invalid of [
+    { status: "shown", view: "gallery" },
+    { status: "shown", view: "checkout" },
+    { status: "shown", view: "cart", path: "/cart" },
+    { status: "navigated", path: "/cart" },
+  ])
+    await assert.rejects(env.api.submitBrowserToolResult(
+      "conversation-1", "invocation-1", claim, invalid,
+    ), { status: 400 });
+  assert.equal(env.calls.complete.length, 0);
+  const outcome = { status: "shown", view: "cart" };
+  await env.api.submitBrowserToolResult("conversation-1", "invocation-1", claim, outcome);
+  assert.deepEqual(plain(await pending), outcome);
+  assert.deepEqual(plain(env.calls.complete[0][3]), { productIds: [], outcome });
+});
+
 test("a waiter owns the conversation while durable creation is pending, including after cancellation", async () => {
   const env = setup();
   const gate = deferred();

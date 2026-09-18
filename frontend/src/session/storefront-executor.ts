@@ -6,6 +6,11 @@ import {
   type CatalogResult,
 } from "../../../shared/catalog";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
+import {
+  parseViewCall,
+  parseViewResult,
+  type ViewResult,
+} from "../../../shared/assistant-view";
 import type {
   CatalogToolName,
   BrowserToolInvocation,
@@ -64,6 +69,7 @@ import {
 export type BrowserToolResult =
   | CatalogResult
   | NavigationResult
+  | ViewResult
   | CartToolResult
   | ProductConfigurationResult
   | ApplyMeasurementsResult
@@ -298,6 +304,11 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<NavigationResult>;
   function execute(
+    name: "show_view",
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<ViewResult>;
+  function execute(
     name: "get_cart" | "add_to_cart" | "add_sample_to_cart",
     input: unknown,
     signal?: AbortSignal,
@@ -322,6 +333,23 @@ export function createStorefrontExecutor(
     input: unknown,
     signal?: AbortSignal,
   ): Promise<BrowserToolResult> {
+    if (name === "show_view") {
+      const call = parseViewCall(input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          const result = parseViewResult(
+            await tools.execute(name, call, signal),
+          );
+          requireCurrentStore();
+          signal.throwIfAborted();
+          if (result.view !== call.view)
+            throw new Error("The browser showed a different Roman view.");
+          return result;
+        },
+        signal,
+      );
+    }
     if (name === "discover_guides") {
       const call = parseGuideLibraryCall(input);
       return enqueue(

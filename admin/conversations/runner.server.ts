@@ -7,7 +7,12 @@ import type {
 } from "../../shared/conversation";
 import { ConversationError } from "./errors.server";
 import { requestBrowserTool } from "./browser-tools.server";
-import { generateReply, TEXT_MODEL, type ModelReply } from "./model.server";
+import {
+  generateReply,
+  TEXT_MODEL,
+  type ModelReply,
+  type GuideReuse,
+} from "./model.server";
 import { recordModelUsage } from "../usage/repository.server";
 import { executeMeasurementTool } from "../measurements/service.server";
 import { latestQuestion, type QuestionPart } from "../../shared/questions";
@@ -19,13 +24,11 @@ import {
   clearGuideSession,
   GUIDE_SESSION_TTL_MS,
 } from "../guides/session.server";
-import type { GuideReuse } from "./model.server";
 import {
   readLibraryInventory,
   readBoundLibrarySource,
   saveLibraryDiscovery,
   readLibraryGuides,
-  selectLibraryGuide,
   bindLibrarySource,
   clearLibrarySession,
 } from "../guides/library.server";
@@ -242,7 +245,6 @@ async function completeTurn(
         },
         read: (selection, readSignal, attachedUrls) =>
           readLibraryGuides(id, origin, selection, readSignal, attachedUrls),
-        present: (selection) => selectLibraryGuide(id, origin, selection),
         bind: async (source, productPath) => {
           signal.throwIfAborted();
           const snapshot = await getSnapshot(id);

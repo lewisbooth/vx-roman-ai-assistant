@@ -1,14 +1,7 @@
 import type { ProductGuideKind } from "../../shared/product-guides";
 import { MAX_PRODUCT_CARDS } from "../../shared/conversation";
 import type { QuestionSelection } from "../../shared/questions";
-import type {
-  BoundLibrarySource,
-  LibraryGuideSelection,
-} from "../guides/library.server";
-
-export interface LibraryGuidePresentation extends LibraryGuideSelection {
-  callId: string;
-}
+import type { BoundLibrarySource } from "../guides/library.server";
 
 export interface QuestionPresentation extends QuestionSelection {
   callId: string;
@@ -30,14 +23,6 @@ export interface CachedGuideSource {
 export interface ProductPresentation {
   callId: string;
   productIds: string[];
-}
-
-/** The source call is supplied by the runner, never by model-authored URLs. */
-export interface GuidePresentation {
-  callId: string;
-  sourceCallId: string;
-  productPath: string;
-  kinds: ProductGuideKind[];
 }
 
 const productId = /^gid:\/\/shopify\/Product\/\d+$/;

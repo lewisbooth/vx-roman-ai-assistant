@@ -5,7 +5,8 @@ import {
 } from "../../shared/voice";
 import { UUID_PATTERN } from "../conversations/auth.server";
 import { ConversationError } from "../conversations/errors.server";
-import type { VoiceAnswerInput } from "../../shared/questions";
+import type { VoiceSelectionInput } from "../../shared/questions";
+import { parseProductChoice } from "../../shared/product-choice";
 
 export const VOICE_START_BODY_BYTES = 64 * 1024;
 const MAX_SDP_BYTES = 48 * 1024;
@@ -87,7 +88,25 @@ export function voiceSessionId(value: string | undefined): string {
 
 export function voiceAnswerInput(
   value: Record<string, unknown>,
-): Omit<VoiceAnswerInput, "voiceId"> {
+): VoiceSelectionInput {
+  if ("carouselId" in value) {
+    const { clientId, requestId, ...choice } = value;
+    try {
+      if (
+        typeof clientId !== "string" ||
+        !UUID_PATTERN.test(clientId) ||
+        typeof requestId !== "string" ||
+        !UUID_PATTERN.test(requestId)
+      )
+        throw new Error("Invalid request identity.");
+      return { clientId, requestId, ...parseProductChoice(choice) };
+    } catch {
+      throw new ConversationError(
+        400,
+        "Send a valid carousel product choice and request identity.",
+      );
+    }
+  }
   if (
     Object.keys(value).length !== 4 ||
     !["clientId", "requestId", "questionId"].every(
