@@ -103,6 +103,7 @@ export function Composer({
         <div className="roman-composer-field">
           <textarea
             ref={textarea}
+            data-roman-composer
             id={id}
             value={message}
             onChange={(event) => {

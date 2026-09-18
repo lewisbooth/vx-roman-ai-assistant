@@ -927,6 +927,43 @@ function catalogCall(
   };
 }
 
+test("text and voice receive the cart's named, rounded discount evidence intact", async (t) => {
+  const cart = {
+    currency: "GBP", itemCount: 1,
+    totalPriceMinorUnits: 34598, originalTotalPriceMinorUnits: 69195,
+    totalDiscountMinorUnits: 34597, cartDiscounts: [],
+    items: [{
+      lineKey: "123:shutter", title: "San Jose Premium Cotton White Shutter Blinds",
+      variantId: 123, quantity: 1, linePriceMinorUnits: 34598,
+      originalLinePriceMinorUnits: 69195,
+      lineDiscounts: [{ title: "50 off test", amountMinorUnits: 34597, percentage: 50 }],
+    }],
+  };
+  for (const mode of ["text", "voice"]) {
+    await t.test(mode, async () => {
+      const env = setup();
+      env.streams.push(
+        events(completed("", { output: [catalogCall("cart-offers", "get_cart", {})] })),
+        events(completed("The shutter has 50 off test applied, saving GBP 345.97.")),
+      );
+      await env.api.generateReply(
+        [], () => {}, new AbortController().signal,
+        async (_id, name) => {
+          assert.equal(name, "get_cart");
+          return cart;
+        }, mode,
+      );
+      const output = env.calls.requests[1].input.input.find(
+        (item) => item.type === "function_call_output" && item.call_id === "cart-offers",
+      );
+      assert.deepEqual(JSON.parse(output.output), cart);
+      const prompt = env.calls.requests[0].input.instructions;
+      assert.match(prompt, /Missing discount fields mean the details were not supplied, not that no offer applies/);
+      assert.match(prompt, /allocations explain those totals, never subtract them again/);
+    });
+  }
+});
+
 test("text and voice publish only the final structured outcome after tools", async (t) => {
   for (const mode of ["text", "voice"]) {
     for (const status of ["updated", "uncertain"]) {

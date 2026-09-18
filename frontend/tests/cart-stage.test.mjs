@@ -740,3 +740,182 @@ test("unmount cancels pending cart work and removes store subscriptions", async 
   await delay(10);
   assert.equal(ctx.container.textContent, "");
 });
+
+const discountedCart = {
+  ...exampleCart,
+  item_count: 2,
+  original_total_price: 3399,
+  total_discount: 474,
+  total_price: 2925,
+  cart_level_discount_applications: [
+    {
+      title: "WELCOME10",
+      total_allocated_amount: 224,
+      value_type: "percentage",
+      value: "10",
+    },
+  ],
+  items: [
+    {
+      ...exampleCart.items[0],
+      title: "Discounted linen blind",
+      original_line_price: 2499,
+      final_line_price: 2249,
+      line_level_discount_allocations: [
+        {
+          amount: 250,
+          discount_application: {
+            title: "Spring sale",
+            value_type: "percentage",
+            value: "10",
+          },
+        },
+      ],
+    },
+    {
+      ...exampleCart.items[0],
+      key: "line-2",
+      title: "Matching sample",
+      original_line_price: 900,
+      final_line_price: 900,
+      line_level_discount_allocations: [],
+    },
+  ],
+};
+
+test("applied line and cart discounts keep final prices distinct without subtracting or summing allocations again", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Cart read");
+  ctx.calls[0].complete(discountedCart);
+  await until(
+    () => ctx.container.querySelector('[aria-label="Applied cart discounts"]'),
+    "Applied discount metadata rendered",
+  );
+  const cards = ctx.container.querySelectorAll(".roman-cart-items > li");
+  assert.equal(cards.length, 2);
+  assert.match(
+    cards[0].querySelector(".roman-cart-price del").textContent,
+    /24\.99/,
+  );
+  assert.match(
+    cards[0].querySelector(".roman-cart-price strong").textContent,
+    /22\.49/,
+  );
+  assert.match(
+    cards[0].querySelector(".roman-cart-discounts").textContent,
+    /Spring sale.*2\.50/,
+  );
+  assert.equal(
+    cards[1].querySelector("del"),
+    null,
+    "An unchanged line price is not struck through",
+  );
+  assert.equal(
+    cards[1].querySelector(".roman-cart-discounts"),
+    null,
+    "No line allocations remain unstated",
+  );
+  assert.doesNotMatch(
+    ctx.container.querySelector(".roman-cart-items").textContent,
+    /WELCOME10|2\.24|4\.74/,
+  );
+  const summary = ctx.container.querySelector(".roman-cart-summary");
+  assert.match(
+    summary.querySelector(".roman-cart-total del").textContent,
+    /33\.99/,
+  );
+  assert.match(
+    summary.querySelector(".roman-cart-total strong").textContent,
+    /29\.25/,
+  );
+  assert.match(
+    summary.querySelector(".roman-cart-discounts").textContent,
+    /WELCOME10.*2\.24/,
+  );
+  assert.doesNotMatch(
+    summary.querySelector(".roman-cart-discounts").textContent,
+    /Spring sale/,
+  );
+  assert.match(
+    summary.querySelector(".roman-cart-savings").textContent,
+    /Total savings.*4\.74/,
+  );
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Discount display uses the shared cart read",
+  );
+});
+
+test("missing or zero discount metadata produces no invented discount, savings or percentage", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Cart read");
+  ctx.calls[0].complete(exampleCart);
+  await until(
+    () => ctx.container.querySelector(".roman-cart-price"),
+    "Prices rendered",
+  );
+  assert.equal(
+    ctx.container.querySelector(
+      "del, .roman-cart-discounts, .roman-cart-savings",
+    ),
+    null,
+  );
+  assert.doesNotMatch(ctx.container.textContent, /discount|savings|%/i);
+  ctx.window.document.dispatchEvent(new ctx.window.CustomEvent("cart:updated"));
+  await until(() => ctx.calls.length === 2, "Cart refresh");
+  ctx.calls[1].complete({
+    ...exampleCart,
+    original_total_price: 4500,
+    total_discount: 0,
+    cart_level_discount_applications: [],
+    items: [
+      {
+        ...exampleCart.items[0],
+        original_line_price: 4500,
+        line_level_discount_allocations: [],
+      },
+    ],
+  });
+  await until(
+    () => !ctx.container.querySelector('[role="status"]'),
+    "Zero-discount cart rendered",
+  );
+  assert.equal(
+    ctx.container.querySelector(
+      "del, .roman-cart-discounts, .roman-cart-savings",
+    ),
+    null,
+  );
+});
+
+test("original prices do not invent named discount allocations or total savings and later carts remove old metadata", async (t) => {
+  const ctx = setup(t, "cart");
+  await until(() => ctx.calls.length === 1, "Cart read");
+  ctx.calls[0].complete({
+    ...exampleCart,
+    original_total_price: 5000,
+    items: [{ ...exampleCart.items[0], original_line_price: 5000 }],
+  });
+  await until(
+    () => ctx.container.querySelectorAll("del").length === 2,
+    "Verified original prices rendered",
+  );
+  assert.equal(
+    ctx.container.querySelector(".roman-cart-discounts, .roman-cart-savings"),
+    null,
+  );
+  ctx.window.document.dispatchEvent(new ctx.window.CustomEvent("cart:updated"));
+  await until(() => ctx.calls.length === 2, "Cart refresh");
+  ctx.calls[1].complete(exampleCart);
+  await until(
+    () => !ctx.container.querySelector('[role="status"]'),
+    "Refreshed cart rendered",
+  );
+  assert.equal(
+    ctx.container.querySelector(
+      "del, .roman-cart-discounts, .roman-cart-savings",
+    ),
+    null,
+  );
+});

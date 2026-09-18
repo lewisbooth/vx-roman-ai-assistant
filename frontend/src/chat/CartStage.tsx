@@ -1,6 +1,53 @@
 import { useState } from "react";
 import { CHECKOUT_PATH } from "../../../shared/checkout";
+import type { CartDiscountAllocation } from "../../../shared/cart-tools";
 import type { CartDisplayState } from "./useCart";
+
+function CartPrice({
+  amount,
+  original,
+  format,
+}: {
+  amount: number;
+  original?: number;
+  format: (amount: number) => string;
+}) {
+  return (
+    <span className="roman-cart-price">
+      {original !== undefined && original > amount && (
+        <del aria-label={`Original price ${format(original)}`}>
+          {format(original)}
+        </del>
+      )}
+      <strong>{format(amount)}</strong>
+    </span>
+  );
+}
+
+function CartDiscounts({
+  discounts,
+  label,
+  format,
+}: {
+  discounts?: CartDiscountAllocation[];
+  label: string;
+  format: (amount: number) => string;
+}) {
+  const applied = discounts?.filter(
+    (discount) => discount.amountMinorUnits > 0,
+  );
+  if (!applied?.length) return null;
+  return (
+    <ul className="roman-cart-discounts" aria-label={label}>
+      {applied.map((discount, index) => (
+        <li key={`${discount.title}-${index}`}>
+          <span>{discount.title}</span>
+          <span>−{format(discount.amountMinorUnits)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function CartImage({ url }: { url?: string }) {
   const [failed, setFailed] = useState(false);
@@ -72,8 +119,17 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
                     )}
                     <div className="roman-cart-item-details">
                       <span>Quantity {item.quantity}</span>
-                      <strong>{price(item.linePriceMinorUnits)}</strong>
+                      <CartPrice
+                        amount={item.linePriceMinorUnits}
+                        original={item.originalLinePriceMinorUnits}
+                        format={price}
+                      />
                     </div>
+                    <CartDiscounts
+                      discounts={item.lineDiscounts}
+                      label="Applied item discounts"
+                      format={price}
+                    />
                   </li>
                 ))}
               </ul>
@@ -84,8 +140,23 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
               <div className="roman-cart-summary">
                 <div className="roman-cart-total">
                   <span>Subtotal</span>
-                  <strong>{price(cart.totalPriceMinorUnits)}</strong>
+                  <CartPrice
+                    amount={cart.totalPriceMinorUnits}
+                    original={cart.originalTotalPriceMinorUnits}
+                    format={price}
+                  />
                 </div>
+                <CartDiscounts
+                  discounts={cart.cartDiscounts}
+                  label="Applied cart discounts"
+                  format={price}
+                />
+                {!!cart.totalDiscountMinorUnits && (
+                  <p className="roman-cart-savings">
+                    <span>Total savings</span>
+                    <span>{price(cart.totalDiscountMinorUnits)}</span>
+                  </p>
+                )}
                 <a
                   className="roman-checkout"
                   href={CHECKOUT_PATH}

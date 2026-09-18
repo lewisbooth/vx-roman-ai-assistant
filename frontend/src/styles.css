@@ -171,7 +171,7 @@
     justify-content: center;
     gap: 32px 24px;
   }
-  .roman-cart-items li {
+  .roman-cart-items > li {
     flex: 0 0 calc((100% - 72px) / 4);
     min-width: 0;
     display: flex;
@@ -207,6 +207,49 @@
     gap: 6px 14px;
     margin-top: auto;
     padding: 0 18px;
+  }
+  .roman-cart-price {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 4px 8px;
+  }
+  .roman-cart-price del {
+    color: #80756b;
+    font-size: 0.8em;
+    font-weight: 400;
+  }
+  .roman-cart-discounts {
+    list-style: none;
+    margin: 10px 18px 0;
+    padding: 0;
+    font: 12px/1.5 system-ui, sans-serif;
+    text-align: left;
+  }
+  .roman-cart-discounts li,
+  .roman-cart-savings {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .roman-cart-discounts li + li {
+    margin-top: 4px;
+  }
+  .roman-cart-discounts li > :first-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .roman-cart-discounts li > :last-child {
+    flex-shrink: 0;
+  }
+  .roman-cart-summary .roman-cart-discounts {
+    margin: -12px 0 18px;
+    font-size: 13px;
+  }
+  .roman-cart-savings {
+    margin: 0 0 18px;
+    font: 13px/1.5 system-ui, sans-serif;
   }
   .roman-cart-configuration {
     margin: 0 18px 18px;
@@ -1231,7 +1274,7 @@
       font-size: 26px;
       margin: 8px 0 12px;
     }
-    .roman-cart-items li {
+    .roman-cart-items > li {
       flex-basis: calc((100% - 24px) / 2);
     }
   }
@@ -1239,7 +1282,7 @@
     .roman-cart-stage {
       padding-inline: 16px;
     }
-    .roman-cart-items li {
+    .roman-cart-items > li {
       flex-basis: 100%;
       max-width: 300px;
     }

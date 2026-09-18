@@ -24,7 +24,7 @@ let download:
 let loadingStartedAt: number | undefined;
 
 const visibilityKey = "roman:sidebar-open";
-const startError = "Roman could not start. Please retry.";
+const startError = "Roman could not start. Retry.";
 let storageUnavailable = false;
 
 function savedState(value?: string, key = visibilityKey): string | null {
@@ -69,7 +69,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       } else resolve(window.RomanAssistant!);
     };
     const timeout = window.setTimeout(
-      () => finish(new Error("Roman timed out. Please retry.")),
+      () => finish(new Error("Roman timed out. Retry.")),
       15000,
     );
     script.onload = () =>
@@ -80,7 +80,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       );
     script.onerror = () =>
       finish(
-        new Error("Roman could not load. Check your connection and retry."),
+        new Error("Check your connection, then retry Roman."),
       );
     try {
       document.head.append(script);
@@ -236,8 +236,10 @@ class RomanAssistant extends HTMLElement {
       document.removeEventListener("focusin", this.#onFocus);
     }
     this.#runtime?.setOpen(open);
-    if (open) this.#closeButton?.focus({ preventScroll: true });
-    else if (focus) this.#headerLauncher?.focus();
+    if (open) {
+      this.#closeButton?.focus({ preventScroll: true });
+      this.#runtime?.focus();
+    } else if (focus) this.#headerLauncher?.focus();
     if (open && this.#state === "idle") void this.#start();
   }
 
@@ -276,6 +278,7 @@ class RomanAssistant extends HTMLElement {
       this.#content!.hidden = false;
       this.#loading!.hidden = true;
       this.#panel!.ariaBusy = "false";
+      runtime.focus();
     } catch (error) {
       if (!this.isConnected || generation !== this.#generation) return;
       this.#runtime?.dispose();

@@ -464,6 +464,32 @@ test("a native size rejection reaches the advisor unchanged rather than becoming
   });
 });
 
+test("cart discount evidence survives validation and durable completion", async () => {
+  const env = setup();
+  env.mock.toolName = "get_cart";
+  const pending = env.api.requestBrowserTool(
+    "conversation-1", "assistant-1", "cart-offers", "get_cart", {},
+    new AbortController().signal,
+  );
+  await flush();
+  const cart = {
+    currency: "GBP", itemCount: 1,
+    totalPriceMinorUnits: 34598,
+    originalTotalPriceMinorUnits: 69195,
+    totalDiscountMinorUnits: 34597,
+    cartDiscounts: [],
+    items: [{
+      lineKey: "123:shutter", title: "San Jose Premium Cotton White Shutter Blinds",
+      variantId: 123, quantity: 1, linePriceMinorUnits: 34598,
+      originalLinePriceMinorUnits: 69195,
+      lineDiscounts: [{ title: "50 off test", amountMinorUnits: 34597, percentage: 50 }],
+    }],
+  };
+  await env.api.submitBrowserToolResult("conversation-1", "invocation-1", claim, cart);
+  assert.deepEqual(plain(await pending), cart);
+  assert.deepEqual(plain(env.calls.complete[0][3]), { productIds: [], outcome: cart });
+});
+
 test("browser result reaches its waiter only after durable IDs-only completion", async () => {
   const env = setup();
   const gate = deferred();

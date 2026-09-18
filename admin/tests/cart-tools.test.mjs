@@ -262,3 +262,127 @@ test("cart results contain only bounded public fields and preserve uncertainty",
     }),
   );
 });
+
+test("cart discount metadata preserves reported rounding and allocation scopes without repricing", () => {
+  const discounted = {
+    ...cart,
+    originalTotalPriceMinorUnits: 69195,
+    totalPriceMinorUnits: 34598,
+    totalDiscountMinorUnits: 34597,
+    cartDiscounts: [],
+    items: [
+      {
+        ...cart.items[0],
+        originalLinePriceMinorUnits: 69195,
+        linePriceMinorUnits: 34598,
+        lineDiscounts: [
+          { title: "50 off test", amountMinorUnits: 34597, percentage: 50 },
+        ],
+      },
+    ],
+  };
+  const parsed = parseCartResult("get_cart", discounted);
+  assert.deepEqual(parsed, discounted);
+  assert.notEqual(
+    parsed.items[0].lineDiscounts[0],
+    discounted.items[0].lineDiscounts[0],
+  );
+  assert.deepEqual(
+    parseCartResult("set_cart_quantity", {
+      status: "updated",
+      message: "Updated.",
+      cart: discounted,
+    }).cart,
+    discounted,
+  );
+
+  const combined = {
+    ...cart,
+    originalTotalPriceMinorUnits: 12345,
+    totalPriceMinorUnits: 11145,
+    totalDiscountMinorUnits: 1200,
+    cartDiscounts: [{ title: "Cart offer", amountMinorUnits: 200 }],
+    items: [
+      {
+        ...cart.items[0],
+        originalLinePriceMinorUnits: 12345,
+        linePriceMinorUnits: 11345,
+        lineDiscounts: [{ title: "Product offer", amountMinorUnits: 1000 }],
+      },
+    ],
+  };
+  assert.deepEqual(parseCartResult("get_cart", combined), combined);
+});
+
+test("cart metadata distinguishes missing details from explicitly no discount", () => {
+  const unknown = parseCartResult("get_cart", cart);
+  assert.equal(Object.hasOwn(unknown, "totalDiscountMinorUnits"), false);
+  assert.equal(Object.hasOwn(unknown, "cartDiscounts"), false);
+  assert.equal(Object.hasOwn(unknown.items[0], "lineDiscounts"), false);
+  const none = {
+    ...cart,
+    originalTotalPriceMinorUnits: 12345,
+    totalDiscountMinorUnits: 0,
+    cartDiscounts: [],
+    items: [
+      {
+        ...cart.items[0],
+        originalLinePriceMinorUnits: 12345,
+        lineDiscounts: [],
+      },
+    ],
+  };
+  assert.deepEqual(parseCartResult("get_cart", none), none);
+});
+
+test("cart discount boundary rejects malformed, excessive, private and contradictory metadata", () => {
+  const discount = { title: "Offer", amountMinorUnits: 200, percentage: 10 };
+  const valid = {
+    ...cart,
+    originalTotalPriceMinorUnits: 12545,
+    totalDiscountMinorUnits: 200,
+    cartDiscounts: [discount],
+  };
+  assert.deepEqual(parseCartResult("get_cart", valid), valid);
+  for (const malformed of [
+    { ...discount, title: "" },
+    { ...discount, title: "x".repeat(301) },
+    { ...discount, title: "Offer\nPRIVATE" },
+    { ...discount, amountMinorUnits: -1 },
+    { ...discount, amountMinorUnits: 0.5 },
+    { ...discount, amountMinorUnits: Number.MAX_SAFE_INTEGER + 1 },
+    { ...discount, percentage: "10" },
+    { ...discount, percentage: null },
+    { ...discount, percentage: -1 },
+    { ...discount, percentage: 101 },
+    { ...discount, percentage: Infinity },
+    { ...discount, customerId: "PRIVATE" },
+  ])
+    assert.throws(() =>
+      parseCartResult("get_cart", { ...valid, cartDiscounts: [malformed] }),
+    );
+  for (const malformed of [
+    { ...valid, originalTotalPriceMinorUnits: null },
+    { ...valid, originalTotalPriceMinorUnits: 12344 },
+    { ...valid, originalTotalPriceMinorUnits: 12544 },
+    { ...valid, totalDiscountMinorUnits: 199 },
+    { ...valid, cartDiscounts: null },
+    { ...valid, cartDiscounts: Array(51).fill(discount) },
+    { ...valid, cartDiscounts: [{ ...discount, amountMinorUnits: 201 }] },
+    {
+      ...cart,
+      items: [{ ...cart.items[0], originalLinePriceMinorUnits: 12344 }],
+    },
+    {
+      ...cart,
+      items: [
+        {
+          ...cart.items[0],
+          originalLinePriceMinorUnits: 12445,
+          lineDiscounts: [discount],
+        },
+      ],
+    },
+  ])
+    assert.throws(() => parseCartResult("get_cart", malformed));
+});

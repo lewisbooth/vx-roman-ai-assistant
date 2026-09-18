@@ -18,6 +18,14 @@ const bundle = await build({
   define: { "import.meta.env.DEV": "false" },
   loader: { ".svg": "dataurl", ".css": "text", ".woff2": "dataurl" },
 });
+const focusBundle = await build({
+  entryPoints: ["frontend/src/chat/composer-focus.ts"],
+  bundle: true,
+  write: false,
+  format: "iife",
+  globalName: "ComposerFocus",
+  platform: "browser",
+});
 
 function deferred() {
   let resolve;
@@ -90,6 +98,7 @@ function setup(t, beforeImport, { url = `${origin}/`, storage = {} } = {}) {
   for (const [key, value] of Object.entries(storage))
     window.sessionStorage.setItem(key, value);
   beforeImport?.(window);
+  window.eval(`${focusBundle.outputFiles[0].text}\nwindow.ComposerFocus = ComposerFocus;`);
   window.eval(bundle.outputFiles[0].text);
   const host = document.querySelector("roman-ai-assistant");
   t.after(async () => {
@@ -133,6 +142,7 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
       const content = window.document.createElement("p");
       content.textContent = "Runtime content";
       container.append(content);
+      const composerFocus = window.ComposerFocus.createComposerFocus(container);
       const mount = {
         host,
         container,
@@ -145,11 +155,16 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
       mounts.push(mount);
       return {
         ready: readiness(mounts.length),
-        setOpen: (open) => mount.open.push(open),
+        focus: () => composerFocus.focus(),
+        setOpen: (open) => {
+          mount.open.push(open);
+          if (!open) composerFocus.cancel();
+        },
         dispose: () => {
           mount.disposed++;
           setSessionActive(false);
           content.remove();
+          composerFocus.dispose();
         },
       };
     },
@@ -164,6 +179,94 @@ function loadingScript(document) {
 function hidden(element) {
   return !element || !!element.closest("[hidden]");
 }
+
+function addRuntimeComposer(mount, disabled = false) {
+  const { document } = mount.host.ownerDocument.defaultView;
+  const input = document.createElement("textarea");
+  input.dataset.romanComposer = "";
+  input.disabled = disabled;
+  const mute = document.createElement("button");
+  mute.textContent = "Mute microphone";
+  mount.container.append(input, mute);
+  return { input, mute };
+}
+
+test("first lazy mount focuses the welcome composer only once visible, and reopening focuses it again beside voice controls", async (t) => {
+  const ctx = setup(t);
+  const ready = deferred();
+  ctx.launcher().click();
+  const mounts = installRuntime(ctx.window, () => ready.promise);
+  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+  await until(() => mounts.length === 1, "Runtime did not mount");
+  const { input, mute } = addRuntimeComposer(mounts[0]);
+  assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+  assert.equal(hidden(input), true);
+  ready.resolve();
+  await until(() => ctx.host.shadowRoot.activeElement === input, "Visible welcome composer was not focused");
+  mute.focus();
+  input.disabled = true;
+  input.disabled = false;
+  await delay(0);
+  assert.equal(ctx.host.shadowRoot.activeElement, mute, "Unrelated changes must not steal focus");
+  ctx.close().click();
+  ctx.launcher().click();
+  assert.equal(ctx.host.shadowRoot.activeElement, input);
+  assert.equal(mounts.length, 1);
+  assert.equal(mounts[0].open.at(-1), true);
+});
+
+test("opening during restoration waits for the composer but respects a later customer focus choice", async (t) => {
+  for (const destination of ["input", "voice", "shell-close", "close", "remove"])
+    await t.test(destination, async (t) => {
+      const ctx = setup(t);
+      const ready = deferred();
+      ctx.launcher().click();
+      const mounts = installRuntime(ctx.window, () => ready.promise);
+      loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+      await until(() => mounts.length === 1, "Runtime did not mount");
+      const { input, mute } = addRuntimeComposer(mounts[0], true);
+      ready.resolve();
+      await until(() => !hidden(mounts[0].container), "Runtime stayed hidden");
+      assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+      if (destination === "voice") mute.focus();
+      if (destination === "shell-close") {
+        const sibling = ctx.document.createElement("button");
+        ctx.panel().append(sibling);
+        sibling.focus();
+        ctx.close().focus();
+      }
+      if (destination === "close") ctx.close().click();
+      if (destination === "remove") {
+        ctx.host.remove();
+        await delay(0);
+      }
+      input.disabled = false;
+      await delay(0);
+      if (destination === "input")
+        assert.equal(ctx.host.shadowRoot.activeElement, input);
+      else if (destination === "voice")
+        assert.equal(ctx.host.shadowRoot.activeElement, mute);
+      else if (destination === "shell-close")
+        assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+      else assert.notEqual(ctx.host.shadowRoot.activeElement, input);
+    });
+});
+
+test("closing before the lazy runtime is ready never focuses its hidden composer", async (t) => {
+  const ctx = setup(t);
+  const ready = deferred();
+  ctx.launcher().click();
+  const mounts = installRuntime(ctx.window, () => ready.promise);
+  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+  await until(() => mounts.length === 1, "Runtime did not mount");
+  const { input } = addRuntimeComposer(mounts[0]);
+  ctx.close().click();
+  ready.resolve();
+  await until(() => !mounts[0].container.hidden, "Runtime did not become ready");
+  assert.notEqual(ctx.host.shadowRoot.activeElement, input);
+  ctx.launcher().click();
+  assert.equal(ctx.host.shadowRoot.activeElement, input);
+});
 
 function addVisibleHeader(document) {
   const header = document.createElement("main-header");

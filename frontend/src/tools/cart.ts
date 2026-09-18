@@ -1,4 +1,7 @@
-import type { CartSnapshot } from "../../../shared/cart-tools";
+import {
+  parseCartSnapshot,
+  type CartSnapshot,
+} from "../../../shared/cart-tools";
 
 type ShopifyWindow = Window & { Shopify?: { routes?: { root?: string } } };
 
@@ -115,20 +118,82 @@ export function validateStoreCart(cart: unknown): StoreCart {
   return cart as StoreCart;
 }
 
+function discountAllocations(input: unknown, scope: "cart" | "line") {
+  if (!Array.isArray(input) || input.length > 50)
+    throw new Error("Shopify returned invalid cart discounts.");
+  return input.map((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      throw new Error("Shopify returned invalid cart discounts.");
+    const allocation = entry as Record<string, unknown>;
+    const source =
+      scope === "cart" ? allocation : allocation.discount_application;
+    if (!source || typeof source !== "object" || Array.isArray(source))
+      throw new Error("Shopify returned invalid cart discounts.");
+    const application = source as Record<string, unknown>;
+    let percentage: number | undefined;
+    if (application.value_type === "percentage") {
+      const value = application.value;
+      if (
+        typeof value !== "number" &&
+        !(typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value))
+      )
+        throw new Error(
+          "Shopify returned an invalid cart discount percentage.",
+        );
+      percentage = Number(value);
+    }
+    return {
+      title: application.title,
+      amountMinorUnits:
+        scope === "cart"
+          ? application.total_allocated_amount
+          : allocation.amount,
+      ...(percentage !== undefined ? { percentage } : {}),
+    };
+  });
+}
+
 export function summarizeCart(cart: StoreCart): CartSnapshot {
   // Return the shopper's items, never the cart token, note or customer attributes.
-  return {
+  // The old item.discounts list mixes scopes; copying it would double-count
+  // cart discounts already reported in cart_level_discount_applications.
+  return parseCartSnapshot({
     currency: cart.currency,
     itemCount: cart.item_count,
     totalPriceMinorUnits: cart.total_price,
+    ...(cart.original_total_price !== undefined
+      ? { originalTotalPriceMinorUnits: cart.original_total_price }
+      : {}),
+    ...(cart.total_discount !== undefined
+      ? { totalDiscountMinorUnits: cart.total_discount }
+      : {}),
+    ...(cart.cart_level_discount_applications !== undefined
+      ? {
+          cartDiscounts: discountAllocations(
+            cart.cart_level_discount_applications,
+            "cart",
+          ),
+        }
+      : {}),
     items: cart.items.map((item) => ({
       lineKey: item.key,
       title: item.title,
       variantId: item.variant_id,
       quantity: item.quantity,
       linePriceMinorUnits: item.final_line_price,
+      ...(item.original_line_price !== undefined
+        ? { originalLinePriceMinorUnits: item.original_line_price }
+        : {}),
+      ...(item.line_level_discount_allocations !== undefined
+        ? {
+            lineDiscounts: discountAllocations(
+              item.line_level_discount_allocations,
+              "line",
+            ),
+          }
+        : {}),
     })),
-  };
+  });
 }
 
 export async function getCart(signal: AbortSignal): Promise<CartSnapshot> {

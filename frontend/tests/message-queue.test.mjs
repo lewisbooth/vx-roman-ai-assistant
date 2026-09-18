@@ -9,15 +9,19 @@ const bundle = await build({
   stdin: {
     contents: `
     import { createRoot } from 'react-dom/client';
-    import { useState } from 'react';
+    import { useLayoutEffect, useState } from 'react';
     import { useMessageQueue } from './frontend/src/chat/useMessageQueue';
+    import { MessageQueue } from './frontend/src/chat/MessageQueue';
     export function mount(container, session) {
       const root = createRoot(container);
       function Harness() {
         const [paused, setPaused] = useState(false);
         window.queue = useMessageQueue(session, paused);
         window.pauseQueue = setPaused;
-        return null;
+        useLayoutEffect(() => {
+          (window.queueRenders ??= []).push(window.queue.messages.map(({text, status}) => ({text, status})));
+        });
+        return <MessageQueue messages={window.queue.messages} onRemove={window.queue.remove} onRetry={window.queue.retry} />;
       }
       root.render(<Harness />);
       return () => root.unmount();
@@ -113,13 +117,100 @@ async function setup(t, overrides = {}) {
   };
 }
 
+test("idle submissions dispatch immediately without ever rendering a queued preview", async (t) => {
+  const ctx = await setup(t);
+  ctx.queue().enqueue("send this now");
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Idle dispatch must not wait for an effect or timer",
+  );
+  await until(() => ctx.queue().messages[0]?.status === "sending");
+  assert.equal(ctx.window.document.querySelector(".roman-message-queue"), null);
+  assert.ok(
+    ctx.window.queueRenders.every((rows) =>
+      rows.every((row) => row.status === "sending"),
+    ),
+  );
+  ctx.calls[0].accept();
+  await until(() => ctx.queue().messages.length === 0);
+  assert.equal(ctx.window.document.querySelector(".roman-message-queue"), null);
+});
+
+test("only genuinely waiting input renders a preview, and dispatch transfers it to the client", async (t) => {
+  const ctx = await setup(t, { pending: true });
+  ctx.queue().enqueue("wait for the current reply");
+  assert.equal(ctx.calls.length, 0);
+  await until(() => ctx.window.document.querySelector(".roman-queued-message"));
+  assert.match(
+    ctx.window.document.querySelector(".roman-message-queue").textContent,
+    /wait for the current reply/,
+  );
+  ctx.update({ pending: false });
+  await until(
+    () =>
+      ctx.calls.length === 1 &&
+      !ctx.window.document.querySelector(".roman-message-queue"),
+  );
+  assert.equal(
+    ctx.queue().messages[0].status,
+    "sending",
+    "In-flight ownership remains until acceptance",
+  );
+});
+
+test("idle failures become visible and deliberate retry uses the same message without a queued flash", async (t) => {
+  const ctx = await setup(t);
+  ctx.queue().enqueue("retain this request");
+  assert.equal(ctx.calls.length, 1);
+  ctx.calls[0].fail();
+  await until(() =>
+    ctx.window.document.querySelector(".roman-message-queue [role=alert]"),
+  );
+  const id = ctx.queue().messages[0].id;
+  assert.equal(ctx.queue().messages[0].status, "failed");
+  ctx.window.queueRenders = [];
+  ctx.queue().retry(id);
+  await until(
+    () =>
+      ctx.calls.length === 2 &&
+      !ctx.window.document.querySelector(".roman-message-queue"),
+  );
+  assert.equal(ctx.queue().messages[0].id, id);
+  assert.ok(
+    ctx.window.queueRenders.every((rows) =>
+      rows.every((row) => row.status !== "queued"),
+    ),
+  );
+  assert.deepEqual(
+    ctx.calls.map((call) => call.text),
+    ["retain this request", "retain this request"],
+  );
+});
+
 test("free text queues once in order and waits for both acceptance and completed reply", async (t) => {
   const ctx = await setup(t);
   ctx.queue().enqueue("first");
   ctx.queue().enqueue("second");
   ctx.queue().enqueue("third");
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Same-tick submissions must serialize before React rerenders",
+  );
   await until(() => ctx.calls.length === 1);
   assert.equal(ctx.calls[0].text, "first");
+  await until(
+    () =>
+      ctx.window.document.querySelectorAll(".roman-queued-message").length ===
+      2,
+  );
+  assert.deepEqual(
+    [...ctx.window.document.querySelectorAll(".roman-queued-message p")].map(
+      (node) => node.textContent,
+    ),
+    ["second", "third"],
+  );
   ctx.calls[0].accept();
   await until(() => ctx.queue().messages.length === 2);
   await delay(20);
@@ -140,7 +231,7 @@ test("failed submissions remain visible and pause later messages until an explic
   ctx.queue().enqueue("then this one");
   await until(() => ctx.calls.length === 1);
   ctx.calls[0].fail();
-  await until(() => ctx.queue().messages[0].status === "failed");
+  await until(() => ctx.queue().messages[0]?.status === "failed");
   ctx.update({ error: null });
   await delay(20);
   assert.equal(

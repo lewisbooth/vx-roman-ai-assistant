@@ -819,7 +819,7 @@ test("distinct welcome and composer inputs queue in their original order", async
         [...ctx.container.querySelectorAll(".roman-queued-message p")].map(
           (row) => row.textContent,
         ),
-        expected,
+        expected.slice(1),
       );
       assert.equal(ctx.input().readOnly, false);
       accept();
@@ -1061,7 +1061,7 @@ test("accepted submissions clear the draft and same-tick repeats cannot send twi
     "Enqueue did not clear the draft immediately",
   );
   assert.deepEqual(calls, ["I need a roman blind"]);
-  assert.ok(container.querySelector(".roman-queued-message"));
+  assert.equal(container.querySelector(".roman-queued-message"), null);
   assert.equal(input().value, "");
   accept();
   await until(

@@ -79,52 +79,58 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
     conversationId.current = id;
   }, [state.conversation?.id, state.conversation?.status, clear]);
 
+  const send = useCallback(
+    (head: QueuedMessage) => {
+      const startedEpoch = epoch.current;
+      active.current = true;
+      publish(
+        current.current.map((item) =>
+          item.id === head.id ? { ...item, status: "sending" } : item,
+        ),
+      );
+      void (async () => {
+        try {
+          await session.sendMessage(head.text);
+          if (mounted.current && startedEpoch === epoch.current) {
+            active.current = false;
+            publish(current.current.filter((item) => item.id !== head.id));
+          }
+        } catch (cause: unknown) {
+          if (mounted.current && startedEpoch === epoch.current) {
+            active.current = false;
+            publish(
+              current.current.map((item) =>
+                item.id === head.id
+                  ? {
+                      ...item,
+                      status: "failed",
+                      error:
+                        cause instanceof Error
+                          ? cause.message
+                          : "Your message could not be sent.",
+                    }
+                  : item,
+              ),
+            );
+          }
+        }
+      })();
+    },
+    [publish, session],
+  );
+
   useEffect(() => {
     const head = current.current[0];
+    const snapshot = session.getSnapshot();
     if (
-      !head ||
-      head.status !== "queued" ||
-      active.current ||
-      paused ||
-      state.error ||
-      transportBusy(session.getSnapshot())
+      head?.status === "queued" &&
+      !active.current &&
+      !paused &&
+      !snapshot.error &&
+      !transportBusy(snapshot)
     )
-      return;
-    const startedEpoch = epoch.current;
-    active.current = true;
-    publish(
-      current.current.map((item) =>
-        item.id === head.id ? { ...item, status: "sending" } : item,
-      ),
-    );
-    void session.sendMessage(head.text).then(
-      () => {
-        if (mounted.current && startedEpoch === epoch.current) {
-          active.current = false;
-          publish(current.current.filter((item) => item.id !== head.id));
-        }
-      },
-      (cause: unknown) => {
-        if (mounted.current && startedEpoch === epoch.current) {
-          active.current = false;
-          publish(
-            current.current.map((item) =>
-              item.id === head.id
-                ? {
-                    ...item,
-                    status: "failed",
-                    error:
-                      cause instanceof Error
-                        ? cause.message
-                        : "Your message could not be sent.",
-                  }
-                : item,
-            ),
-          );
-        }
-      },
-    );
-  }, [messages, paused, publish, session, state]);
+      send(head);
+  }, [messages, paused, send, session, state]);
 
   const enqueue = useCallback(
     (value: string) => {
@@ -137,12 +143,25 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
         throw new Error(
           "You can queue up to five messages. Wait for one to send or remove a queued message.",
         );
-      publish([
-        ...current.current,
-        { id: ++nextId.current, text, status: "queued" },
-      ]);
+      const snapshot = session.getSnapshot();
+      const immediate =
+        !current.current.length &&
+        !active.current &&
+        !paused &&
+        !snapshot.error &&
+        !transportBusy(snapshot);
+      const message: QueuedMessage = {
+        id: ++nextId.current,
+        text,
+        status: immediate ? "sending" : "queued",
+      };
+      current.current = [...current.current, message];
+      // Idle input goes straight to the client's optimistic transcript. Only
+      // work actually waiting for that owner is published as queued.
+      if (immediate) send(message);
+      else publish(current.current);
     },
-    [publish],
+    [paused, publish, send, session],
   );
 
   return {
@@ -165,13 +184,18 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
       )
         return;
       session.clearError();
-      publish(
-        current.current.map((item) =>
-          item.id === id
-            ? { ...item, status: "queued", error: undefined }
-            : item,
-        ),
-      );
+      const head = { ...current.current[0], error: undefined };
+      const snapshot = session.getSnapshot();
+      if (
+        !active.current &&
+        !paused &&
+        !snapshot.error &&
+        !transportBusy(snapshot)
+      ) {
+        current.current = [head, ...current.current.slice(1)];
+        send(head);
+      } else
+        publish([{ ...head, status: "queued" }, ...current.current.slice(1)]);
     },
   };
 }

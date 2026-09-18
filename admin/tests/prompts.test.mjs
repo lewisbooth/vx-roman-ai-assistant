@@ -377,7 +377,7 @@ test("explicit product choices load once and replacements require conversational
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
     assert.match(prompt, /A recommendation, even a single result, is not a customer selection/);
     assert.match(prompt, /With no active blind, load the customer's explicit choice without an extra confirmation/);
-    assert.match(prompt, /If no measuring or configuration work has begun, call ask_question with Yes, change blind and No, keep this blind/);
+    assert.match(prompt, /If there are no customer-supplied measurements or deliberately chosen product options to reuse, call ask_question with Yes, change blind and No, keep this blind/);
     assert.match(prompt, /Keep the current blind unchanged until the customer confirms that replacement/);
     assert.match(prompt, /declining preserves the current blind and configuration/);
     assert.match(prompt, /never carry purchase consent into the replacement/);
@@ -1630,6 +1630,19 @@ test("a matching library remains the working source and written steps can be rec
   }
 });
 
+
+test("browsing a new product family stays quiet about irrelevant carry-over", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
+    assert.match(prompt, /Starting a measuring guide, answering a suitability check, seeing native defaults or browsing alternatives does not establish a setup to transfer/);
+    assert.match(prompt, /do not inspect or discuss the previous configuration just because another product is still active/);
+    assert.match(prompt, /silently omit carry-over: never announce that there are no dimensions, nothing to carry over or nothing configured unless the customer asks about reuse/);
+    assert.match(prompt, /continue the latest shopping goal with the new category's relevant next step/);
+    assert.match(prompt, /do not carry the old product's unfinished suitability question or guide problem into the new category/);
+    assert.match(prompt, /Do not read or discuss the previous blind's guide to justify a start-fresh switch/);
+    assert.match(prompt, /verified product details may require the window brand and size code/);
+    assert.doesNotMatch(prompt, /If work has begun, combine replacement confirmation/);
+  }
+});
 
 test("blind replacements offer compatible setup transfer without reusing consent or unsupported dimensions", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {

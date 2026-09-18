@@ -10,6 +10,7 @@ import { createStorefrontExecutor } from "./session/storefront-executor";
 import { createJourneyObserver } from "./session/journey";
 import { createVoiceAutostart } from "./session/voice-autostart";
 import { isConversationStorefront } from "../../shared/storefronts";
+import { createComposerFocus } from "./chat/composer-focus";
 import styles from "./styles.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
@@ -52,6 +53,7 @@ export function mountAssistant(
   let disposed = false;
   let readyTimer: number | undefined;
   let sidebarOpen = false;
+  const composerFocus = createComposerFocus(container);
   const voiceDock = document.createElement("div");
   voiceDock.hidden = true;
   host.shadowRoot?.append(voiceDock);
@@ -104,6 +106,7 @@ export function mountAssistant(
     disposed = true;
     window.clearTimeout(readyTimer);
     root?.unmount();
+    composerFocus.dispose();
     router?.dispose();
     tools.dispose();
     executor.dispose();
@@ -119,9 +122,13 @@ export function mountAssistant(
 
   return {
     ready,
+    focus() {
+      if (!disposed && sidebarOpen) composerFocus.focus();
+    },
     setOpen(open) {
       if (!disposed) {
         sidebarOpen = open;
+        if (!open) composerFocus.cancel();
         syncVoiceDock();
         voiceAutostart?.setOpen(open);
       }
@@ -133,6 +140,7 @@ export function mountAssistant(
         new DOMException("The Roman assistant was removed.", "AbortError"),
       );
       root?.unmount();
+      composerFocus.dispose();
       router?.dispose();
       tools.dispose();
       executor.dispose();

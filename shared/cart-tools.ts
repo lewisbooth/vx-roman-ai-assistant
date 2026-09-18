@@ -7,16 +7,30 @@ export type CartToolName =
   | "remove_from_cart"
   | "set_cart_quantity"
   | "clear_cart";
+export interface CartDiscountAllocation {
+  title: string;
+  amountMinorUnits: number;
+  /** Shopify's reported percentage, never inferred from rounded prices. */
+  percentage?: number;
+}
 export interface CartSnapshot {
   currency: string;
   itemCount: number;
   totalPriceMinorUnits: number;
+  /** Omitted discount metadata is unknown; zero/empty values mean none. */
+  originalTotalPriceMinorUnits?: number;
+  /** All applied discounts, including line and cart allocations below. */
+  totalDiscountMinorUnits?: number;
+  cartDiscounts?: CartDiscountAllocation[];
   items: {
     lineKey: string;
     title: string;
     variantId: number;
     quantity: number;
+    /** After line discounts, before any cart-level discounts. */
     linePriceMinorUnits: number;
+    originalLinePriceMinorUnits?: number;
+    lineDiscounts?: CartDiscountAllocation[];
   }[];
 }
 export interface CartAddedProduct {
@@ -64,7 +78,7 @@ const lineKeySchema = { type: "string", pattern: lineKeyPattern.source };
 const definitions = [
   [
     "get_cart",
-    "Read this shopper's current cart, including exact line keys and quantities. Refresh before choosing a line to remove or change; historical cart contents may be stale. Reading does not request that Roman show the cart; display or navigate to it only when the shopper explicitly asks to view it.",
+    "Read this shopper's current cart, including exact line keys, quantities and applied discounts. totalPriceMinorUnits is Shopify's final cart total; totalDiscountMinorUnits already includes lineDiscounts and cartDiscounts, so never subtract them again. linePriceMinorUnits is after line discounts but before cart-level discounts. Original prices, named allocations and percentages are included only when Shopify reports them; omitted metadata is unknown, not zero or no discount. Refresh before choosing a line to remove or change; historical cart contents may be stale. Reading does not request that Roman show the cart; display or navigate to it only when the shopper explicitly asks to view it.",
     {},
   ],
   [
@@ -253,9 +267,58 @@ export function parseCartCall(
   };
 }
 
-function parseCartSnapshot(input: unknown): CartSnapshot {
+function parseDiscounts(input: unknown): CartDiscountAllocation[] {
+  if (!Array.isArray(input) || input.length > 50)
+    throw new Error("Invalid cart discounts.");
+  return input.map((input) => {
+    const discount = object(input);
+    exact(discount, [
+      "title",
+      "amountMinorUnits",
+      ...(discount.percentage !== undefined ? ["percentage"] : []),
+    ]);
+    if (
+      !text(discount.title, 300) ||
+      !integer(discount.amountMinorUnits) ||
+      (discount.percentage !== undefined &&
+        (typeof discount.percentage !== "number" ||
+          !Number.isFinite(discount.percentage) ||
+          discount.percentage < 0 ||
+          discount.percentage > 100))
+    )
+      throw new Error("Invalid cart discounts.");
+    return {
+      title: discount.title,
+      amountMinorUnits: discount.amountMinorUnits,
+      ...(discount.percentage !== undefined
+        ? { percentage: discount.percentage }
+        : {}),
+    };
+  });
+}
+
+function optionalPrice(
+  value: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  if (value[field] === undefined) return undefined;
+  if (!integer(value[field])) throw new Error("Invalid cart price.");
+  return value[field];
+}
+
+export function parseCartSnapshot(input: unknown): CartSnapshot {
   const value = object(input);
-  exact(value, ["currency", "itemCount", "totalPriceMinorUnits", "items"]);
+  exact(value, [
+    "currency",
+    "itemCount",
+    "totalPriceMinorUnits",
+    "items",
+    ...[
+      "originalTotalPriceMinorUnits",
+      "totalDiscountMinorUnits",
+      "cartDiscounts",
+    ].filter((field) => value[field] !== undefined),
+  ]);
   if (
     typeof value.currency !== "string" ||
     !/^[A-Z]{3}$/.test(value.currency) ||
@@ -265,6 +328,26 @@ function parseCartSnapshot(input: unknown): CartSnapshot {
     value.items.length > 100
   )
     throw new Error("Invalid cart summary.");
+  const originalTotalPriceMinorUnits = optionalPrice(
+    value,
+    "originalTotalPriceMinorUnits",
+  );
+  const totalDiscountMinorUnits = optionalPrice(
+    value,
+    "totalDiscountMinorUnits",
+  );
+  const cartDiscounts =
+    value.cartDiscounts === undefined
+      ? undefined
+      : parseDiscounts(value.cartDiscounts);
+  if (
+    originalTotalPriceMinorUnits !== undefined &&
+    (originalTotalPriceMinorUnits < value.totalPriceMinorUnits ||
+      (totalDiscountMinorUnits !== undefined &&
+        originalTotalPriceMinorUnits - value.totalPriceMinorUnits !==
+          totalDiscountMinorUnits))
+  )
+    throw new Error("Cart discounts do not match its prices.");
   const keys = new Set<string>();
   const items = value.items.map((input) => {
     const item = object(input);
@@ -274,6 +357,9 @@ function parseCartSnapshot(input: unknown): CartSnapshot {
       "variantId",
       "quantity",
       "linePriceMinorUnits",
+      ...["originalLinePriceMinorUnits", "lineDiscounts"].filter(
+        (field) => item[field] !== undefined,
+      ),
     ]);
     if (
       typeof item.lineKey !== "string" ||
@@ -285,6 +371,25 @@ function parseCartSnapshot(input: unknown): CartSnapshot {
       !integer(item.linePriceMinorUnits)
     )
       throw new Error("Invalid cart line.");
+    const originalLinePriceMinorUnits = optionalPrice(
+      item,
+      "originalLinePriceMinorUnits",
+    );
+    const lineDiscounts =
+      item.lineDiscounts === undefined
+        ? undefined
+        : parseDiscounts(item.lineDiscounts);
+    if (
+      originalLinePriceMinorUnits !== undefined &&
+      (originalLinePriceMinorUnits < item.linePriceMinorUnits ||
+        (lineDiscounts !== undefined &&
+          lineDiscounts.reduce(
+            (sum, discount) => sum + discount.amountMinorUnits,
+            0,
+          ) >
+            originalLinePriceMinorUnits - item.linePriceMinorUnits))
+    )
+      throw new Error("Cart line discounts do not match its prices.");
     keys.add(item.lineKey);
     return {
       lineKey: item.lineKey,
@@ -292,16 +397,37 @@ function parseCartSnapshot(input: unknown): CartSnapshot {
       variantId: item.variantId,
       quantity: item.quantity,
       linePriceMinorUnits: item.linePriceMinorUnits,
+      ...(originalLinePriceMinorUnits !== undefined
+        ? { originalLinePriceMinorUnits }
+        : {}),
+      ...(lineDiscounts !== undefined ? { lineDiscounts } : {}),
     };
   });
   if (
     items.reduce((total, item) => total + item.quantity, 0) !== value.itemCount
   )
     throw new Error("Cart item count does not match its lines.");
+  const allocatedDiscount = [
+    ...(cartDiscounts ?? []),
+    ...items.flatMap((item) => item.lineDiscounts ?? []),
+  ].reduce((sum, discount) => sum + discount.amountMinorUnits, 0);
+  if (
+    !Number.isSafeInteger(allocatedDiscount) ||
+    (totalDiscountMinorUnits !== undefined &&
+      allocatedDiscount > totalDiscountMinorUnits)
+  )
+    throw new Error("Cart allocations exceed its reported discount.");
   return {
     currency: value.currency,
     itemCount: value.itemCount,
     totalPriceMinorUnits: value.totalPriceMinorUnits,
+    ...(originalTotalPriceMinorUnits !== undefined
+      ? { originalTotalPriceMinorUnits }
+      : {}),
+    ...(totalDiscountMinorUnits !== undefined
+      ? { totalDiscountMinorUnits }
+      : {}),
+    ...(cartDiscounts !== undefined ? { cartDiscounts } : {}),
     items,
   };
 }
