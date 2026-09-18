@@ -38,7 +38,6 @@ const bundle = await build({
             contents = `export const createVoiceProvider = (...args) => mock.createProvider(...args);`;
           else if (args.path.endsWith("runner.server"))
             contents = `export const cancelVoiceDelegation = (...args) => mock.cancelDelegation(...args);
-        export const getVoiceWorkActivity = (...args) => mock.activity(...args);
         export const runVoiceDelegation = (...args) => mock.delegate(...args);`;
           else if (args.path.includes("conversations"))
             contents = `export const getVoiceStartupContext = (...args) => mock.context(...args);
@@ -95,7 +94,6 @@ function setup() {
     heartbeat: [],
     usage: [],
     answer: [],
-    activity: [],
   };
   let api;
   const mock = {
@@ -110,11 +108,6 @@ function setup() {
     onProviderClose: undefined,
     onDelegate: undefined,
     onCancelDelegation: undefined,
-    workActivity: undefined,
-    activity: (...args) => {
-      calls.activity.push(args);
-      return mock.workActivity;
-    },
     delay: async (_ms, _value, options) => {
       options.signal.throwIfAborted();
     },
@@ -202,7 +195,6 @@ function setup() {
         thoughts: [],
         inputs: [],
         replies: [],
-        replyOptions: [],
       };
       const provider = {
         providerId: "live_test",
@@ -226,11 +218,10 @@ function setup() {
           order.push("input-sent");
           await mock.onCustomerInput?.(text);
         },
-        appendReply: async (text, options) => {
+        appendReply: async (text) => {
           record.replies.push(text);
-          record.replyOptions.push(options);
           order.push("reply-sent");
-          await mock.onReply?.(text, options);
+          await mock.onReply?.(text);
         },
       };
       record.provider = provider;
@@ -2035,51 +2026,25 @@ test("UI input returns after accepted mirroring while the advisor works and Live
   await state.stop();
 });
 
-test("accepted UI input gets one optional spoken acknowledgement without delaying advisor or final reply", async () => {
-  const state = setup();
-  const input = await answerableVoice(state);
-  const advisor = deferred();
-  const cue = deferred();
-  state.mock.onDelegate = () => advisor.promise;
-  state.mock.onReply = (_text, options) =>
-    options?.optional ? cue.promise : undefined;
-  await state.api.answerVoiceQuestion(
-    state.conversationId,
-    state.input.requestId,
-    input,
-  );
-  await flush();
-  assert.equal(state.calls.delegate.length, 1);
-  const timer = [...state.timers].find((timer) => timer.ms === 250);
-  assert.ok(timer);
-  timer.callback();
-  timer.callback();
-  await state.api.answerVoiceQuestion(
-    state.conversationId,
-    state.input.requestId,
-    input,
-  );
-  assert.deepEqual(state.providers[0].replies, ["Let me take a look."]);
-  assert.deepEqual(plain(state.providers[0].replyOptions), [
-    { optional: true },
-  ]);
-  advisor.resolve({ text: "What is the width?" });
-  await flush();
-  assert.deepEqual(state.providers[0].replies, [
-    "Let me take a look.",
-    "What is the width?",
-  ]);
-  cue.resolve();
-  await flush();
-  assert.equal(state.calls.delegate.length, 1);
-  assert.equal(state.providers[0].closed, false);
-  await state.stop();
-});
-
-test("fast final replies, new speech and stopping suppress late UI acknowledgement cues", async () => {
-  for (const outcome of ["final", "speech", "stop"]) {
+test("typed replies, quick answers and carousel choices send only the completed briefing without a second acknowledgement", async () => {
+  for (const kind of ["text", "answer", "choice"]) {
     const state = setup();
-    const input = await answerableVoice(state);
+    const answer = await answerableVoice(state);
+    const input =
+      kind === "answer"
+        ? answer
+        : {
+            requestId: randomUUID(),
+            clientId: state.input.clientId,
+            ...(kind === "text"
+              ? { text: "Light neutrals." }
+              : {
+                  carouselId: "carousel",
+                  productId: "gid://shopify/Product/2",
+                  title: "Lemon roller",
+                  productPath: "/products/lemon-roller",
+                }),
+          };
     const advisor = deferred();
     state.mock.onDelegate = () => advisor.promise;
     await state.api.answerVoiceQuestion(
@@ -2088,163 +2053,32 @@ test("fast final replies, new speech and stopping suppress late UI acknowledgeme
       input,
     );
     await flush();
-    const timer = [...state.timers].find((timer) => timer.ms === 250);
-    assert.ok(timer);
-    if (outcome === "final") {
-      advisor.resolve({ text: "Your verified next step." });
-      await flush();
-    } else if (outcome === "speech") {
-      // Suppress immediately, even while the fresh caption waits for persistence.
-      const saving = deferred();
-      state.mock.beforeCaption = () => saving.promise;
-      state.emit(
-        transcript({
-          eventId: "correction",
-          text: "Actually, a different window.",
-        }),
-      );
-      timer.callback();
-      assert.equal(state.providers[0].replies.length, 0);
-      saving.resolve();
-      await flush();
-    } else {
-      const stopped = state.stop();
-      advisor.resolve({ text: "Stopped." });
-      await stopped;
-    }
-    assert.equal(state.timers.has(timer), false);
-    timer.callback();
-    assert.equal(
-      state.providers[0].replies.includes("Let me take a look."),
-      false,
+    state.emit(
+      transcript({
+        role: "assistant",
+        eventId: "natural-ack",
+        text: "Light neutrals.",
+      }),
     );
-    if (outcome !== "stop") {
-      const stopped = state.stop();
-      advisor.resolve({ text: "Stopped." });
-      await stopped;
-    }
-  }
-});
-
-test("optional UI acknowledgement failure does not cancel useful work or end voice", async () => {
-  const state = setup();
-  const input = await answerableVoice(state);
-  const advisor = deferred();
-  state.mock.onDelegate = () => advisor.promise;
-  state.mock.onReply = (_text, options) => {
-    if (options?.optional) throw new Error("PRIVATE_CUE_ERROR");
-  };
-  await state.api.answerVoiceQuestion(
-    state.conversationId,
-    state.input.requestId,
-    input,
-  );
-  await flush();
-  [...state.timers].find((timer) => timer.ms === 250).callback();
-  await flush();
-  assert.equal(state.providers[0].closed, false);
-  assert.equal(state.calls.delegate[0][3].aborted, false);
-  assert.match(
-    JSON.stringify(state.logs),
-    /Optional voice acknowledgement unavailable/,
-  );
-  assert.doesNotMatch(JSON.stringify(state.logs), /PRIVATE_CUE_ERROR/);
-  advisor.resolve({ text: "Your actual next question?" });
-  await flush();
-  assert.equal(state.providers[0].replies.at(-1), "Your actual next question?");
-  await state.stop();
-});
-
-test("UI acknowledgements use current request activity and vary repeated cues without inferring tasks from text", async () => {
-  const state = setup();
-  await answerableVoice(state);
-  const cases = [
-    [undefined, "Let me take a look."],
-    [undefined, "I'll check that for you."],
-    [undefined, "One moment while I look into that."],
-    [undefined, "Thanks, let me check."],
-    [undefined, "Let me take a look."],
-    [{ tool: "get_product_guides" }, "I'm finding the product guidance."],
-    [{ tool: "get_product_guides" }, "Let me pull up the product guidance."],
-    [{ readingGuides: ["fitting"] }, "I'm checking the fitting guide."],
-    [
-      { readingGuides: ["measuring", "fitting"] },
-      "I'm checking the measuring and fitting guidance.",
-    ],
-    [{ tool: "search_products" }, "I'm looking through the options."],
-    [
-      { tool: "get_product_configuration" },
-      "Let's take a closer look at that blind.",
-    ],
-    [{ tool: "get_cart" }, "I'm checking your cart."],
-    [{ tool: "add_to_cart" }, "Let me take a look."],
-  ];
-  for (const [activity, expected] of cases) {
-    const advisor = deferred();
-    state.mock.onDelegate = () => advisor.promise;
-    state.mock.workActivity = activity;
-    const input = {
-      requestId: randomUUID(),
-      clientId: state.input.clientId,
-      text: "Don't open the measuring guide or add anything to my cart.",
-    };
+    await flush();
     await state.api.answerVoiceQuestion(
       state.conversationId,
       state.input.requestId,
       input,
     );
+    assert.equal(state.providers[0].inputs.length, 1);
+    assert.equal(state.calls.delegate.length, 1);
+    assert.deepEqual(state.providers[0].replies, []);
+    assert.deepEqual(state.providers[0].commentaries, []);
+    advisor.resolve({ text: "Which of these styles suits your room?" });
     await flush();
-    const timer = [...state.timers].find((timer) => timer.ms === 250);
-    assert.ok(timer);
-    state.timers.delete(timer); // A native timeout leaves the scheduler when it fires.
-    timer.callback();
-    assert.equal(state.providers[0].replies.at(-1), expected);
-    assert.deepEqual(state.calls.activity.at(-1), [
-      state.conversationId,
-      state.input.requestId,
-      input.requestId,
+    assert.deepEqual(state.providers[0].replies, [
+      "Which of these styles suits your room?",
     ]);
-    assert.doesNotMatch(expected, /Okay|\?|added|selected|saved/);
-    advisor.resolve({ text: "The verified next question?" });
-    await flush();
-    assert.equal(
-      state.providers[0].replies.at(-1),
-      "The verified next question?",
-    );
+    assert.deepEqual(state.providers[0].commentaries, []);
+    assert.equal(state.providers[0].closed, false);
+    await state.stop();
   }
-  await state.stop();
-});
-
-test("a carousel choice acknowledges the choice without inventing a confirmation or completed navigation", async () => {
-  const state = setup();
-  await answerableVoice(state);
-  const advisor = deferred();
-  state.mock.onDelegate = () => advisor.promise;
-  await state.api.answerVoiceQuestion(
-    state.conversationId,
-    state.input.requestId,
-    {
-      requestId: randomUUID(),
-      clientId: state.input.clientId,
-      carouselId: "synthetic-carousel",
-      productId: "gid://shopify/Product/1",
-      productPath: "/products/lemon-roller",
-      title: "Lemon roller",
-    },
-  );
-  await flush();
-  [...state.timers].find((timer) => timer.ms === 250).callback();
-  assert.deepEqual(state.providers[0].replies, [
-    "Let's take a closer look at that blind.",
-  ]);
-  advisor.resolve({ text: "The backend's verified configuration question?" });
-  await flush();
-  assert.equal(state.providers[0].replies.length, 2);
-  assert.equal(
-    state.providers[0].replies.at(-1),
-    "The backend's verified configuration question?",
-  );
-  await state.stop();
 });
 
 test("a durable UI choice supersedes an old briefing before its provider mirror is acknowledged", async () => {
@@ -2259,7 +2093,6 @@ test("a durable UI choice supersedes an old briefing before its provider mirror 
     firstInput,
   );
   await flush();
-  const oldCue = [...state.timers].find((timer) => timer.ms === 250);
   const oldSignal = state.calls.delegate[0][3];
   state.mock.onCustomerInput = () => mirror.promise;
   const choice = state.api.answerVoiceQuestion(
@@ -2276,7 +2109,6 @@ test("a durable UI choice supersedes an old briefing before its provider mirror 
   );
   await flush();
   assert.equal(oldSignal.aborted, true);
-  oldCue.callback();
   oldReply.resolve({ text: "Which direction speaks to you most?" });
   await flush();
   assert.deepEqual(state.providers[0].replies, []);

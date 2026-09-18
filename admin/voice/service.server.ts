@@ -17,10 +17,8 @@ import {
 } from "../conversations/repository.server";
 import {
   cancelVoiceDelegation,
-  getVoiceWorkActivity,
   runVoiceDelegation,
 } from "../conversations/runner.server";
-import { voiceAcknowledgement } from "./acknowledgement.server";
 import {
   createVoiceProvider,
   type VoiceProvider,
@@ -75,11 +73,6 @@ interface VoiceOwner {
     offsetMs: number;
     timer: ReturnType<typeof setTimeout>;
   };
-  inputAcknowledgement?: {
-    caption: string;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  lastInputAcknowledgement?: string;
   delegationController?: AbortController;
   resumeQuestionId?: string;
   resumeController?: AbortController;
@@ -175,65 +168,12 @@ type AdvisorRequest =
       kind: "input";
       requestId: string;
       caption: string;
-      productChoice: boolean;
     }
   | { kind: "resume"; questionId: string };
 
 function clearPendingSpeech(owner: VoiceOwner) {
   if (owner.pendingSpeech) clearTimeout(owner.pendingSpeech.timer);
   owner.pendingSpeech = undefined;
-}
-
-function clearInputAcknowledgement(owner: VoiceOwner, caption?: string) {
-  if (caption !== undefined && owner.inputAcknowledgement?.caption !== caption)
-    return;
-  if (owner.inputAcknowledgement)
-    clearTimeout(owner.inputAcknowledgement.timer);
-  owner.inputAcknowledgement = undefined;
-}
-
-function acknowledgeInput(
-  owner: VoiceOwner,
-  request: Extract<AdvisorRequest, { kind: "input" }>,
-  signal: AbortSignal,
-) {
-  const { caption } = request;
-  const acknowledgement = {
-    caption,
-    timer: setTimeout(() => {
-      if (owner.inputAcknowledgement !== acknowledgement) return;
-      owner.inputAcknowledgement = undefined;
-      if (
-        owner.stopping ||
-        signal.aborted ||
-        owner.latestUserCaption !== caption
-      )
-        return;
-      const text = voiceAcknowledgement(
-        getVoiceWorkActivity(
-          owner.conversationId,
-          owner.voiceId,
-          request.requestId,
-        ),
-        request.productChoice,
-        owner.lastInputAcknowledgement,
-      );
-      owner.lastInputAcknowledgement = text;
-      // This optional cue neither delays the result nor claims an action succeeded.
-      void owner
-        .provider!.appendReply(text, {
-          optional: true,
-        })
-        .catch(() => {
-          if (!owner.stopping && !signal.aborted)
-            console.error(
-              "[Roman] Optional voice acknowledgement unavailable.",
-            );
-        });
-    }, 250),
-  };
-  owner.inputAcknowledgement = acknowledgement;
-  acknowledgement.timer.unref();
 }
 
 function hasFreshSpeech(owner: VoiceOwner) {
@@ -310,7 +250,6 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     return;
   }
   owner.scheduledCaption = owner.latestUserCaption;
-  clearInputAcknowledgement(owner);
   owner.delegationController?.abort();
   const controller = new AbortController();
   owner.delegationController = controller;
@@ -319,7 +258,6 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     owner.resumeQuestionId = undefined;
   }
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
-  if (request.kind === "input") acknowledgeInput(owner, request, signal);
   // A new delegation may be a spoken correction. Retire pending tools from
   // the earlier request before beginning work from the updated captions.
   const cancelled = cancelVoiceDelegation(owner.conversationId, owner.voiceId);
@@ -369,8 +307,6 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         signal,
         resumeQuestionId ? { resumeQuestionId } : undefined,
       );
-      if (request.kind === "input")
-        clearInputAcknowledgement(owner, request.caption);
       await owner.events;
       if (signal.aborted) return;
       if (resumeQuestionId && owner.userSpeechObserved) return;
@@ -401,8 +337,6 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         );
     })
     .finally(() => {
-      if (request.kind === "input")
-        clearInputAcknowledgement(owner, request.caption);
       if (owner.resumeController === controller)
         owner.resumeController = undefined;
       owner.delegationCount--;
@@ -443,7 +377,6 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
   // generic welcome after the customer has already begun their request.
   if (event.type === "transcript" && event.role === "user") {
     owner.userSpeechObserved = true;
-    clearInputAcknowledgement(owner);
   }
   const interruptedResume =
     event.type === "transcript" && event.role === "user"
@@ -517,7 +450,6 @@ function closeOwner(owner: VoiceOwner): Promise<void> {
   if (owner.closing) return owner.closing;
   owner.stopping = true;
   clearPendingSpeech(owner);
-  clearInputAcknowledgement(owner);
   if (owner.timer) clearTimeout(owner.timer);
   owner.controller.abort();
   owner.closing = (async () => {
@@ -884,7 +816,6 @@ async function submitVoiceInput(
       // while its silent provider mirror is still awaiting acknowledgement.
       owner.delegationController?.abort();
       clearPendingSpeech(owner);
-      clearInputAcknowledgement(owner);
     }
     return receipt;
   });
@@ -917,7 +848,6 @@ async function submitVoiceInput(
         kind: "input",
         requestId: receipt.messageId,
         caption: `answer:${receipt.messageId}`,
-        productChoice: !!receipt.productChoice,
       });
     } catch {
       const message =

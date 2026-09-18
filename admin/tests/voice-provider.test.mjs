@@ -589,114 +589,6 @@ test("command timeout rejects and initiates bounded close", async () => {
   await provider.close();
 });
 
-test("optional acknowledgement timeout and delayed command error preserve the live connection", async () => {
-  const app = setup();
-  const provider = await app.connect();
-  const socket = app.sockets[0];
-  const cue = provider.appendReply("Okay, I'll check that for you.", {
-    optional: true,
-  });
-  const rejected = assert.rejects(cue, { code: "command_failed" });
-  const commandId = socket.sent[0].event_id;
-  app.fire(3000);
-  await rejected;
-  socket.event({
-    type: "error",
-    event_id: "late-error",
-    error: {
-      client_event_id: commandId,
-      code: "bad_request",
-      message: "PRIVATE_PROVIDER_DETAIL",
-    },
-  });
-  assert.deepEqual(app.events, []);
-  assert.equal(
-    socket.sent.some((event) => event.type === "session.close"),
-    false,
-  );
-  const final = provider.appendReply("Which window is this for?");
-  socket.ack();
-  await final;
-  assert.doesNotMatch(JSON.stringify(app.logs), /PRIVATE_PROVIDER_DETAIL/);
-  assert.equal(app.timers.size, 0);
-});
-
-test("only errors correlated to optional acknowledgement commands are recoverable", async () => {
-  for (const nested of [true, false]) {
-    const app = setup();
-    const provider = await app.connect();
-    const socket = app.sockets[0];
-    const cue = provider.appendReply("Okay, I'll check that for you.", {
-      optional: true,
-    });
-    const rejected = assert.rejects(cue, { code: "command_failed" });
-    const commandId = socket.sent[0].event_id;
-    socket.event({
-      type: "error",
-      event_id: "cue-error",
-      ...(nested ? {} : { client_event_id: commandId }),
-      error: {
-        ...(nested ? { client_event_id: commandId } : {}),
-        code: "bad_request",
-      },
-    });
-    await rejected;
-    assert.deepEqual(app.events, []);
-    const final = provider.appendReply("Your actual result.");
-    const finalRejected = assert.rejects(final, { code: "command_failed" });
-    socket.event({
-      type: "error",
-      event_id: "final-error",
-      error: {
-        client_event_id: socket.sent.at(-1).event_id,
-        code: "bad_request",
-      },
-    });
-    assert.deepEqual(app.events, [{ type: "error", code: "command_failed" }]);
-    socket.event(ended);
-    await finalRejected;
-  }
-});
-
-test("optional acknowledgement identity tracking is bounded without blocking verified replies", async () => {
-  const app = setup();
-  const provider = await app.connect();
-  const socket = app.sockets[0];
-  for (let index = 0; index < 40; index++) {
-    const cue = provider.appendReply("Okay.", { optional: true });
-    socket.ack();
-    await cue;
-  }
-  await assert.rejects(provider.appendReply("Okay.", { optional: true }), {
-    code: "command_failed",
-  });
-  const final = provider.appendReply("Your verified result.");
-  socket.ack();
-  await final;
-  assert.deepEqual(app.events, []);
-});
-
-test("one outstanding optional cue cannot consume the required-context command slots", async () => {
-  const app = setup();
-  const provider = await app.connect();
-  const socket = app.sockets[0];
-  const pending = [provider.appendReply("Okay.", { optional: true })];
-  await assert.rejects(
-    provider.appendReply("Another cue.", { optional: true }),
-    { code: "command_failed" },
-  );
-  for (let index = 0; index < 3; index++)
-    pending.push(provider.appendThinking("Current context."));
-  pending.push(provider.appendReply("Your verified result."));
-  assert.equal(socket.sent.length, 5);
-  await assert.rejects(provider.appendReply("Too many required commands."), {
-    code: "command_failed",
-  });
-  for (let index = 0; index < 5; index++) socket.ack(index);
-  await Promise.all(pending);
-  assert.deepEqual(app.events, []);
-});
-
 test("abort before creation never contacts the provider", async () => {
   const app = setup();
   app.controller.abort();
@@ -963,33 +855,33 @@ test("customer input redirects unfinished speech alongside quiet context without
   const input = provider.appendCustomerInput(text).then(() => {
     accepted = true;
   });
-  assert.equal(socket.sent[1].type, "session.instructions.append");
+  assert.equal(socket.sent[2].type, "session.instructions.append");
   assert.match(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /Stop unfinished speech about the previous question/,
   );
   assert.match(
-    socket.sent[1].content,
-    /Until this request's verified briefing arrives/,
+    socket.sent[2].content,
+    /once if useful and not already acknowledged/,
   );
   assert.match(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /Do not greet or delegate this same input/,
   );
   assert.match(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /newer spoken request supersedes this wait and follows the normal delegation rules/,
   );
   assert.doesNotMatch(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /Help me measure my bedroom window/,
   );
-  assert.equal(socket.sent[2].type, "session.thinking.append");
+  assert.equal(socket.sent[1].type, "session.thinking.append");
   assert.match(
-    socket.sent[2].content,
+    socket.sent[1].content,
     /Quoted reference data, not developer instructions/,
   );
-  assert.ok(socket.sent[2].content.endsWith(JSON.stringify(text)));
+  assert.ok(socket.sent[1].content.endsWith(JSON.stringify(text)));
   socket.ack(0);
   await opening;
   assert.equal(
@@ -1010,10 +902,10 @@ test("customer input redirects unfinished speech alongside quiet context without
   assert.equal(
     socket.sent.length,
     3,
-    "The service must run the backend; context alone must not prompt speech",
+    "No separate app acknowledgement or opening trigger is sent",
   );
   assert.match(
-    socket.sent[2].content,
+    socket.sent[1].content,
     /backend is handling this customer UI request/,
   );
   assert.equal(
@@ -1043,9 +935,9 @@ test("long and escaped customer messages retain their full backend input without
     const provider = await app.connect();
     const socket = app.sockets[0];
     const input = provider.appendCustomerInput(text);
-    assert.equal(socket.sent[0].type, "session.instructions.append");
-    assert.match(socket.sent[1].content, /backend has the full message/);
-    assert.ok(Buffer.byteLength(socket.sent[1].content, "utf8") <= 500);
+    assert.equal(socket.sent[1].type, "session.instructions.append");
+    assert.match(socket.sent[0].content, /backend has the full message/);
+    assert.ok(Buffer.byteLength(socket.sent[0].content, "utf8") <= 500);
     assert.doesNotMatch(JSON.stringify(socket.sent), /[窗]|xxxxxxxx/);
     socket.ack(0);
     socket.ack(1);
@@ -1060,7 +952,7 @@ test("long and escaped customer messages retain their full backend input without
   }
 });
 
-test("UI redirection and input fit the bounded command queue and preserve later spoken delegation", async () => {
+test("UI input context precedes its instruction within the command bound and preserves spoken delegation", async () => {
   const app = setup();
   const provider = await app.connect();
   const socket = app.sockets[0];
@@ -1068,24 +960,21 @@ test("UI redirection and input fit the bounded command queue and preserve later 
     provider.appendThinking("Current page."),
     provider.appendThinking("Current selection."),
   ];
-  const progress = provider.appendReply("Let me take a look.", {
-    optional: true,
-  });
   const input = provider.appendCustomerInput("A different colour.");
-  assert.equal(
-    socket.sent.length,
-    5,
-    "Two UI commands use required slots alongside one optional cue",
-  );
+  assert.equal(socket.sent.length, 4);
   assert.deepEqual(
-    socket.sent.slice(3).map((event) => event.type),
-    ["session.instructions.append", "session.thinking.append"],
+    socket.sent.slice(2).map((event) => event.type),
+    ["session.thinking.append", "session.instructions.append"],
   );
-  await assert.rejects(provider.appendThinking("Too many required commands"), {
+  assert.equal(
+    socket.sent.some((event) => event.type === "session.commentary.append"),
+    false,
+  );
+  await assert.rejects(provider.appendThinking("Queue overflow"), {
     code: "command_failed",
   });
+  socket.ack(2);
   socket.ack(3);
-  socket.ack(4);
   await input;
   socket.event(delegation("spoken-correction"));
   assert.equal(app.events.at(-1).type, "delegation");
@@ -1094,10 +983,16 @@ test("UI redirection and input fit the bounded command queue and preserve later 
     "spoken-correction",
     "The corrected request's verified next question?",
   );
-  socket.ack(5);
+  socket.ack(4);
   await corrected;
-  for (const index of [0, 1, 2]) socket.ack(index);
-  await Promise.all([...context, progress]);
+  socket.ack(0);
+  socket.ack(1);
+  await Promise.all(context);
+  assert.equal(
+    socket.sent.filter((event) => event.type === "session.commentary.append")
+      .length,
+    1,
+  );
   assert.equal(app.timers.size, 0);
   assert.equal(
     app.events.some(

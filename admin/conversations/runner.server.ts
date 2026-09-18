@@ -49,7 +49,6 @@ interface ActiveTurn {
   text: string;
   streamRevision: number;
   readingGuides?: ProductGuideKind[];
-  tool?: { name: string };
   ready: Promise<void>;
   controller: AbortController;
   voiceId?: string;
@@ -61,26 +60,6 @@ interface ActiveTurn {
 const active = new Map<string, ActiveTurn>();
 const ending = new Set<string>();
 const MAX_CONCURRENT_TURNS = 4;
-
-/** Read-only, in-process progress for this exact accepted voice request. */
-export function getVoiceWorkActivity(
-  id: string,
-  voiceId: string,
-  requestId: string,
-) {
-  const turn = active.get(id);
-  if (
-    !turn ||
-    turn.voiceId !== voiceId ||
-    turn.requestId !== requestId ||
-    turn.controller.signal.aborted
-  )
-    return undefined;
-  return {
-    tool: turn.tool?.name,
-    readingGuides: turn.readingGuides?.slice(),
-  };
-}
 
 export function readConversation(id: string): Promise<ConversationReadSnapshot>;
 export function readConversation(
@@ -232,18 +211,10 @@ async function completeTurn(
         }
       },
       signal,
-      async (callId, name, input) => {
-        const tool = { name };
-        turn.tool = tool;
-        try {
-          return await (name === "set_measurements" ||
-          name === "get_measurements"
-            ? executeMeasurementTool(id, assistantId, callId, name, input)
-            : requestBrowserTool(id, assistantId, callId, name, input, signal));
-        } finally {
-          if (turn.tool === tool) turn.tool = undefined;
-        }
-      },
+      (callId, name, input) =>
+        name === "set_measurements" || name === "get_measurements"
+          ? executeMeasurementTool(id, assistantId, callId, name, input)
+          : requestBrowserTool(id, assistantId, callId, name, input, signal),
       turn.voiceId ? "voice" : "text",
       (usage) => recordModelUsage(id, assistantId, usage),
       origin,

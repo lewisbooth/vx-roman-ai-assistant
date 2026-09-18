@@ -1611,9 +1611,9 @@ test("the canonical shopping policy appears once in each advisor channel and ret
 test("voice waits for verified guidance and gives one customer-facing guide introduction", () => {
   const prompt = romanVoicePrompt("marin");
   assert.match(prompt, /wait for the verified briefing before giving its overview or next question/);
-  assert.match(prompt, /do not fill it with speculative actions, repeated acknowledgements or a provisional guide introduction/);
+  assert.match(prompt, /Do not add a question, provisional guide introduction or claim that a guide has been read/);
   assert.match(prompt, /Do not say "PDP", backend, tool names or other implementation terms to the customer/);
-  assert.match(prompt, /one short sentence, never read internal context or quote the customer's input back/);
+  assert.match(prompt, /at most one short, natural sentence when useful/);
   assert.match(prompt, /Treat the briefing as the complete next reply, not a request for another introduction/);
   assert.match(prompt, /Do not prepend a second version or repeat an introduction already spoken during this flow/);
   assert.match(prompt, /Do not reject supported library guidance merely because the original product-page link was wrong/);
@@ -1680,24 +1680,21 @@ test("measuring direction survives brevity rules in text, briefings and live spe
   assert.match(live, /do not repeat an allowance or method you have just spoken/);
 });
 
-test("interrupted short answers delegate while optional UI acknowledgements never replace useful replies", () => {
+test("Live alone acknowledges substantive input without stacking filler or weakening delegation", () => {
   const live = romanVoicePrompt("marin");
   assert.match(live, /An early answer to the current question is new input even if you were still explaining it/);
   assert.match(live, /even with "yes", "no", "1200 millimetres" or "that's correct", including while you are speaking/);
   assert.match(live, /Never use a short answer as permission to invent the next measuring step/);
   assert.match(live, /listening backchannel that does not answer a pending question/);
-  assert.match(live, /application may supply one short progress acknowledgement/);
-  assert.match(live, /do not add another acknowledgement if you already gave one/);
-  assert.match(live, /Do not guess which task is running or imply anything was saved, configured or added/);
-  assert.match(live, /prioritize it and skip obsolete filler/);
+  assert.match(live, /You own any spoken acknowledgement: at most one short, natural sentence when useful/);
+  assert.match(live, /grounded in the latest known answer or preference/);
+  assert.match(live, /Silence is fine, especially for routine yes\/no fit checks or measurement answers/);
+  assert.match(live, /already acknowledged this input or the result is ready, skip the acknowledgement/);
+  assert.match(live, /Do not stack a habitual "Right, got it" with a second progress sentence/);
+  assert.match(live, /a measurement is valid or saved, or an action has started or succeeded/);
   assert.match(live, /do not delegate that same input again or replace the result with a bare acknowledgement/);
   assert.match(live, /supersedes the previous follow-up and any unfinished speech about it immediately/);
   assert.match(live, /Only the backend may request a necessary replacement or configuration confirmation/);
-  assert.match(live, /Vary the natural delivery without adding "Okay", a question/);
-  assert.match(live, /safe factual hint, not an exact script/);
-  assert.match(live, /briefly acknowledge the latest known preference or answer from the quiet customer context/);
-  assert.match(live, /Do not turn an intent or preference into a claim that an action has started/);
-  assert.match(live, /never resumes the preceding question or authorizes an improvised follow-up/);
   assert.match(live, /do not prepend "Okay", "Right" or another acknowledgement/);
   assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Do not add "Okay", "Right", a second acknowledgement or a recap of progress/);
 });
