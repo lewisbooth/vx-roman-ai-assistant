@@ -39,14 +39,20 @@ const terminal = (
   usage = tokens(10, 5),
   output = [
     {
-      type: "message",
-      content: [{ type: "output_text", text: "Synthetic reply." }],
+      type: "function_call",
+      name: "ask_question",
+      call_id: "synthetic-question",
+      arguments: JSON.stringify({
+        message: "Synthetic reply.",
+        question: "Which room are you shopping for?",
+        answers: ["Bedroom", "Kitchen"],
+      }),
     },
   ],
 ) => ({
   type: `response.${status}`,
   response: {
-    model: "gpt-5.6-luna-observed",
+    model: "gpt-5.6-terra-observed",
     service_tier: "priority",
     usage,
     output,
@@ -138,7 +144,7 @@ test("every tool round records a durable attempt and its own provider-reported u
   assert.ok(
     reported.every(
       (r) =>
-        r.model === "gpt-5.6-luna-observed" && r.serviceTier === "priority",
+        r.model === "gpt-5.6-terra-observed" && r.serviceTier === "priority",
     ),
   );
   assert.doesNotMatch(
@@ -262,44 +268,34 @@ test("an attempt persistence failure prevents the provider request", async () =>
   assert.equal(app.requests.length, 0);
 });
 
-test("ordinary text and voice replies receive next-action choices without another provider round", async () => {
-  const replies = [];
+test("terminal text and voice replies preserve authored questions and usage without a narration round", async () => {
   for (const mode of ["text", "voice"]) {
     const app = setup([events(terminal())]);
     const reply = plain(await app.run(undefined, { mode }));
-    replies.push(reply);
     assert.equal(app.requests.length, 1);
     assert.deepEqual(
       app.records.map((usage) => usage.status),
       ["pending", "completed"],
     );
     assert.equal(app.records.at(-1).totalTokens, 15);
-    assert.match(
-      reply.questionPresentation.callId,
-      /^next-actions-[0-9a-f-]{36}$/,
-    );
+    assert.equal(reply.questionPresentation.callId, "synthetic-question");
     assert.deepEqual(reply.questionPresentation.answers, [
-      "Help me measure",
-      "Explore products",
-      "Find my style",
+      "Bedroom",
+      "Kitchen",
     ]);
     assert.equal(
       reply.questionPresentation.question,
-      "What would you like to do next?",
+      "Which room are you shopping for?",
     );
     assert.equal(
       reply.text,
       mode === "text"
         ? "Synthetic reply."
-        : "Synthetic reply. What would you like to do next?",
+        : "Synthetic reply. Which room are you shopping for?",
     );
-    assert.equal(reply.model, "gpt-5.6-luna-observed");
+    assert.equal(reply.model, "gpt-5.6-terra-observed");
     assert.equal(reply.serviceTier, "priority");
   }
-  assert.notEqual(
-    replies[0].questionPresentation.callId,
-    replies[1].questionPresentation.callId,
-  );
 });
 
 test("a model-selected follow-up remains authoritative instead of becoming a generic menu", async () => {
@@ -319,15 +315,7 @@ test("a model-selected follow-up remains authoritative instead of becoming a gen
             type: "function_call",
             name: "ask_question",
             call_id: "chosen-question",
-            arguments: JSON.stringify(question),
-          },
-        ]),
-      ),
-      events(
-        terminal("completed", tokens(25, 7), [
-          {
-            type: "message",
-            content: [{ type: "output_text", text: overview }],
+            arguments: JSON.stringify({ message: "Let's start with your room.", ...question }),
           },
         ]),
       ),
@@ -338,7 +326,9 @@ test("a model-selected follow-up remains authoritative instead of becoming a gen
       ...question,
     });
     assert.equal(reply.text, overview);
-    assert.equal(app.requests.length, 2);
+    assert.equal(app.requests.length, 1);
+    assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "completed"]);
+    assert.equal(app.records.at(-1).totalTokens, 25);
     assert.doesNotMatch(
       JSON.stringify(reply),
       /next-actions-|What would you like to do next/,
@@ -389,7 +379,7 @@ test("failed, cancelled and empty replies cannot turn into successful next-actio
   }
 });
 
-test("saved-question resume failure retains its neutral limitation without inventing another question", async () => {
+test("an invalid saved-question resume records its bounded repair without inventing a replacement menu", async () => {
   const resumeQuestion = {
     type: "question",
     version: 1,
@@ -397,15 +387,12 @@ test("saved-question resume failure retains its neutral limitation without inven
     question: "Which room are you measuring?",
     answers: ["Kitchen", "Bedroom"],
   };
-  const app = setup([events(terminal())]);
-  const reply = plain(
-    await app.run(undefined, { mode: "voice", resumeQuestion }),
-  );
-  assert.match(reply.text, /saved question could not be safely restored/);
-  assert.equal(reply.questionPresentation, undefined);
-  assert.doesNotMatch(reply.text, /What would you like to do next/);
-  assert.equal(app.requests.length, 1);
-  assert.equal(app.records.at(-1).totalTokens, 15);
+  const app = setup([events(terminal()), events(terminal())]);
+  await assert.rejects(app.run(undefined, { mode: "voice", resumeQuestion }), /did not finish with a valid answer request/);
+  assert.equal(app.requests.length, 2);
+  assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "completed", "pending", "completed"]);
+  assert.equal(app.records.filter((entry) => entry.status === "completed").reduce((sum, entry) => sum + entry.totalTokens, 0), 30);
+  assert.match(JSON.stringify(app.requests[1][0].input), /Resume only the saved unanswered question/);
 });
 
 test("unreadable PDP guides preserve usage while the model chooses a supported next step", async () => {
@@ -419,6 +406,7 @@ test("unreadable PDP guides preserve usage while the model chooses a supported n
           arguments: JSON.stringify({
             productPath: "/products/blind",
             kinds: ["measuring"],
+            refresh: false,
           }),
         },
       ]),
@@ -430,13 +418,13 @@ test("unreadable PDP guides preserve usage while the model chooses a supported n
           name: "ask_question",
           call_id: "supported-next-step",
           arguments: JSON.stringify({
+            message: "I couldn't read this product's measuring guide.",
             question: "Would you like another product?",
             answers: ["Explore products", "Find my style"],
           }),
         },
       ]),
     ),
-    events(terminal("completed", tokens(25, 5))),
   ]);
   const reply = plain(
     await app.run(undefined, {
@@ -454,12 +442,12 @@ test("unreadable PDP guides preserve usage while the model chooses a supported n
     "Explore products",
     "Find my style",
   ]);
-  assert.equal(app.requests.length, 3);
+  assert.equal(app.requests.length, 2);
   assert.equal(
     app.records
       .filter((entry) => entry.status === "completed")
       .reduce((sum, entry) => sum + entry.totalTokens, 0),
-    92,
+    62,
   );
   const output = app.requests[1][0].input.find(
     (entry) =>

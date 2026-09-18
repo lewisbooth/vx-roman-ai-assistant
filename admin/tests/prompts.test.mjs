@@ -59,25 +59,20 @@ test("the generic welcome offers canonical quick answers without repeating text 
   ]);
   assert.ok(
     ROMAN_TEXT_PROMPT.includes(
-      `first call ask_question with ${JSON.stringify(ROMAN_WELCOME_QUESTION)}`,
-    ),
-  );
-  assert.ok(
-    ROMAN_TEXT_PROMPT.includes(
-      `write this introduction exactly once: "${ROMAN_WELCOME_INTRO}"`,
+      JSON.stringify({ message: ROMAN_WELCOME_INTRO, ...ROMAN_WELCOME_QUESTION }),
     ),
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /You may also include the welcome's final question in the text alongside its quick-answer widget/,
+    /tool is the complete reply: do not introduce yourself before it or write a second response afterward/,
+  );
+  assert.doesNotMatch(
+    ROMAN_TEXT_PROMPT,
+    /Once it succeeds, write|application supply fallback choices|may also include the welcome's final question/,
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /If the question tool fails, write only that introduction and let the application supply fallback choices; do not add another question/,
-  );
-  assert.match(
-    ROMAN_TEXT_PROMPT,
-    /specific request[\s\S]*do not offer the generic welcome menu/,
+    /specific request[\s\S]*use the next useful question rather than the generic welcome menu/,
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
@@ -222,7 +217,7 @@ test("catalog tool context distinguishes candidate discovery from evidence and b
   assert.match(descriptions.lookup_catalog, /Do not repeat a sufficient current-turn read/);
 });
 
-test("both backend modes use concise card recommendations and optional answer choices without weakening action approvals", () => {
+test("both backend modes use concise card recommendations and terminal questions without weakening action approvals", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     assert.match(prompt, /brief one- or two-sentence overview/);
     assert.match(
@@ -240,19 +235,19 @@ test("both backend modes use concise card recommendations and optional answer ch
     assert.match(prompt, /Free-text and spoken answers are equally valid/);
     assert.match(
       prompt,
-      /Call ask_question after selecting any carousel/,
+      /finish necessary reads, actions and carousel selection before calling exactly one of them on its own/,
     );
     assert.match(
       prompt,
-      /Keep other written text to a concise useful overview or confirmed outcome/,
+      /Put the concise useful overview, confirmed outcome, necessary uncertainty or first guide introduction in message/,
     );
     assert.match(
       prompt,
-      /A voice briefing supplies the displayed question once, with its exact wording, after that overview/,
+      /For voice, the application assembles message, numeric instructions if any, and the exact question into one briefing/,
     );
     assert.match(
       prompt,
-      /The same quick-answer question may also appear in Roman's written response or spoken transcript; that duplication with the widget is intentional/,
+      /Do not repeat the question in message or instructions/,
     );
     assert.match(
       prompt,
@@ -260,7 +255,7 @@ test("both backend modes use concise card recommendations and optional answer ch
     );
     assert.match(
       prompt,
-      /It can supply the ordinary conversational confirmation/,
+      /It can supply ordinary conversational confirmation/,
     );
     assert.match(
       prompt,
@@ -278,7 +273,7 @@ test("both backend modes use concise card recommendations and optional answer ch
   }
 });
 
-test("text allows its displayed question alongside the widget while voice says it once", () => {
+test("one terminal question owns text history while actual voice captions own spoken history", () => {
   assert.match(
     ROMAN_TEXT_PROMPT,
     /Refer to products by their verified names without Markdown links or raw URLs/,
@@ -286,20 +281,26 @@ test("text allows its displayed question alongside the widget while voice says i
   assert.doesNotMatch(ROMAN_TEXT_PROMPT, /link each product name/);
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /If ask_question succeeded, include its displayed question exactly once after the factual overview so Roman can say it aloud/,
+    /application assembles these fields into Roman's briefing without a separate final narration request/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /call ask_question with that exact saved question and its saved concise answers/,
+    /call ask_question with the exact saved question and concise answers/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Do not fetch the catalog, replay an action or create a new recommendation to resume it/,
+    /Startup resume is read-only: do not navigate, fetch the catalog, replay an action, create recommendations/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Do not reword it, repeat it, add a second question or turn it into a written customer reply/,
+    /Do not repeat the question, write a final prose response or rely on an automatic fallback menu/,
   );
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /single question remains in history when the next customer reply removes its input controls/);
+    assert.match(prompt, /actual captions own the spoken history/);
+    assert.match(prompt, /Retiring voice answer controls must not generate another spoken message/);
+    assert.doesNotMatch(prompt, /duplication with the widget is intentional|may also include the confirmation question/);
+  }
   const live = romanVoicePrompt("marin");
   assert.match(
     live,
@@ -605,7 +606,7 @@ test("guide mismatches affect only the current requested measuring or fitting st
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Put the confirmed outcome and any failure or uncertainty affecting the current request or step first/,
+    /Use message for the concise factual outcome and any failure or uncertainty affecting the current request/,
   );
   assert.doesNotMatch(
     ROMAN_VOICE_BRIEFING_PROMPT,
@@ -646,7 +647,7 @@ test("a guide failure during read-only voice resume cannot replace the customer'
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /If its guide evidence is unavailable or mismatched, explain the limitation without creating a replacement question; alternative actions require fresh customer input/,
+    /If guide evidence is unavailable or mismatched, explain the limitation without creating a replacement question; alternative actions require fresh customer input/,
   );
 });
 
@@ -760,11 +761,11 @@ test("the first guide introduces grounded help and its first question without PD
     assert.match(prompt, /"Let's walk through the measuring guide\." or "Let's walk through the fitting guide\."/);
     assert.match(prompt, /Ask the first needed step question in that same reply; do not spend a separate turn announcing the guide/);
     assert.match(prompt, /Put this introduction before the question widget, and retain it in the voice briefing; do not repeat it on later steps/);
-    assert.match(prompt, /ordinary numeric question needs no extra prose beyond a first guide introduction when applicable/);
+    assert.match(prompt, /first guide introduction in message; use an empty message when the question needs no introduction/);
     assert.match(prompt, /Never display PDF links or cards/);
   }
   assert.match(romanVoicePrompt("marin"), /once before its step instructions and question; omit that introduction on later steps/);
-  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Retain the one short guide introduction when the flow's first matched guide is established/);
+  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Retain the one short guide introduction in message when the flow's first matched guide is established/);
 });
 
 test("library guidance waits for a matching family and reuses sources without repeated links", () => {
@@ -786,7 +787,7 @@ test("all channels keep original PDF evidence in the background without source-l
   }
   assert.match(ROMAN_TEXT_PROMPT, /Do not output PDF links, guide cards, raw guide URLs or instructions to open\/read\/load a document/);
   assert.match(romanVoicePrompt("marin"), /PDF links and cards are not shown; Roman uses the original source in the background/);
-  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Do not add instructions to open or read a guide; the customer can continue without opening it/);
+  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Never add instructions to open or read a guide/);
 });
 
 test("carousel questions refine browsing while card buttons select products", () => {
@@ -844,7 +845,7 @@ test("guided measuring reads the matching guide and collects one labelled readin
       /Ask the first needed step question in that same reply/,
       /establish the matching requested guide through a read or valid prior-read provenance/,
       /Before requesting any numeric measurement, including clearance, use ask_question to offer "cm", "mm" and "in" unless the customer has already clearly supplied their units/,
-      /call ask_measurement for one needed reading at a time with \{question, instructions, productPath, label, unit\}/,
+      /call ask_measurement for one needed reading at a time with \{message, question, instructions, productPath, label, unit\}/,
       /verified current productPath, unit mm\/cm\/in and a precise label/,
       /Width, Drop, Width at top or Clearance as required by the guide/,
       /current step's short, grounded method, endpoints and necessary conditions in instructions/,
@@ -886,7 +887,7 @@ test("numeric and choice widgets share one answer request without duplicate writ
     );
     assert.match(
       prompt,
-      /do not duplicate those instructions or the question in written text/,
+      /Do not repeat the question in message or instructions/,
     );
     assert.doesNotMatch(
       prompt,
@@ -895,11 +896,11 @@ test("numeric and choice widgets share one answer request without duplicate writ
   }
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /When ask_measurement succeeds, leave its instructions and question in the widget/,
+    /For ask_measurement, leave the step instructions and question in their own fields instead of copying them into message/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /application passes its exact instructions and question to Roman as the voice briefing without a separate final narration request/,
+    /application assembles these fields into Roman's briefing without a separate final narration request/,
   );
   const live = romanVoicePrompt("marin");
   for (const rule of [
@@ -915,28 +916,29 @@ test("numeric and choice widgets share one answer request without duplicate writ
   );
 });
 
-test("numeric questions normally finish directly but preserve outcomes and instructions when narration is requested", () => {
+test("both answer tools finish complete replies without optional post-tool narration or fallback menus", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     assert.match(
       prompt,
-      /A validated ask_measurement normally finishes the reply directly/,
+      /ask_question and ask_measurement are terminal reply tools: each returns the complete customer reply/,
     );
     assert.match(
       prompt,
-      /Finish necessary reads and checks before calling it; an ordinary numeric question needs no extra prose/,
+      /finish necessary reads, actions and carousel selection before calling exactly one of them on its own/,
     );
     assert.match(
       prompt,
-      /If the application requests another response to preserve an earlier action outcome or fit the voice briefing limit/,
+      /Put the sole question in question, answer choices in answers, and numeric step instructions only in instructions/,
     );
     assert.match(
       prompt,
-      /preserves confirmed outcomes and all current-step instructions without duplicating the written question/,
+      /Preserve confirmed action outcomes in that same payload/,
     );
     assert.match(
       prompt,
-      /This shortcut applies only to ask_measurement; ask_question still needs the final overview or action outcomes when relevant/,
+      /A rejected payload can be corrected without replaying earlier actions/,
     );
+    assert.doesNotMatch(prompt, /normally finishes|If another response is requested|shortcut applies only to ask_measurement|application appends its fallback question/);
     assert.match(
       prompt,
       /A valid server receipt for a prior read of this product's original guide lets you reuse already-grounded instructions from the conversation, including the next numeric measuring step, without loading the PDF again/,
@@ -956,23 +958,19 @@ test("numeric questions normally finish directly but preserve outcomes and instr
   }
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /A validated ask_measurement normally finishes the backend reply directly/,
+    /Complete the backend reply with exactly one terminal ask_question or ask_measurement call after all necessary work/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /If another response is requested, preserve any confirmed action outcomes and all current-step instructions concisely, then include the exact measurement question once/,
+    /Keep message plus instructions plus question within 1000 characters/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /For other replies, return only a concise factual briefing after the requested work/,
+    /stage a smaller useful step rather than truncating essential guidance/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /If ask_question succeeded, include its displayed question exactly once after the factual overview/,
-  );
-  assert.doesNotMatch(
-    ROMAN_VOICE_BRIEFING_PROMPT,
-    /If ask_measurement succeeded, include its brief instructions/,
+    /Do not repeat the question, write a final prose response or rely on an automatic fallback menu/,
   );
 });
 
@@ -991,11 +989,11 @@ test("resumed numeric steps retain their input type and require current guide an
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /For a pending numeric question, use valid prior-read provenance and established grounded instructions for that exact PDP, or consult the relevant original if needed, then call ask_measurement/,
+    /For a pending numeric question, use valid prior-read provenance and grounded instructions for that exact current PDP, or consult the relevant original only if needed, then call ask_measurement/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /only if they are still supported and the product is still current/,
+    /Do not restore it after navigation away from that product, a product or unit change, stopping measuring, an answer or a new topic/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
@@ -1015,11 +1013,11 @@ test("resumed numeric steps retain their input type and require current guide an
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /use valid prior-read provenance and established grounded instructions/,
+    /use valid prior-read provenance and grounded instructions/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /A startup resume is read-only and limited to the one saved question: do not navigate, save or apply measurements, configure options, change the cart, advance a step or restart measuring/,
+    /Startup resume is read-only: do not navigate, fetch the catalog, replay an action, create recommendations, save or apply measurements, configure options, change the cart, advance a step or restart measuring/,
   );
 });
 
@@ -1366,7 +1364,7 @@ test("substantive completions invite one natural next step without inventing mea
       /For open-ended details, free-form typed or spoken answers remain welcome; offer broad examples or Not sure when useful rather than inventing specifics/,
       /Contextual next actions or the original capability choices can follow an open-ended explanation, within the same one-question limit/,
       /Across ask_question and ask_measurement, make at most one answer request per reply/,
-      /Neither tool replaces the existing confirmation and approval rules/,
+      /Neither reply tool replaces the existing confirmation and approval rules/,
     ])
       assert.match(prompt, rule);
   }
@@ -1376,7 +1374,7 @@ test("substantive completions invite one natural next step without inventing mea
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /The same quick-answer question may also appear in Roman's written response or spoken transcript; that duplication with the widget is intentional/,
+    /Do not repeat the question in message or instructions/,
   );
   assert.match(
     romanVoicePrompt("marin"),
@@ -1487,7 +1485,7 @@ test("Live delegates every guidance follow-up and preserves backend source limit
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /A resumed measuring\/fitting\/suitability follow-up still requires valid original-guide grounding, from a current read or valid prior-read provenance/,
+    /A resumed measuring\/fitting\/suitability follow-up requires valid original-guide grounding and must never advance unsupported advice/,
   );
   assert.doesNotMatch(live, /cannot read the PDFs/);
 });

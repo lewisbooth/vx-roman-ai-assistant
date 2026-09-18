@@ -1339,8 +1339,6 @@ test("an unchanged saved choice refresh commits once and becomes the latest ques
 for (const answer of [
   "Handle clearance: 0 mm",
   "Handle clearance: 50.5 mm",
-  "Change units",
-  "Stop measuring",
 ])
   test(`voice measurement answer ${answer} persists once and reconciles after stop or restart`, async () => {
     const { session, input, question } = await questionDuringVoice(true);
@@ -1391,6 +1389,37 @@ for (const answer of [
     );
   });
 
+for (const channel of ["typed", "spoken"])
+  for (const text of ["Actually, use centimetres", "Stop measuring"])
+    test(`${channel} ${text} retires a numeric question as ordinary customer input`, async () => {
+      const { session, input, question } = await questionDuringVoice(true);
+      const before = await database.measurementDraft.count();
+      if (channel === "typed") {
+        const receipt = await conversation.appendVoiceQuestionAnswer(id, session.id, {
+          clientId,
+          requestId: randomUUID(),
+          text,
+        });
+        assert.equal(receipt.customerText, text);
+        assert.equal(receipt.question, "");
+      } else {
+        await caption(session, text, 500);
+      }
+      const context = await conversation.getVoiceStartupContext(id);
+      assert.equal(context.pendingQuestion, undefined);
+      assert.deepEqual(context.history.at(-1), { role: "user", text });
+      assert.ok(context.history.some((message) => message.text.includes(question.question)));
+      assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
+      assert.equal(await database.measurementDraft.count(), before);
+      await assert.rejects(
+        conversation.appendVoiceQuestionAnswer(id, session.id, {
+          ...input,
+          answer: "Handle clearance: 50 mm",
+        }),
+        { status: 409 },
+      );
+    });
+
 test("voice measurement answers reject wrong units, labels, malformed values and navigation away", async () => {
   const { session, input, question } = await questionDuringVoice(true);
   for (const answer of [
@@ -1401,6 +1430,8 @@ test("voice measurement answers reject wrong units, labels, malformed values and
     "Handle clearance: NaN mm",
     "Handle clearance: 50 mm ",
     "500 mm please buy",
+    "Change units",
+    "Stop measuring",
   ]) {
     await assert.rejects(
       conversation.appendVoiceQuestionAnswer(id, session.id, {

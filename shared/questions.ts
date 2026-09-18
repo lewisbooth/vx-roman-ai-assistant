@@ -2,11 +2,6 @@ import type { ConversationMessage } from "./conversation";
 import type { ProductChoice } from "./product-choice";
 import { parseProductPath, productPathSchema } from "./product-path";
 
-// Accepted for answers and durable receipts from already-open clients. New
-// measurement widgets leave changes and stopping to normal text or speech.
-export const MEASUREMENT_CHANGE_UNITS = "Change units";
-export const MEASUREMENT_STOP = "Stop measuring";
-
 export interface MeasurementQuestion {
   productPath: string;
   label: string;
@@ -47,6 +42,11 @@ export interface QuestionSelection {
   measurement?: MeasurementQuestion;
 }
 
+/** Complete model reply; message is context, never a second question. */
+export interface QuestionCall extends QuestionSelection {
+  message: string;
+}
+
 export interface QuestionPart extends QuestionSelection {
   type: "question";
   version: 1;
@@ -59,11 +59,17 @@ export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Ask one short follow-up question with one to four concise clickable answers beneath the reply's other widgets. Use an answer widget for every completed substantive reply: choose a contextual clarification or next step, including after a flow completes, without requiring a catalog call or completed action. Fall back to Help me measure, Explore products and Find my style when no more specific next action fits. Use ask_measurement for an individual guided numeric measurement. For open-ended details, offer useful examples or a Not sure choice without limiting typed or spoken answers; never invent numeric readings or imply an action was approved. Prefer two or three answers, and fewer where sufficient. Use plain text, without Markdown or URLs. Before new recommendations, ask the missing room or main requirements unless already known. After product suggestions, give a brief overview, show the carousel, then use this tool for refinement such as Show me more or Different colours. The cards' Choose this blind image controls select products; do not list those product names again as answers. For an unselected entry-PDP card, offer only Something else using the shared product-page entry question. If a customer chooses a different active blind, use Yes, change blind and No, keep this blind before replacement. Call once per reply, choosing either ask_question or ask_measurement. When this tool succeeds, Roman may also include its exact question in the written reply; duplication with the quick-answer widget is allowed. Keep any overview concise and do not add a different question. If neither answer-request tool succeeds, keep the written reply to the useful outcome; the application supplies fallback choices without another written question. In a voice briefing, provide this exact question once after the overview for Roman to say aloud, without adding or rewording another question. The customer can answer by clicking, speaking or writing their own reply. Answers are customer input; the widget does not execute actions or bypass action-specific safeguards.",
+    "Finish this reply with a brief message, one question and one to four concise clickable answers. This is a terminal tool: complete necessary research, actions and carousel presentation first, then call this alone; there is no prose response afterward. Put only necessary confirmed outcomes, explanation or introduction in message, or use an empty string for a simple follow-up. Put the question only in question, never in message. Prefer two or three answers and fewer where sufficient. Use contextual choices throughout the conversation; default to Help me measure, Explore products and Find my style only when no useful contextual next step remains. Ask missing room/requirements before new recommendations. Carousel images select products; use refinement answers rather than repeating product names. The unselected entry-PDP choice has only Something else. A replacement needs Yes, change blind / No, keep this blind. Use ask_measurement instead for a supported individual numeric reading. Questions and answers are plain text; message may use brief Markdown in text mode. In voice mode keep message plus question within 1000 characters; the application assembles the spoken briefing. Clicked, typed and spoken answers are customer input, never implicit tool commands or approval to act.",
   strict: true,
   parameters: {
     type: "object",
     properties: {
+      message: {
+        type: "string",
+        maxLength: 2000,
+        description:
+          "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
+      },
       question: { type: "string", minLength: 1, maxLength: 300 },
       answers: {
         type: "array",
@@ -72,7 +78,7 @@ export const askQuestionToolDefinition = {
         maxItems: 4,
       },
     },
-    required: ["question", "answers"],
+    required: ["message", "question", "answers"],
     additionalProperties: false,
   },
 } as const;
@@ -81,18 +87,31 @@ export const askMeasurementToolDefinition = {
   type: "function",
   name: "ask_measurement",
   description:
-    "Request one measurement using a numeric input, selected units and concise guide-grounded instructions beneath the reply's other widgets. Use this product's original guides already supplied by the server, including cached documents; look up a needed guide only if absent. Establish units with ask_question (cm / mm / in), unless already explicit. Label the actual measurement, such as Width, Drop or Handle clearance; never invent a PDP field. Use only the current product and guide-supported instructions. Choose either this tool or ask_question once per reply. This is the last action in a routine measuring reply: finish any necessary guide or product presentation first and include all instructions in this call. The widget owns the written question and instructions; voice says the instructions and question once. Typed or spoken answers also work, including requests to change units or stop measuring. A unit change restarts collection in the new units, without converting or reusing the old set. This only asks a question: it does not save, confirm or apply dimensions.",
+    "Finish this reply with one guide-grounded numeric measurement, its units, instructions and question. This is a terminal tool: complete needed guide reads, actions and carousel presentation first, then call this alone; there is no prose response afterward. Use message only for a necessary confirmed outcome or the initial guide introduction, otherwise an empty string. Put the question only in question and the complete current-step method only in instructions. Use the current product and verified original-guide evidence, including valid prior reads. Establish cm/mm/in first unless already clear. Label the actual reading; never invent a PDP field. In voice mode keep message plus instructions plus question within 1000 characters without losing fit-critical conditions; stage a smaller step if needed. Typed or spoken answers also work, including unit changes and stopping. Unit changes restart collection without silently converting or reusing the old set. This requests a reading; it does not save, confirm or apply dimensions.",
   strict: true,
   parameters: {
     type: "object",
     properties: {
+      message: {
+        type: "string",
+        maxLength: 2000,
+        description:
+          "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
+      },
       question: { type: "string", minLength: 1, maxLength: 300 },
       instructions: { type: "string", minLength: 1, maxLength: 600 },
       productPath: productPathSchema,
       label: { type: "string", minLength: 1, maxLength: 40 },
       unit: { type: "string", enum: ["cm", "mm", "in"] },
     },
-    required: ["question", "instructions", "productPath", "label", "unit"],
+    required: [
+      "message",
+      "question",
+      "instructions",
+      "productPath",
+      "label",
+      "unit",
+    ],
     additionalProperties: false,
   },
 } as const;
@@ -168,13 +187,65 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
   return { question, answers };
 }
 
-export function parseMeasurementQuestionSelection(
+function questionMessage(
   input: unknown,
-): QuestionSelection {
+  question: string,
+  field = "message",
+): string {
+  if (
+    typeof input !== "string" ||
+    input.length > 2000 ||
+    /(?![\n\r\t])\p{Cc}/u.test(input)
+  )
+    throw new Error(
+      "Question message must be a string of at most 2000 characters.",
+    );
+  const message = input.trim();
+  const comparable = (value: string) =>
+    value.normalize("NFKC").replace(/\s+/gu, " ").toLowerCase();
+  if (comparable(message).includes(comparable(question)))
+    throw new Error(`Keep the question in question, not ${field}.`);
+  return message;
+}
+
+export function parseQuestionCall(input: unknown): QuestionCall {
   const value = object(input);
-  exact(value, ["question", "instructions", "productPath", "label", "unit"]);
-  const { question, ...measurement } = value;
-  return parseQuestionSelection({ question, answers: [], measurement });
+  exact(value, ["message", "question", "answers"]);
+  const selection = parseQuestionSelection({
+    question: value.question,
+    answers: value.answers,
+  });
+  return {
+    message: questionMessage(value.message, selection.question),
+    ...selection,
+  };
+}
+
+export function parseMeasurementQuestionCall(input: unknown): QuestionCall {
+  const value = object(input);
+  exact(value, [
+    "message",
+    "question",
+    "instructions",
+    "productPath",
+    "label",
+    "unit",
+  ]);
+  const { message, question, ...measurement } = value;
+  const selection = parseQuestionSelection({
+    question,
+    answers: [],
+    measurement,
+  });
+  questionMessage(
+    selection.measurement!.instructions,
+    selection.question,
+    "instructions",
+  );
+  return {
+    message: questionMessage(message, selection.question),
+    ...selection,
+  };
 }
 
 /** A customer answer, not a form mutation or a dimension confirmation. */
@@ -202,8 +273,6 @@ export function isQuestionAnswer(
   answer: string,
 ): boolean {
   if (!selection.measurement) return selection.answers.includes(answer);
-  if (answer === MEASUREMENT_CHANGE_UNITS || answer === MEASUREMENT_STOP)
-    return true;
   const prefix = `${selection.measurement.label}: `;
   const suffix = ` ${selection.measurement.unit}`;
   if (!answer.startsWith(prefix) || !answer.endsWith(suffix)) return false;

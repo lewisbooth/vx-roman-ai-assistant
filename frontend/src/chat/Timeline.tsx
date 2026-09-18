@@ -37,7 +37,8 @@ export function Timeline({
   ) => Promise<void>;
 }) {
   // Keep the current question below every widget and later journey event.
-  // Stable row IDs retain the question when its buttons retire after a reply.
+  // Text questions become history. Voice questions own controls only: recorded
+  // captions own spoken history, even when speech was interrupted or absent.
   const rows = messages.flatMap((message) => {
     const questions = message.parts.filter((part) => part.type === "question");
     const parts = message.parts
@@ -50,26 +51,24 @@ export function Timeline({
       .filter((part) => part.type !== "voice" || voiceCaptionText(part.text));
     return [
       ...(parts.length || message.status === "failed"
-        ? [{ ...message, parts }]
+        ? [{ kind: "message" as const, id: message.id, message, parts }]
         : []),
       ...questions.map((part) => ({
-        ...message,
+        kind: "question" as const,
         id: `${message.id}:question:${part.invocationId}`,
-        role: "assistant" as const,
-        parts: [part],
+        part,
       })),
     ];
   });
-  const activeRow = rows.findIndex((row) =>
-    row.parts.some(
-      (part) =>
-        part.type === "question" && part.invocationId === activeQuestionId,
-    ),
+  const activeRow = rows.findIndex(
+    (row) =>
+      row.kind === "question" && row.part.invocationId === activeQuestionId,
   );
   if (activeRow >= 0) rows.push(...rows.splice(activeRow, 1));
   let lastCustomer = -1;
   rows.forEach((row, index) => {
-    if (row.role === "user") lastCustomer = index;
+    if (row.kind === "message" && row.message.role === "user")
+      lastCustomer = index;
   });
   return (
     <ol
@@ -79,135 +78,129 @@ export function Timeline({
       aria-live="polite"
       aria-relevant="additions text"
     >
-      {rows.map((message, rowIndex) => (
-        <li
-          key={message.id}
-          className={`roman-message roman-message-${message.role}`}
-          data-current-turn={rowIndex >= lastCustomer ? "true" : undefined}
-          hidden={
-            !!questionDock &&
-            message.parts.every(
-              (part) =>
-                part.type === "question" &&
-                part.invocationId === activeQuestionId,
-            )
-          }
-        >
-          {message.role !== "context" && (
-            <span className="sr-only">
-              {message.role === "user" ? "You" : "Roman"}:
-            </span>
-          )}
-          <div className="roman-message-parts">
-            {message.parts.map((part, index) => {
-              if (part.type === "question")
-                return (
-                  <Question
-                    key={part.invocationId}
-                    part={part}
-                    active={
-                      !!onAnswer && part.invocationId === activeQuestionId
-                    }
-                    disabled={questionDisabled}
-                    voice={voice}
-                    onAnswer={onAnswer!}
-                    dock={
-                      part.invocationId === activeQuestionId
-                        ? questionDock
-                        : undefined
-                    }
-                  />
-                );
-              if (part.type === "text")
-                return message.role === "assistant" ? (
-                  <RichText
-                    key={index}
-                    text={part.text}
-                    navigation={navigation}
-                    pending={message.status === "pending"}
-                  />
-                ) : (
-                  <p key={index} className="roman-message-text">
-                    {part.text}
-                  </p>
-                );
-              if (part.type === "navigation")
-                return (
-                  <p
-                    key={index}
-                    className="roman-inline-event roman-navigation"
-                  >
-                    Roman navigated to{" "}
-                    <StorefrontLink url={part.path} navigation={navigation}>
-                      {part.title || part.path}
-                    </StorefrontLink>
-                  </p>
-                );
-              if (part.type === "cart_added")
-                return (
-                  <p
-                    key={index}
-                    className="roman-inline-event roman-cart-added"
-                  >
-                    Roman added {part.product.title} to your cart
-                    {part.product.measurements &&
-                      ` at ${part.product.measurements.width} x ${part.product.measurements.height}${part.product.measurements.unit}`}{" "}
-                    <StorefrontLink url="/cart" navigation={navigation}>
-                      View Cart
-                    </StorefrontLink>
-                  </p>
-                );
-              if (part.type === "cart_sample_added")
-                return (
-                  <p
-                    key={index}
-                    className="roman-inline-event roman-cart-added"
-                  >
-                    Roman added a sample of {part.sample.title} to your cart{" "}
-                    <StorefrontLink url="/cart" navigation={navigation}>
-                      View Cart
-                    </StorefrontLink>
-                  </p>
-                );
-              if (part.type === "voice_event")
-                return (
-                  <p
-                    key={index}
-                    className="roman-inline-event roman-voice-event"
-                  >
-                    {VOICE_EVENT_LABELS[part.event]}
-                  </p>
-                );
-              if (part.type === "voice")
-                return (
-                  <div key={index} className="roman-voice-caption">
-                    <span className="roman-voice-label">Voice</span>
-                    <p className="roman-message-text">
-                      {voiceCaptionText(part.text)}
+      {rows.map((row, rowIndex) => {
+        if (row.kind === "question")
+          return (
+            <Question
+              key={row.id}
+              part={row.part}
+              active={!!onAnswer && row.part.invocationId === activeQuestionId}
+              disabled={questionDisabled}
+              voice={voice}
+              onAnswer={onAnswer!}
+              currentTurn={rowIndex >= lastCustomer}
+              dock={
+                row.part.invocationId === activeQuestionId
+                  ? questionDock
+                  : undefined
+              }
+            />
+          );
+        const { message, parts } = row;
+        return (
+          <li
+            key={row.id}
+            className={`roman-message roman-message-${message.role}`}
+            data-current-turn={rowIndex >= lastCustomer ? "true" : undefined}
+          >
+            {message.role !== "context" && (
+              <span className="sr-only">
+                {message.role === "user" ? "You" : "Roman"}:
+              </span>
+            )}
+            <div className="roman-message-parts">
+              {parts.map((part, index) => {
+                if (part.type === "text")
+                  return message.role === "assistant" ? (
+                    <RichText
+                      key={index}
+                      text={part.text}
+                      navigation={navigation}
+                      pending={message.status === "pending"}
+                    />
+                  ) : (
+                    <p key={index} className="roman-message-text">
+                      {part.text}
                     </p>
-                  </div>
+                  );
+                if (part.type === "navigation")
+                  return (
+                    <p
+                      key={index}
+                      className="roman-inline-event roman-navigation"
+                    >
+                      Roman navigated to{" "}
+                      <StorefrontLink url={part.path} navigation={navigation}>
+                        {part.title || part.path}
+                      </StorefrontLink>
+                    </p>
+                  );
+                if (part.type === "cart_added")
+                  return (
+                    <p
+                      key={index}
+                      className="roman-inline-event roman-cart-added"
+                    >
+                      Roman added {part.product.title} to your cart
+                      {part.product.measurements &&
+                        ` at ${part.product.measurements.width} x ${part.product.measurements.height}${part.product.measurements.unit}`}{" "}
+                      <StorefrontLink url="/cart" navigation={navigation}>
+                        View Cart
+                      </StorefrontLink>
+                    </p>
+                  );
+                if (part.type === "cart_sample_added")
+                  return (
+                    <p
+                      key={index}
+                      className="roman-inline-event roman-cart-added"
+                    >
+                      Roman added a sample of {part.sample.title} to your cart{" "}
+                      <StorefrontLink url="/cart" navigation={navigation}>
+                        View Cart
+                      </StorefrontLink>
+                    </p>
+                  );
+                if (part.type === "voice_event")
+                  return (
+                    <p
+                      key={index}
+                      className="roman-inline-event roman-voice-event"
+                    >
+                      {VOICE_EVENT_LABELS[part.event]}
+                    </p>
+                  );
+                if (part.type === "voice")
+                  return (
+                    <div key={index} className="roman-voice-caption">
+                      <span className="roman-voice-label">Voice</span>
+                      <p className="roman-message-text">
+                        {voiceCaptionText(part.text)}
+                      </p>
+                    </div>
+                  );
+                return (
+                  <ProductCards
+                    key={part.invocationId}
+                    productIds={part.productIds}
+                    carouselId={part.invocationId}
+                    session={session}
+                    onChoose={onChooseProduct}
+                    disabled={questionDisabled || message.status !== "complete"}
+                    onContentChange={onContentChange}
+                  />
                 );
-              return (
-                <ProductCards
-                  key={part.invocationId}
-                  productIds={part.productIds}
-                  carouselId={part.invocationId}
-                  session={session}
-                  onChoose={onChooseProduct}
-                  disabled={questionDisabled || message.status !== "complete"}
-                  onContentChange={onContentChange}
-                />
-              );
-            })}
-          </div>
-          {message.status === "failed" && (
-            <p className="roman-chat-error">
-              {message.error ||
-                "Roman could not finish this reply. Please try again."}
-            </p>
-          )}
-        </li>
-      ))}
+              })}
+            </div>
+            {message.status === "failed" && (
+              <p className="roman-chat-error">
+                {message.error ||
+                  "Roman could not finish this reply. Please try again."}
+              </p>
+            )}
+          </li>
+        );
+      })}
     </ol>
   );
 }

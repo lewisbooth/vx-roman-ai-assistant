@@ -95,6 +95,7 @@ const library = () => ({
     "Diagrams and videos were not interpreted; do not infer instructions that depend on them.",
 });
 const measurement = () => ({
+  message: "",
   question: "What is the width?",
   instructions: "Follow the verified synthetic guide's width method.",
   productPath,
@@ -108,10 +109,16 @@ const call = (name, args, callId = `call_${randomUUID()}`) => ({
   arguments: JSON.stringify(args),
   call_id: callId,
 });
-const message = (text) => ({
+const narration = (text) => ({
   type: "message",
   content: [{ type: "output_text", text }],
 });
+const message = (text) =>
+  call("ask_question", {
+    message: text,
+    question: "What would you like to do next?",
+    answers: ["Help me measure", "Explore products", "Find my style"],
+  });
 const files = (request) =>
   request.input
     .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
@@ -399,10 +406,6 @@ test("explicit cached PDF selection attaches only its original with no browser r
   );
 });
 
-
-
-
-
 test("a library read grounds the same reply's terminal numeric question without display work", async () => {
   const state = setup();
   const saved = await state.seed({ read: false });
@@ -426,7 +429,7 @@ test("a library read grounds the same reply's terminal numeric question without 
   assert.equal(state.browser.length, 0);
 });
 
-test("a terminal library measurement preserves only the authored guide introduction from earlier rounds", async (t) => {
+test("a terminal library measurement carries its authored guide introduction without copying earlier narration", async (t) => {
   for (const apostrophe of ["'", "’"])
     await t.test(
       apostrophe === "'" ? "straight apostrophe" : "curly apostrophe",
@@ -436,15 +439,16 @@ test("a terminal library measurement preserves only the authored guide introduct
         const intro = `Let${apostrophe}s walk through the measuring guide.`;
         const selection = {
           discoveryId: saved.discoveryId,
-          guideIds: [guideId(1)], refresh: false,
+          guideIds: [guideId(1)],
+          refresh: false,
         };
         const result = await state.run(
           [
             [
-              message(`I am checking the selected original. ${intro}`),
+              narration(`I am checking the selected original. ${intro}`),
               call("read_library_guides", selection),
             ],
-            [call("ask_measurement", measurement())],
+            [call("ask_measurement", { ...measurement(), message: intro })],
           ],
           { mode: "voice" },
         );
@@ -461,27 +465,23 @@ test("a terminal library measurement preserves only the authored guide introduct
 test("a later library numeric question does not reuse a historical voice introduction", async () => {
   const state = setup();
   await state.seed();
-  const result = await state.run(
-    [
-      [call("ask_measurement", measurement())],
+  const result = await state.run([[call("ask_measurement", measurement())]], {
+    mode: "voice",
+    history: [
+      { role: "assistant", text: "Let's walk through the measuring guide." },
+      { role: "user", text: "Show that guide again, then continue." },
     ],
-    {
-      mode: "voice",
-      history: [
-        { role: "assistant", text: "Let's walk through the measuring guide." },
-        { role: "user", text: "Show that guide again, then continue." },
-      ],
-    },
+  });
+  assert.equal(
+    result.text,
+    `${measurement().instructions} ${measurement().question}`,
   );
-  assert.equal(result.text, "");
   assert.equal(
     result.questionPresentation.measurement.instructions,
     measurement().instructions,
   );
   assert.equal(state.requests.length, 1);
 });
-
-
 
 test("library PDF prefixes stay identical across reversed selections and remain demand-driven", async () => {
   const state = setup();
@@ -725,7 +725,7 @@ test("general library guidance works without a selected product but cannot creat
   assert.equal(files(state.requests.at(-1)).length, 0);
   assert.match(
     outputs(state.requests.at(-1)).at(-1).error,
-    /No measurement input/,
+    /no verified measuring guide/,
   );
 });
 
@@ -750,7 +750,10 @@ test("saved numeric voice resume may reuse its bound library evidence without re
     mode: "voice",
     resume,
   });
-  assert.equal(result.text, "");
+  assert.equal(
+    result.text,
+    `${measurement().instructions} ${measurement().question}`,
+  );
   assert.equal(result.questionPresentation.measurement.label, "Width");
   assert.equal(state.requests.length, 1);
   assert.equal(files(state.requests[0]).length, 0);
@@ -993,5 +996,4 @@ test("a model read over the combined original budget cannot authorize unread evi
     state.requests.map((request) => files(request).length),
     [0, 2, 2],
   );
-
 });

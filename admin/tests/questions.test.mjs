@@ -17,15 +17,14 @@ new Function("module", "exports", bundle.outputFiles[0].text)(
 );
 const {
   parseQuestionSelection,
+  parseQuestionCall,
   parseQuestionPart,
   askQuestionToolDefinition,
-  parseMeasurementQuestionSelection,
+  parseMeasurementQuestionCall,
   askMeasurementToolDefinition,
   formatMeasurementAnswer,
   isQuestionAnswer,
   latestQuestion,
-  MEASUREMENT_CHANGE_UNITS,
-  MEASUREMENT_STOP,
 } = module.exports;
 const selection = { question: "Which room?", answers: ["Bedroom", "Kitchen"] };
 
@@ -49,6 +48,7 @@ test("question selection is bounded, normalized and plain text with distinct ans
     null,
     [],
     { ...selection, extra: true },
+    { ...selection, message: "A living room can need glare control." },
     { question: "Which?" },
     { ...selection, question: " " },
     { ...selection, question: "x".repeat(301) },
@@ -68,32 +68,91 @@ test("question selection is bounded, normalized and plain text with distinct ans
   ])
     assert.throws(() => parseQuestionSelection(invalid));
   assert.equal(askQuestionToolDefinition.name, "ask_question");
-  assert.match(
-    askQuestionToolDefinition.description,
-    /Roman may also include its exact question in the written reply; duplication with the quick-answer widget is allowed/,
+});
+
+test("terminal question calls own context and question separately without changing stored question data", () => {
+  assert.deepEqual(parseQuestionCall({ message: "", ...selection }), {
+    message: "",
+    ...selection,
+  });
+  assert.deepEqual(
+    parseQuestionCall({
+      message: "  **No-drill blinds** can help.\n\nLet's narrow it down.  ",
+      ...selection,
+    }),
+    {
+      message: "**No-drill blinds** can help.\n\nLet's narrow it down.",
+      ...selection,
+    },
   );
-  assert.match(
-    askQuestionToolDefinition.description,
-    /the application supplies fallback choices without another written question/,
-  );
-  assert.match(
-    askQuestionToolDefinition.description,
-    /In a voice briefing, provide this exact question once after the overview for Roman to say aloud/,
-  );
+  assert.deepEqual(parseQuestionCall({ message: " \n\t ", ...selection }), {
+    message: "",
+    ...selection,
+  });
   assert.equal(
-    askQuestionToolDefinition.parameters.additionalProperties,
-    false,
+    parseQuestionCall({ message: "x".repeat(2000), ...selection }).message
+      .length,
+    2000,
   );
+  for (const input of [
+    selection,
+    { message: null, ...selection },
+    { message: 1, ...selection },
+    { message: "x".repeat(2001), ...selection },
+    { message: "a\u0000b", ...selection },
+    { message: "a\u007fb", ...selection },
+    { message: "", ...selection, extra: true },
+    ...[
+      selection.question,
+      `Let's choose. ${selection.question}`,
+      "WHICH ROOM?",
+      "Which\n\troom?",
+      "Ｗｈｉｃｈ room?",
+      `**${selection.question}**`,
+    ].map((message) => ({ message, ...selection })),
+  ])
+    assert.throws(() => parseQuestionCall(input));
+  assert.deepEqual(parseQuestionSelection(selection), selection);
+});
+
+test("both terminal tools require a bounded context message and prohibit unknown fields", () => {
+  for (const definition of [
+    askQuestionToolDefinition,
+    askMeasurementToolDefinition,
+  ]) {
+    assert.equal(definition.strict, true);
+    assert.equal(definition.parameters.additionalProperties, false);
+    assert.equal(definition.parameters.properties.message.type, "string");
+    assert.equal(definition.parameters.properties.message.maxLength, 2000);
+    assert.equal(definition.parameters.properties.message.minLength, undefined);
+    assert.deepEqual(
+      definition.parameters.required.toSorted(),
+      Object.keys(definition.parameters.properties).toSorted(),
+    );
+    assert.match(definition.description, /terminal tool/);
+    assert.match(definition.description, /no prose response afterward/);
+    assert.match(definition.description, /Put the question only in question/);
+    assert.doesNotMatch(
+      definition.description,
+      /duplication .*allowed|supplies fallback/,
+    );
+  }
 });
 
 const measurementCall = {
+  message: "",
   question: "What is the width?",
   instructions: "Measure across the top of the recess without deductions.",
   productPath: "/products/roller-blind",
   label: "Width",
   unit: "mm",
 };
-const numeric = () => parseMeasurementQuestionSelection(measurementCall);
+const numeric = () => {
+  const { message, ...selection } =
+    parseMeasurementQuestionCall(measurementCall);
+  assert.equal(message, "");
+  return selection;
+};
 
 test("numeric questions preserve guide instructions, units and product without accepting arbitrary fields", () => {
   const expected = {
@@ -107,10 +166,20 @@ test("numeric questions preserve guide instructions, units and product without a
     },
   };
   assert.deepEqual(numeric(), expected);
+  assert.deepEqual(
+    parseMeasurementQuestionCall({
+      ...measurementCall,
+      message: "Let's walk through the measuring guide.",
+    }),
+    {
+      message: "Let's walk through the measuring guide.",
+      ...expected,
+    },
+  );
   for (const unit of ["cm", "mm", "in"])
     assert.equal(
-      parseMeasurementQuestionSelection({ ...measurementCall, unit })
-        .measurement.unit,
+      parseMeasurementQuestionCall({ ...measurementCall, unit }).measurement
+        .unit,
       unit,
     );
   for (const invalid of [
@@ -123,10 +192,24 @@ test("numeric questions preserve guide instructions, units and product without a
     { ...measurementCall, instructions: "x".repeat(601) },
     { ...measurementCall, instructions: "**Measure** here" },
     { ...measurementCall, instructions: "" },
+    { ...measurementCall, instructions: measurementCall.question },
+    {
+      ...measurementCall,
+      instructions: `Measure without deductions. ${measurementCall.question.toUpperCase()}`,
+    },
+    { ...measurementCall, instructions: "What is the   width?" },
+    { ...measurementCall, instructions: "What is the \uFF57\uFF49\uFF44\uFF54\uFF48?" },
     { ...measurementCall, min: 30 },
     { ...measurementCall, sourceCallId: randomUUID() },
+    { ...measurementCall, message: undefined },
+    { ...measurementCall, message: measurementCall.question },
+    {
+      ...measurementCall,
+      message: `Measure carefully. ${measurementCall.question.toUpperCase()}`,
+    },
+    { ...measurementCall, message: "x".repeat(2001) },
   ])
-    assert.throws(() => parseMeasurementQuestionSelection(invalid));
+    assert.throws(() => parseMeasurementQuestionCall(invalid));
   for (const invalid of [
     { ...expected, answers: ["Yes"] },
     { ...expected, measurement: null },
@@ -190,12 +273,17 @@ test("numeric answers validate exact label/unit and remain ordinary bounded cust
     "Width: 1e3 mm",
   ])
     assert.equal(isQuestionAnswer(numeric(), answer), false);
-  for (const answer of [MEASUREMENT_CHANGE_UNITS, MEASUREMENT_STOP])
-    assert.equal(isQuestionAnswer(numeric(), answer), true);
+  for (const answer of [
+    "Change units",
+    "Stop measuring",
+    "Actually cm",
+    "Stop",
+  ])
+    assert.equal(isQuestionAnswer(numeric(), answer), false);
   assert.equal(isQuestionAnswer(selection, "Bedroom"), true);
   assert.equal(isQuestionAnswer(selection, "Width: 500 mm"), false);
   assert.throws(() => formatMeasurementAnswer(selection, "500"));
-  const longest = parseMeasurementQuestionSelection({
+  const longest = parseMeasurementQuestionCall({
     ...measurementCall,
     label: "x".repeat(40),
   });

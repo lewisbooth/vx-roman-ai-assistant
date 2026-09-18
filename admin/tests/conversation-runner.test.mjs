@@ -96,7 +96,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const nextActionQuestion = "What would you like to do next?";
 function assertNextActions(reply) {
   const { callId, ...selection } = plain(reply.questionPresentation ?? {});
-  assert.match(callId, /^next-actions-[0-9a-f-]{36}$/);
+  assert.equal(callId, "fixture-next-actions");
   assert.deepEqual(selection, {
     question: nextActionQuestion,
     answers: ["Help me measure", "Explore products", "Find my style"],
@@ -133,7 +133,13 @@ const completed = (text = "A completed reply.", extra = {}) => ({
   response: {
     model: "gpt-5.6-luna-actual",
     service_tier: "fast",
-    output: [{ type: "message", content: [{ type: "output_text", text }] }],
+    output: [
+      catalogCall("fixture-next-actions", "ask_question", {
+        message: text,
+        question: nextActionQuestion,
+        answers: ["Help me measure", "Explore products", "Find my style"],
+      }),
+    ],
     ...extra,
   },
 });
@@ -472,7 +478,7 @@ test("the global concurrency bound counts initializing owners and releases finis
   await flush();
 });
 
-test("partial snapshots belong to the active assistant while HTTP acceptance stays independent", async () => {
+test("pending snapshots never expose preliminary model narration while HTTP acceptance stays independent", async () => {
   const env = setup();
   const generation = pendingReply("For a bedroom, start with privacy.");
   env.streams.push(generation.stream);
@@ -486,10 +492,7 @@ test("partial snapshots belong to the active assistant while HTTP acceptance sta
   await flush();
   const partial = await env.api.readConversation("one");
   assert.equal(partial.messages[0].parts[0].text, firstInput.text);
-  assert.equal(
-    partial.messages[1].parts[0].text,
-    "For a bedroom, start with privacy.",
-  );
+  assert.equal(partial.messages[1].parts[0].text, "");
   assert.equal(
     env.rows.get("one").messages[1].text,
     "",
@@ -515,7 +518,7 @@ test("partial snapshots belong to the active assistant while HTTP acceptance sta
   assert.equal(env.calls.finishes[0].result.serviceTier, "fast");
 });
 
-test("versioned reads skip history until durable state or active partial text changes", async () => {
+test("versioned reads skip history while preliminary prose is held until final publication", async () => {
   const env = setup();
   const next = deferred();
   const finish = deferred();
@@ -530,13 +533,13 @@ test("versioned reads skip history until durable state or active partial text ch
   await env.api.startTurn("one", firstInput);
   await flush();
   const first = await env.api.readConversation("one");
-  assert.equal(first.streamRevision, 1);
+  assert.equal(first.streamRevision, 0);
   const count = env.calls.snapshots.length;
   for (let index = 0; index < 20; index++)
     assert.deepEqual(plain(await env.api.readConversation("one", first)), {
       id: "one",
       revision: first.revision,
-      streamRevision: 1,
+      streamRevision: 0,
       unchanged: true,
     });
   assert.equal(
@@ -548,9 +551,9 @@ test("versioned reads skip history until durable state or active partial text ch
   await flush();
   const second = await env.api.readConversation("one", first);
   assert.equal(second.revision, first.revision);
-  assert.equal(second.streamRevision, 2);
-  assert.equal(second.messages[1].parts[0].text, "First second");
-  assert.equal(env.calls.snapshots.length, count + 1);
+  assert.equal(second.streamRevision, 0);
+  assert.equal(second.unchanged, true);
+  assert.equal(env.calls.snapshots.length, count);
   finish.resolve(completed("A finished answer."));
   await flush();
   const done = await env.api.readConversation("one", second);
@@ -593,7 +596,7 @@ test("model failure persists safe failed state and releases ownership without an
   const result = await env.api.readConversation("one");
   assert.equal(result.busy, false);
   assert.equal(result.messages[1].status, "failed");
-  assert.equal(result.messages[1].parts[0].text, "A useful partial answer.");
+  assert.equal(result.messages[1].parts[0].text, "");
   assert.equal(JSON.stringify(result).includes("private"), false);
   assert.equal(JSON.stringify(env.logs).includes("private"), false);
   assert.equal(env.calls.requests.length, 1);
@@ -736,10 +739,10 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   assert.equal(input.instructions.includes("Private room preference"), false);
   assert.match(input.instructions, /untrusted|not instructions/i);
   assert.match(input.instructions, /Never invent manufacturer tolerances/);
-  assert.match(input.instructions, /Use Markdown with short paragraphs/);
+  assert.match(input.instructions, /Use Markdown in message with short paragraphs/);
   assert.match(
     input.instructions,
-    /For a greeting or open-ended start in a new conversation, first call ask_question/,
+    /For a greeting or open-ended start in a new conversation, finish with ask_question/,
   );
   assert.match(
     input.instructions,
@@ -789,10 +792,10 @@ test("voice backend requests retain tool policy without text greetings or presen
   assert.match(instructions, /cart[^\n]+separate/i);
   assert.doesNotMatch(instructions, /Every cart mutation requires/);
   assert.match(instructions, /save those exact values with set_measurements/);
-  assert.match(instructions, /return only a concise factual briefing/i);
+  assert.match(instructions, /Complete the backend reply with exactly one terminal ask_question or ask_measurement/);
   assert.doesNotMatch(
     instructions,
-    /For a greeting or open-ended start in a new conversation, first call ask_question|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
+    /For a greeting or open-ended start in a new conversation, finish with ask_question|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
   );
 });
 
@@ -837,7 +840,7 @@ test("streaming and completed output show text/refusal content but never reasoni
     (text) => partials.push(text),
     new AbortController().signal,
   );
-  assert.deepEqual(partials, ["Hello ", "Hello there."]);
+  assert.deepEqual(partials, ["Final text. I cannot help with that request."]);
   assert.equal(reply.text, "Final text. I cannot help with that request.");
   assert.equal(JSON.stringify({ partials, reply }).includes("private"), false);
   assert.equal(
@@ -884,7 +887,7 @@ test("provider failure, incomplete output, empty output and premature stream end
       const env = setup();
       env.streams.push(
         (async function* () {
-          if (mode === "empty") yield completed("   ");
+          if (mode === "empty") yield completed("", { output: [] });
           else if (mode === "reasoning-only")
             yield completed("", {
               output: [{ type: "reasoning", summary: [] }],
@@ -924,7 +927,7 @@ function catalogCall(
   };
 }
 
-test("voice briefings retain the final outcome while text replies retain preliminary tool narration", async (t) => {
+test("text and voice publish only the final structured outcome after tools", async (t) => {
   for (const mode of ["text", "voice"]) {
     for (const status of ["updated", "uncertain"]) {
       await t.test(`${mode}: ${status}`, async () => {
@@ -937,14 +940,16 @@ test("voice briefings retain the final outcome while text replies retain prelimi
           status === "updated"
             ? "The cart is now empty. The theme confirmed the change."
             : "The cart change was not confirmed. Check the cart before requesting another change.";
-        const accumulated = `${checking}\n\n${reviewing}\n\n${final}`;
         assert.ok(checking.length + reviewing.length > 1000);
         env.streams.push(
           events(
             { type: "response.output_text.delta", delta: checking },
             completed("", {
               output: [
-                ...completed(checking).response.output,
+                {
+                  type: "message",
+                  content: [{ type: "output_text", text: checking }],
+                },
                 catalogCall("read-cart", "get_cart", {}),
               ],
             }),
@@ -953,7 +958,10 @@ test("voice briefings retain the final outcome while text replies retain prelimi
             { type: "response.output_text.delta", delta: reviewing },
             completed("", {
               output: [
-                ...completed(reviewing).response.output,
+                {
+                  type: "message",
+                  content: [{ type: "output_text", text: reviewing }],
+                },
                 catalogCall("clear-cart", "clear_cart", {}),
               ],
             }),
@@ -985,11 +993,11 @@ test("voice briefings retain the final outcome while text replies retain prelimi
         assert.deepEqual(executions, ["get_cart", "clear_cart"]);
         assert.equal(env.calls.requests.length, 3);
         const voiceFinal = `${final} ${nextActionQuestion}`;
-        assert.equal(reply.text, mode === "voice" ? voiceFinal : accumulated);
+        assert.equal(reply.text, mode === "voice" ? voiceFinal : final);
         assertNextActions(reply);
         if (mode === "voice")
           assert.equal(reply.text.slice(0, 1000), voiceFinal);
-        else assert.equal(partials.at(-1), accumulated);
+        else assert.deepEqual(partials, [final]);
       });
     }
   }
@@ -1001,12 +1009,17 @@ test("voice cannot substitute preliminary narration for an empty terminal briefi
     events(
       completed("", {
         output: [
-          ...completed("I will check the catalog.").response.output,
+          {
+            type: "message",
+            content: [
+              { type: "output_text", text: "I will check the catalog." },
+            ],
+          },
           catalogCall("catalog-read"),
         ],
       }),
     ),
-    events(completed("   ")),
+    events(completed("", { output: [] })),
   );
   await assert.rejects(
     env.api.generateReply(
@@ -1239,13 +1252,13 @@ test("an applied measurement can read configuration and ask a final-review quest
         completed("", {
           output: [
             questionCall({
+              message: "Review ready.",
               question: "Ready to add it?",
               answers: ["Add product to cart", "Keep configuring"],
             }),
           ],
         }),
       ),
-      events(completed("Review ready.")),
     );
     const executions = [];
     const reply = await env.api.generateReply(
@@ -1345,17 +1358,14 @@ test("text and voice can apply Exact then newly exposed Bracket to Bracket, ente
       }),
       configRead(4),
       questionCall({
+        message:
+          "Exact and Bracket to Bracket are selected, with 40 cm width and 50 cm drop.",
         question: "What would you like to do next?",
         answers: ["Keep configuring", "Add product to cart", "Add a sample"],
       }),
     ];
     env.streams.push(
       ...steps.map((call) => events(completed("", { output: [call] }))),
-      events(
-        completed(
-          "Exact and Bracket to Bracket are selected, with 40 cm width and 50 cm drop.",
-        ),
-      ),
     );
     const executed = [];
     const reply = await env.api.generateReply(
@@ -1399,7 +1409,7 @@ test("text and voice can apply Exact then newly exposed Bracket to Bracket, ente
         ),
         "A fresh read is required after each form change",
       );
-    for (const index of [2, 3, 4, 5, 6, 7, 8, 9])
+    for (const index of [2, 3, 4, 5, 6, 7, 8])
       assert.ok(
         !allowedToolNames(env.calls.requests[index].input).includes(
           "add_to_cart",
@@ -1533,13 +1543,13 @@ test("configuration cap allows three choices and one measurement application, th
     }),
     configRead(6),
     questionCall({
+      message: "Review the current choices.",
       question: "What next?",
       answers: ["Keep configuring", "Review for basket"],
     }),
   ];
   env.streams.push(
     ...steps.map((call) => events(completed("", { output: [call] }))),
-    events(completed("Review the current choices.")),
   );
   const writes = [];
   const reply = await env.api.generateReply(
@@ -1836,7 +1846,7 @@ test("catalog call budget leaves only presentation after four lookups and reject
       ["show_products", "ask_question", "ask_measurement"],
     );
     assert.equal(env.calls.requests[4].input.tool_choice.type, "allowed_tools");
-    assert.equal(env.calls.requests[4].input.tool_choice.mode, "auto");
+    assert.equal(env.calls.requests[4].input.tool_choice.mode, "required");
     assert.ok(
       env.calls.requests.every(
         ({ input }) =>
@@ -1944,7 +1954,11 @@ const questionSelection = {
   answers: ["Blackout", "Daytime privacy"],
 };
 const questionCall = (args = questionSelection, callId = "question-1") =>
-  catalogCall(callId, "ask_question", args);
+  catalogCall(
+    callId,
+    "ask_question",
+    typeof args === "string" ? args : { message: "", ...args },
+  );
 
 const measurementSelection = {
   question: "What is the width?",
@@ -1957,7 +1971,12 @@ const measurementSelection = {
 const measurementCall = (
   args = measurementSelection,
   callId = "measurement-1",
-) => catalogCall(callId, "ask_measurement", args);
+) =>
+  catalogCall(
+    callId,
+    "ask_measurement",
+    typeof args === "string" ? args : { message: "", ...args },
+  );
 
 function libraryContext() {
   const source = {
@@ -2071,7 +2090,10 @@ test("newly authored Finish for now choices are rejected and leave the original 
     const outcome = env.calls.requests[1].input.input.find(
       (item) => item.type === "function_call_output",
     );
-    assert.match(JSON.parse(outcome.output).error, /No question was selected/);
+    assert.match(
+      JSON.parse(outcome.output).error,
+      /never a Finish for now choice/,
+    );
     assert.equal(env.calls.browserTools.length, 0);
     assert.ok(
       !allowedToolNames(env.calls.requests[0].input).includes("finish_for_now"),
@@ -2268,7 +2290,12 @@ test("validated text and voice measurement inputs finish immediately with guide 
       dispatched.map((call) => call[1]),
       ["get_product_guides"],
     );
-    assert.equal(reply.text, "");
+    assert.equal(
+      reply.text,
+      mode === "voice"
+        ? `${measurementSelection.instructions} ${measurementSelection.question}`
+        : "",
+    );
     assert.equal(env.calls.guideReads.length, 1);
     assert.equal(env.calls.requests.length, 2);
     assert.equal(env.streams.length, 0);
@@ -2934,7 +2961,7 @@ test("terminal numeric replies preserve selected cards, visible text and complet
       completed("", {
         output: [
           { type: "message", content: [{ type: "output_text", text: note }] },
-          measurementCall(),
+          measurementCall({ ...measurementSelection, message: note }),
         ],
         usage: { input_tokens: 100, output_tokens: 40, total_tokens: 140 },
       }),
@@ -2989,7 +3016,7 @@ test("terminal voice numeric replies retain the current overview and speak the e
               { type: "output_text", text: `${overview} ${method} ${method}` },
             ],
           },
-          measurementCall(),
+          measurementCall({ ...measurementSelection, message: overview }),
         ],
       }),
     ),
@@ -3007,7 +3034,7 @@ test("terminal voice numeric replies retain the current overview and speak the e
   assert.equal(env.calls.requests.length, 2);
 });
 
-test("numeric voice replies keep a completion round when their overview would truncate critical instructions", async () => {
+test("oversized voice answer gets one structured repair without truncating critical instructions", async () => {
   const env = setup();
   const selection = {
     ...measurementSelection,
@@ -3029,11 +3056,16 @@ test("numeric voice replies keep a completion round when their overview would tr
               },
             ],
           },
-          measurementCall(selection),
+          measurementCall({
+            ...selection,
+            message: "A necessary explanation. ".repeat(12),
+          }),
         ],
       }),
     ),
-    events(completed(finalText)),
+    events(
+      completed("", { output: [measurementCall(selection, "shortened")] }),
+    ),
   );
   const reply = await env.api.generateReply(
     [],
@@ -3052,7 +3084,7 @@ test("numeric voice replies keep a completion round when their overview would tr
   assert.equal(env.calls.requests.length, 3);
 });
 
-test("numeric questions do not skip the outcome briefing after a measurement draft write", async () => {
+test("terminal numeric message includes a prior draft write outcome without another model round", async () => {
   const env = setup();
   env.streams.push(
     events(completed("", { output: [guideLookup()] })),
@@ -3070,11 +3102,16 @@ test("numeric questions do not skip the outcome briefing after a measurement dra
         ],
       }),
     ),
-    events(completed("", { output: [measurementCall()] })),
     events(
-      completed(
-        "Your window notes were saved. The remaining reading is separate.",
-      ),
+      completed("", {
+        output: [
+          measurementCall({
+            ...measurementSelection,
+            message:
+              "Your window notes were saved. The remaining reading is separate.",
+          }),
+        ],
+      }),
     ),
   );
   const reply = await env.api.generateReply(
@@ -3087,7 +3124,7 @@ test("numeric questions do not skip the outcome briefing after a measurement dra
     undefined,
     guideOrigin,
   );
-  assert.equal(env.calls.requests.length, 4);
+  assert.equal(env.calls.requests.length, 3);
   assert.match(reply.text, /window notes were saved/);
   assert.ok(reply.questionPresentation);
 });
@@ -3178,7 +3215,7 @@ test("measurement and choice questions share one attempt budget in either order"
         undefined,
         guideOrigin,
       ),
-      /question presentation limit/,
+      /concurrent tool calls/,
     );
   }
 });
@@ -3254,10 +3291,7 @@ test("navigation retires measurement evidence until the destination product guid
 test("questions work without catalog matches or a browser executor, including question-only replies", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
-    env.streams.push(
-      events(completed("", { output: [questionCall()] })),
-      events(completed("")),
-    );
+    env.streams.push(events(completed("", { output: [questionCall()] })));
     const reply = await env.api.generateReply(
       [],
       () => {},
@@ -3265,7 +3299,10 @@ test("questions work without catalog matches or a browser executor, including qu
       undefined,
       mode,
     );
-    assert.equal(reply.text, "");
+    assert.equal(
+      reply.text,
+      mode === "voice" ? questionSelection.question : "",
+    );
     assert.deepEqual(plain(reply.questionPresentation), {
       callId: "question-1",
       ...questionSelection,
@@ -3274,16 +3311,8 @@ test("questions work without catalog matches or a browser executor, including qu
       allowedTools(env.calls.requests[0].input).map((tool) => tool.name),
       ["ask_question"],
     );
-    assert.equal(env.calls.requests[1].input.tool_choice, "none");
+    assert.equal(env.calls.requests.length, 1);
     assert.equal(env.calls.browserTools.length, 0);
-    assert.deepEqual(
-      JSON.parse(
-        env.calls.requests[1].input.input.find(
-          (item) => item.type === "function_call_output",
-        ).output,
-      ),
-      questionSelection,
-    );
   }
 });
 
@@ -3311,7 +3340,6 @@ test("historical widget metadata stays reference context while a new shape quest
   };
   env.streams.push(
     events(completed("", { output: [questionCall(selection)] })),
-    events(completed("")),
   );
   const reply = await env.api.generateReply(
     history,
@@ -3336,7 +3364,7 @@ test("historical widget metadata stays reference context while a new shape quest
   );
   assert.equal(
     env.calls.requests.length,
-    2,
+    1,
     "No repair or extra generation round",
   );
   assert.deepEqual(plain(history[1]), {
@@ -3346,7 +3374,7 @@ test("historical widget metadata stays reference context while a new shape quest
   });
 });
 
-test("invalid questions consume the single attempt without rendering an invalid widget", async () => {
+test("invalid questions receive one terminal repair without rendering an invalid widget", async () => {
   for (const selection of [
     { ...questionSelection, answers: ["same", "SAME"] },
     { ...questionSelection, answers: [] },
@@ -3367,37 +3395,73 @@ test("invalid questions consume the single attempt without rendering an invalid 
       env.calls.requests[1].input.input.find(
         (item) => item.type === "function_call_output",
       ).output,
-      /No question was selected/,
+      /No answer request was displayed/,
     );
-    assert.equal(env.calls.requests[1].input.tool_choice, "none");
+    assert.deepEqual(allowedToolNames(env.calls.requests[1].input), [
+      "ask_question",
+    ]);
   }
 });
 
-test("a second question attempt cannot replace the first and a later failed model response cannot publish it", async () => {
-  for (const duplicate of [true, false]) {
+test("a valid terminal question returns once without requesting a second model response", async () => {
+  const env = setup();
+  env.streams.push(events(completed("", { output: [questionCall()] })));
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+  );
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(reply.questionPresentation.question, questionSelection.question);
+});
+
+test("a terminal question mixed with pending work rejects before any tool can run", async () => {
+  for (const calls of [
+    [questionCall(), catalogCall("write", "clear_cart", {})],
+    [catalogCall("read"), questionCall()],
+  ]) {
+    const env = setup();
+    env.streams.push(events(completed("", { output: calls })));
+    await assert.rejects(
+      env.api.generateReply(
+        [],
+        () => assert.fail("No mixed result can display"),
+        new AbortController().signal,
+        () => assert.fail("No sibling tool can run"),
+      ),
+      /concurrent tool calls/,
+    );
+  }
+});
+
+test("one malformed terminal answer can be repaired but a second cannot loop or dispatch work", async () => {
+  for (const second of [
+    questionCall({ question: "Invalid", answers: [] }, "bad-2"),
+    catalogCall("forbidden", "clear_cart", {}),
+  ]) {
     const env = setup();
     env.streams.push(
-      events(completed("", { output: [questionCall()] })),
-      duplicate
-        ? events(
-            completed("", {
-              output: [
-                questionCall(
-                  { question: "Another?", answers: ["Yes"] },
-                  "question-2",
-                ),
-              ],
-            }),
-          )
-        : events({
-            type: "response.failed",
-            response: { model: "gpt-5.6-terra", output: [] },
-          }),
+      events(
+        completed("", {
+          output: [questionCall({ question: "Invalid", answers: [] })],
+        }),
+      ),
+      events(completed("", { output: [second] })),
     );
     await assert.rejects(
-      env.api.generateReply([], () => {}, new AbortController().signal),
-      duplicate ? /question presentation limit/ : /did not complete/,
+      env.api.generateReply(
+        [],
+        () => assert.fail("Invalid results cannot display"),
+        new AbortController().signal,
+        () => assert.fail("Repairs cannot dispatch work"),
+      ),
+      /valid answer request|Only an answer request/,
     );
+    assert.equal(env.calls.requests.length, 2);
+    assert.deepEqual(allowedToolNames(env.calls.requests[1].input), [
+      "ask_question",
+      "ask_measurement",
+    ]);
   }
 });
 
@@ -3795,7 +3859,6 @@ test("unavailable PDP documents discard preliminary advice and queued actions be
             completed("", {
               output: [
                 guideLookup(),
-                questionCall(),
                 catalogCall("unsafe-next", "add_to_cart", {
                   productPath: guidePath,
                 }),
@@ -3837,11 +3900,9 @@ test("unavailable PDP documents discard preliminary advice and queued actions be
           env.calls.guideReads.length,
           ["missing", "lookup throws", "no origin"].includes(scenario) ? 0 : 1,
         );
-        assert.equal(displayed.at(-1), safe);
-        assert.ok(
-          displayed.includes(""),
-          "Failed guidance must clear preliminary visible text",
-        );
+        assert.deepEqual(displayed, [
+          mode === "voice" ? `${safe} ${nextActionQuestion}` : safe,
+        ]);
         assert.doesNotMatch(
           reply.text,
           /Preliminary instructions|Private download detail/,
@@ -3852,7 +3913,7 @@ test("unavailable PDP documents discard preliminary advice and queued actions be
         assertNextActions(reply);
         const continuation = env.calls.requests[1].input;
         assert.deepEqual(guideFiles(continuation), []);
-        for (const id of ["question-1", "unsafe-next"]) {
+        for (const id of ["unsafe-next"]) {
           const output = continuation.input.find(
             (item) =>
               item.type === "function_call_output" && item.call_id === id,
@@ -3872,19 +3933,24 @@ test("unavailable PDP documents discard preliminary advice and queued actions be
   }
 });
 
-test("failed guide reading retires an earlier selected question and permits one contextual recovery question", async () => {
+test("failed guide reading permits a contextual terminal question with its safe outcome", async () => {
   const env = setup();
   const recovery = {
     question: "Would you like to explore another blind?",
     answers: ["Other colours", "Other products"],
   };
   env.streams.push(
-    events(completed("", { output: [questionCall()] })),
     events(completed("", { output: [guideLookup()] })),
     events(
-      completed("", { output: [questionCall(recovery, "recovery-choice")] }),
+      completed("", {
+        output: [
+          questionCall(
+            { ...recovery, message: "I couldn't verify that measuring step." },
+            "recovery-choice",
+          ),
+        ],
+      }),
     ),
-    events(completed("I couldn't verify that measuring step.")),
   );
   env.mock.readGuides = async () => ({
     status: "unavailable",
@@ -3899,13 +3965,13 @@ test("failed guide reading retires an earlier selected question and permits one 
     undefined,
     guideOrigin,
   );
-  assert.equal(env.calls.requests.length, 4);
+  assert.equal(env.calls.requests.length, 2);
   assert.deepEqual(plain(reply.questionPresentation), {
     callId: "recovery-choice",
     ...recovery,
   });
   assert.equal(reply.cachedGuideSource, undefined);
-  assert.deepEqual(guideFiles(env.calls.requests[2].input), []);
+  assert.deepEqual(guideFiles(env.calls.requests[1].input), []);
 });
 
 test("a failed guide read during read-only voice resume cannot replace the saved question", async () => {
@@ -3923,10 +3989,7 @@ test("a failed guide read during read-only voice resume cannot replace the saved
     status: "unavailable",
     reason: "not_found",
   });
-  env.streams.push(
-    events(completed("", { output: [guideLookup()] })),
-    events(completed("The guide could not be read.")),
-  );
+  env.streams.push(events(completed("", { output: [guideLookup()] })));
   const reply = await env.api.generateReply(
     [],
     () => {},
@@ -3937,10 +4000,9 @@ test("a failed guide read during read-only voice resume cannot replace the saved
     guideOrigin,
     resume,
   );
-  assert.equal(env.calls.requests.length, 2);
+  assert.equal(env.calls.requests.length, 1);
   assert.equal(reply.questionPresentation, undefined);
-  assert.doesNotMatch(reply.text, /What would you like to do instead/);
-  assert.match(reply.text, /could not be safely restored/);
+  assert.match(reply.text, /could not be verified from its guide/);
 });
 
 test("cancellation during a failed PDF read does not return recovery choices", async () => {
@@ -4232,10 +4294,12 @@ test("initial PDP choice preserves its single verified card and one alternative 
   };
   const shoppingState = {
     role: "user",
-    text: `Current Roman shopping state (application state, not a new customer request): ${JSON.stringify({
-      activeBlind: null,
-      backgroundPage: { title: "Shade 123", path: "/products/shade-123" },
-    })}`,
+    text: `Current Roman shopping state (application state, not a new customer request): ${JSON.stringify(
+      {
+        activeBlind: null,
+        backgroundPage: { title: "Shade 123", path: "/products/shade-123" },
+      },
+    )}`,
   };
   for (const mode of ["text", "voice"])
     await t.test(mode, async () => {
@@ -4253,11 +4317,13 @@ test("initial PDP choice preserves its single verified card and one alternative 
         ),
         events(completed("", { output: [showCall([123])] })),
         events(completed("", { output: [questionCall(selection)] })),
-        events(completed(mode === "voice" ? selection.question : "")),
       );
       const customerText = "Help me measure my windows for blinds.";
       if (mode === "voice") {
-        voiceHistory(env, [shoppingState, { role: "user", text: customerText }]);
+        voiceHistory(env, [
+          shoppingState,
+          { role: "user", text: customerText },
+        ]);
         await env.api.runVoiceDelegation(
           "voice",
           VOICE_ID,
@@ -4289,16 +4355,8 @@ test("initial PDP choice preserves its single verified card and one alternative 
       assert.equal(env.calls.browserTools.length, 1);
       assert.equal(env.calls.browserTools[0][3], "search_products");
       assert.equal(env.calls.guideReads.length, 0);
-      assert.equal(env.calls.requests.length, 4);
-      const questionReceipt = env.calls.requests[3].input.input.find(
-        (item) =>
-          item.type === "function_call_output" && item.call_id === "question-1",
-      );
-      assert.deepEqual(JSON.parse(questionReceipt.output), selection);
-      assert.match(
-        env.calls.requests[0].input.instructions,
-        /Something else/,
-      );
+      assert.equal(env.calls.requests.length, 3);
+      assert.match(env.calls.requests[0].input.instructions, /Something else/);
     });
 });
 
@@ -4312,7 +4370,6 @@ test("declining the initial PDP can continue with room discovery without restori
       const env = setup();
       env.streams.push(
         events(completed("", { output: [questionCall(selection)] })),
-        events(completed(mode === "voice" ? selection.question : "")),
       );
       const history = [
         { role: "user", text: "Help me measure my windows for blinds." },
@@ -4353,17 +4410,33 @@ test("declining the initial PDP can continue with room discovery without restori
       assert.equal(result.presentation, undefined);
       assert.equal(env.calls.browserTools.length, 0);
       assert.equal(env.calls.guideReads.length, 0);
-      assert.equal(env.calls.requests.length, 2);
+      assert.equal(env.calls.requests.length, 1);
     });
 });
 
-test("missing question after a carousel offers browsing refinement in text and voice without another model call", async () => {
+test("model-owned browsing question finishes the selected carousel in text and voice", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
     env.streams.push(
       events(completed("", { output: [catalogCall("catalog-1")] })),
       events(completed("", { output: [showCall([456, 123, 789])] })),
-      events(completed("These are the available blinds.")),
+      events(
+        completed("", {
+          output: [
+            questionCall({
+              message: "These are the available blinds.",
+              ...{
+                question: "Would you like to explore more options?",
+                answers: [
+                  "Show me more",
+                  "Different colours",
+                  "Help me narrow it down",
+                ],
+              },
+            }),
+          ],
+        }),
+      ),
     );
     const reply = await env.api.generateReply(
       [{ role: "user", text: "Let's continue measuring this window." }],
@@ -4393,7 +4466,7 @@ test("missing question after a carousel offers browsing refinement in text and v
   }
 });
 
-test("carousel fallback is independent of card names and never duplicates product selection", async () => {
+test("carousel title data never rewrites the model selected browsing question", async () => {
   for (const titles of [
     ["Only shade"],
     ["Shade one", "Shade two", "Shade three", "Shade four"],
@@ -4411,7 +4484,23 @@ test("carousel fallback is independent of card names and never duplicates produc
     env.streams.push(
       events(completed("", { output: [catalogCall("catalog-1")] })),
       events(completed("", { output: [showCall(ids)] })),
-      events(completed("These are the available choices.")),
+      events(
+        completed("", {
+          output: [
+            questionCall({
+              message: "These are the available choices.",
+              ...{
+                question: "Would you like to explore more options?",
+                answers: [
+                  "Show me more",
+                  "Different colours",
+                  "Help me narrow it down",
+                ],
+              },
+            }),
+          ],
+        }),
+      ),
     );
     const reply = await env.api.generateReply(
       [],
@@ -4432,7 +4521,7 @@ test("carousel fallback is independent of card names and never duplicates produc
   }
 });
 
-test("generic menus and product-name quick answers become refinements but meaningful questions remain unchanged", async () => {
+test("validated model questions remain authoritative without hidden menu substitutions", async () => {
   const welcome = {
     question: "Where would you like to start?",
     answers: ["Help me measure", "Explore products", "Find my style"],
@@ -4459,7 +4548,6 @@ test("generic menus and product-name quick answers become refinements but meanin
       events(completed("", { output: [catalogCall("catalog-1")] })),
       events(completed("", { output: [showCall([456, 123, 789])] })),
       events(completed("", { output: [questionCall(selection)] })),
-      events(completed("Here are the options for your current window.")),
     );
     const reply = await env.api.generateReply(
       [],
@@ -4467,62 +4555,41 @@ test("generic menus and product-name quick answers become refinements but meanin
       new AbortController().signal,
       async () => catalogResult(123, 456, 789),
     );
-    const expected =
-      selection === welcome ||
-      selection === nextActions ||
-      selection.question === "Which blind?"
-        ? {
-            question: "Would you like to explore more options?",
-            answers: [
-              "Show me more",
-              "Different colours",
-              "Help me narrow it down",
-            ],
-          }
-        : selection;
+    const expected = selection;
     assert.deepEqual(plain(reply.questionPresentation), {
       callId: "question-1",
       ...expected,
     });
-    const acknowledged = env.calls.requests[3].input.input.find(
-      (item) =>
-        item.type === "function_call_output" && item.call_id === "question-1",
-    );
-    assert.deepEqual(
-      JSON.parse(acknowledged.output),
-      expected,
-      "The model receives the actual displayed question for its final voice/text overview",
-    );
-    assert.equal(env.calls.requests.length, 4);
+    assert.equal(env.calls.requests.length, 3);
   }
 });
 
-test("an explicit question or a completed product selection takes precedence over carousel fallback", async () => {
+test("explicit browsing and completed product choices each author their own terminal question", async () => {
   for (const next of ["question", "navigate"]) {
     const env = setup();
     env.streams.push(
       events(completed("", { output: [catalogCall("catalog-1")] })),
       events(
         completed("", {
-          output: [showCall(next === "single" ? [123] : [123, 456])],
+          output: [showCall([123, 456])],
         }),
       ),
     );
-    if (next !== "single")
-      env.streams.push(
-        events(
-          completed("", {
-            output: [
-              next === "question"
-                ? questionCall()
-                : catalogCall("open-chosen", "navigate", {
-                    path: "/products/shade-123",
-                  }),
-            ],
-          }),
-        ),
-      );
-    env.streams.push(events(completed("Here is the useful next step.")));
+    env.streams.push(
+      events(
+        completed("", {
+          output: [
+            next === "question"
+              ? questionCall()
+              : catalogCall("open-chosen", "navigate", {
+                  path: "/products/shade-123",
+                }),
+          ],
+        }),
+      ),
+    );
+    if (next === "navigate")
+      env.streams.push(events(completed("Here is the useful next step.")));
     const reply = await env.api.generateReply(
       [],
       () => {},
@@ -4662,7 +4729,10 @@ test("invalid selections cannot present duplicate, variant, unknown or historica
     ["variant", { productIds: ["gid://shopify/ProductVariant/123"] }],
     ["unknown", { productIds: [productGid(999)] }],
     ["empty", { productIds: [] }],
-    ["too many", { productIds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(productGid) }],
+    [
+      "too many",
+      { productIds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(productGid) },
+    ],
     ["extra fields", { productIds: [productGid(123)], title: "Forged" }],
     ["invalid JSON", "not JSON"],
   ]) {
@@ -4724,7 +4794,7 @@ test("a second presentation attempt fails without replacing the first selection"
   assert.equal(env.calls.requests.length, 3);
 });
 
-test("four browser calls and both local presentations leave a final answer round without tools", async () => {
+test("four browser calls and product presentation finish at the terminal answer tool", async () => {
   const env = setup();
   for (let index = 0; index < 2; index++)
     env.streams.push(
@@ -4750,13 +4820,13 @@ test("four browser calls and both local presentations leave a final answer round
       completed("", {
         output: [
           catalogCall("question", "ask_question", {
+            message: "I opened the product and selected this option.",
             question: "Which room?",
             answers: ["Bedroom", "Kitchen"],
           }),
         ],
       }),
     ),
-    events(completed("I opened the product and selected this option.")),
   );
   const dispatched = [];
   const reply = await env.api.generateReply(
@@ -4789,7 +4859,8 @@ test("four browser calls and both local presentations leave a final answer round
     allowedTools(env.calls.requests[5].input).map((tool) => tool.name),
     ["ask_question", "ask_measurement"],
   );
-  assert.equal(env.calls.requests[6].input.tool_choice, "none");
+  assert.equal(env.calls.requests.length, 6);
+  assert.equal(reply.text, "I opened the product and selected this option.");
   assert.equal(reply.questionPresentation.question, "Which room?");
   assert.equal(reply.presentation.productIds[0], productGid(123));
 });
@@ -4999,7 +5070,7 @@ test("streaming text preserves an already-persisted product widget", async () =>
   await flush();
   const current = await env.api.readConversation("one");
   assert.deepEqual(plain(current.messages[1].parts), [
-    { type: "text", text: "Here are current options." },
+    { type: "text", text: "" },
     widget,
   ]);
   generation.complete();
@@ -5054,8 +5125,10 @@ test("startup resume exposes only guide reads and the matching saved question pr
     );
     assert.equal(
       reply.text,
-      "",
-      "Service speaks the exact restored widget once",
+      [numeric ? measurementSelection.instructions : undefined, saved.question]
+        .filter(Boolean)
+        .join(" "),
+      "The validated response contains the exact spoken step once",
     );
     assert.equal(reply.questionPresentation.question, saved.question);
     assert.equal(env.calls.guideReads.length, numeric ? 1 : 0);
@@ -5134,19 +5207,19 @@ test("startup cannot invent changed measurement metadata or reuse historic guide
       events(completed("", { output: [measurementCall(selection)] })),
       events(completed("Unverified instructions must not be forwarded.")),
     );
-    const reply = await env.api.generateReply(
-      [{ role: "assistant", text: "I read this guide earlier." }],
-      () => {},
-      new AbortController().signal,
-      async () => guideResult(),
-      "voice",
-      undefined,
-      guideOrigin,
-      savedResumeQuestion(),
+    await assert.rejects(
+      env.api.generateReply(
+        [{ role: "assistant", text: "I read this guide earlier." }],
+        () => {},
+        new AbortController().signal,
+        async () => guideResult(),
+        "voice",
+        undefined,
+        guideOrigin,
+        savedResumeQuestion(),
+      ),
+      /Only read-only question resume tools are allowed/,
     );
-    assert.equal(reply.questionPresentation, undefined, changed);
-    assert.match(reply.text, /could not be safely restored/);
-    assert.doesNotMatch(reply.text, /Unverified instructions/);
   }
 });
 
@@ -5290,7 +5363,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
   );
   assert.match(
     env.calls.requests[0].input.instructions,
-    /return only a concise factual briefing/i,
+    /Complete the backend reply with exactly one terminal ask_question or ask_measurement/,
   );
   assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");
@@ -5475,10 +5548,7 @@ test("stale cancelled voice completion cannot remove or overwrite a newer text o
   assert.equal(await old, undefined);
   const snapshot = await env.api.readConversation("one");
   assert.equal(snapshot.busy, true);
-  assert.equal(
-    snapshot.messages.at(-1).parts[0].text,
-    "New text answer in progress.",
-  );
+  assert.equal(snapshot.messages.at(-1).parts[0].text, "");
   assert.doesNotMatch(JSON.stringify(snapshot), /late obsolete/);
   await assert.rejects(
     env.api.startTurn("one", { requestId: "third", text: "Do not overlap." }),
@@ -5790,5 +5860,135 @@ test("show_view is available as a bounded browser tool without native navigation
     allowedTools(env.calls.requests[0].input).some(
       (tool) => tool.name === "show_view",
     ),
+  );
+});
+
+test("plain prose receives one structured repair without publishing a competing question", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup(),
+      visible = [];
+    env.streams.push(
+      events(
+        { type: "response.output_text.delta", delta: "Which room?" },
+        completed("", {
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "Which room?" }],
+            },
+          ],
+        }),
+      ),
+      events(
+        completed("", {
+          output: [
+            questionCall({
+              message: "",
+              question: "Which room?",
+              answers: ["Bedroom", "Living room"],
+            }),
+          ],
+        }),
+      ),
+    );
+    const reply = await env.api.generateReply(
+      [],
+      (text) => visible.push(text),
+      new AbortController().signal,
+      () => assert.fail("A repair cannot execute storefront work"),
+      mode,
+    );
+    assert.equal(reply.text, mode === "voice" ? "Which room?" : "");
+    assert.deepEqual(visible, [reply.text]);
+    assert.equal(reply.questionPresentation.question, "Which room?");
+    assert.equal(env.calls.requests.length, 2);
+    assert.deepEqual(allowedToolNames(env.calls.requests[1].input), [
+      "ask_question",
+      "ask_measurement",
+    ]);
+    assert.equal(env.calls.requests[1].input.tool_choice.mode, "required");
+  }
+});
+
+test("repairing a repeated written question never replays the preceding cart action", async () => {
+  const env = setup(),
+    executed = [],
+    visible = [];
+  const q = {
+    question: "What would you like to do next?",
+    answers: ["Find more products", "View cart"],
+  };
+  env.streams.push(
+    events(
+      completed("", { output: [catalogCall("cart-read", "get_cart", {})] }),
+    ),
+    events(
+      completed("", { output: [catalogCall("cart-clear", "clear_cart", {})] }),
+    ),
+    events(
+      completed("", {
+        output: [
+          questionCall({ ...q, message: "The cart is empty. " + q.question }),
+        ],
+      }),
+    ),
+    events(
+      completed("", {
+        output: [
+          questionCall({ ...q, message: "The cart is empty." }, "repaired"),
+        ],
+      }),
+    ),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    (text) => visible.push(text),
+    new AbortController().signal,
+    async (id, name) => {
+      executed.push(name);
+      return name === "get_cart"
+        ? { currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: [] }
+        : { status: "updated", message: "The cart is empty." };
+    },
+  );
+  assert.deepEqual(executed, ["get_cart", "clear_cart"]);
+  assert.deepEqual(visible, ["The cart is empty."]);
+  assert.equal(reply.questionPresentation.callId, "repaired");
+  assert.equal(env.calls.requests.length, 4);
+  assert.deepEqual(allowedToolNames(env.calls.requests[3].input), [
+    "ask_question",
+    "ask_measurement",
+  ]);
+});
+
+test("a fitting-only original cannot authorize a numeric measuring input", async () => {
+  const env = setup();
+  env.streams.push(
+    events(
+      completed("", { output: [guideLookup("fitting-only", ["fitting"])] }),
+    ),
+    events(completed("", { output: [measurementCall()] })),
+    events(
+      completed(
+        "I need the matching measuring guide before we take that reading.",
+      ),
+    ),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => guideResult(["fitting"]),
+    "text",
+    undefined,
+    guideOrigin,
+  );
+  assert.equal(reply.questionPresentation.measurement, undefined);
+  assert.equal(env.calls.requests.length, 3);
+  assert.match(
+    env.calls.requests[2].input.input.find(
+      (i) => i.call_id === "measurement-1" && i.type === "function_call_output",
+    ).output,
+    /no verified measuring guide/,
   );
 });

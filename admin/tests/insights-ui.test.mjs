@@ -242,6 +242,7 @@ test("inspection retains original question choices as literal read-only history 
       rows[0].textContent.indexOf(question),
   );
   assert.match(rows[0].textContent, /Offered answers/);
+  assert.match(rows[0].textContent, /Offered question/);
   assert.deepEqual(
     [...rows[0].querySelectorAll("ul:last-child li")].map(
       (item) => item.textContent,
@@ -326,6 +327,7 @@ test("inspection keeps measurement instructions, unit and product as read-only h
   assert.match(container.textContent, /Measurement input: Width \(mm\)/);
   assert.match(container.textContent, /Width: 500 mm/);
   assert.doesNotMatch(container.textContent, /Offered answers/);
+  assert.doesNotMatch(container.textContent, /Offered question/);
   assert.equal(
     container.querySelectorAll("button, s-button, input, img").length,
     0,

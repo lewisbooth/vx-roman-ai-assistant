@@ -246,7 +246,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
               .join(" ")
           : undefined);
       const response = briefing
-        ? briefing.slice(0, 1_000)
+        ? briefing
         : resumeQuestionId
           ? "The saved question could not be resumed. Do not repeat its previous instructions or claim any action. Ask the customer what they would like to continue with."
           : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.";

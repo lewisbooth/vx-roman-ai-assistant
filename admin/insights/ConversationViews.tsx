@@ -231,6 +231,11 @@ export function ConversationTimeline({
               if (part.type === "question")
                 return (
                   <div key={index}>
+                    {part.voiceReply && (
+                      <p className="text-xs font-semibold text-gray-600">
+                        Offered question
+                      </p>
+                    )}
                     <p className="whitespace-pre-wrap">{part.question}</p>
                     {part.measurement ? (
                       <>

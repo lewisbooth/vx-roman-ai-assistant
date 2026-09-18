@@ -251,6 +251,34 @@ test("submission failure retains the value and permits editing/retry without aut
   );
 });
 
+test("an optimistic voice answer can hide the row and restore its numeric draft and failure for retry", async (t) => {
+  let reject;
+  const submission = new Promise((_resolve, fail) => {
+    reject = fail;
+  });
+  const ctx = setup(t, {
+    voice: true,
+    part: {
+      ...part,
+      voiceReply: { voiceId: "voice-1", afterSequence: 2 },
+    },
+    onAnswer: () => submission,
+  });
+  ctx.fill("12.5");
+  ctx.submit();
+  ctx.render({ active: false });
+  assert.equal(ctx.container.children.length, 0);
+  assert.equal(ctx.calls.length, 1);
+  reject(new ctx.window.Error("Connection lost. Please retry."));
+  await delay(0);
+  ctx.render({ active: true });
+  await until(() => ctx.container.querySelector('[role="alert"]'));
+  assert.equal(ctx.input().value, "12.5");
+  assert.equal(ctx.input().readOnly, false);
+  assert.match(ctx.container.textContent, /Connection lost/);
+  assert.equal(ctx.calls.length, 1);
+});
+
 test("disabled and retired questions cannot submit; history retains guide instructions and units", (t) => {
   const ctx = setup(t, { disabled: true });
   assert.equal(ctx.input().disabled, true);

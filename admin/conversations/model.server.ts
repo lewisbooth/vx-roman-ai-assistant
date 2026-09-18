@@ -44,7 +44,6 @@ import {
   parseProductGuidesResult,
 } from "../../shared/product-guides";
 import { ROMAN_TEXT_PROMPT } from "../prompts/text.server";
-import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
 import {
   parseViewCall,
   parseViewResult,
@@ -59,8 +58,8 @@ import type { GuideSession } from "../guides/session.server";
 import {
   askQuestionToolDefinition,
   askMeasurementToolDefinition,
-  parseMeasurementQuestionSelection,
-  parseQuestionSelection,
+  parseMeasurementQuestionCall,
+  parseQuestionCall,
   type QuestionPart,
 } from "../../shared/questions";
 import { ROMAN_VOICE_BRIEFING_PROMPT } from "../prompts/voice.server";
@@ -257,23 +256,13 @@ export async function generateReply(
   };
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
-  let questionPresentationAttempted = false;
-  let questionPresentation: QuestionPresentation | undefined;
+  let answerRepair = false;
   const availableGuides = new Map<
     string,
     { sourceCallId: string; kinds: ProductGuideKind[] }
   >();
   let measurementProductPath: string | undefined;
   const availableProducts = new Map<string, string>();
-  let browsingPending = false;
-  const browsingQuestion = () => {
-    if (!browsingPending || !presentation) return;
-    // Product selection belongs to each card, regardless of carousel size.
-    return {
-      question: "Would you like to explore more options?",
-      answers: ["Show me more", "Different colours", "Help me narrow it down"],
-    };
-  };
   // Original files stay server-side; a verified product session can reuse them.
   const attachedGuideUrls = new Set<string>();
   const documents = new Map<
@@ -368,16 +357,15 @@ export async function generateReply(
         },
       ]
     : [];
-  let accumulated = "";
   replyRounds: for (
     let round = 0;
-    round < (configurationMode ? 16 : 8);
+    round < (configurationMode ? 16 : 8) + (answerRepair ? 1 : 0);
     round++
   ) {
     signal.throwIfAborted();
     const tools = stableTools.filter(({ name }) => {
-      if (name === "ask_question" || name === "ask_measurement")
-        return !questionPresentationAttempted;
+      if (name === "ask_question" || name === "ask_measurement") return true;
+      if (answerRepair) return false;
       if (name === "show_products") return !presentationAttempted;
       return withinToolBudget(name) && canMutate(name);
     });
@@ -496,7 +484,7 @@ export async function generateReply(
                 tool_choice: tools.length
                   ? {
                       type: "allowed_tools" as const,
-                      mode: "auto" as const,
+                      mode: "required" as const,
                       tools: tools.map(({ name }) => ({
                         type: "function" as const,
                         name,
@@ -532,7 +520,6 @@ export async function generateReply(
         if (event.type === "response.output_text.delta") {
           if (event.delta.trim()) finishGuideReading();
           text += event.delta;
-          onText(accumulated + text);
         } else if (event.type === "response.completed") {
           // Refusals are displayable responses too, without exposing reasoning items.
           text = event.response.output
@@ -565,59 +552,42 @@ export async function generateReply(
       toolCalls.length > 1 &&
       toolCalls.some(
         (call) =>
-          call.name === "ask_measurement" ||
-          (resumeQuestion && call.name === resumePresentation),
+          call.name === "ask_question" || call.name === "ask_measurement",
       )
     )
       throw new Error(
-        "Roman reached the question presentation limit for this reply.",
+        "Roman returned concurrent tool calls despite sequential execution being required.",
       );
     if (!toolCalls.length) {
-      if (
-        resumeQuestion &&
-        (!questionPresentation ||
-          (resumeQuestion.measurement &&
-            measurementProductPath !== resumeQuestion.measurement.productPath))
-      )
+      const refused = completed.output.some(
+        (item) =>
+          item.type === "message" &&
+          item.content.some((part) => part.type === "refusal"),
+      );
+      if (refused) {
+        onText(text);
         return {
-          text: "The saved question could not be safely restored. Do not repeat its earlier measuring instructions. Ask the customer how they would like to continue.",
+          text,
           model: completed.model,
           serviceTier: completed.service_tier ?? undefined,
         };
-      // Voice needs the final outcome; preliminary tool narration belongs only
-      // to the text transcript and can crowd out a bounded spoken briefing.
-      const answer = resumeQuestion
-        ? ""
-        : mode === "voice"
-          ? text
-          : accumulated + text;
-      if (!answer.trim() && !questionPresentation)
-        throw new Error("The model returned an empty reply.");
-      // A completed reply always leaves an easy way forward, without a repair
-      // model request. Specific model questions and numeric inputs take priority.
-      // These are new customer intents, never inferred consent or replayed work.
-      const nextQuestion = questionPresentation ?? {
-        callId: `next-actions-${randomUUID()}`,
-        ...(browsingQuestion() ?? {
-          question: "What would you like to do next?",
-          answers: [...ROMAN_WELCOME_QUESTION.answers],
-        }),
-      };
-      return {
-        text:
-          mode === "voice" &&
-          !questionPresentation &&
-          !answer.includes(nextQuestion.question)
-            ? `${answer.trimEnd()} ${nextQuestion.question}`
-            : answer,
-        model: completed.model,
-        serviceTier: completed.service_tier ?? undefined,
-        ...(presentation ? { presentation } : {}),
-        questionPresentation: nextQuestion,
-        ...(cachedGuideSource ? { cachedGuideSource } : {}),
-      };
+      }
+      if (!text.trim()) throw new Error("The model returned an empty reply.");
+      if (answerRepair)
+        throw new Error("Roman did not finish with a valid answer request.");
+      answerRepair = true;
+      input.push(
+        ...completed.output.filter(
+          (item) => item.type === "message" || item.type === "reasoning",
+        ),
+        {
+          role: "developer",
+          content:
+            "Finish this reply with ask_question or ask_measurement. Put the useful overview or confirmed outcome in message and the single next decision in question. No answer was displayed. Do not repeat completed work; only an answer request is available.",
+        },
+      );
+      continue;
     }
-    if (text.trim()) accumulated += text + "\n\n";
     // Preserve provider reasoning/function items only within this turn. Never
     // expose them as chat content or persist a second provider-owned transcript.
     input.push(
@@ -647,40 +617,13 @@ export async function generateReply(
       )
         throw new Error("The saved measurement belongs to another product.");
       if (call.name === "ask_question" || call.name === "ask_measurement") {
-        if (questionPresentationAttempted)
-          throw new Error(
-            "Roman reached the question presentation limit for this reply.",
-          );
-        questionPresentationAttempted = true;
-        let outcome;
         try {
-          let selection =
+          const { message, ...selection } =
             call.name === "ask_measurement"
-              ? parseMeasurementQuestionSelection(JSON.parse(call.arguments))
-              : parseQuestionSelection(JSON.parse(call.arguments));
-          if (
-            ((selection.question === ROMAN_WELCOME_QUESTION.question ||
-              selection.question === "What would you like to do next?") &&
-              selection.answers.length ===
-                ROMAN_WELCOME_QUESTION.answers.length &&
-              selection.answers.every(
-                (answer, index) =>
-                  answer === ROMAN_WELCOME_QUESTION.answers[index],
-              )) ||
-            (browsingPending &&
-              presentation?.productIds.some((id) =>
-                selection.answers.some(
-                  (answer) =>
-                    answer.toLocaleLowerCase() ===
-                    availableProducts.get(id)?.toLocaleLowerCase(),
-                ),
-              ))
-          )
-            selection = browsingQuestion() ?? selection;
+              ? parseMeasurementQuestionCall(JSON.parse(call.arguments))
+              : parseQuestionCall(JSON.parse(call.arguments));
           if (!call.call_id || call.call_id.length > 200)
             throw new Error("Invalid question presentation call ID.");
-          if (call.name === "ask_question" && selection.measurement)
-            throw new Error("Use the measurement tool for a numeric question.");
           if (
             selection.answers.some((answer) =>
               /^finish\s+for\s+now[.!]?$/i.test(answer),
@@ -712,11 +655,25 @@ export async function generateReply(
           if (
             selection.measurement &&
             (!source ||
+              !source.kinds.includes("measuring") ||
               selection.measurement.productPath !== measurementProductPath) &&
             libraryBound?.productPath !== selection.measurement.productPath
           )
-            throw new Error("Read this product's guides before measuring.");
-          questionPresentation = {
+            throw new Error(
+              "This measurement has no verified measuring guide. Ask a safe clarification instead, without measuring instructions.",
+            );
+          const spoken = [
+            message,
+            selection.measurement?.instructions,
+            selection.question,
+          ]
+            .filter(Boolean)
+            .join(" ");
+          if (mode === "voice" && spoken.length > 1_000)
+            throw new Error(
+              "The complete spoken reply exceeds 1000 characters. Shorten message while preserving the exact question and all fit-critical instructions.",
+            );
+          const questionPresentation: QuestionPresentation = {
             callId: call.call_id,
             ...selection,
             ...(selection.measurement &&
@@ -729,85 +686,45 @@ export async function generateReply(
                 ? { sourceCallId: source.sourceCallId }
                 : {}),
           };
-          outcome = selection;
-        } catch {
-          outcome = {
-            error:
-              call.name === "ask_measurement"
-                ? "No measurement input was shown. First read this product's current guides, then request one supported measurement with its explicit units and instructions. Do not claim an input was shown or invent measuring advice."
-                : "No question was selected. Do not claim those answer buttons were shown. Finish with the concise outcome; the application supplies safe fallback choices.",
+          signal.throwIfAborted();
+          const answer = mode === "voice" ? spoken : message;
+          onText(answer);
+          return {
+            text: answer,
+            model: completed.model,
+            serviceTier: completed.service_tier ?? undefined,
+            ...(presentation ? { presentation } : {}),
+            questionPresentation,
+            ...(cachedGuideSource ? { cachedGuideSource } : {}),
           };
+        } catch (error) {
+          signal.throwIfAborted();
+          if (answerRepair)
+            throw new Error(
+              "Roman did not finish with a valid answer request.",
+            );
+          answerRepair = true;
+          input.push({
+            type: "function_call_output",
+            call_id: call.call_id,
+            output: JSON.stringify({
+              error:
+                error instanceof SyntaxError
+                  ? "Invalid answer request JSON."
+                  : error instanceof Error
+                    ? error.message
+                    : "Invalid answer request.",
+              instruction:
+                "No answer request was displayed. Correct it once using ask_question or ask_measurement. Keep the confirmed outcome in message. Do not repeat completed work; only an answer request is available.",
+            }),
+          });
+          continue;
         }
-        if (
-          questionPresentation &&
-          (resumeQuestion || questionPresentation.measurement)
-        ) {
-          const measurement = questionPresentation.measurement;
-          // The guide read may precede the terminal numeric tool by a round.
-          // Retain its actual short introduction, never earlier tool narration
-          // or an invented introduction while reusing an earlier source.
-          const guideIntro =
-            measurement &&
-            (availableGuides.has(measurement.productPath) || libraryBound)
-              ? (accumulated.match(
-                  /(?:^|[.!?]\s+|\n\s*)(Let['’]s walk through the (?:(?:measuring|fitting) guide|measuring and fitting guides)\.)(?=\s|$)/,
-                )?.[1] ?? "")
-              : "";
-          const overview = measurement
-            ? text
-                .replaceAll(measurement.instructions, "")
-                .replaceAll(questionPresentation.question, "")
-                .replaceAll(guideIntro, "")
-                .trim()
-            : "";
-          const voiceText =
-            overview || guideIntro
-              ? [
-                  guideIntro,
-                  overview,
-                  measurement?.instructions,
-                  questionPresentation.question,
-                ]
-                  .filter(Boolean)
-                  .join(" ")
-              : "";
-          // A validated numeric step already owns its instructions/question.
-          // Keep the normal completion round if it must explain a prior write
-          // or compress an overview without truncating the spoken method.
-          const needsOutcome = input.some(
-            (item) =>
-              item.type === "function_call" &&
-              (item.name === "set_measurements" ||
-                isCartMutation(item.name) ||
-                item.name === "apply_measurements" ||
-                item.name === "configure_product"),
-          );
-          if (
-            resumeQuestion ||
-            (!needsOutcome && (mode !== "voice" || voiceText.length <= 1_000))
-          ) {
-            signal.throwIfAborted();
-            return {
-              text: resumeQuestion
-                ? ""
-                : mode === "voice"
-                  ? voiceText
-                  : accumulated.trimEnd(),
-              model: completed.model,
-              serviceTier: completed.service_tier ?? undefined,
-              ...(presentation ? { presentation } : {}),
-              questionPresentation,
-              ...(cachedGuideSource ? { cachedGuideSource } : {}),
-            };
-          }
-        }
-        input.push({
-          type: "function_call_output",
-          call_id: call.call_id,
-          output: JSON.stringify(outcome),
-        });
-        continue;
       }
+      if (answerRepair)
+        throw new Error(
+          "Only an answer request can repair the completed work's reply.",
+        );
       if (call.name === "show_products") {
         if (presentationAttempted)
           throw new Error(
@@ -828,7 +745,6 @@ export async function generateReply(
               "Products must come from this reply's catalog results.",
             );
           presentation = { callId: call.call_id, productIds };
-          browsingPending = true;
           outcome = {
             selectedProductIds: [...productIds],
             instruction:
@@ -1102,15 +1018,6 @@ export async function generateReply(
         if ("products" in outcome)
           for (const product of outcome.products)
             availableProducts.set(product.id, product.title);
-        if (
-          (parsed.name === "navigate" ||
-            parsed.name === "get_product_configuration" ||
-            parsed.name === "configure_product" ||
-            parsed.name === "apply_measurements" ||
-            isCartMutation(parsed.name)) &&
-          !("error" in outcome)
-        )
-          browsingPending = false;
       } catch {
         signal.throwIfAborted();
         if (
@@ -1244,14 +1151,16 @@ export async function generateReply(
           guideContext = undefined;
           documents.clear();
           documentProductPath = undefined;
-          accumulated = "";
-          onText("");
-          questionPresentation = undefined;
-          questionPresentationAttempted = false;
           onGuideReading?.(undefined);
           console.warn("[Roman] Product guides could not be read.", {
             reason: read.reason,
           });
+          if (resumeQuestion)
+            return {
+              text: "The saved measuring step could not be verified from its guide, so I cannot safely repeat those instructions.",
+              model: completed.model,
+              serviceTier: completed.service_tier ?? undefined,
+            };
           input.push({
             type: "function_call_output",
             call_id: call.call_id,
@@ -1263,8 +1172,7 @@ export async function generateReply(
                 : "These PDP documents were not read. Try discover_guides for the relevant store library before giving up. Use only matching verified evidence; do not invent steps or repeat the failed lookup.",
             }),
           });
-          // A provider that ignored serial-tool mode cannot dispatch a queued
-          // action on the assumption that this source read succeeded.
+          // Do not dispatch any queued action on failed source evidence.
           for (const queued of toolCalls.slice(toolCalls.indexOf(call) + 1))
             input.push({
               type: "function_call_output",

@@ -76,7 +76,7 @@ function setup(t) {
   return { container, render: view.render };
 }
 
-test("spoken questions remain in the transcript alongside clickable answers and answered history", async (t) => {
+test("answering a voice question retires its controls without adding a second transcript message", async (t) => {
   const ctx = setup(t);
   const spoken = caption("Yes, we can. Would you like a sample?");
   const offered = question();
@@ -112,7 +112,12 @@ test("spoken questions remain in the transcript alongside clickable answers and 
     ],
   });
   assert.equal(ctx.container.querySelector(".roman-question"), null);
-  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
+  assert.equal(ctx.container.querySelectorAll(".roman-message").length, 2);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-message-assistant").length,
+    1,
+  );
 });
 
 test("widget arrival does not erase complete or split captions", (t) => {
@@ -167,7 +172,7 @@ test("voice cue cleanup still applies without removing questions or mutating sav
     ctx.container.querySelector(".roman-voice-caption p").textContent,
     offered.question,
   );
-  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
   assert.deepEqual(messages, original);
 });
 
@@ -207,9 +212,47 @@ test("a resumed pending question remains visible in new voice captions and its w
   assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
 });
 
-test("written and numeric questions retain their prose alongside the input widget", (t) => {
+test("a text question has one owner while active, answered, restored and voice is enabled", (t) => {
+  const ctx = setup(t);
+  const offered = question({ voiceReply: undefined });
+  const messages = [
+    message(
+      "assistant",
+      { type: "text", text: "The sample is available." },
+      offered,
+    ),
+  ];
+  ctx.render({
+    messages,
+    activeQuestionId: offered.invocationId,
+    onAnswer: async () => {},
+  });
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-question button").length,
+    2,
+  );
+  const answered = [
+    ...messages,
+    message("user", { type: "text", text: "Keep browsing" }),
+  ];
+  ctx.render({ messages: answered, voice: true });
+  assert.equal(ctx.container.querySelector(".roman-question"), null);
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-message-assistant").length,
+    2,
+  );
+
+  const restored = setup(t);
+  restored.render({ messages: structuredClone(answered), voice: true });
+  assert.equal(restored.container.textContent, ctx.container.textContent);
+});
+
+test("text numeric questions retain one question, instructions and units in history", (t) => {
   const ctx = setup(t);
   const offered = question({
+    voiceReply: undefined,
     question: "What is the width including brackets?",
     answers: [],
     measurement: {
@@ -219,32 +262,96 @@ test("written and numeric questions retain their prose alongside the input widge
       instructions: "Measure the full width, including brackets.",
     },
   });
-  for (const part of [
-    caption(`${offered.measurement.instructions} ${offered.question}`),
-    {
-      type: "text",
-      text: `${offered.measurement.instructions} ${offered.question}`,
-    },
-  ]) {
-    ctx.render({
-      messages: [message("assistant", part), message("context", offered)],
-      activeQuestionId: offered.invocationId,
-      onAnswer: async () => {},
-    });
+  const messages = [message("assistant", offered)];
+  ctx.render({
+    messages,
+    activeQuestionId: offered.invocationId,
+    onAnswer: async () => {},
+  });
+  assert.ok(
+    ctx.container
+      .querySelector('input[type="number"]')
+      .getAttribute("aria-describedby")
+      .includes("instructions"),
+  );
+  for (const active of [true, false]) {
+    if (!active)
+      ctx.render({
+        messages: [
+          ...messages,
+          message("user", { type: "text", text: "Width: 500 mm" }),
+        ],
+      });
     assert.equal(
       ctx.container.textContent.split(offered.question).length - 1,
-      2,
+      1,
     );
     assert.equal(
       ctx.container.textContent.split(offered.measurement.instructions).length -
         1,
-      2,
+      1,
     );
-    assert.ok(
-      ctx.container
-        .querySelector('input[type="number"]')
-        .getAttribute("aria-describedby")
-        .includes("instructions"),
-    );
+    assert.match(ctx.container.textContent, /Width \(mm\)/);
   }
+  assert.equal(ctx.container.querySelector('input[type="number"]'), null);
+});
+
+test("voice question history uses provenance across reloads and mode switches, without inventing interrupted speech", (t) => {
+  const offered = question();
+  for (const spoken of [undefined, caption("Yes, we can. Would you")]) {
+    const messages = [
+      ...(spoken ? [message("assistant", spoken)] : []),
+      message("context", offered),
+      message("user", { type: "text", text: "Keep browsing" }),
+    ];
+    for (const voice of [false, true]) {
+      const ctx = setup(t);
+      ctx.render({ messages: structuredClone(messages), voice });
+      assert.equal(ctx.container.querySelector(".roman-question"), null);
+      assert.equal(ctx.container.textContent.includes(offered.question), false);
+      assert.equal(
+        ctx.container.querySelectorAll(".roman-message").length,
+        spoken ? 2 : 1,
+      );
+      assert.equal(
+        ctx.container.querySelectorAll(".roman-message-assistant").length,
+        spoken ? 1 : 0,
+      );
+      if (spoken)
+        assert.equal(
+          ctx.container.querySelector(".roman-voice-caption p").textContent,
+          spoken.text,
+        );
+    }
+  }
+});
+
+test("an unaccepted optimistic voice answer restores the same pending control without replaying or historical duplication", (t) => {
+  const ctx = setup(t);
+  const offered = question();
+  const messages = [message("context", offered)];
+  const onAnswer = async () =>
+    assert.fail("Rendering must not replay an answer");
+  const pendingProps = {
+    messages,
+    activeQuestionId: offered.invocationId,
+    onAnswer,
+  };
+  ctx.render(pendingProps);
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
+
+  const optimistic = {
+    ...message("user", { type: "text", text: "Keep browsing" }),
+    status: "pending",
+  };
+  ctx.render({ messages: [...messages, optimistic], onAnswer });
+  assert.equal(ctx.container.querySelector(".roman-question"), null);
+  assert.equal(ctx.container.querySelectorAll(".roman-message").length, 1);
+
+  ctx.render(pendingProps);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-question button").length,
+    2,
+  );
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
 });

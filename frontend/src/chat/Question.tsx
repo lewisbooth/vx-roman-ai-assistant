@@ -12,6 +12,7 @@ export function Question({
   voice,
   onAnswer,
   dock,
+  currentTurn = false,
 }: {
   part: QuestionPart;
   active: boolean;
@@ -19,6 +20,7 @@ export function Question({
   voice: boolean;
   onAnswer: (part: QuestionPart, answer: string) => Promise<void>;
   dock?: HTMLElement | null;
+  currentTurn?: boolean;
 }) {
   const id = useId();
   const text = useRef<HTMLParagraphElement>(null);
@@ -69,19 +71,21 @@ export function Question({
       {measurement.instructions}
     </p>
   );
-  if (!active)
-    return (
-      <>
-        {question}
-        {instructions}
-        {measurement && (
-          <p className="roman-question-hint">
-            {measurement.label} ({measurement.unit})
-          </p>
-        )}
-      </>
-    );
-  const content = (
+  // Keep the component mounted when an optimistic voice answer retires it.
+  // Failed submissions can restore the numeric draft and error without a
+  // manufactured transcript row or a separate question-state cache.
+  if (!active && part.voiceReply) return null;
+  const content = !active ? (
+    <>
+      {question}
+      {instructions}
+      {measurement && (
+        <p className="roman-question-hint">
+          {measurement.label} ({measurement.unit})
+        </p>
+      )}
+    </>
+  ) : (
     <section
       className="roman-action-panel roman-question"
       aria-labelledby={id}
@@ -168,5 +172,16 @@ export function Question({
       )}
     </section>
   );
-  return dock ? createPortal(content, dock) : content;
+  return (
+    <li
+      className="roman-message roman-message-assistant"
+      data-current-turn={currentTurn ? "true" : undefined}
+      hidden={active && !!dock}
+    >
+      <span className="sr-only">Roman:</span>
+      <div className="roman-message-parts">
+        {active && dock ? createPortal(content, dock) : content}
+      </div>
+    </li>
+  );
 }
