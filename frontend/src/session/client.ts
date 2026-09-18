@@ -1,3 +1,4 @@
+import { parseCheckoutCall } from "../../../shared/checkout";
 import {
   MAX_MESSAGE_LENGTH,
   MAX_CONVERSATION_MESSAGES,
@@ -262,6 +263,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
         const name = String(tool.name);
         if (tool.name === "navigate") parseNavigationCall(tool.arguments);
         else if (tool.name === "show_view") parseViewCall(tool.arguments);
+        else if (tool.name === "open_checkout") parseCheckoutCall(tool.arguments);
         else if (isCartTool(String(tool.name)))
           parseCartCall(String(tool.name), tool.arguments);
         else if (tool.name === "apply_measurements")
@@ -962,6 +964,8 @@ export function createConversationClient(
                 )
               : tool.name === "navigate"
                 ? await executor!.execute("navigate", tool.arguments, signal)
+                : tool.name === "open_checkout"
+                  ? await executor!.execute("open_checkout", tool.arguments, signal)
                 : tool.name === "show_view"
                   ? await executor!.execute("show_view", tool.arguments, signal)
                   : tool.name === "get_product_guides" ||
@@ -1879,7 +1883,7 @@ export function createConversationClient(
         );
       return executor.loadProducts(ids, signal);
     },
-    loadProductImage(url, signal) {
+    loadProductImage(url, signal, maxWidth) {
       if (
         !executor ||
         disposed ||
@@ -1889,7 +1893,7 @@ export function createConversationClient(
         return Promise.reject(
           new Error("Start a chat to load product images."),
         );
-      return executor.loadProductImage(url, signal);
+      return executor.loadProductImage(url, signal, maxWidth);
     },
     resolveToolApproval(invocationId, confirmed) {
       if (approvalChoice?.id === invocationId && typeof confirmed === "boolean")

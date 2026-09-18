@@ -78,6 +78,7 @@ export function readProductMainImage(
 export async function loadProductPageImage(
   input: string,
   signal: AbortSignal,
+  maxWidth: 480 | 1200 = 480,
 ): Promise<string | undefined> {
   const pageUrl = productImagePageUrl(input);
   signal.throwIfAborted();
@@ -86,7 +87,7 @@ export async function loadProductPageImage(
       window.location.pathname,
     );
   if (current?.[1] === new URL(pageUrl).pathname) {
-    const image = readProductMainImage(document, pageUrl);
+    const image = readProductMainImage(document, pageUrl, maxWidth);
     if (image) return image;
   }
   const controller = new AbortController();
@@ -139,7 +140,7 @@ export async function loadProductPageImage(
       .querySelector('link[rel="canonical"]')
       ?.getAttribute("href");
     if (!canonical || productImagePageUrl(canonical) !== pageUrl) return;
-    return readProductMainImage(template.content, pageUrl);
+    return readProductMainImage(template.content, pageUrl, maxWidth);
   } catch {
     signal.throwIfAborted();
     // A display-only timeout/unavailable PDP must not hide its catalog card.

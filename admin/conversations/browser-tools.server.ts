@@ -1,3 +1,8 @@
+import {
+  parseCheckoutCall,
+  parseCheckoutResult,
+  type CheckoutResult,
+} from "../../shared/checkout";
 import { parseCatalogResult, type CatalogResult } from "../../shared/catalog";
 import { parseCatalogCall } from "../../shared/catalog-tools";
 import {
@@ -60,6 +65,7 @@ export type BrowserToolOutcome =
   | CatalogResult
   | NavigationResult
   | ViewResult
+  | CheckoutResult
   | CartToolResult
   | ApplyMeasurementsResult
   | ProductGuidesResult
@@ -104,35 +110,37 @@ export async function requestBrowserTool(
   signal: AbortSignal,
 ): Promise<BrowserToolOutcome> {
   const call =
-    name === "show_view"
-      ? { name: "show_view" as const, arguments: parseViewCall(input) }
-      : name === "discover_guides"
-        ? {
-            name: "discover_guides" as const,
-            arguments: parseGuideLibraryCall(input),
-          }
-        : name === "get_store_support"
+    name === "open_checkout"
+      ? { name: "open_checkout" as const, arguments: parseCheckoutCall(input) }
+      : name === "show_view"
+        ? { name: "show_view" as const, arguments: parseViewCall(input) }
+        : name === "discover_guides"
           ? {
-              name: "get_store_support" as const,
-              arguments: parseStoreSupportCall(input),
+              name: "discover_guides" as const,
+              arguments: parseGuideLibraryCall(input),
             }
-          : name === "get_product_guides"
+          : name === "get_store_support"
             ? {
-                name: "get_product_guides" as const,
-                arguments: parseProductGuidesCall(input),
+                name: "get_store_support" as const,
+                arguments: parseStoreSupportCall(input),
               }
-            : name === "apply_measurements"
-              ? await resolveMeasurements(conversationId, input)
-              : name === "navigate"
-                ? {
-                    name: "navigate" as const,
-                    arguments: parseNavigationCall(input),
-                  }
-                : isCartTool(name)
-                  ? parseCartCall(name, input)
-                  : isProductConfigurationTool(name)
-                    ? parseProductConfigurationCall(name, input)
-                    : parseCatalogCall(name, input);
+            : name === "get_product_guides"
+              ? {
+                  name: "get_product_guides" as const,
+                  arguments: parseProductGuidesCall(input),
+                }
+              : name === "apply_measurements"
+                ? await resolveMeasurements(conversationId, input)
+                : name === "navigate"
+                  ? {
+                      name: "navigate" as const,
+                      arguments: parseNavigationCall(input),
+                    }
+                  : isCartTool(name)
+                    ? parseCartCall(name, input)
+                    : isProductConfigurationTool(name)
+                      ? parseProductConfigurationCall(name, input)
+                      : parseCatalogCall(name, input);
   signal.throwIfAborted();
   if (waiting.has(conversationId))
     throw new Error("A storefront action is already running.");
@@ -237,7 +245,9 @@ export async function submitBrowserToolResult(
         : { error };
   } else {
     try {
-      if (context.name === "show_view") {
+      if (context.name === "open_checkout") {
+        outcome = parseCheckoutResult(result);
+      } else if (context.name === "show_view") {
         outcome = parseViewResult(result);
         if (outcome.view !== context.arguments.view)
           throw new Error("The browser showed a different Roman view.");
@@ -286,6 +296,7 @@ export async function submitBrowserToolResult(
           ...(isCartTool(context.name) ||
           context.name === "navigate" ||
           context.name === "show_view" ||
+          context.name === "open_checkout" ||
           context.name === "apply_measurements" ||
           context.name === "get_product_guides" ||
           context.name === "discover_guides" ||
@@ -297,6 +308,7 @@ export async function submitBrowserToolResult(
                   | ApplyMeasurementsResult
                   | NavigationResult
                   | ViewResult
+                  | CheckoutResult
                   | ProductGuidesResult
                   | GuideLibraryResult
                   | StoreSupportResult

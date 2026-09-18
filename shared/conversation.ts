@@ -101,6 +101,7 @@ export type BrowserToolName =
   | ProductConfigurationToolName
   | "navigate"
   | "show_view"
+  | "open_checkout"
   | "apply_measurements"
   | "get_product_guides"
   | "discover_guides"

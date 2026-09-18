@@ -1,3 +1,8 @@
+import {
+  parseCheckoutCall,
+  parseCheckoutResult,
+  checkoutToolDefinition,
+} from "../../shared/checkout";
 import OpenAI from "openai";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -258,6 +263,8 @@ export async function generateReply(
       );
     return true;
   };
+  let checkoutAttempted = false;
+  let checkoutHandoff = false;
   let presentationAttempted = false;
   let presentation: ProductPresentation | undefined;
   let answerRepair = false;
@@ -318,6 +325,7 @@ export async function generateReply(
           ...catalogToolDefinitions,
           navigationToolDefinition,
           showViewToolDefinition,
+          checkoutToolDefinition,
           productGuidesToolDefinition,
           ...(libraryReuse
             ? [guideLibraryToolDefinition, readLibraryGuidesToolDefinition]
@@ -369,6 +377,8 @@ export async function generateReply(
   ) {
     signal.throwIfAborted();
     const tools = stableTools.filter(({ name }) => {
+      if (checkoutHandoff || (name === "open_checkout" && checkoutAttempted))
+        return false;
       if (name === "ask_question" || name === "ask_measurement") return true;
       if (answerRepair) return false;
       if (name === "show_products") return !presentationAttempted;
@@ -569,7 +579,7 @@ export async function generateReply(
           item.type === "message" &&
           item.content.some((part) => part.type === "refusal"),
       );
-      if (refused) {
+      if (refused || (checkoutHandoff && text.trim())) {
         onText(text);
         return {
           text,
@@ -605,6 +615,10 @@ export async function generateReply(
     );
     for (const call of toolCalls) {
       signal.throwIfAborted();
+      if (checkoutHandoff)
+        throw new Error(
+          "Checkout handoff is complete; no further tools are allowed in this reply.",
+        );
       // The advertised subset is not authorization: reject even an unsolicited
       // provider call before parsing or dispatching any privileged action.
       if (
@@ -867,48 +881,59 @@ export async function generateReply(
         if (call.name === "get_product_guides")
           requestedGuides = parseProductGuideRead(argumentsValue);
         const parsed =
-          call.name === "show_view"
-            ? { name: call.name, arguments: parseViewCall(argumentsValue) }
-            : call.name === "discover_guides"
-              ? {
-                  name: call.name,
-                  arguments: parseGuideLibraryCall(argumentsValue),
-                }
-              : call.name === "get_store_support"
+          call.name === "open_checkout"
+            ? { name: call.name, arguments: parseCheckoutCall(argumentsValue) }
+            : call.name === "show_view"
+              ? { name: call.name, arguments: parseViewCall(argumentsValue) }
+              : call.name === "discover_guides"
                 ? {
                     name: call.name,
-                    arguments: parseStoreSupportCall(argumentsValue),
+                    arguments: parseGuideLibraryCall(argumentsValue),
                   }
-                : call.name === "get_product_guides"
+                : call.name === "get_store_support"
                   ? {
                       name: call.name,
-                      // The browser only discovers links; PDF selection is server-owned.
-                      arguments: { productPath: requestedGuides!.productPath },
+                      arguments: parseStoreSupportCall(argumentsValue),
                     }
-                  : call.name === "navigate"
+                  : call.name === "get_product_guides"
                     ? {
-                        name: "navigate",
-                        arguments: parseNavigationCall(argumentsValue),
+                        name: call.name,
+                        // The browser only discovers links; PDF selection is server-owned.
+                        arguments: {
+                          productPath: requestedGuides!.productPath,
+                        },
                       }
-                    : isCartTool(call.name)
-                      ? parseCartCall(call.name, argumentsValue)
-                      : isProductConfigurationTool(call.name)
-                        ? parseProductConfigurationCall(
-                            call.name,
-                            argumentsValue,
-                          )
-                        : call.name === "apply_measurements"
-                          ? {
-                              name: call.name,
-                              arguments: parseMeasurementCall(
-                                "get_measurements",
-                                argumentsValue,
-                              ).arguments,
-                            }
-                          : call.name === "get_measurements" ||
-                              call.name === "set_measurements"
-                            ? parseMeasurementCall(call.name, argumentsValue)
-                            : parseCatalogCall(call.name, argumentsValue);
+                    : call.name === "navigate"
+                      ? {
+                          name: "navigate",
+                          arguments: parseNavigationCall(argumentsValue),
+                        }
+                      : isCartTool(call.name)
+                        ? parseCartCall(call.name, argumentsValue)
+                        : isProductConfigurationTool(call.name)
+                          ? parseProductConfigurationCall(
+                              call.name,
+                              argumentsValue,
+                            )
+                          : call.name === "apply_measurements"
+                            ? {
+                                name: call.name,
+                                arguments: parseMeasurementCall(
+                                  "get_measurements",
+                                  argumentsValue,
+                                ).arguments,
+                              }
+                            : call.name === "get_measurements" ||
+                                call.name === "set_measurements"
+                              ? parseMeasurementCall(call.name, argumentsValue)
+                              : parseCatalogCall(call.name, argumentsValue);
+        if (parsed.name === "open_checkout") {
+          if (checkoutAttempted)
+            throw new Error(
+              "Checkout was already requested; do not retry automatically.",
+            );
+          checkoutAttempted = true;
+        }
         if (!canMutate(parsed.name))
           throw new Error(
             "This storefront change is not available in this reply.",
@@ -1023,6 +1048,10 @@ export async function generateReply(
             "productPath" in outcome &&
             outcome.productPath === formProductPath
           );
+        if (parsed.name === "open_checkout" && !("error" in outcome)) {
+          parseCheckoutResult(outcome);
+          checkoutHandoff = true;
+        }
         if (parsed.name === "show_view" && !("error" in outcome)) {
           const shown = parseViewResult(outcome);
           if (shown.view !== parseViewCall(parsed.arguments).view)
@@ -1053,11 +1082,13 @@ export async function generateReply(
                   ? "The measurement draft could not be read or saved. Do not claim dimensions were saved or applied."
                   : call.name === "get_product_guides"
                     ? "The product's current guide links could not be verified. Do not invent a guide URL, display unavailable guides or claim its PDF instructions were read."
-                    : call.name === "show_view"
-                      ? "Roman's requested view could not be confirmed. Do not claim the view changed or navigate the storefront as a substitute."
-                      : call.name === "navigate"
-                        ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
-                        : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
+                    : call.name === "open_checkout"
+                      ? "Checkout opening could not be confirmed. Do not claim it opened or retry automatically; show Roman's Cart and direct the customer to Continue to checkout."
+                      : call.name === "show_view"
+                        ? "Roman's requested view could not be confirmed. Do not claim the view changed or navigate the storefront as a substitute."
+                        : call.name === "navigate"
+                          ? "Storefront navigation could not be confirmed. Do not claim the page changed or repeat the navigation automatically."
+                          : "The store lookup could not be completed. Do not claim product availability or invent the missing details.",
         };
       }
       if (

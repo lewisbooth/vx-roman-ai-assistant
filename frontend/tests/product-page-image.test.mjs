@@ -375,3 +375,97 @@ test("unavailable images are cached briefly; cancelled and disposed reads never 
   assert.equal(pending.calls.length, 1);
   assert.equal(pending.calls[0][1].signal.aborted, true);
 });
+
+test("active-product recovery keeps its larger image separate from carousel-size cache entries", async (t) => {
+  const ctx = setup(t);
+  const executor = ctx.createStorefrontExecutor({
+    execute: () => assert.fail("Image recovery must not request catalog"),
+  });
+  t.after(() => executor.dispose());
+  const signal = new AbortController().signal;
+  assert.equal(await executor.loadProductImage(page, signal), main);
+  assert.equal(
+    await executor.loadProductImage(page, signal, 1200),
+    `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
+  );
+  assert.equal(
+    await executor.loadProductImage(page, signal, 1200),
+    `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
+  );
+  assert.equal(await executor.loadProductImage(page, signal), main);
+  assert.equal(ctx.calls.length, 2);
+});
+
+test("missing PDP imagery falls back only to the matching fresh normalized Shopify catalog image", async (t) => {
+  const ctx = setup(t, async () =>
+    response("Unavailable PDP", { status: 404 }),
+  );
+  let catalogReads = 0;
+  const catalogImage = `${origin}/cdn/shop/files/catalog-main.webp`;
+  const executor = ctx.createStorefrontExecutor({
+    execute: async () => {
+      catalogReads++;
+      return {
+        products: [
+          {
+            id: "gid://shopify/Product/123",
+            title: "Shopify blind",
+            handle: "shade",
+            description: { html: "" },
+            media: [{ type: "image", url: catalogImage }],
+          },
+        ],
+      };
+    },
+  });
+  t.after(() => executor.dispose());
+  const signal = new AbortController().signal;
+  await executor.execute("search_products", { query: "shade" });
+  assert.equal(
+    await executor.loadProductImage(page, signal, 1200),
+    catalogImage,
+  );
+  assert.equal(
+    await executor.loadProductImage(page, signal, 1200),
+    catalogImage,
+  );
+  assert.equal(
+    catalogReads,
+    1,
+    "No additional catalog lookup for display fallback",
+  );
+  assert.equal(ctx.calls.length, 1);
+  assert.equal(
+    await executor.loadProductImage(`${origin}/products/other`, signal, 1200),
+    undefined,
+  );
+  ctx.clock.now += 60_000;
+  assert.equal(
+    await executor.loadProductImage(page, signal, 1200),
+    undefined,
+    "Expired catalog entries do not become authority for a restored choice",
+  );
+});
+
+test("PDP gallery imagery stays preferred over the listing image when both are available", async (t) => {
+  const ctx = setup(t);
+  const executor = ctx.createStorefrontExecutor({
+    execute: async () => ({
+      products: [
+        {
+          id: "gid://shopify/Product/123",
+          title: "Shopify blind",
+          handle: "shade",
+          description: { html: "" },
+          media: [{ type: "image", url: swatch }],
+        },
+      ],
+    }),
+  });
+  t.after(() => executor.dispose());
+  await executor.execute("search_products", { query: "shade" });
+  assert.equal(
+    await executor.loadProductImage(page, new AbortController().signal, 1200),
+    `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
+  );
+});

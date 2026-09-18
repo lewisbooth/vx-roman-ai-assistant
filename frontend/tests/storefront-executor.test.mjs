@@ -778,3 +778,16 @@ test("show_view switches only Roman's view and validates its acknowledgement", a
   await assert.rejects(mismatch.executor.execute("show_view", { view: "cart" }), /different Roman view/);
   mismatch.executor.dispose();
 });
+
+test('checkout validates empty arguments and acknowledges only opened or blocked through the queued executor', async()=>{
+ for(const status of ['opened','blocked']){
+ const ctx=setup(async(name,args)=>{assert.equal(name,'open_checkout');assert.deepEqual(plain(args),{});return{status}});
+ assert.deepEqual(plain(await ctx.executor.execute('open_checkout',{})),{status});assert.equal(ctx.location.href,origin+'/');ctx.executor.dispose();
+ }
+ for(const input of [{url:'https://other.example'},null,[]]){
+ const ctx=setup(()=>assert.fail('Invalid checkout must not execute'));await assert.rejects(async()=>ctx.executor.execute('open_checkout',input));ctx.executor.dispose();
+ }
+ for(const result of [{status:'complete'},{status:'opened',url:'https://other.example'},null]){
+ const ctx=setup(async()=>result);await assert.rejects(ctx.executor.execute('open_checkout',{}),/handoff was not confirmed/);ctx.executor.dispose();
+ }
+});

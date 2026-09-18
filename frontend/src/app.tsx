@@ -26,6 +26,8 @@ import { ProductStage } from "./chat/ProductStage";
 import { CartStage } from "./chat/CartStage";
 import { EndChatDialog } from "./chat/EndChatDialog";
 import { useCart } from "./chat/useCart";
+import { useMessageQueue } from "./chat/useMessageQueue";
+import { MessageQueue } from "./chat/MessageQueue";
 import { RomanViewContext } from "./chat/views";
 import { activeProduct } from "../../shared/active-product";
 import type { CatalogProduct } from "../../shared/catalog";
@@ -84,10 +86,8 @@ function Assistant({
     navigation.getSnapshot,
   );
   const cart = useCart(navigation, session);
-  const cartCount =
-    !cart.loading && !cart.error ? cart.cart?.itemCount : undefined;
+  const cartCount = !cart.error ? cart.cart?.itemCount : undefined;
   const viewport = useRef<HTMLDivElement>(null);
-  const conversationView = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const manualScroll = useRef(false);
   const [questionDock, setQuestionDock] = useState<HTMLDivElement | null>(null);
@@ -145,9 +145,8 @@ function Assistant({
   const [toolsOpen, setToolsOpen] = useState(false);
   const [answering, setAnswering] = useState(false);
   const answeringRef = useRef(false);
-  const [sending, setSending] = useState(false);
-  const sendingRef = useRef(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const startingTopic = useRef(false);
   const voice = state.voice;
   const localVoice =
     voice.status === "starting" ||
@@ -159,42 +158,34 @@ function Assistant({
     (state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active");
   const voiceMode = localVoice || waitingForVoice;
-  const voiceOnly = voiceMode && hasCustomerReply;
-  const textBusy =
-    ending ||
-    answering ||
-    sending ||
-    voiceOnly ||
-    waitingForVoice ||
-    voice.status === "stopping" ||
-    (voice.status === "error" && voice.muted) ||
-    state.pending ||
-    state.restoring ||
-    !!state.conversation?.busy;
-  const previousVoiceMode = useRef(voiceOnly);
+  const messageQueue = useMessageQueue(
+    session,
+    ending || confirmEnd || answering,
+  );
+  const textBusy = ending || answering || messageQueue.busy;
   const activeQuestion =
     state.conversation?.status === "active"
       ? latestQuestion(messages ?? [], storefront.url)
       : undefined;
 
   async function sendMessage(text: string) {
-    if (sendingRef.current || textBusy)
-      throw new Error("Wait for Roman's current reply.");
-    sendingRef.current = true;
-    setSending(true);
+    if (endingRef.current || state.restoring || confirmEnd)
+      throw new Error("Wait until your conversation is ready.");
     setStartError(null);
     showView("chat");
-    try {
-      following.current = true;
-      await session.sendMessage(text);
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
-    }
+    following.current = true;
+    messageQueue.enqueue(text);
   }
 
   async function startTopic(text: string) {
-    if (sendingRef.current || textBusy) return;
+    if (
+      startingTopic.current ||
+      endingRef.current ||
+      state.restoring ||
+      confirmEnd
+    )
+      return;
+    startingTopic.current = true;
     try {
       await sendMessage(text);
     } catch (error) {
@@ -203,6 +194,8 @@ function Assistant({
           ? error.message
           : "Your message could not be sent. Please retry.",
       );
+    } finally {
+      startingTopic.current = false;
     }
   }
 
@@ -215,6 +208,7 @@ function Assistant({
     );
     if (
       answeringRef.current ||
+      messageQueue.hasMessages() ||
       endingRef.current ||
       current.pending ||
       current.restoring ||
@@ -256,6 +250,7 @@ function Assistant({
     setEndError(null);
     try {
       await session.end();
+      messageQueue.clear();
       setConfirmEnd(false);
       showView("chat");
       setStartError(null);
@@ -278,7 +273,7 @@ function Assistant({
     const current = session.getSnapshot();
     if (
       answeringRef.current ||
-      sendingRef.current ||
+      messageQueue.hasMessages() ||
       endingRef.current ||
       current.pending ||
       current.restoring ||
@@ -310,28 +305,6 @@ function Assistant({
 
   useEffect(() => onReady(), [onReady]);
 
-  useLayoutEffect(() => {
-    if (previousVoiceMode.current === voiceOnly) return;
-    previousVoiceMode.current = voiceOnly;
-    const view = conversationView.current;
-    if (!view || view.hidden || !view.getClientRects().length) return;
-    const active = (view.getRootNode() as ShadowRoot).activeElement;
-    // Keep an already focused conversation widget focused when modes change.
-    if (
-      active &&
-      view.contains(active) &&
-      !active.closest(".roman-composer, .roman-voice-composer")
-    )
-      return;
-    view
-      .querySelector<HTMLElement>(
-        voiceOnly
-          ? ".roman-voice-composer button:not(:disabled)"
-          : ".roman-composer textarea",
-      )
-      ?.focus({ preventScroll: true });
-  }, [voiceOnly]);
-
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
     if (hasCustomerReply && following.current && scroll) {
@@ -357,11 +330,7 @@ function Assistant({
   return (
     <RomanViewContext.Provider value={showView}>
       <div className="roman-content roman-chat">
-        <div
-          ref={conversationView}
-          className="roman-conversation"
-          hidden={toolsOpen}
-        >
+        <div className="roman-conversation" hidden={toolsOpen}>
           <header className="roman-chat-header">
             <div className="roman-header-brand">
               <img
@@ -407,6 +376,8 @@ function Assistant({
           <div className="roman-workspace">
             {selectedProduct && (
               <ProductStage
+                key={selectedProduct.path}
+                session={session}
                 navigation={navigation}
                 selectedPath={selectedProduct.path}
                 selectedTitle={selectedProduct.title}
@@ -486,9 +457,9 @@ function Assistant({
                   <p className="roman-chat-restoring" role="status">
                     Restoring your conversation…
                   </p>
-                ) : hasCustomerReply ? (
+                ) : hasCustomerReply || messageQueue.messages.length > 0 ? (
                   <Timeline
-                    messages={messages!}
+                    messages={messages ?? []}
                     session={session}
                     navigation={navigation}
                     onContentChange={followConversation}
@@ -496,6 +467,7 @@ function Assistant({
                     questionDisabled={
                       ending ||
                       answering ||
+                      messageQueue.messages.length > 0 ||
                       (!!activeQuestion?.measurement && storefront.pending) ||
                       state.pending ||
                       !!state.conversation?.busy ||
@@ -512,7 +484,7 @@ function Assistant({
                 ) : (
                   <Welcome
                     logoUrl={logoUrl}
-                    busy={textBusy}
+                    busy={ending || state.restoring || confirmEnd}
                     onStart={(text) => void startTopic(text)}
                   />
                 )}
@@ -553,11 +525,6 @@ function Assistant({
               {state.approval && (
                 <ToolApproval approval={state.approval} session={session} />
               )}
-              <VoiceControls
-                session={session}
-                voice={voice}
-                waiting={waitingForVoice}
-              />
               {voiceDock &&
                 (localVoice || state.approval) &&
                 createPortal(
@@ -577,9 +544,22 @@ function Assistant({
                 )}
               <Composer
                 key={chatVersion}
-                hidden={voiceOnly}
                 busy={textBusy}
-                disabled={ending || state.restoring}
+                disabled={ending || state.restoring || confirmEnd}
+                queuedMessages={
+                  <MessageQueue
+                    messages={messageQueue.messages}
+                    onRemove={messageQueue.remove}
+                    onRetry={messageQueue.retry}
+                  />
+                }
+                voiceControls={
+                  <VoiceControls
+                    session={session}
+                    voice={voice}
+                    waiting={waitingForVoice}
+                  />
+                }
                 error={state.error || startError || endError}
                 onClearError={() => {
                   setEndError(null);

@@ -1,3 +1,8 @@
+import {
+  parseCheckoutCall,
+  parseCheckoutResult,
+  type CheckoutResult,
+} from "../../../shared/checkout";
 import { storefrontPageTitle } from "./page-title";
 import {
   normalizeCatalogResult,
@@ -70,6 +75,7 @@ export type BrowserToolResult =
   | CatalogResult
   | NavigationResult
   | ViewResult
+  | CheckoutResult
   | CartToolResult
   | ProductConfigurationResult
   | ApplyMeasurementsResult
@@ -304,6 +310,11 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<NavigationResult>;
   function execute(
+    name: "open_checkout",
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<CheckoutResult>;
+  function execute(
     name: "show_view",
     input: unknown,
     signal?: AbortSignal,
@@ -333,6 +344,18 @@ export function createStorefrontExecutor(
     input: unknown,
     signal?: AbortSignal,
   ): Promise<BrowserToolResult> {
+    if (name === "open_checkout") {
+      const call = parseCheckoutCall(input);
+      return enqueue(
+        "foreground",
+        async (signal) => {
+          requireCurrentStore();
+          signal.throwIfAborted();
+          return parseCheckoutResult(await tools.execute(name, call, signal));
+        },
+        signal,
+      );
+    }
     if (name === "show_view") {
       const call = parseViewCall(input);
       return enqueue(
@@ -626,18 +649,31 @@ export function createStorefrontExecutor(
         signal,
       );
     },
-    async loadProductImage(url: string, signal: AbortSignal) {
+    async loadProductImage(
+      url: string,
+      signal: AbortSignal,
+      maxWidth: 480 | 1200 = 480,
+    ) {
       requireCurrentStore();
       signal.throwIfAborted();
-      const key = productImagePageUrl(url);
+      const pageUrl = productImagePageUrl(url);
+      const key = `${pageUrl}#${maxWidth}`;
+      const catalogFallback = () => {
+        const now = Date.now();
+        for (const { product, expiresAt } of displayProducts.values())
+          if (expiresAt > now && product.url === pageUrl && product.imageUrl)
+            return product.imageUrl;
+      };
       const cached = productImages.get(key);
-      if (cached && cached.expiresAt > Date.now()) return cached.image;
+      if (cached && cached.expiresAt > Date.now())
+        return cached.image ?? catalogFallback();
       return enqueue(
         "image",
         async (signal) => {
           const cached = productImages.get(key);
-          if (cached && cached.expiresAt > Date.now()) return cached.image;
-          const image = await loadProductPageImage(key, signal);
+          if (cached && cached.expiresAt > Date.now())
+            return cached.image ?? catalogFallback();
+          const image = await loadProductPageImage(pageUrl, signal, maxWidth);
           requireCurrentStore();
           signal.throwIfAborted();
           const now = Date.now();
@@ -649,7 +685,7 @@ export function createStorefrontExecutor(
             if (productImages.size <= MAX_DISPLAY_PRODUCTS) break;
             productImages.delete(url);
           }
-          return image;
+          return image ?? catalogFallback();
         },
         signal,
       );

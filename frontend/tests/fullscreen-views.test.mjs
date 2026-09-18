@@ -680,7 +680,9 @@ test("voice startup and Roman's opening retain live home tiles and focused text 
     ctx.container.querySelector(".roman-timeline").textContent,
     /I need a kitchen blind/,
   );
-  assert.ok(textarea.closest("[hidden]"));
+  assert.equal(textarea.closest("[hidden]"), null);
+  assert.equal(textarea.disabled, false);
+  assert.equal(textarea.readOnly, false);
   assert.equal(ctx.state().voice.status, "active");
   assert.deepEqual(ctx.calls, []);
 });

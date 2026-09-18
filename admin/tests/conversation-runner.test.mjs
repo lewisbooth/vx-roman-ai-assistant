@@ -792,7 +792,7 @@ test("voice backend requests retain tool policy without text greetings or presen
   assert.match(instructions, /cart[^\n]+separate/i);
   assert.doesNotMatch(instructions, /Every cart mutation requires/);
   assert.match(instructions, /save those exact values with set_measurements/);
-  assert.match(instructions, /Complete the backend reply with exactly one terminal ask_question or ask_measurement/);
+  assert.match(instructions, /Except after a verified open_checkout result, complete the backend reply with exactly one terminal ask_question or ask_measurement/);
   assert.doesNotMatch(
     instructions,
     /For a greeting or open-ended start in a new conversation, finish with ask_question|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
@@ -1763,6 +1763,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "lookup_catalog",
         "navigate",
         "show_view",
+        "open_checkout",
         "get_product_guides",
         "get_store_support",
         "set_measurements",
@@ -5211,6 +5212,7 @@ test("startup resume exposes only guide reads and the matching saved question pr
 test("startup resume rejects unsolicited actions, catalog reads and another product before dispatch", async () => {
   for (const [name, input] of [
     ["navigate", { path: guidePath }],
+    ["open_checkout", {}],
     ["add_to_cart", { productPath: guidePath }],
     ["apply_measurements", { productPath: guidePath }],
     ["set_measurements", {}],
@@ -5426,7 +5428,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
   );
   assert.match(
     env.calls.requests[0].input.instructions,
-    /Complete the backend reply with exactly one terminal ask_question or ask_measurement/,
+    /Except after a verified open_checkout result, complete the backend reply with exactly one terminal ask_question or ask_measurement/,
   );
   assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");
@@ -6054,4 +6056,18 @@ test("a fitting-only original cannot authorize a numeric measuring input", async
     ).output,
     /no verified measuring guide/,
   );
+});
+
+for(const mode of ['text','voice']) for(const status of ['opened','blocked']) test('checkout returns an outcome-grounded sign-off without an answer-widget repair: '+mode+' '+status,async()=>{
+ const env=setup();const text=status==='opened'?'Checkout is opening in a new tab. I will be here if you need anything else.':'Choose Continue to checkout in your cart. I will be here if you need anything else.';
+ env.streams.push(events(completed('',{output:[catalogCall('checkout','open_checkout',{})]})),events(completed('',{output:[{type:'message',content:[{type:'output_text',text}]}]})));
+ const calls=[],visible=[];const reply=await env.api.generateReply([],value=>visible.push(value),new AbortController().signal,async(...args)=>{calls.push(args.slice(0,3));return{status}},mode);
+ assert.deepEqual(plain(calls),[['checkout','open_checkout',{}]]);assert.equal(reply.text,text);assert.equal(reply.questionPresentation,undefined);assert.deepEqual(visible,[text]);assert.equal(env.calls.requests.length,2);assert.equal(env.calls.requests[1].input.tool_choice,'none');
+});
+
+test('checkout handoff rejects unsolicited follow-on tools after the browser outcome',async()=>{
+ const env=setup();let executions=0;
+ env.streams.push(events(completed('',{output:[catalogCall('checkout','open_checkout',{})]})),events(completed('',{output:[catalogCall('repeat','open_checkout',{})]})));
+ await assert.rejects(env.api.generateReply([],()=>{},new AbortController().signal,async()=>{executions++;return{status:'opened'}}),/no further tools/);
+ assert.equal(executions,1);assert.equal(env.calls.requests[1].input.tool_choice,'none');
 });

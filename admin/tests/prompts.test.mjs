@@ -294,7 +294,7 @@ test("one terminal question owns text history while actual voice captions own sp
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Do not repeat the question, write a final prose response or rely on an automatic fallback menu/,
+    /For these answer-request tools, do not repeat the question, write a final prose response or rely on an automatic fallback menu/,
   );
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     assert.match(prompt, /single question remains in history when the next customer reply removes its input controls/);
@@ -999,7 +999,7 @@ test("both answer tools finish complete replies without optional post-tool narra
   }
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Complete the backend reply with exactly one terminal ask_question or ask_measurement call after all necessary work/,
+    /Except after a verified open_checkout result, complete the backend reply with exactly one terminal ask_question or ask_measurement call after all necessary work/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
@@ -1011,7 +1011,7 @@ test("both answer tools finish complete replies without optional post-tool narra
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
-    /Do not repeat the question, write a final prose response or rely on an automatic fallback menu/,
+    /For these answer-request tools, do not repeat the question, write a final prose response or rely on an automatic fallback menu/,
   );
 });
 
@@ -1396,7 +1396,7 @@ test("store support uses one canonical observed-contact policy without promising
 test("substantive completions invite one natural next step without inventing measurements or repeating approvals", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
-      /Finish a completed substantive response with one natural next step through ask_question, or ask_measurement when the next step needs a supported numeric reading/,
+      /Except after a verified checkout handoff, finish a completed substantive response with one natural next step through ask_question, or ask_measurement when the next step needs a supported numeric reading/,
       /especially after a completed flow or confirmed action/,
       /Prefer contextual next steps; when none remain, offer Help me measure, Explore products and Find my style without a new greeting or resetting the current product, preferences or saved measurements/,
       /Stopping one task while asking to do something else ends that workflow and follows the new request/,
@@ -1411,7 +1411,7 @@ test("substantive completions invite one natural next step without inventing mea
   }
   assert.match(
     ROMAN_TEXT_PROMPT,
-    /Follow every completed substantive response with the shared next-step question policy/,
+    /Except after a verified checkout handoff, follow every completed substantive response with the shared next-step question policy/,
   );
   assert.match(
     ROMAN_TEXT_PROMPT,
@@ -1645,4 +1645,16 @@ test("blind replacements offer compatible setup transfer without reusing consent
     assert.match(prompt, /confirm the compatible final pair and units for the new blind once/);
     assert.doesNotMatch(prompt, /do not reuse partial readings|do not carry old measurements or purchase consent/);
   }
+});
+
+test('checkout handoff is available in both channels with truthful popup outcomes and no payment authority',()=>{
+ for(const prompt of [ROMAN_TEXT_PROMPT,ROMAN_VOICE_BRIEFING_PROMPT]){
+ assert.doesNotMatch(prompt,/Checkout, payment and order placement remain unavailable/);assert.match(prompt,/use open_checkout once instead of refusing/);assert.match(prompt,/For blocked/);assert.match(prompt,/without another quick-answer question/);assert.match(prompt,/Do not end their chat or voice connection/);assert.match(prompt,/cannot accompany the customer through checkout, collect payment details, submit payment or place the order/);
+ }
+ assert.match(romanVoicePrompt('marin'),/delegate the customer's checkout request to open_checkout/);
+});
+test('guide-prescribed multiple positions form one measurement step without inventing a universal minimum rule',()=>{
+ for(const prompt of [ROMAN_TEXT_PROMPT,ROMAN_VOICE_BRIEFING_PROMPT]){
+ assert.match(prompt,/When the verified guide prescribes several positions and one resulting value, treat that as one measuring step/);assert.match(prompt,/smallest, largest or other result in one ask_measurement/);assert.match(prompt,/Keep separate readings only when the guide needs them independently/);assert.match(prompt,/Do not substitute a familiar smallest-of-three method/);
+ }
 });

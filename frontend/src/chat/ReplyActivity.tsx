@@ -3,6 +3,7 @@ import type { BrowserToolName } from "../../../shared/conversation";
 import type { ConversationClientState } from "../session/types";
 
 const toolLabels: Record<BrowserToolName, string> = {
+  open_checkout: "Opening checkout?",
   show_view: "Opening your Roman view…",
   search_products: "Finding suitable products…",
   get_product: "Checking product details…",

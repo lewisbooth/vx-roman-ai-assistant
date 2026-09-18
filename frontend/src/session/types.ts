@@ -43,6 +43,7 @@ export interface ConversationClient {
   loadProductImage(
     url: string,
     signal: AbortSignal,
+    maxWidth?: 480 | 1200,
   ): Promise<string | undefined>;
   resolveToolApproval(invocationId: string, confirmed: boolean): void;
   startVoice(): Promise<void>;

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CHECKOUT_PATH } from "../../../shared/checkout";
 import type { CartDisplayState } from "./useCart";
 
 function CartImage({ url }: { url?: string }) {
@@ -87,7 +88,9 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
                 </div>
                 <a
                   className="roman-checkout"
-                  href="/checkout"
+                  href={CHECKOUT_PATH}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   data-roman-native-navigation
                 >
                   Continue to checkout <span aria-hidden="true">↗</span>

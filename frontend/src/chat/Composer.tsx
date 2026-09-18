@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import { MAX_MESSAGE_LENGTH } from "../../../shared/conversation";
 import { StartVoiceButton } from "./VoiceControls";
@@ -11,7 +12,8 @@ import { StartVoiceButton } from "./VoiceControls";
 type ComposerProps = {
   busy: boolean;
   disabled?: boolean;
-  hidden?: boolean;
+  voiceControls?: ReactNode;
+  queuedMessages?: ReactNode;
   error: string | null;
   onClearError: () => void;
   onSend: (message: string) => Promise<void>;
@@ -21,7 +23,8 @@ type ComposerProps = {
 export function Composer({
   busy,
   disabled = false,
-  hidden = false,
+  voiceControls,
+  queuedMessages,
   error,
   onClearError,
   onSend,
@@ -32,30 +35,35 @@ export function Composer({
   const [sendError, setSendError] = useState<string>();
   const [sending, setSending] = useState(false);
   const submitting = useRef(false);
+  const draftRevision = useRef(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const pending = busy || disabled || sending;
+  const sendDisabled = disabled || sending;
   const displayedError = error || sendError;
+  const sendLabel = busy ? "Queue message" : "Send";
 
   useLayoutEffect(() => {
     const input = textarea.current;
-    if (!input || hidden) return;
+    if (!input) return;
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
-  }, [message, hidden]);
+  }, [message]);
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const text = message.trim();
-    if (!text || busy || disabled || hidden || submitting.current) return;
+    if (!text || disabled || submitting.current) return;
     // Focus during the user's submission, never after the network response: a
     // later completion must not steal focus from another control or voice mode.
     textarea.current?.focus({ preventScroll: true });
     submitting.current = true;
+    const submittedRevision = draftRevision.current;
     setSending(true);
     setSendError(undefined);
     try {
       await onSend(text);
-      setMessage("");
+      // Enqueueing is immediate, but a completion must still leave any newer
+      // typing intact. Network delivery belongs to the queue owner.
+      if (draftRevision.current === submittedRevision) setMessage("");
     } catch (cause) {
       setSendError(
         cause instanceof Error
@@ -69,7 +77,8 @@ export function Composer({
   }
 
   return (
-    <div className="roman-composer" hidden={hidden && !displayedError}>
+    <div className="roman-composer">
+      {queuedMessages}
       {displayedError && (
         <p className="roman-chat-error" role="alert">
           {displayedError}
@@ -87,11 +96,7 @@ export function Composer({
           )}
         </p>
       )}
-      <form
-        hidden={hidden}
-        onSubmit={(event) => void submit(event)}
-        aria-busy={pending}
-      >
+      <form onSubmit={(event) => void submit(event)} aria-busy={sending}>
         <label htmlFor={id} className="sr-only">
           Message Roman
         </label>
@@ -100,7 +105,10 @@ export function Composer({
             ref={textarea}
             id={id}
             value={message}
-            onChange={(event) => setMessage(event.target.value)}
+            onChange={(event) => {
+              draftRevision.current++;
+              setMessage(event.target.value);
+            }}
             onKeyDown={(event) => {
               if (
                 event.key === "Enter" &&
@@ -114,17 +122,16 @@ export function Composer({
             rows={1}
             maxLength={MAX_MESSAGE_LENGTH}
             placeholder="Ask Roman…"
-            disabled={disabled || hidden}
-            readOnly={pending}
+            disabled={disabled}
           />
           <button
             type="submit"
             className="roman-composer-action roman-send-button"
-            aria-label="Send"
-            disabled={pending || !message.trim()}
+            aria-label={sendLabel}
+            disabled={sendDisabled || !message.trim()}
           >
             <span className="roman-action-label" aria-hidden="true">
-              Send
+              {sendLabel}
             </span>
             <span className="roman-action-icon" aria-hidden="true">
               <svg
@@ -143,9 +150,13 @@ export function Composer({
             </span>
           </button>
         </div>
+        {voiceControls}
         {onStartVoice && (
           <div className="roman-composer-voice">
-            <StartVoiceButton onStart={onStartVoice} disabled={pending} />
+            <StartVoiceButton
+              onStart={onStartVoice}
+              disabled={disabled || sending || busy}
+            />
           </div>
         )}
       </form>

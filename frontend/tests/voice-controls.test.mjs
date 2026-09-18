@@ -57,7 +57,7 @@ test("active voice presents decorative activity and labelled mute/end actions", 
   render({ voice: { status: "active", muted: false, error: null } });
   const waveform = container.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
-  assert.equal(waveform.children.length, 13);
+  assert.equal(waveform.children.length, 7);
   assert.equal(
     container.querySelector('[role="status"]').textContent,
     "Voice is on",

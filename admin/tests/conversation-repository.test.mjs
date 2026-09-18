@@ -3211,3 +3211,15 @@ test("text product choices reject unoffered products and forged metadata before 
   await assert.rejects(repository.beginTurn(otherId, input), { status: 409 });
   assert.deepEqual(await repository.getSnapshot(id), snapshot);
 });
+
+test('checkout handoff is claimed once and persists only its bounded outcome', async()=>{
+ for(const status of ['opened','blocked']){
+ const {id,tool}=await cartInvocation('open_checkout',{});const claim=executor();
+ assert.equal((await repository.claimToolInvocation(id,tool.id,claim)).claimed,true);
+ assert.equal((await repository.claimToolInvocation(id,tool.id,executor())).claimed,false);
+ const result={productIds:[],outcome:{status}};
+ await repository.completeToolInvocation(id,tool.id,claim,result);await repository.completeToolInvocation(id,tool.id,claim,result);
+ const stored=await database.toolInvocation.findUniqueOrThrow({where:{id:tool.id}});assert.deepEqual(JSON.parse(stored.resultJson),{status});
+ const snapshot=await repository.getSnapshot(id);assert.equal(snapshot.status,'active');assert.equal(snapshot.messages.some(row=>row.parts.some(part=>part.type==='navigation')),false);
+ }
+});

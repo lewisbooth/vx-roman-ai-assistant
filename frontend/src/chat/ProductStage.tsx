@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { StorefrontNavigation } from "../navigation/shared";
+import type { ConversationClient } from "../session/types";
 import { storefrontPageTitle } from "../session/page-title";
 import { readProductConfigurationDisplay } from "../tools/product-configuration";
 import { isCurrentProduct } from "../tools/product-controls";
@@ -34,14 +35,16 @@ function readProductStage(path: string): ProductStageState | null {
   };
 }
 
-/** A display of the live theme, with no separate product/cart state or requests. */
+/** Selected imagery survives background navigation; configuration stays live. */
 export function ProductStage({
   navigation,
+  session,
   selectedPath,
   selectedTitle,
   hidden = false,
 }: {
   navigation: StorefrontNavigation;
+  session: Pick<ConversationClient, "loadProductImage">;
   selectedPath: string;
   selectedTitle: string;
   hidden?: boolean;
@@ -52,6 +55,7 @@ export function ProductStage({
   );
   const path = productPath(page.url);
   const [product, setProduct] = useState<ProductStageState | null>(null);
+  const [imagery, setImagery] = useState<{ path: string; image?: string }>();
   const [failedImage, setFailedImage] = useState<string>();
 
   useEffect(() => {
@@ -77,6 +81,12 @@ export function ProductStage({
       if (last !== fingerprint) {
         last = fingerprint;
         setProduct(next);
+        if (next?.image)
+          setImagery((previous) =>
+            previous?.path === path && previous.image === next.image
+              ? previous
+              : { path, image: next.image },
+          );
       }
     };
     const schedule = () => {
@@ -135,6 +145,39 @@ export function ProductStage({
     };
   }, [path, page.url, page.pending, selectedPath]);
 
+  useEffect(() => {
+    if (page.pending || imagery?.path === selectedPath) return;
+    const controller = new AbortController();
+    let current = true;
+    // Restore a selected blind even when this session opens on the cart or
+    // another background page. The existing queue keeps display work optional.
+    void Promise.resolve().then(async () => {
+      if (!current) return;
+      try {
+        const image = await session.loadProductImage(
+          selectedPath,
+          controller.signal,
+          1200,
+        );
+        if (current && !controller.signal.aborted)
+          setImagery((previous) =>
+            previous?.path === selectedPath && previous.image
+              ? previous
+              : { path: selectedPath, image },
+          );
+      } catch {
+        if (current && !controller.signal.aborted)
+          setImagery((previous) =>
+            previous?.path === selectedPath ? previous : { path: selectedPath },
+          );
+      }
+    });
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [imagery?.path, page.pending, selectedPath, session]);
+
   const display = product?.path === selectedPath ? product : null;
   // Selection survives a temporary cart page, but only the matching live PDP
   // can supply a current configuration or price. Never replay settings here.
@@ -155,7 +198,9 @@ export function ProductStage({
               : undefined,
         })),
     ) ?? [];
-  const image = display?.image !== failedImage ? display?.image : undefined;
+  const selectedImage =
+    imagery?.path === selectedPath ? imagery.image : undefined;
+  const image = selectedImage !== failedImage ? selectedImage : undefined;
   const title = display?.title || selectedTitle;
 
   return (

@@ -1,3 +1,5 @@
+import { parseCheckoutCall } from "../../../shared/checkout";
+import { openCheckout } from "./checkout";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { selectStore } from "../navigation/themes";
 import { getCart } from "./cart";
@@ -23,6 +25,12 @@ import {
 } from "../../../shared/measurements";
 
 export const toolDefinitions = [
+  {
+    name: "open_checkout",
+    description:
+      "Open this store's checkout in a new tab, with a Cart link if blocked.",
+    example: {},
+  },
   {
     name: "show_view",
     description:
@@ -251,6 +259,14 @@ export function createAssistantTools(
               "Live Shopify tools run on the installed storefront. The local preview has no Shopify session.",
             );
           switch (name) {
+            case "open_checkout": {
+              parseCheckoutCall(input);
+              if (!showView)
+                throw new Error("Roman's Cart view is unavailable.");
+              await showView("cart");
+              request.signal.throwIfAborted();
+              return openCheckout();
+            }
             case "show_view": {
               const { view } = parseViewCall(input);
               if (!showView)

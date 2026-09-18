@@ -257,6 +257,11 @@ test("closed runtime waits for opening and refreshes once after hidden native ca
   );
   ctx.open(true);
   await until(() => ctx.calls.length === 2, "Reopen reads latest cart once");
+  assert.equal(
+    ctx.badge()?.textContent,
+    "1",
+    "Reopen retains the verified count while refreshing",
+  );
   ctx.calls[1].complete(cart([]));
   await until(() => !ctx.badge(), "Empty cart hides badge");
 });
@@ -275,6 +280,11 @@ for (const name of [
     await until(() => ctx.badge(), "Initial badge");
     ctx.tools([{ id: "mutation", name, status: "running", arguments: {} }]);
     await delay(0);
+    assert.equal(
+      ctx.badge()?.textContent,
+      "1",
+      "Running mutation retains the verified count",
+    );
     ctx.change();
     await delay(20);
     assert.equal(
@@ -284,6 +294,11 @@ for (const name of [
     );
     ctx.tools([]);
     await until(() => ctx.calls.length === 2, "Mutation completion reads once");
+    assert.equal(
+      ctx.badge()?.textContent,
+      "1",
+      "Refresh retains the count until the replacement snapshot is verified",
+    );
     ctx.calls[1].complete(cart(name === "clear_cart" ? [] : [4]));
     await until(
       () =>
@@ -301,6 +316,11 @@ test("a completed mutation refreshes without a theme event and navigation alone 
   await until(() => ctx.badge(), "Initial badge");
   ctx.navigate(true);
   await delay(0);
+  assert.equal(
+    ctx.badge()?.textContent,
+    "1",
+    "Hidden navigation retains the verified count",
+  );
   ctx.navigate(false);
   await delay(20);
   assert.equal(ctx.calls.length, 1);
@@ -326,6 +346,11 @@ test("failed reads leave the badge unknown and the cart view offers an explicit 
   await until(() => ctx.badge(), "Initial badge");
   ctx.change();
   await until(() => ctx.calls.length === 2, "Native event refreshes");
+  assert.equal(
+    ctx.badge()?.textContent,
+    "2",
+    "Pending refresh keeps the last verified quantity",
+  );
   ctx.calls[1].fail();
   await until(() => !ctx.badge(), "Unknown count hides badge");
   ctx.show("cart");

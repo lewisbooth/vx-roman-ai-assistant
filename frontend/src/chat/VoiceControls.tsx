@@ -141,7 +141,9 @@ export function VoiceControls({
   return (
     <div
       className={
-        dock ? "roman-voice-controls roman-voice-dock" : "roman-voice-composer"
+        dock
+          ? "roman-voice-controls roman-voice-dock"
+          : "roman-voice-composer"
       }
     >
       {dock ? (
@@ -162,7 +164,7 @@ export function VoiceControls({
             </span>
             {showWaveform && (
               <div className="roman-voice-waveform" aria-hidden="true">
-                {Array.from({ length: 13 }, (_, index) => (
+                {Array.from({ length: 7 }, (_, index) => (
                   <span key={index} />
                 ))}
               </div>

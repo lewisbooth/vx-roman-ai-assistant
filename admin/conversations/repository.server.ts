@@ -1,3 +1,4 @@
+import { parseCheckoutCall, parseCheckoutResult, type CheckoutResult } from "../../shared/checkout";
 import {
   parseGuideLibraryCall,
   parseGuideLibraryResult,
@@ -276,6 +277,7 @@ function storedBrowserCall(
   if (name === "navigate")
     return { name, arguments: parseNavigationCall(input) };
   if (name === "show_view") return { name, arguments: parseViewCall(input) };
+  if (name === "open_checkout") return { name, arguments: parseCheckoutCall(input) };
   if (name === "get_product_guides")
     return { name, arguments: parseProductGuidesCall(input) };
   if (name === "discover_guides")
@@ -1271,6 +1273,7 @@ export async function getBrowserToolContext(id: string, invocationId: string) {
     ![
       "navigate",
       "show_view",
+      "open_checkout",
       "search_products",
       "get_product",
       "lookup_catalog",
@@ -2296,6 +2299,7 @@ export async function completeToolInvocation(
       | ProductGuidesResult
       | NavigationResult
       | ViewResult
+      | CheckoutResult
       | GuideLibraryResult
       | StoreSupportResult;
   },
@@ -2325,6 +2329,7 @@ export async function completeToolInvocation(
       isCartTool(tool.name) ||
       tool.name === "navigate" ||
       tool.name === "show_view" ||
+      tool.name === "open_checkout" ||
       tool.name === "apply_measurements" ||
       tool.name === "get_product_guides" ||
       tool.name === "discover_guides" ||
@@ -2335,6 +2340,8 @@ export async function completeToolInvocation(
         ? isStorefrontMutation(tool.name) && error
           ? interruptedActionResult(tool, true)
           : undefined
+        : tool.name === "open_checkout"
+          ? parseCheckoutResult(result.outcome)
         : tool.name === "show_view"
           ? parseViewResult(result.outcome)
           : tool.name === "discover_guides"

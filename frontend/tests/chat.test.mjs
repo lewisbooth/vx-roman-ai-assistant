@@ -307,7 +307,7 @@ test("the in-field Send submits the draft once and blocks voice while its local 
     "Pending send did not block both actions",
   );
   assert.deepEqual(ctx.calls, ["Show me blackout blinds"]);
-  assert.equal(ctx.input().value, "  Show me blackout blinds  ");
+  assert.equal(ctx.input().value, "");
   voice.click();
   send.click();
   assert.deepEqual(ctx.startVoiceCalls, []);
@@ -410,7 +410,7 @@ test("saved guide records stay hidden without fetching products, navigating or s
   assert.deepEqual(fetches, []);
   assert.equal(
     ctx.container.querySelector(".roman-composer textarea").disabled,
-    true,
+    false,
   );
   assert.match(ctx.voiceDock.textContent, /Voice is on.*Stop voice/);
 });
@@ -637,8 +637,11 @@ test("typed and tile sends show their local row before a session exists without 
         /thinking/,
       );
       assert.equal(ctx.input(), input);
-      assert.equal(input.value, "Keep my room description");
-      assert.equal(input.readOnly, true);
+      assert.equal(
+        input.value,
+        source === "tile" ? "Keep my room description" : "",
+      );
+      assert.equal(input.readOnly, false);
       assert.equal(input.disabled, false);
       ctx.update({
         pending: false,
@@ -667,7 +670,7 @@ test("typed and tile sends show their local row before a session exists without 
     });
 });
 
-test("an unconfirmed first message returns to retryable home without losing its typed draft", async (t) => {
+test("an unconfirmed first message remains visibly retryable in the queue without blocking new typing", async (t) => {
   let reject;
   const submitted = new Promise((_, fail) => {
     reject = fail;
@@ -699,10 +702,15 @@ test("an unconfirmed first message returns to retryable home without losing its 
   reject(new ctx.window.Error("Connection lost. Please retry."));
   await until(
     () =>
-      !!ctx.container.querySelector(".roman-welcome") && !ctx.input().readOnly,
-    "Failed send did not return to home",
+      !!ctx.container.querySelector(".roman-queued-message [role=alert]") &&
+      !ctx.input().readOnly,
+    "Failed send was not retained in the queue",
   );
-  assert.equal(ctx.input().value, "My measurements");
+  assert.equal(ctx.input().value, "");
+  assert.match(
+    ctx.container.querySelector(".roman-message-queue").textContent,
+    /My measurements/,
+  );
   assert.equal(ctx.container.querySelector(".roman-message-user"), null);
   assert.match(
     ctx.container.querySelector('[role="alert"]').textContent,
@@ -738,8 +746,8 @@ test("each welcome tile starts a normal text conversation without clearing the c
       tiles[index].click();
       tiles[(index + 1) % tiles.length].click();
       await until(
-        () => tiles.every((tile) => tile.disabled) && input.readOnly,
-        "Tile submission did not lock every text action",
+        () => ctx.calls.length === 1 && !input.readOnly,
+        "Tile submission did not start while preserving text entry",
       );
       assert.deepEqual(ctx.calls, [starter]);
       assert.deepEqual(ctx.startVoiceCalls, []);
@@ -775,7 +783,7 @@ test("each welcome tile starts a normal text conversation without clearing the c
     });
 });
 
-test("welcome and composer share a same-tick submission guard", async (t) => {
+test("distinct welcome and composer inputs queue in their original order", async (t) => {
   for (const first of ["tile", "composer"])
     await t.test(first, async (t) => {
       let accept;
@@ -797,30 +805,36 @@ test("welcome and composer share a same-tick submission guard", async (t) => {
         submit();
         tile.click();
       }
-      assert.deepEqual(ctx.calls, [
-        first === "tile"
-          ? "Help me measure my windows for blinds."
-          : "My typed question",
-      ]);
       await until(
-        () => ctx.input().readOnly,
-        "Submission did not lock the composer",
+        () => ctx.calls.length === 1 && ctx.input().value === "",
+        "Queued drafts did not clear the composer",
       );
+      const expected = [
+        "Help me measure my windows for blinds.",
+        "My typed question",
+      ];
+      if (first === "composer") expected.reverse();
+      assert.deepEqual(ctx.calls, [expected[0]]);
+      assert.deepEqual(
+        [...ctx.container.querySelectorAll(".roman-queued-message p")].map(
+          (row) => row.textContent,
+        ),
+        expected,
+      );
+      assert.equal(ctx.input().readOnly, false);
       accept();
       await until(
         () =>
-          !ctx.input().readOnly &&
-          (first === "tile" || ctx.input().value === ""),
-        "Submission did not finish",
+          ctx.calls.length === 2 &&
+          !ctx.container.querySelector(".roman-message-queue"),
+        "Queued submissions did not finish",
       );
-      assert.equal(
-        ctx.input().value,
-        first === "tile" ? "My typed question" : "",
-      );
+      assert.deepEqual(ctx.calls, expected);
+      assert.equal(ctx.input().value, "");
     });
 });
 
-test("welcome tiles do not submit during restoration, pending work, stopping or remote voice ownership", async (t) => {
+test("welcome tiles queue during pending work or unavailable voice but restoration stays locked", async (t) => {
   for (const [name, state] of [
     ["restoring", { restoring: true }],
     ["pending", { pending: true }],
@@ -860,8 +874,16 @@ test("welcome tiles do not submit during restoration, pending work, stopping or 
       if (name === "restoring") assert.equal(tiles.length, 0);
       else {
         assert.equal(tiles.length, 4);
-        assert.ok(tiles.every((tile) => tile.disabled));
-        tiles.forEach((tile) => tile.click());
+        assert.ok(tiles.every((tile) => !tile.disabled));
+        tiles[0].click();
+        await until(
+          () => ctx.container.querySelector(".roman-queued-message"),
+          "Starter was not queued",
+        );
+        assert.match(
+          ctx.container.querySelector(".roman-queued-message").textContent,
+          /Help me measure/,
+        );
       }
       assert.deepEqual(ctx.calls, []);
       assert.deepEqual(ctx.startVoiceCalls, []);
@@ -975,7 +997,7 @@ test("voice startup, lifecycle events and Roman's greeting keep welcome tiles an
         );
         assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
         assert.equal(ctx.input(), input);
-        assert.equal(input.closest("form").hidden, true);
+        assert.equal(input.closest("form").hidden, false);
         assert.deepEqual(ctx.stopVoiceCalls, []);
         assert.deepEqual(ctx.startVoiceCalls, []);
         assert.equal(ctx.calls.length, response === "spoken" ? 0 : 1);
@@ -1003,10 +1025,11 @@ test("failed welcome submissions show one retryable error and retain the same st
     /Connection lost/,
   );
   assert.equal(ctx.input().value, "Keep my dimensions");
-  assert.equal(tile.disabled, false);
-  tile.click();
+  ctx.container.querySelector(".roman-queued-message button").click();
   await until(
-    () => ctx.calls.length === 2 && !tile.disabled,
+    () =>
+      ctx.calls.length === 2 &&
+      !ctx.container.querySelector(".roman-message-queue"),
     "Tile retry did not complete",
   );
   assert.deepEqual(ctx.calls, [
@@ -1034,21 +1057,21 @@ test("accepted submissions clear the draft and same-tick repeats cannot send twi
     new window.Event("submit", { bubbles: true, cancelable: true }),
   );
   await until(
-    () => input().readOnly,
-    "Local pending state did not lock the composer",
+    () => calls.length === 1 && input().value === "",
+    "Enqueue did not clear the draft immediately",
   );
   assert.deepEqual(calls, ["I need a roman blind"]);
-  assert.equal(form.getAttribute("aria-busy"), "true");
-  assert.equal(input().value, "  I need a roman blind  ");
+  assert.ok(container.querySelector(".roman-queued-message"));
+  assert.equal(input().value, "");
   accept();
   await until(
-    () => !input().readOnly,
+    () => !container.querySelector(".roman-message-queue"),
     "Accepted send did not release the composer",
   );
   assert.equal(input().value, "");
 });
 
-test("failed submissions preserve the draft and display an actionable error", async (t) => {
+test("failed delivery preserves the message in the retryable queue and leaves the composer clear", async (t) => {
   const { container, calls, input, type } = await setup(t, {
     onSend: (_text, window) => {
       throw new window.Error("Connection lost. Please retry.");
@@ -1060,7 +1083,11 @@ test("failed submissions preserve the draft and display an actionable error", as
     () => container.querySelector('[role="alert"]'),
     "Send failure was not displayed",
   );
-  assert.equal(input().value, "Keep these measurements");
+  assert.equal(input().value, "");
+  assert.match(
+    container.querySelector(".roman-message-queue").textContent,
+    /Keep these measurements/,
+  );
   assert.equal(input().disabled, false);
   assert.equal(input().getRootNode().activeElement, input());
   assert.deepEqual(calls, ["Keep these measurements"]);
@@ -1095,16 +1122,19 @@ test("Enter and Send retain composer focus through submission and the model repl
         send.focus();
         send.click();
       }
-      await until(() => input.readOnly, "Send did not become pending");
+      await until(
+        () => ctx.calls.length === 1 && input.value === "",
+        "Send was not queued",
+      );
       assert.equal(root.activeElement, input);
       assert.equal(input.disabled, false);
-      assert.equal(input.value, "400 by 500 mm");
+      assert.equal(input.value, "");
       ctx.update({
         conversation: { ...engagedConversation([]), busy: true },
       });
       accept();
       await until(() => input.value === "", "Accepted draft was not cleared");
-      assert.equal(input.readOnly, true);
+      assert.equal(input.readOnly, false);
       assert.equal(root.activeElement, input);
       ctx.update({ conversation: engagedConversation([]) });
       await until(() => !input.readOnly, "Reply did not release text entry");
@@ -1125,7 +1155,10 @@ test("a late send completion never takes focus back after the customer moves awa
       const ctx = await setup(t, { onSend: () => accepted });
       await ctx.type("Help me measure");
       ctx.container.querySelector('button[type="submit"]').click();
-      await until(() => ctx.input().readOnly, "Send did not become pending");
+      await until(
+        () => ctx.calls.length === 1 && ctx.input().value === "",
+        "Send was not queued",
+      );
       let target;
       if (destination === "voice") {
         ctx.update({
@@ -1149,8 +1182,8 @@ test("a late send completion never takes focus back after the customer moves awa
       assert.equal(target.getRootNode().activeElement, target);
       assert.equal(
         ctx.input().disabled,
-        destination === "voice",
-        "Only voice ownership should disable the text input",
+        false,
+        "Text remains editable during local voice",
       );
     });
 });
@@ -1180,7 +1213,7 @@ test("Enter sends, while Shift+Enter and composition Enter do not submit", async
   assert.deepEqual(calls, ["Show me some options"]);
 });
 
-test("retrying a connection clears the duplicated local send error without resending", async (t) => {
+test("recovering a connection retains a failed queued message until an explicit retry", async (t) => {
   let ctx;
   ctx = await setup(t, {
     onSend: (_text, window) => {
@@ -1196,14 +1229,19 @@ test("retrying a connection clears the duplicated local send error without resen
   );
   ctx.container.querySelector(".roman-chat-retry").click();
   await until(
-    () => !ctx.container.querySelector('[role="alert"]'),
-    "Recovered connection retained a stale send error",
+    () => !ctx.container.querySelector(".roman-chat-retry"),
+    "Connection error did not clear",
   );
   assert.deepEqual(ctx.calls, ["Keep this draft"]);
-  assert.equal(ctx.input().value, "Keep this draft");
+  assert.equal(ctx.input().value, "");
+  assert.match(
+    ctx.container.querySelector(".roman-queued-message").textContent,
+    /Keep this draft/,
+  );
+  assert.ok(ctx.container.querySelector(".roman-queued-message [role=alert]"));
 });
 
-test("restoration disables the composer and backend work keeps it read-only without inventing a new session", async (t) => {
+test("restoration disables the composer and backend work allows queuing without inventing a new session", async (t) => {
   const { container, update, input, calls } = await setup(t, {
     state: { restoring: true },
   });
@@ -1227,7 +1265,7 @@ test("restoration disables the composer and backend work keeps it read-only with
     "Restored history was not displayed",
   );
   assert.equal(input().disabled, false);
-  assert.equal(input().readOnly, true);
+  assert.equal(input().readOnly, false);
   assert.match(container.textContent, /Roman is thinking/);
   assert.deepEqual(calls, []);
 });
@@ -1277,7 +1315,9 @@ test("new messages preserve a reader's scroll position and resume following at t
   });
   function append(id) {
     messages = [...messages, message(id, "assistant", id)];
-    update({ conversation: { id: "existing", busy: false, tools: [], messages } });
+    update({
+      conversation: { id: "existing", busy: false, tools: [], messages },
+    });
   }
   append("Second reply");
   await until(
@@ -1884,7 +1924,10 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   const end = ctx.container.querySelector(".roman-end-chat");
   end.click();
   end.click();
-  await until(() => ctx.container.querySelector(".roman-end-dialog[open]"), "End confirmation did not open");
+  await until(
+    () => ctx.container.querySelector(".roman-end-dialog[open]"),
+    "End confirmation did not open",
+  );
   assert.deepEqual(ctx.endCalls, []);
   assert.equal(ctx.input().value, "Unsent draft");
   const confirm = ctx.container.querySelector(".roman-end-confirm");
@@ -1894,8 +1937,13 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   assert.deepEqual(ctx.endCalls, ["end"]);
   const dialog = ctx.container.querySelector(".roman-end-dialog");
   dialog.dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));
-  assert.ok(dialog.open, "Pending End must not dismiss its acknowledgement state");
-  assert.ok([...dialog.querySelectorAll("button")].every((button) => button.disabled));
+  assert.ok(
+    dialog.open,
+    "Pending End must not dismiss its acknowledgement state",
+  );
+  assert.ok(
+    [...dialog.querySelectorAll("button")].every((button) => button.disabled),
+  );
   assert.match(ctx.container.textContent, /Your saved conversation/);
   assert.equal(ctx.input().value, "Unsent draft");
   finish();
@@ -1933,7 +1981,10 @@ test("an unsuccessful End keeps its confirmation, conversation and draft availab
   });
   await ctx.type("Keep this draft");
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
+  await until(
+    () => ctx.container.querySelector(".roman-end-confirm"),
+    "Confirmation missing",
+  );
   ctx.container.querySelector(".roman-end-confirm").click();
   await until(
     () => ctx.container.querySelector('[role="alert"]'),
@@ -1942,41 +1993,80 @@ test("an unsuccessful End keeps its confirmation, conversation and draft availab
   assert.match(ctx.container.textContent, /Could not end the chat/);
   assert.match(ctx.container.textContent, /Keep this conversation/);
   assert.equal(ctx.input().value, "Keep this draft");
-  assert.equal(ctx.input().disabled, false);
+  assert.equal(
+    ctx.input().disabled,
+    true,
+    "Open confirmation keeps background entry locked",
+  );
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
   assert.ok(ctx.container.querySelector(".roman-end-dialog[open]"));
-  assert.equal(ctx.container.querySelector(".roman-end-confirm").disabled, false);
+  assert.equal(
+    ctx.container.querySelector(".roman-end-confirm").disabled,
+    false,
+  );
   ctx.container.querySelector(".roman-end-confirm").click();
-  await until(() => ctx.container.querySelector(".roman-welcome"), "Retry did not finish End");
+  await until(
+    () => ctx.container.querySelector(".roman-welcome"),
+    "Retry did not finish End",
+  );
   assert.deepEqual(ctx.endCalls, ["end", "end"]);
   assert.equal(ctx.container.querySelector(".roman-end-dialog"), null);
 });
 
 test("cancelling End preserves chat and lets the native dialog own Escape and Tab", async (t) => {
   const ctx = await setup(t, {
-    state: { conversation: engagedConversation([message("reply", "assistant", "Keep chatting here")]) },
+    state: {
+      conversation: engagedConversation([
+        message("reply", "assistant", "Keep chatting here"),
+      ]),
+    },
   });
   await ctx.type("Keep my unsent draft");
   let escapedPanel = false;
-  ctx.container.getRootNode().addEventListener("keydown", () => { escapedPanel = true; });
+  ctx.container.getRootNode().addEventListener("keydown", () => {
+    escapedPanel = true;
+  });
   for (const method of ["button", "escape"]) {
     ctx.container.querySelector(".roman-end-chat").click();
-    await until(() => ctx.container.querySelector(".roman-end-dialog[open]"), "Confirmation missing");
+    await until(
+      () => ctx.container.querySelector(".roman-end-dialog[open]"),
+      "Confirmation missing",
+    );
     const dialog = ctx.container.querySelector(".roman-end-dialog");
     const cancel = dialog.querySelector("button");
     assert.equal(ctx.container.getRootNode().activeElement, cancel);
-    assert.match(dialog.textContent, /Items in your Cart and Gallery will remain/);
+    assert.match(
+      dialog.textContent,
+      /Items in your Cart and Gallery will remain/,
+    );
     if (method === "button") cancel.click();
     else {
       for (const key of ["Tab", "Escape"]) {
-        const event = new ctx.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        const event = new ctx.window.KeyboardEvent("keydown", {
+          key,
+          bubbles: true,
+          cancelable: true,
+        });
         cancel.dispatchEvent(event);
-        assert.equal(event.defaultPrevented, false, "Native dialog keyboard behaviour must remain enabled");
+        assert.equal(
+          event.defaultPrevented,
+          false,
+          "Native dialog keyboard behaviour must remain enabled",
+        );
       }
-      assert.equal(escapedPanel, false, "Dialog keys escaped into the assistant panel");
-      dialog.dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));
+      assert.equal(
+        escapedPanel,
+        false,
+        "Dialog keys escaped into the assistant panel",
+      );
+      dialog.dispatchEvent(
+        new ctx.window.Event("cancel", { cancelable: true }),
+      );
     }
-    await until(() => !ctx.container.querySelector(".roman-end-dialog"), "Cancel did not dismiss confirmation");
+    await until(
+      () => !ctx.container.querySelector(".roman-end-dialog"),
+      "Cancel did not dismiss confirmation",
+    );
     assert.deepEqual(ctx.endCalls, []);
     assert.deepEqual(ctx.stopVoiceCalls, []);
     assert.match(ctx.container.textContent, /Keep chatting here/);
@@ -2160,15 +2250,15 @@ test("the voice composer and dock synchronize mute state and restore the mounted
     () => !!button("Mute microphone"),
     "Voice controls did not become active",
   );
-  assert.equal(ctx.input().disabled, true);
-  assert.equal(form.hidden, true);
-  assert.equal(form.closest(".roman-composer").hidden, true);
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(form.hidden, false);
+  assert.equal(form.closest(".roman-composer").hidden, false);
   const bar = ctx.container.querySelector(
     ".roman-voice-composer > .roman-voice-bar",
   );
   const waveform = bar.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
-  assert.equal(waveform.children.length, 13);
+  assert.equal(waveform.children.length, 7);
   assert.equal(
     button("Mute microphone").getAttribute("title"),
     "Mute microphone",
@@ -2240,14 +2330,16 @@ test("restored remote voice can be ended explicitly without activating the micro
   assert.ok(
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
   );
-  assert.equal(ctx.input().disabled, true);
-  assert.equal(ctx.input().closest("form").hidden, true);
-  assert.equal(ctx.input().closest(".roman-composer").hidden, true);
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.input().closest("form").hidden, false);
+  assert.equal(ctx.input().closest(".roman-composer").hidden, false);
   assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.startVoiceCalls, []);
   end.click();
   await until(
-    () => !ctx.input().closest("form").hidden && !ctx.input().disabled,
+    () =>
+      !ctx.container.querySelector(".roman-voice-composer") &&
+      !ctx.input().disabled,
     "Ending remote voice did not restore the text composer",
   );
   assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
@@ -2360,7 +2452,7 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
     ctx.container.querySelector(".roman-voice-status").textContent,
     /Connecting voice/,
   );
-  assert.equal(input.closest("form").hidden, true);
+  assert.equal(input.closest("form").hidden, false);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
   assert.equal(mute.disabled, true);
   mute.click();
@@ -2385,7 +2477,8 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
   assert.equal(input.value, "My saved draft before connecting");
   stopped();
   await until(
-    () => !input.closest("form").hidden && !input.disabled,
+    () =>
+      !ctx.container.querySelector(".roman-voice-composer") && !input.disabled,
     "Completed shutdown did not restore editing",
   );
   assert.equal(ctx.input(), input);
@@ -2448,7 +2541,7 @@ test("a failed voice start leaves text usable and retries voice only after anoth
   assert.deepEqual(ctx.calls, []);
 });
 
-test("a failed voice shutdown retains an explicit retry and reveals text only after stop acknowledgement", async (t) => {
+test("a failed voice shutdown retains an explicit retry while text remains editable", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
     state: { conversation: engagedConversation([]) },
@@ -2470,11 +2563,11 @@ test("a failed voice shutdown retains an explicit retry and reveals text only af
     () => ctx.container.querySelector('[aria-label="End voice"]'),
     "Unconfirmed stop did not expose recovery",
   );
-  assert.equal(input.closest("form").hidden, true);
+  assert.equal(input.closest("form").hidden, false);
   assert.equal(
     input.closest(".roman-composer").hidden,
     false,
-    "Connection diagnostics must remain visible while the form is hidden",
+    "Connection diagnostics and text stay visible while voice needs recovery",
   );
   assert.match(
     input.closest(".roman-composer").textContent,
@@ -2494,11 +2587,12 @@ test("a failed voice shutdown retains an explicit retry and reveals text only af
     "Stop retry was not attempted",
   );
   await delay(0);
-  assert.equal(input.closest("form").hidden, true);
+  assert.equal(input.closest("form").hidden, false);
   assert.equal(input.value, "Do not discard my unsent measurements");
   ctx.container.querySelector('[aria-label="End voice"]').click();
   await until(
-    () => !input.closest("form").hidden && !input.disabled,
+    () =>
+      !ctx.container.querySelector(".roman-voice-composer") && !input.disabled,
     "Acknowledged stop did not restore text",
   );
   assert.equal(ctx.input(), input);
@@ -3415,8 +3509,14 @@ test("End removes progress before acknowledgement and does not restore it after 
     "Roman is replying…",
   );
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
-  assert.ok(ctx.container.querySelector(".roman-reply-activity"), "Merely opening confirmation must not interrupt the reply");
+  await until(
+    () => ctx.container.querySelector(".roman-end-confirm"),
+    "Confirmation missing",
+  );
+  assert.ok(
+    ctx.container.querySelector(".roman-reply-activity"),
+    "Merely opening confirmation must not interrupt the reply",
+  );
   ctx.container.querySelector(".roman-end-confirm").click();
   await until(
     () =>

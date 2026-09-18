@@ -116,6 +116,7 @@ function setup(t, options = {}) {
       host,
       navigation,
       measurements,
+      options.showView,
     );
     instances.push(instance);
     return instance;
@@ -883,4 +884,25 @@ test("ending model navigation aborts the navigator request through the existing 
   await rejected;
   assert.deepEqual(visits, ["/cart"]);
   await tools.execute("get_measurements", {});
+});
+
+for (const opened of [true, false]) test('checkout shows Cart and reports its actual new-tab outcome: '+opened, async (t) => {
+ const views=[]; const ctx=setup(t,{showView: async view=>views.push(view)}); const operations=[];
+ const tab={set opener(value){operations.push(['opener',value])},location:{replace(url){operations.push(['navigate',url])}},close(){operations.push(['close'])}};
+ ctx.window.open=(...args)=>{operations.push(['open',...args]);return opened?tab:null};
+ assert.deepEqual(plain(await ctx.tools.execute('open_checkout',{})),{status:opened?'opened':'blocked'});
+ assert.deepEqual(views,['cart']);
+ assert.deepEqual(operations,opened?[['open','about:blank','_blank'],['opener',null],['navigate',origin+'/checkout']]:[['open','about:blank','_blank']]);
+ assert.deepEqual(ctx.visits,[]); assert.deepEqual(ctx.calls,[]); assert.equal(ctx.window.location.href,origin+productOne);
+});
+test('checkout rejects arbitrary destinations and closes a blank tab if navigation fails', async (t) => {
+ const ctx=setup(t,{showView:async()=>{}});let opens=0,closed=0;
+ ctx.window.open=()=>{opens++;return{opener:'Roman',location:{replace(){throw Error('navigation denied')}},close(){closed++}}};
+ for(const input of [null,[],{url:'https://other.example/checkout'},{path:'/checkout'},{payment:'secret'}])await assert.rejects(ctx.tools.execute('open_checkout',input));
+ assert.equal(opens,0);
+ await assert.rejects(ctx.tools.execute('open_checkout',{}),/navigation denied/);assert.equal(opens,1);assert.equal(closed,1);
+});
+test('checkout cannot open a tab after cancellation while changing views', async(t)=>{
+ const controller=new AbortController();const ctx=setup(t,{showView:async()=>controller.abort()});ctx.window.open=()=>assert.fail('Cancelled request cannot open a tab');
+ await assert.rejects(ctx.tools.execute('open_checkout',{},controller.signal),{name:'AbortError'});
 });
