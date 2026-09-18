@@ -19,6 +19,7 @@ export interface VoiceTranscriptGroup {
   sequence: number;
   endSequence: number;
   role: "user" | "assistant";
+  /** Display text; exact provider deltas remain available in fragments. */
   text: string;
   startMs: number;
   endMs: number;
@@ -27,6 +28,34 @@ export interface VoiceTranscriptGroup {
 }
 
 const maxCaptionPauseMs = 3000;
+
+function joinedCaptionText(
+  fragments: readonly VoiceTranscriptFragment[],
+): string {
+  let length = 0;
+  const boundaries = new Set<number>();
+  for (const fragment of fragments) {
+    if (length) boundaries.add(length);
+    length += fragment.text.length;
+  }
+  const text = fragments.map((fragment) => fragment.text).join("");
+  // New speech captions can omit their leading space after a sentence. Repair
+  // only actual fragment boundaries, with enough following text to distinguish
+  // a sentence start from a split word. Keep identifiers and abbreviations exact.
+  return text.replace(
+    /[.!?](?=\p{Lu}\p{Ll}|I\b)/gu,
+    (punctuation, index: number) => {
+      if (!boundaries.has(index + 1)) return punctuation;
+      const token = text.slice(0, index).match(/\S+$/u)?.[0] ?? "";
+      if (
+        /[.:/@]/u.test(token) ||
+        (punctuation === "." && !/\p{L}{2}$/u.test(token))
+      )
+        return punctuation;
+      return `${punctuation} `;
+    },
+  );
+}
 
 /** Display only: hide non-speech cues and punctuation orphaned at a group boundary. */
 export function voiceCaptionText(text: string): string {
@@ -103,7 +132,6 @@ export function groupVoiceTranscript(
         fragment.startMs <= previous.endMs + maxCaptionPauseMs
       ) {
         previous.fragments.push(fragment);
-        previous.text += fragment.text;
         previous.endMs = Math.max(previous.endMs, fragment.endMs);
         previous.endSequence = slot.sequence;
       } else {
@@ -142,5 +170,6 @@ export function groupVoiceTranscript(
     segment.push(fragment);
   }
   appendSegment();
+  for (const group of groups) group.text = joinedCaptionText(group.fragments);
   return groups;
 }

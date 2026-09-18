@@ -17,8 +17,10 @@ import {
 } from "../conversations/repository.server";
 import {
   cancelVoiceDelegation,
+  getVoiceWorkActivity,
   runVoiceDelegation,
 } from "../conversations/runner.server";
+import { voiceAcknowledgement } from "./acknowledgement.server";
 import {
   createVoiceProvider,
   type VoiceProvider,
@@ -77,6 +79,7 @@ interface VoiceOwner {
     caption: string;
     timer: ReturnType<typeof setTimeout>;
   };
+  lastInputAcknowledgement?: string;
   delegationController?: AbortController;
   resumeQuestionId?: string;
   resumeController?: AbortController;
@@ -168,7 +171,12 @@ function beginConversation(owner: VoiceOwner) {
 
 type AdvisorRequest =
   | { kind: "speech"; delegationId: string; offsetMs: number }
-  | { kind: "input"; requestId: string; caption: string }
+  | {
+      kind: "input";
+      requestId: string;
+      caption: string;
+      productChoice: boolean;
+    }
   | { kind: "resume"; questionId: string };
 
 function clearPendingSpeech(owner: VoiceOwner) {
@@ -186,9 +194,10 @@ function clearInputAcknowledgement(owner: VoiceOwner, caption?: string) {
 
 function acknowledgeInput(
   owner: VoiceOwner,
-  caption: string,
+  request: Extract<AdvisorRequest, { kind: "input" }>,
   signal: AbortSignal,
 ) {
+  const { caption } = request;
   const acknowledgement = {
     caption,
     timer: setTimeout(() => {
@@ -200,10 +209,19 @@ function acknowledgeInput(
         owner.latestUserCaption !== caption
       )
         return;
-      // The backend is already running. This optional cue neither delays its
-      // result nor claims a particular tool or customer action has succeeded.
+      const text = voiceAcknowledgement(
+        getVoiceWorkActivity(
+          owner.conversationId,
+          owner.voiceId,
+          request.requestId,
+        ),
+        request.productChoice,
+        owner.lastInputAcknowledgement,
+      );
+      owner.lastInputAcknowledgement = text;
+      // This optional cue neither delays the result nor claims an action succeeded.
       void owner
-        .provider!.appendReply("Okay, I'll check that for you.", {
+        .provider!.appendReply(text, {
           optional: true,
         })
         .catch(() => {
@@ -301,8 +319,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     owner.resumeQuestionId = undefined;
   }
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
-  if (request.kind === "input")
-    acknowledgeInput(owner, request.caption, signal);
+  if (request.kind === "input") acknowledgeInput(owner, request, signal);
   // A new delegation may be a spoken correction. Retire pending tools from
   // the earlier request before beginning work from the updated captions.
   const cancelled = cancelVoiceDelegation(owner.conversationId, owner.voiceId);
@@ -863,6 +880,9 @@ async function submitVoiceInput(
       owner.latestUserStartMs = undefined;
       owner.uiInputCaption = owner.latestUserCaption;
       owner.delegatedCaption = owner.latestUserCaption;
+      // Accepted customer intent owns the next reply immediately, including
+      // while its silent provider mirror is still awaiting acknowledgement.
+      owner.delegationController?.abort();
       clearPendingSpeech(owner);
       clearInputAcknowledgement(owner);
     }
@@ -897,6 +917,7 @@ async function submitVoiceInput(
         kind: "input",
         requestId: receipt.messageId,
         caption: `answer:${receipt.messageId}`,
+        productChoice: !!receipt.productChoice,
       });
     } catch {
       const message =

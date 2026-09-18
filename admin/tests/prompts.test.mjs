@@ -1613,7 +1613,7 @@ test("voice waits for verified guidance and gives one customer-facing guide intr
   assert.match(prompt, /wait for the verified briefing before giving its overview or next question/);
   assert.match(prompt, /do not fill it with speculative actions, repeated acknowledgements or a provisional guide introduction/);
   assert.match(prompt, /Do not say "PDP", backend, tool names or other implementation terms to the customer/);
-  assert.match(prompt, /one short sentence, never read internal context or repeat the customer's input/);
+  assert.match(prompt, /one short sentence, never read internal context or quote the customer's input back/);
   assert.match(prompt, /Treat the briefing as the complete next reply, not a request for another introduction/);
   assert.match(prompt, /Do not prepend a second version or repeat an introduction already spoken during this flow/);
   assert.match(prompt, /Do not reject supported library guidance merely because the original product-page link was wrong/);
@@ -1691,6 +1691,15 @@ test("interrupted short answers delegate while optional UI acknowledgements neve
   assert.match(live, /Do not guess which task is running or imply anything was saved, configured or added/);
   assert.match(live, /prioritize it and skip obsolete filler/);
   assert.match(live, /do not delegate that same input again or replace the result with a bare acknowledgement/);
+  assert.match(live, /supersedes the previous follow-up and any unfinished speech about it immediately/);
+  assert.match(live, /Only the backend may request a necessary replacement or configuration confirmation/);
+  assert.match(live, /Vary the natural delivery without adding "Okay", a question/);
+  assert.match(live, /safe factual hint, not an exact script/);
+  assert.match(live, /briefly acknowledge the latest known preference or answer from the quiet customer context/);
+  assert.match(live, /Do not turn an intent or preference into a claim that an action has started/);
+  assert.match(live, /never resumes the preceding question or authorizes an improvised follow-up/);
+  assert.match(live, /do not prepend "Okay", "Right" or another acknowledgement/);
+  assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Do not add "Okay", "Right", a second acknowledgement or a recap of progress/);
 });
 
 test('guide-prescribed multiple positions form one measurement step without inventing a universal minimum rule',()=>{

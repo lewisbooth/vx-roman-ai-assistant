@@ -38,7 +38,7 @@ const bundle = await build({
               : path.includes("usage")
                 ? "export const recordModelUsage=async()=>{};"
                 : path.endsWith("browser-tools.server")
-                  ? "export const requestBrowserTool=()=>{throw Error('Unexpected browser action');};"
+                  ? "export const requestBrowserTool=(...args)=>mock.browser(...args);"
                   : path.includes("measurements")
                     ? "export const executeMeasurementTool=()=>{throw Error('Unexpected measurement action');};"
                     : `export const beginTurn=(...args)=>mock.begin(...args);
@@ -74,6 +74,9 @@ function setup() {
     libraryReads: [],
     libraryClears: [],
     libraryDiscards: [],
+    browser: () => {
+      throw Error("Unexpected browser action");
+    },
     snapshot: async (id) => {
       const row = rows.get(id);
       return plain({
@@ -132,6 +135,7 @@ function setup() {
       generations.push({
         text: args[1],
         signal: args[2],
+        execute: args[3],
         reading: args[8],
         library: args[10],
         result,
@@ -266,5 +270,97 @@ test("cancel clears activity before persistence, and obsolete callbacks cannot a
   assert.deepEqual(plain(replacement.readingGuides), ["fitting"]);
   assert.equal(replacement.busy, true);
   second.generation.result.resolve({ text: "Current", model: "synthetic" });
+  await second.done;
+});
+
+test("voice activity belongs to the exact live request, clears after tools and never reads durable data", async () => {
+  const ctx = setup();
+  const { generation, done } = await ctx.start(true);
+  const tool = deferred();
+  ctx.mock.browser = () => tool.promise;
+  const running = generation.execute("guide-call", "get_product_guides", {
+    productPath: "/products/synthetic",
+  });
+  ctx.mock.snapshot = () => {
+    throw Error("Activity must not read the database");
+  };
+  const activity = ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1");
+  assert.deepEqual(plain(activity), {
+    tool: "get_product_guides",
+  });
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("other", "voice-1", "request-1"),
+    undefined,
+  );
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-2", "request-1"),
+    undefined,
+  );
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "old-request"),
+    undefined,
+  );
+  activity.tool = "get_cart";
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1").tool,
+    "get_product_guides",
+  );
+  tool.resolve({ guides: [] });
+  await running;
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1").tool,
+    undefined,
+  );
+  generation.reading(["fitting"]);
+  const reading = ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1");
+  assert.deepEqual(plain(reading.readingGuides), ["fitting"]);
+  reading.readingGuides.push("measuring");
+  assert.deepEqual(
+    plain(
+      ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1")
+        .readingGuides,
+    ),
+    ["fitting"],
+  );
+  const failing = deferred();
+  ctx.mock.browser = () => failing.promise;
+  const failure = generation.execute("failed-call", "get_cart", {});
+  failing.reject(new Error("Unavailable"));
+  await assert.rejects(failure, /Unavailable/);
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1").tool,
+    undefined,
+  );
+  generation.result.resolve({ text: "Done", model: "synthetic" });
+  await done;
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1"),
+    undefined,
+  );
+});
+
+test("cancelled voice work and text work cannot supply spoken progress", async () => {
+  const ctx = setup();
+  const first = await ctx.start(true);
+  first.generation.reading(["measuring"]);
+  const finishing = deferred();
+  ctx.mock.beforeFinish = () => finishing.promise;
+  const cancelled = ctx.api.cancelVoiceDelegation("chat", "voice-1");
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-1"),
+    undefined,
+  );
+  finishing.resolve();
+  await cancelled;
+  first.generation.result.resolve({ text: "Old", model: "synthetic" });
+  await first.done;
+  ctx.mock.beforeFinish = undefined;
+  const second = await ctx.start(false);
+  second.generation.reading(["fitting"]);
+  assert.equal(
+    ctx.api.getVoiceWorkActivity("chat", "voice-1", "request-2"),
+    undefined,
+  );
+  second.generation.result.resolve({ text: "Text", model: "synthetic" });
   await second.done;
 });

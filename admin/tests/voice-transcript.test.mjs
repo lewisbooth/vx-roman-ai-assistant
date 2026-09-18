@@ -66,6 +66,89 @@ function fragment(sequence, text, startMs, endMs, extra = {}) {
   };
 }
 
+test("separate voice sentences gain a display space without changing stored captions", () => {
+  // Native caption boundaries: ` you.` ends at 16000ms and `For` starts at
+  // 17000ms. The grouping pause allowance intentionally keeps one chat bubble.
+  const captions = [
+    fragment(1, "Okay, I'll check that for", 15000, 15800),
+    fragment(2, " you.", 15800, 16000),
+    fragment(3, "For", 17000, 17200),
+    fragment(4, " no-drill blinds, what matters most today?", 17200, 17400),
+    fragment(5, "You can choose below.", 17400, 17600),
+    fragment(6, "Okay.", 18200, 18400),
+  ];
+  const original = structuredClone(captions);
+  const [group] = groupVoiceTranscript(captions);
+  assert.equal(
+    group.text,
+    "Okay, I'll check that for you. For no-drill blinds, what matters most today? You can choose below. Okay.",
+  );
+  assert.deepEqual(group.fragments, original);
+  assert.deepEqual(captions, original);
+  assert.equal(group.id, captions[0].id);
+  assert.equal(group.sequence, 1);
+  assert.equal(group.endSequence, 6);
+  assert.equal(group.startMs, 15000);
+  assert.equal(group.endMs, 18400);
+});
+
+test("sentence spacing uses real fragment boundaries and survives split sentence starts", () => {
+  const captions = [
+    fragment(1, "Done", 0, 100),
+    fragment(2, ".", 100, 200),
+    fragment(3, "F", 200, 300),
+    fragment(4, "or you.", 300, 400),
+    fragment(5, "I can help.", 400, 500),
+  ];
+  assert.equal(
+    groupVoiceTranscript(captions)[0].text,
+    "Done. For you. I can help.",
+  );
+  // Caption projection does not rewrite text inside a provider fragment.
+  assert.equal(
+    groupVoiceTranscript([fragment(1, "Keep.This identifier", 0, 100)])[0].text,
+    "Keep.This identifier",
+  );
+  const acrossCompletion = [
+    captions[0],
+    { ...captions[1], sequence: 3 },
+    ...captions.slice(2).map((row) => ({ ...row, sequence: row.sequence + 1 })),
+  ];
+  assert.equal(
+    groupVoiceTranscript(acrossCompletion, [2], [], [3])[0].text,
+    "Done. For you. I can help.",
+  );
+});
+
+test("caption joining preserves split words, numeric values, identifiers, abbreviations and existing whitespace", () => {
+  for (const pieces of [
+    ["black", "out"],
+    ["G", "reat."],
+    ["That costs £19.", "95."],
+    ["Use 0.", "5 cm."],
+    ["https://shop.", "Example.com/product"],
+    ["https://example.com/guide?", "Title=Roller"],
+    ["support@shop.", "Example.com"],
+    ["example.", "COM"],
+    ["U.", "K."],
+    ["U.", "S.", "A."],
+    ["J.", "Smith"],
+    ["Wait.", ".", ".", "Let me check."],
+    ["Done.", " Next step."],
+    ["Done. ", "Next step."],
+    ["Done.\n\n", "Next step."],
+  ]) {
+    const captions = pieces.map((text, index) =>
+      fragment(index + 1, text, index * 200, (index + 1) * 200),
+    );
+    assert.equal(
+      groupVoiceTranscript(captions)[0].text,
+      pieces.join(""),
+      JSON.stringify(pieces),
+    );
+  }
+});
+
 test("normal pauses in a greeting retain one stable bubble and exact provider text", () => {
   // Timings reproduce the 0.8–1.8 second pauses seen in native caption metadata.
   const captions = [

@@ -853,7 +853,7 @@ for (const widgetKinds of [
       rows.map((row) => row.id),
       ["caption-0", "caption-2", widgetId],
     );
-    assert.equal(rows[1].parts[0].text, "Let me check.Here are the options.");
+    assert.equal(rows[1].parts[0].text, "Let me check. Here are the options.");
     assert.deepEqual(base, original);
     // The final response fragment can arrive after the customer's next caption.
     // Widget placement must use the projected response end, not that fragment's
@@ -877,7 +877,7 @@ for (const widgetKinds of [
       rows.map((row) => row.id),
       ["caption-0", "caption-2", widgetId, "caption-5", "caption-7"],
     );
-    assert.equal(rows[1].parts[0].text, "Let me check.Here are the options.");
+    assert.equal(rows[1].parts[0].text, "Let me check. Here are the options.");
     for (const barrier of [
       {
         ...widget,
@@ -946,7 +946,7 @@ for (const widgetKinds of [
       assert.equal(rows.filter((row) => row.role === "assistant").length, 1);
       assert.equal(
         rows.find((row) => row.id === "caption-2").parts[0].text,
-        "Let me check.Here are the options. Which suits your room?",
+        "Let me check. Here are the options. Which suits your room?",
       );
       assert.ok(
         rows.findIndex((row) => row.id === widgetId) >

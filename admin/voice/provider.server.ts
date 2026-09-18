@@ -14,6 +14,7 @@ import {
   ROMAN_VOICE_OPENING_PROMPTS,
   ROMAN_VOICE_OPENING_CUE,
   ROMAN_VOICE_PENDING_QUESTION_OPENING,
+  ROMAN_VOICE_UI_INPUT_INSTRUCTION,
 } from "../prompts/voice.server";
 
 export const VOICE_MODEL = "gpt-live-1";
@@ -594,13 +595,18 @@ export async function createVoiceProvider(options: {
         // mirrors that input. The service can send one optional acknowledgement
         // while work runs, separately from the completed factual briefing.
         // It cannot serve as a reliable request to start backend work.
-        await append(
-          "thinking",
-          null,
-          Buffer.byteLength(context, "utf8") <= MAX_INPUT_CONTEXT_BYTES
-            ? context
-            : "The customer submitted a longer UI message. Roman's backend has the full message and is handling the request; its verified result will follow.",
-        );
+        // A fixed instruction redirects unfinished speech; customer data stays
+        // in thinking. Send both together, without another serial round trip.
+        await Promise.all([
+          append("instructions", null, ROMAN_VOICE_UI_INPUT_INSTRUCTION),
+          append(
+            "thinking",
+            null,
+            Buffer.byteLength(context, "utf8") <= MAX_INPUT_CONTEXT_BYTES
+              ? context
+              : "The customer submitted a longer UI message. Roman's backend has the full message and is handling the request; its verified result will follow.",
+          ),
+        ]);
       },
       appendReply: (text, options) =>
         append("commentary", null, text, options?.optional),

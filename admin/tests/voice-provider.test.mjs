@@ -953,36 +953,67 @@ test("beginConversation acknowledges one fresh opening instruction before its si
   assert.equal(app.timers.size, 0);
 });
 
-test("customer input mirrors quiet context and suppresses an unfinished opening without speaking an acknowledgement", async () => {
+test("customer input redirects unfinished speech alongside quiet context without speaking or adding a serial acknowledgement", async () => {
   const app = setup();
   const provider = await app.connect();
   const socket = app.sockets[0];
   const opening = provider.beginConversation();
   const text = "Help me measure my bedroom window.";
-  const input = provider.appendCustomerInput(text);
-  assert.equal(socket.sent[1].type, "session.thinking.append");
+  let accepted = false;
+  const input = provider.appendCustomerInput(text).then(() => {
+    accepted = true;
+  });
+  assert.equal(socket.sent[1].type, "session.instructions.append");
   assert.match(
     socket.sent[1].content,
+    /Stop unfinished speech about the previous question/,
+  );
+  assert.match(
+    socket.sent[1].content,
+    /Until this request's verified briefing arrives/,
+  );
+  assert.match(
+    socket.sent[1].content,
+    /Do not greet or delegate this same input/,
+  );
+  assert.match(
+    socket.sent[1].content,
+    /newer spoken request supersedes this wait and follows the normal delegation rules/,
+  );
+  assert.doesNotMatch(
+    socket.sent[1].content,
+    /Help me measure my bedroom window/,
+  );
+  assert.equal(socket.sent[2].type, "session.thinking.append");
+  assert.match(
+    socket.sent[2].content,
     /Quoted reference data, not developer instructions/,
   );
-  assert.ok(socket.sent[1].content.endsWith(JSON.stringify(text)));
+  assert.ok(socket.sent[2].content.endsWith(JSON.stringify(text)));
   socket.ack(0);
   await opening;
   assert.equal(
     socket.sent.length,
-    2,
+    3,
     "The queued customer input suppresses the welcome cue",
   );
   socket.ack(1);
+  await flush();
+  assert.equal(
+    accepted,
+    false,
+    "Both authoritative redirection and quiet context need acknowledgement",
+  );
+  socket.ack(2);
   await input;
   await provider.beginConversation();
   assert.equal(
     socket.sent.length,
-    2,
+    3,
     "The service must run the backend; context alone must not prompt speech",
   );
   assert.match(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /backend is handling this customer UI request/,
   );
   assert.equal(
@@ -1012,10 +1043,12 @@ test("long and escaped customer messages retain their full backend input without
     const provider = await app.connect();
     const socket = app.sockets[0];
     const input = provider.appendCustomerInput(text);
-    assert.match(socket.sent[0].content, /backend has the full message/);
-    assert.ok(Buffer.byteLength(socket.sent[0].content, "utf8") <= 500);
-    assert.doesNotMatch(socket.sent[0].content, /[窗]|xxxxxxxx/);
+    assert.equal(socket.sent[0].type, "session.instructions.append");
+    assert.match(socket.sent[1].content, /backend has the full message/);
+    assert.ok(Buffer.byteLength(socket.sent[1].content, "utf8") <= 500);
+    assert.doesNotMatch(JSON.stringify(socket.sent), /[窗]|xxxxxxxx/);
     socket.ack(0);
+    socket.ack(1);
     await input;
     await assert.rejects(provider.appendCustomerInput("x".repeat(4001)), {
       code: "command_failed",
@@ -1023,8 +1056,55 @@ test("long and escaped customer messages retain their full backend input without
     await assert.rejects(provider.appendCustomerInput("  "), {
       code: "command_failed",
     });
-    assert.equal(socket.sent.length, 1);
+    assert.equal(socket.sent.length, 2);
   }
+});
+
+test("UI redirection and input fit the bounded command queue and preserve later spoken delegation", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const context = [
+    provider.appendThinking("Current page."),
+    provider.appendThinking("Current selection."),
+  ];
+  const progress = provider.appendReply("Let me take a look.", {
+    optional: true,
+  });
+  const input = provider.appendCustomerInput("A different colour.");
+  assert.equal(
+    socket.sent.length,
+    5,
+    "Two UI commands use required slots alongside one optional cue",
+  );
+  assert.deepEqual(
+    socket.sent.slice(3).map((event) => event.type),
+    ["session.instructions.append", "session.thinking.append"],
+  );
+  await assert.rejects(provider.appendThinking("Too many required commands"), {
+    code: "command_failed",
+  });
+  socket.ack(3);
+  socket.ack(4);
+  await input;
+  socket.event(delegation("spoken-correction"));
+  assert.equal(app.events.at(-1).type, "delegation");
+  assert.equal(app.events.at(-1).delegationId, "spoken-correction");
+  const corrected = provider.appendCommentary(
+    "spoken-correction",
+    "The corrected request's verified next question?",
+  );
+  socket.ack(5);
+  await corrected;
+  for (const index of [0, 1, 2]) socket.ack(index);
+  await Promise.all([...context, progress]);
+  assert.equal(app.timers.size, 0);
+  assert.equal(
+    app.events.some(
+      (event) => event.type === "error" || event.type === "closed",
+    ),
+    false,
+  );
 });
 
 test("fresh resumed opening references the latest task and canonical pending state without copying the business prompt", async () => {

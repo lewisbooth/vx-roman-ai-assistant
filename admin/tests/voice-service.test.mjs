@@ -38,6 +38,7 @@ const bundle = await build({
             contents = `export const createVoiceProvider = (...args) => mock.createProvider(...args);`;
           else if (args.path.endsWith("runner.server"))
             contents = `export const cancelVoiceDelegation = (...args) => mock.cancelDelegation(...args);
+        export const getVoiceWorkActivity = (...args) => mock.activity(...args);
         export const runVoiceDelegation = (...args) => mock.delegate(...args);`;
           else if (args.path.includes("conversations"))
             contents = `export const getVoiceStartupContext = (...args) => mock.context(...args);
@@ -94,6 +95,7 @@ function setup() {
     heartbeat: [],
     usage: [],
     answer: [],
+    activity: [],
   };
   let api;
   const mock = {
@@ -108,6 +110,11 @@ function setup() {
     onProviderClose: undefined,
     onDelegate: undefined,
     onCancelDelegation: undefined,
+    workActivity: undefined,
+    activity: (...args) => {
+      calls.activity.push(args);
+      return mock.workActivity;
+    },
     delay: async (_ms, _value, options) => {
       options.signal.throwIfAborted();
     },
@@ -2052,16 +2059,14 @@ test("accepted UI input gets one optional spoken acknowledgement without delayin
     state.input.requestId,
     input,
   );
-  assert.deepEqual(state.providers[0].replies, [
-    "Okay, I'll check that for you.",
-  ]);
+  assert.deepEqual(state.providers[0].replies, ["Let me take a look."]);
   assert.deepEqual(plain(state.providers[0].replyOptions), [
     { optional: true },
   ]);
   advisor.resolve({ text: "What is the width?" });
   await flush();
   assert.deepEqual(state.providers[0].replies, [
-    "Okay, I'll check that for you.",
+    "Let me take a look.",
     "What is the width?",
   ]);
   cue.resolve();
@@ -2110,7 +2115,7 @@ test("fast final replies, new speech and stopping suppress late UI acknowledgeme
     assert.equal(state.timers.has(timer), false);
     timer.callback();
     assert.equal(
-      state.providers[0].replies.includes("Okay, I'll check that for you."),
+      state.providers[0].replies.includes("Let me take a look."),
       false,
     );
     if (outcome !== "stop") {
@@ -2147,6 +2152,145 @@ test("optional UI acknowledgement failure does not cancel useful work or end voi
   advisor.resolve({ text: "Your actual next question?" });
   await flush();
   assert.equal(state.providers[0].replies.at(-1), "Your actual next question?");
+  await state.stop();
+});
+
+test("UI acknowledgements use current request activity and vary repeated cues without inferring tasks from text", async () => {
+  const state = setup();
+  await answerableVoice(state);
+  const cases = [
+    [undefined, "Let me take a look."],
+    [undefined, "I'll check that for you."],
+    [undefined, "One moment while I look into that."],
+    [undefined, "Thanks, let me check."],
+    [undefined, "Let me take a look."],
+    [{ tool: "get_product_guides" }, "I'm finding the product guidance."],
+    [{ tool: "get_product_guides" }, "Let me pull up the product guidance."],
+    [{ readingGuides: ["fitting"] }, "I'm checking the fitting guide."],
+    [
+      { readingGuides: ["measuring", "fitting"] },
+      "I'm checking the measuring and fitting guidance.",
+    ],
+    [{ tool: "search_products" }, "I'm looking through the options."],
+    [
+      { tool: "get_product_configuration" },
+      "Let's take a closer look at that blind.",
+    ],
+    [{ tool: "get_cart" }, "I'm checking your cart."],
+    [{ tool: "add_to_cart" }, "Let me take a look."],
+  ];
+  for (const [activity, expected] of cases) {
+    const advisor = deferred();
+    state.mock.onDelegate = () => advisor.promise;
+    state.mock.workActivity = activity;
+    const input = {
+      requestId: randomUUID(),
+      clientId: state.input.clientId,
+      text: "Don't open the measuring guide or add anything to my cart.",
+    };
+    await state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    );
+    await flush();
+    const timer = [...state.timers].find((timer) => timer.ms === 250);
+    assert.ok(timer);
+    state.timers.delete(timer); // A native timeout leaves the scheduler when it fires.
+    timer.callback();
+    assert.equal(state.providers[0].replies.at(-1), expected);
+    assert.deepEqual(state.calls.activity.at(-1), [
+      state.conversationId,
+      state.input.requestId,
+      input.requestId,
+    ]);
+    assert.doesNotMatch(expected, /Okay|\?|added|selected|saved/);
+    advisor.resolve({ text: "The verified next question?" });
+    await flush();
+    assert.equal(
+      state.providers[0].replies.at(-1),
+      "The verified next question?",
+    );
+  }
+  await state.stop();
+});
+
+test("a carousel choice acknowledges the choice without inventing a confirmation or completed navigation", async () => {
+  const state = setup();
+  await answerableVoice(state);
+  const advisor = deferred();
+  state.mock.onDelegate = () => advisor.promise;
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    {
+      requestId: randomUUID(),
+      clientId: state.input.clientId,
+      carouselId: "synthetic-carousel",
+      productId: "gid://shopify/Product/1",
+      productPath: "/products/lemon-roller",
+      title: "Lemon roller",
+    },
+  );
+  await flush();
+  [...state.timers].find((timer) => timer.ms === 250).callback();
+  assert.deepEqual(state.providers[0].replies, [
+    "Let's take a closer look at that blind.",
+  ]);
+  advisor.resolve({ text: "The backend's verified configuration question?" });
+  await flush();
+  assert.equal(state.providers[0].replies.length, 2);
+  assert.equal(
+    state.providers[0].replies.at(-1),
+    "The backend's verified configuration question?",
+  );
+  await state.stop();
+});
+
+test("a durable UI choice supersedes an old briefing before its provider mirror is acknowledged", async () => {
+  const state = setup();
+  const firstInput = await answerableVoice(state);
+  const oldReply = deferred();
+  const mirror = deferred();
+  state.mock.onDelegate = () => oldReply.promise;
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    firstInput,
+  );
+  await flush();
+  const oldCue = [...state.timers].find((timer) => timer.ms === 250);
+  const oldSignal = state.calls.delegate[0][3];
+  state.mock.onCustomerInput = () => mirror.promise;
+  const choice = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    {
+      requestId: randomUUID(),
+      clientId: state.input.clientId,
+      carouselId: "new-carousel",
+      productId: "gid://shopify/Product/2",
+      productPath: "/products/lemon-roller",
+      title: "Lemon roller",
+    },
+  );
+  await flush();
+  assert.equal(oldSignal.aborted, true);
+  oldCue.callback();
+  oldReply.resolve({ text: "Which direction speaks to you most?" });
+  await flush();
+  assert.deepEqual(state.providers[0].replies, []);
+  state.mock.onDelegate = () => ({
+    text: "The new selected blind's actual next question?",
+  });
+  mirror.resolve();
+  await choice;
+  await flush();
+  assert.deepEqual(state.providers[0].replies, [
+    "The new selected blind's actual next question?",
+  ]);
+  assert.equal(state.calls.delegate.length, 2);
+  assert.equal(state.providers[0].closed, false);
   await state.stop();
 });
 
