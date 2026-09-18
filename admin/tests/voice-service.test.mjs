@@ -81,6 +81,7 @@ function setup() {
   const order = [];
   const timers = new Set();
   const answerReceipts = new Map();
+  let nextMessageSequence = 0;
   const calls = {
     reserve: [],
     activate: [],
@@ -157,7 +158,7 @@ function setup() {
       const receipt = {
         created: true,
         messageId: input.requestId,
-        sequence: 100,
+        sequence: nextMessageSequence++,
         question: "Which room?",
         answer: input.answer,
         ...("text" in input
@@ -192,9 +193,8 @@ function setup() {
         openingCount: 0,
         commentaries: [],
         thoughts: [],
-        answers: [],
-        products: [],
-        texts: [],
+        inputs: [],
+        replies: [],
       };
       const provider = {
         providerId: "live_test",
@@ -213,20 +213,15 @@ function setup() {
         },
         appendCommentary: async (...args) => record.commentaries.push(args),
         appendThinking: async (...args) => record.thoughts.push(args),
-        appendAnswer: async (...args) => {
-          record.answers.push(args);
-          order.push("answer-sent");
-          await mock.onAnswer?.(...args);
+        appendCustomerInput: async (text) => {
+          record.inputs.push(text);
+          order.push("input-sent");
+          await mock.onCustomerInput?.(text);
         },
-        appendProductChoice: async (choice) => {
-          record.products.push(choice);
-          order.push("product-sent");
-          await mock.onProductChoice?.(choice);
-        },
-        appendCustomerText: async (text) => {
-          record.texts.push(text);
-          order.push("text-sent");
-          await mock.onCustomerText?.(text);
+        appendReply: async (text) => {
+          record.replies.push(text);
+          order.push("reply-sent");
+          await mock.onReply?.(text);
         },
       };
       record.provider = provider;
@@ -258,7 +253,7 @@ function setup() {
       order.push("caption-saved");
       const key = `${args[1]}:${args[2].providerEventId}`;
       if (!captionSequences.has(key))
-        captionSequences.set(key, captionSequences.size);
+        captionSequences.set(key, nextMessageSequence++);
       return { sequence: captionSequences.get(key) };
     },
     cancel: async (
@@ -304,6 +299,7 @@ function setup() {
     },
     delegate: async (...args) => {
       calls.delegate.push(args);
+      order.push("delegate-started");
       return mock.onDelegate
         ? mock.onDelegate(...args)
         : { text: "Here is a verified product result." };
@@ -1628,7 +1624,7 @@ async function answerableVoice(state) {
   };
 }
 
-test("typed first input is saved before readiness and replaces the welcome with one continuation", async () => {
+test("typed first input is saved before readiness and directly starts one advisor reply instead of the welcome", async () => {
   for (const startedFirst of [false, true]) {
     const state = setup();
     await state.start();
@@ -1648,16 +1644,16 @@ test("typed first input is saved before readiness and replaces the welcome with 
     await flush();
     assert.equal(state.calls.started.length, 0);
     assert.equal(state.providers[0].openingCount, 0);
-    assert.equal(state.providers[0].texts.length, 0);
+    assert.equal(state.providers[0].inputs.length, 0);
     save.resolve();
     await flush();
     if (!startedFirst) {
       assert.equal(state.calls.started.length, 0);
-      assert.equal(state.providers[0].texts.length, 0);
+      assert.equal(state.providers[0].inputs.length, 0);
       state.emit({ type: "started", eventId: "started" });
     }
     await ready;
-    assert.deepEqual(state.providers[0].texts, [input.text]);
+    assert.deepEqual(state.providers[0].inputs, [input.text]);
     assert.equal(state.providers[0].openingCount, 0);
     assert.equal(state.calls.started.length, 1);
     assert.equal(
@@ -1669,7 +1665,7 @@ test("typed first input is saved before readiness and replaces the welcome with 
       state.order.indexOf("answer-saved") < state.order.indexOf("start-saved"),
     );
     assert.ok(
-      state.order.indexOf("start-saved") < state.order.indexOf("text-sent"),
+      state.order.indexOf("start-saved") < state.order.indexOf("input-sent"),
     );
     await state.api.readyVoice(
       state.conversationId,
@@ -1678,8 +1674,13 @@ test("typed first input is saved before readiness and replaces the welcome with 
       input,
     );
     await state.ready();
-    assert.equal(state.providers[0].texts.length, 1);
+    assert.equal(state.providers[0].inputs.length, 1);
     assert.equal(state.providers[0].openingCount, 0);
+    await flush();
+    assert.equal(state.calls.delegate.length, 1);
+    assert.deepEqual(state.providers[0].replies, [
+      "Here is a verified product result.",
+    ]);
     state.emit({
       type: "delegation",
       eventId: "typed-request",
@@ -1687,7 +1688,11 @@ test("typed first input is saved before readiness and replaces the welcome with 
       offsetMs: 1,
     });
     await flush();
-    assert.equal(state.calls.delegate.length, 1);
+    assert.equal(
+      state.calls.delegate.length,
+      1,
+      "Live cannot replay this UI request",
+    );
     await state.stop();
   }
 });
@@ -1712,7 +1717,8 @@ test("stopping before provider readiness cancels a saved first typed input witho
   assert.equal(state.calls.answer.length, 1);
   await state.stop();
   await rejected;
-  assert.equal(state.providers[0].texts.length, 0);
+  assert.equal(state.providers[0].inputs.length, 0);
+  assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.providers[0].openingCount, 0);
   assert.equal(state.providers[0].closed, true);
 });
@@ -1735,10 +1741,206 @@ test("ordinary typed inputs keep connected voice and durable delivery idempotenc
     state.input.requestId,
     input,
   );
-  assert.deepEqual(state.providers[0].texts, [input.text]);
-  assert.equal(state.providers[0].answers.length, 0);
+  assert.deepEqual(state.providers[0].inputs, [input.text]);
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.deepEqual(state.providers[0].replies, [
+    "Here is a verified product result.",
+  ]);
   assert.equal(state.providers[0].closed, false);
   await state.stop();
+});
+
+test("UI input returns after accepted mirroring while the advisor works and Live cannot cancel or replay it", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const mirror = deferred();
+  const advisor = deferred();
+  state.mock.onCustomerInput = () => mirror.promise;
+  state.mock.onDelegate = () => advisor.promise;
+  let accepted = false;
+  const submitted = state.api
+    .answerVoiceQuestion(state.conversationId, state.input.requestId, input)
+    .then(() => {
+      accepted = true;
+    });
+  await flush();
+  assert.equal(accepted, false);
+  assert.equal(state.calls.delegate.length, 0);
+  mirror.resolve();
+  await flush();
+  assert.equal(
+    accepted,
+    true,
+    "HTTP acceptance must not wait for Terra's full reply",
+  );
+  await submitted;
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].replies.length, 0);
+  assert.ok(
+    state.order.indexOf("input-sent") < state.order.indexOf("delegate-started"),
+  );
+  const cancellationCount = state.calls.cancelDelegation.length;
+  state.emit({ type: "delegation", delegationId: "redundant-ui-delegation" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.calls.delegate[0][3].aborted, false);
+  assert.equal(state.calls.cancelDelegation.length, cancellationCount);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.calls.answer.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
+  assert.equal(state.calls.delegate.length, 1);
+  advisor.resolve({ text: "Which kind of window are you measuring?" });
+  await flush();
+  assert.deepEqual(state.providers[0].replies, [
+    "Which kind of window are you measuring?",
+  ]);
+  assert.equal(state.providers[0].closed, false);
+  await state.stop();
+});
+
+test("stopping an accepted UI request cancels advisor work without speaking a late result or replaying the receipt", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const advisor = deferred();
+  state.mock.onDelegate = () => advisor.promise;
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  const stopping = state.stop();
+  advisor.resolve({ text: "This stopped result must not be spoken." });
+  await stopping;
+  await flush();
+  assert.equal(state.calls.delegate[0][3].aborted, true);
+  assert.equal(state.providers[0].replies.length, 0);
+  assert.equal(state.providers[0].closed, true);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
+});
+
+test("fresh spoken correction supersedes pending UI advisor work without speaking its stale reply", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  state.mock.onDelegate = async (
+    _conversationId,
+    _voiceId,
+    _requestId,
+    signal,
+  ) => {
+    if (state.calls.delegate.length === 1)
+      return new Promise((resolve) =>
+        signal.addEventListener(
+          "abort",
+          () => resolve({ text: "Stale kitchen advice." }),
+          { once: true },
+        ),
+      );
+    return { text: "Which bedroom window are you measuring?" };
+  };
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  state.emit(
+    transcript({
+      eventId: "bedroom-correction",
+      text: "Actually, it's for my bedroom.",
+    }),
+  );
+  state.emit({ type: "delegation", delegationId: "bedroom-delegation" });
+  await flush();
+  assert.equal(state.calls.delegate[0][3].aborted, true);
+  assert.equal(state.calls.delegate.length, 2);
+  assert.equal(state.providers[0].replies.length, 0);
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["bedroom-delegation", "Which bedroom window are you measuring?"],
+  ]);
+  assert.equal(state.providers[0].closed, false);
+  await state.stop();
+});
+
+test("a late UI mirror acknowledgment cannot cancel newer spoken advisor work", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const mirror = deferred();
+  const advisor = deferred();
+  state.mock.onCustomerInput = () => mirror.promise;
+  state.mock.onDelegate = () => advisor.promise;
+  const submitted = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.calls.answer.length, 1);
+  assert.equal(state.calls.delegate.length, 0);
+  state.emit(
+    transcript({
+      eventId: "newer-spoken-request",
+      text: "Actually, it's for my bedroom.",
+    }),
+  );
+  state.emit({ type: "delegation", delegationId: "newer-spoken-delegation" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  const cancellationCount = state.calls.cancelDelegation.length;
+  mirror.resolve();
+  await submitted;
+  await flush();
+  assert.equal(state.calls.delegate[0][3].aborted, false);
+  assert.equal(state.calls.cancelDelegation.length, cancellationCount);
+  advisor.resolve({ text: "Which bedroom window are you measuring?" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].replies.length, 0);
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["newer-spoken-delegation", "Which bedroom window are you measuring?"],
+  ]);
+  await state.stop();
+});
+
+test("an unconfirmed direct advisor briefing fails voice without replaying its saved customer request", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  state.mock.onReply = async () => {
+    throw new Error("private briefing transport details");
+  };
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].replies.length, 1);
+  assert.equal(state.providers[0].closed, true);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
+  assert.doesNotMatch(
+    JSON.stringify(state.logs),
+    /private briefing transport details|Kitchen/,
+  );
 });
 
 test("typed input after browser readiness waits for the trusted startup and replaces the welcome", async () => {
@@ -1767,11 +1969,11 @@ test("typed input after browser readiness waits for the trusted startup and repl
   await flush();
   assert.equal(state.calls.answer.length, 1);
   assert.equal(state.calls.started.length, 0);
-  assert.equal(state.providers[0].texts.length, 0);
+  assert.equal(state.providers[0].inputs.length, 0);
   assert.equal(state.providers[0].openingCount, 0);
   state.emit({ type: "started", eventId: "delayed-started" });
   await submitted;
-  assert.deepEqual(state.providers[0].texts, [input.text]);
+  assert.deepEqual(state.providers[0].inputs, [input.text]);
   assert.equal(state.calls.started.length, 1);
   assert.equal(state.calls.started[0][3], false);
   assert.equal(state.providers[0].openingCount, 0);
@@ -1779,8 +1981,13 @@ test("typed input after browser readiness waits for the trusted startup and repl
     state.order.indexOf("answer-saved") < state.order.indexOf("start-saved"),
   );
   assert.ok(
-    state.order.indexOf("start-saved") < state.order.indexOf("text-sent"),
+    state.order.indexOf("start-saved") < state.order.indexOf("input-sent"),
   );
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.deepEqual(state.providers[0].replies, [
+    "Here is a verified product result.",
+  ]);
   await state.stop();
 });
 
@@ -1809,12 +2016,13 @@ test("stop cancels typed input waiting after browser readiness without a late de
   state.emit({ type: "started", eventId: "too-late-started" });
   await flush();
   assert.equal(state.calls.started.length, 0);
-  assert.equal(state.providers[0].texts.length, 0);
+  assert.equal(state.providers[0].inputs.length, 0);
+  assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.providers[0].openingCount, 0);
   assert.equal(state.providers[0].closed, true);
 });
 
-test("clicked voice answers persist before context delivery without a text turn or voice restart", async () => {
+test("clicked voice answers persist before direct advisor work without another delegation or voice restart", async () => {
   const state = setup();
   const input = await answerableVoice(state);
   await state.api.answerVoiceQuestion(
@@ -1822,11 +2030,17 @@ test("clicked voice answers persist before context delivery without a text turn 
     state.input.requestId,
     input,
   );
-  assert.deepEqual(state.providers[0].answers, [["Which room?", "Kitchen"]]);
+  assert.equal(state.providers[0].inputs.length, 1);
+  assert.match(state.providers[0].inputs[0], /Which room\?/);
+  assert.match(state.providers[0].inputs[0], /Kitchen/);
   assert.ok(
-    state.order.indexOf("answer-saved") < state.order.indexOf("answer-sent"),
+    state.order.indexOf("answer-saved") < state.order.indexOf("input-sent"),
   );
-  assert.equal(state.calls.delegate.length, 0);
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.deepEqual(state.providers[0].replies, [
+    "Here is a verified product result.",
+  ]);
   assert.equal(state.providers[0].closed, false);
   assert.equal(state.providers.length, 1);
   await state.api.answerVoiceQuestion(
@@ -1834,7 +2048,7 @@ test("clicked voice answers persist before context delivery without a text turn 
     state.input.requestId,
     input,
   );
-  assert.equal(state.providers[0].answers.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
   assert.equal(state.calls.answer.length, 1);
   state.emit({
     type: "delegation",
@@ -1846,7 +2060,7 @@ test("clicked voice answers persist before context delivery without a text turn 
   assert.equal(
     state.calls.delegate.length,
     1,
-    "Live may delegate the new clicked customer intent",
+    "Live cannot run this handled customer intent a second time",
   );
   await state.stop();
   await state.api.answerVoiceQuestion(
@@ -1855,13 +2069,13 @@ test("clicked voice answers persist before context delivery without a text turn 
     input,
   );
   assert.equal(
-    state.providers[0].answers.length,
+    state.providers[0].inputs.length,
     1,
     "a durable receipt after stop cannot replay provider context",
   );
 });
 
-test("carousel choices use the same owned durable live input boundary and send one product continuation", async () => {
+test("carousel choices use the same durable input boundary and directly request one advisor reply", async () => {
   const state = setup();
   const answer = await answerableVoice(state);
   const choice = {
@@ -1880,26 +2094,33 @@ test("carousel choices use the same owned durable live input boundary and send o
     state.input.requestId,
     input,
   );
-  assert.deepEqual(state.providers[0].products, [choice]);
+  assert.equal(state.providers[0].inputs.length, 1);
+  assert.match(state.providers[0].inputs[0], /Green roller blind/);
+  assert.match(state.providers[0].inputs[0], /\/products\/green-roller/);
   assert.ok(
-    state.order.indexOf("answer-saved") < state.order.indexOf("product-sent"),
+    state.order.indexOf("answer-saved") < state.order.indexOf("input-sent"),
   );
-  assert.equal(state.providers[0].answers.length, 0);
   assert.equal(state.providers[0].closed, false);
-  assert.equal(state.calls.delegate.length, 0);
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.deepEqual(state.providers[0].replies, [
+    "Here is a verified product result.",
+  ]);
   await state.api.answerVoiceQuestion(
     state.conversationId,
     state.input.requestId,
     input,
   );
-  assert.equal(state.providers[0].products.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
+  assert.equal(state.calls.delegate.length, 1);
   await state.stop();
   await state.api.answerVoiceQuestion(
     state.conversationId,
     state.input.requestId,
     input,
   );
-  assert.equal(state.providers[0].products.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
+  assert.equal(state.calls.delegate.length, 1);
 });
 
 test("concurrent same-ID answers have one delivery and another answer cannot overtake an in-flight acceptance", async () => {
@@ -1935,14 +2156,16 @@ test("concurrent same-ID answers have one delivery and another answer cannot ove
   save.resolve();
   await Promise.all([first, repeat]);
   assert.equal(state.calls.answer.length, 1);
-  assert.equal(state.providers[0].answers.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
   await state.stop();
 });
 
 test("unconfirmed voice context reports the saved answer and can never be retried as another delivery", async () => {
   const state = setup();
   const input = await answerableVoice(state);
-  state.mock.onAnswer = async () => {
+  state.mock.onCustomerInput = async () => {
     throw new Error("private provider context");
   };
   await assert.rejects(
@@ -1955,12 +2178,13 @@ test("unconfirmed voice context reports the saved answer and can never be retrie
   );
   assert.equal(state.calls.answer.length, 1);
   assert.equal(state.providers[0].closed, true);
+  assert.equal(state.calls.delegate.length, 0);
   await state.api.answerVoiceQuestion(
     state.conversationId,
     state.input.requestId,
     input,
   );
-  assert.equal(state.providers[0].answers.length, 1);
+  assert.equal(state.providers[0].inputs.length, 1);
   assert.doesNotMatch(
     JSON.stringify(state.logs),
     /private provider context|Kitchen/,
@@ -1983,7 +2207,8 @@ test("stop while an answer is being persisted prevents late provider delivery", 
   save.resolve();
   await Promise.all([stopping, rejected]);
   assert.equal(state.calls.answer.length, 1);
-  assert.equal(state.providers[0].answers.length, 0);
+  assert.equal(state.providers[0].inputs.length, 0);
+  assert.equal(state.calls.delegate.length, 0);
 });
 
 test("answers reject missing readiness and wrong connection/client ownership before persistence", async () => {
@@ -2005,6 +2230,6 @@ test("answers reject missing readiness and wrong connection/client ownership bef
       { status: 409 },
     );
   assert.equal(state.calls.answer.length, 0);
-  assert.equal(state.providers[0].answers.length, 0);
+  assert.equal(state.providers[0].inputs.length, 0);
   await state.stop();
 });

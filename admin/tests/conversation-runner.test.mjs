@@ -5153,7 +5153,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
   );
   assert.match(
     env.calls.requests[0].input.instructions,
-    /latest spoken request/,
+    /latest request, whether spoken, typed or clicked/,
   );
   assert.match(
     env.calls.requests[0].input.instructions,

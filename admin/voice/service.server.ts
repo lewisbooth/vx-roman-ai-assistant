@@ -61,6 +61,8 @@ interface VoiceOwner {
   delegationCount: number;
   seenDelegations: Set<string>;
   delegatedCaption?: string;
+  /** Fresh UI input is handled directly, never delegated a second time by Live. */
+  uiInputCaption?: string;
   latestUserCaption?: string;
   latestUserSequence?: number;
   delegationController?: AbortController;
@@ -144,8 +146,26 @@ function beginConversation(owner: VoiceOwner) {
     });
 }
 
-function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
-  if (owner.stopping || owner.seenDelegations.has(delegationId)) return;
+type AdvisorRequest =
+  | { kind: "speech"; delegationId: string }
+  | { kind: "input"; requestId: string; caption: string };
+
+function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
+  if (owner.stopping) return;
+  // A spoken correction can arrive while the silent input mirror is in flight.
+  // Its newer work must not be cancelled when that older acknowledgement lands.
+  if (request.kind === "input" && owner.latestUserCaption !== request.caption)
+    return;
+  if (request.kind === "speech") {
+    if (owner.seenDelegations.has(request.delegationId)) return;
+    // UI input already owns a backend turn. An unsolicited Live delegation
+    // must not cancel it, replay its actions, or ask the customer to repeat it.
+    if (
+      owner.uiInputCaption &&
+      owner.latestUserCaption === owner.uiInputCaption
+    )
+      return;
+  }
   if (owner.seenDelegations.size >= 40 || owner.delegationCount >= 2) {
     fail(
       owner,
@@ -154,7 +174,8 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
     );
     return;
   }
-  owner.seenDelegations.add(delegationId);
+  if (request.kind === "speech")
+    owner.seenDelegations.add(request.delegationId);
   owner.delegationController?.abort();
   const controller = new AbortController();
   owner.delegationController = controller;
@@ -169,10 +190,16 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
       await cancelled;
       // Delegation is the provider's explicit signal to act. This brief grace
       // only drains in-flight captions; transcript pauses never trigger tools.
-      await delay(200, undefined, { signal });
+      if (request.kind === "speech") await delay(200, undefined, { signal });
       await owner.events;
       if (signal.aborted) return;
+      if (
+        request.kind === "input" &&
+        owner.latestUserCaption !== request.caption
+      )
+        return;
       const resumeQuestionId =
+        request.kind === "speech" &&
         !owner.latestUserCaption &&
         !owner.userSpeechObserved &&
         owner.openingStarted
@@ -187,12 +214,13 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
       )
         owner.resumeQuestionId = undefined;
       if (
+        request.kind === "speech" &&
         !resumeQuestionId &&
         (!owner.latestUserCaption ||
           owner.latestUserCaption === owner.delegatedCaption)
       ) {
         await owner.provider!.appendCommentary(
-          delegationId,
+          request.delegationId,
           "No new customer request was captured, so no tools were run. Ask the customer to repeat or clarify their request.",
         );
         return;
@@ -202,7 +230,7 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
       const reply = await runVoiceDelegation(
         owner.conversationId,
         owner.voiceId,
-        randomUUID(),
+        request.kind === "input" ? request.requestId : randomUUID(),
         signal,
         resumeQuestionId ? { resumeQuestionId } : undefined,
       );
@@ -217,14 +245,14 @@ function scheduleDelegation(owner: VoiceOwner, delegationId: string) {
               .filter(Boolean)
               .join(" ")
           : undefined);
-      await owner.provider!.appendCommentary(
-        delegationId,
-        briefing
-          ? briefing.slice(0, 1_000)
-          : resumeQuestionId
-            ? "The saved question could not be resumed. Do not repeat its previous instructions or claim any action. Ask the customer what they would like to continue with."
-            : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.",
-      );
+      const response = briefing
+        ? briefing.slice(0, 1_000)
+        : resumeQuestionId
+          ? "The saved question could not be resumed. Do not repeat its previous instructions or claim any action. Ask the customer what they would like to continue with."
+          : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.";
+      if (request.kind === "input") await owner.provider!.appendReply(response);
+      else
+        await owner.provider!.appendCommentary(request.delegationId, response);
     })
     .catch((error: unknown) => {
       if (!signal.aborted)
@@ -318,7 +346,11 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
           owner.latestUserSequence = caption.sequence;
         }
         await cancelledResume;
-      } else scheduleDelegation(owner, event.delegationId);
+      } else
+        scheduleAdvisorReply(owner, {
+          kind: "speech",
+          delegationId: event.delegationId,
+        });
     })
     .catch(() => {
       fail(
@@ -672,7 +704,7 @@ async function submitVoiceInput(
       voiceId,
       input,
     );
-    if (receipt.customerText) owner.userSpeechObserved = true;
+    owner.userSpeechObserved = true;
     if (startsConversation) {
       owner.browserReady = true;
       beginConversation(owner);
@@ -685,6 +717,8 @@ async function submitVoiceInput(
       // while repeated/draining caption IDs cannot replace its newer sequence.
       owner.latestUserCaption = `answer:${receipt.messageId}`;
       owner.latestUserSequence = receipt.sequence;
+      owner.uiInputCaption = owner.latestUserCaption;
+      owner.delegatedCaption = owner.latestUserCaption;
     }
     return receipt;
   });
@@ -702,13 +736,22 @@ async function submitVoiceInput(
         throw new ConversationError(409, disconnected);
       // The browser can acknowledge readiness before the trusted sideband's
       // started event arrives. Keep its typed request and wait at that gate.
-      if (startsConversation || receipt.customerText)
-        await waitForInputReady(owner);
-      if (receipt.customerText)
-        await owner.provider!.appendCustomerText(receipt.customerText);
-      else if (receipt.productChoice)
-        await owner.provider!.appendProductChoice(receipt.productChoice);
-      else await owner.provider!.appendAnswer(receipt.question, receipt.answer);
+      await waitForInputReady(owner);
+      const customerInput =
+        receipt.customerText ??
+        (receipt.productChoice
+          ? `Customer chose ${receipt.productChoice.title} (${receipt.productChoice.productPath}).`
+          : `Question: ${receipt.question}\nCustomer answer: ${receipt.answer}`);
+      await owner.provider!.appendCustomerInput(customerInput);
+      if (owner.stopping || owners.get(conversationId) !== owner)
+        throw new ConversationError(409, disconnected);
+      // Queue the canonical advisor directly. HTTP acceptance does not wait for
+      // model/tools, and the existing pending turn drives polling and widgets.
+      scheduleAdvisorReply(owner, {
+        kind: "input",
+        requestId: receipt.messageId,
+        caption: `answer:${receipt.messageId}`,
+      });
     } catch {
       const message =
         "Your answer was saved, but Roman could not confirm it reached voice. Start voice again to continue.";
