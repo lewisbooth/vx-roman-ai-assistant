@@ -43,7 +43,7 @@ const image = (id, kind = "product") => ({
 });
 const items = [image("room"), image("detail"), image("back")];
 
-function setup(t) {
+function setup(t, { reduced = false } = {}) {
   const dom = new JSDOM(
     "<!doctype html><roman-ai-assistant></roman-ai-assistant>",
     {
@@ -53,6 +53,20 @@ function setup(t) {
     },
   );
   const { window } = dom;
+  const animations = [];
+  window.matchMedia = () => ({ matches: reduced });
+  window.HTMLElement.prototype.animate = function (frames, options) {
+    const animation = {
+      frames,
+      options,
+      cancelled: false,
+      cancel() {
+        this.cancelled = true;
+      },
+    };
+    animations.push(animation);
+    return animation;
+  };
   const failures = [],
     dialogs = [],
     captured = new Set();
@@ -87,29 +101,31 @@ function setup(t) {
   });
   const click = (selector, detail = 0) =>
     view.flush(() =>
-      shadow
-        .querySelector(selector)
-        .dispatchEvent(
-          new window.MouseEvent("click", {
-            bubbles: true,
-            composed: true,
-            detail,
-          }),
-        ),
+      shadow.querySelector(selector).dispatchEvent(
+        new window.MouseEvent("click", {
+          bubbles: true,
+          composed: true,
+          detail,
+        }),
+      ),
     );
   const key = (selector, key) =>
     view.flush(() =>
-      shadow
-        .querySelector(selector)
-        .dispatchEvent(
-          new window.KeyboardEvent("keydown", {
-            key,
-            bubbles: true,
-            cancelable: true,
-          }),
-        ),
+      shadow.querySelector(selector).dispatchEvent(
+        new window.KeyboardEvent("keydown", {
+          key,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
     );
-  const pointer = (type, x, y = 20, pointerType = "mouse") =>
+  const pointer = (
+    type,
+    x,
+    y = 20,
+    pointerType = "mouse",
+    selector = ".roman-gallery-open",
+  ) =>
     view.flush(() => {
       const event = new window.MouseEvent(type, {
         bubbles: true,
@@ -123,7 +139,7 @@ function setup(t) {
         pointerId: { value: 1 },
         pointerType: { value: pointerType },
       });
-      shadow.querySelector(".roman-gallery-open").dispatchEvent(event);
+      shadow.querySelector(selector).dispatchEvent(event);
     });
   return {
     window,
@@ -131,6 +147,7 @@ function setup(t) {
     view,
     dialogs,
     captured,
+    animations,
     click,
     key,
     pointer,
@@ -268,4 +285,66 @@ test("empty, hidden and changed selections never retain stale image resources or
   ctx.view.render([image("new")], { productPath: "/products/new" });
   assert.equal(ctx.current(), image("new").src);
   assert.doesNotMatch(ctx.shadow.innerHTML, /detail.jpg/);
+});
+
+test("swipe follows the pointer, uses the compact viewport threshold and resets on cancellation", (t) => {
+  const ctx = setup(t);
+  ctx.view.render(items);
+  const surface = ctx.shadow.querySelector(".roman-gallery-open");
+  Object.defineProperty(surface, "clientWidth", { value: 88 });
+  ctx.pointer("pointerdown", 70);
+  ctx.pointer("pointermove", 45);
+  surface
+    .querySelector("img")
+    .dispatchEvent(
+      new ctx.window.Event("lostpointercapture", { bubbles: true }),
+    );
+  assert.equal(surface.style.getPropertyValue("--roman-gallery-drag"), "-25px");
+  assert.equal(surface.dataset.dragging, "true");
+  ctx.pointer("pointerup", 45);
+  ctx.click(".roman-gallery-open", 1);
+  assert.equal(
+    ctx.current(),
+    items[1].src,
+    "A 25px swipe works in the 88px mobile viewport",
+  );
+  assert.equal(surface.style.getPropertyValue("--roman-gallery-drag"), "");
+  assert.equal(surface.dataset.dragging, undefined);
+  assert.equal(ctx.animations.length, 1);
+  ctx.pointer("pointerdown", 70);
+  ctx.pointer("pointermove", 50);
+  ctx.window.dispatchEvent(new ctx.window.Event("blur"));
+  assert.equal(surface.style.getPropertyValue("--roman-gallery-drag"), "");
+  assert.equal(ctx.captured.size, 0);
+  ctx.pointer("pointerdown", 70);
+  ctx.pointer("pointermove", 40);
+  ctx.dispose();
+  assert.equal(ctx.captured.size, 0);
+  assert.equal(ctx.animations[0].cancelled, true);
+});
+
+test("the enlarged image supports touch swipes and respects reduced motion", (t) => {
+  const ctx = setup(t, { reduced: true });
+  ctx.view.render(items);
+  ctx.click(".roman-gallery-open");
+  const surface = ctx.shadow.querySelector(".roman-gallery-zoom-image");
+  Object.defineProperty(surface, "clientWidth", { value: 300 });
+  ctx.pointer("pointerdown", 230, 30, "touch", ".roman-gallery-zoom-image");
+  ctx.pointer("pointermove", 110, 32, "touch", ".roman-gallery-zoom-image");
+  assert.equal(
+    surface.style.getPropertyValue("--roman-gallery-drag"),
+    "-120px",
+  );
+  ctx.pointer("pointerup", 110, 32, "touch", ".roman-gallery-zoom-image");
+  assert.equal(surface.querySelector("img").src, items[1].zoomSrc);
+  assert.equal(ctx.current(), items[1].src);
+  assert.equal(ctx.animations.length, 0);
+  ctx.pointer("pointerdown", 200, 30, "touch", ".roman-gallery-zoom-image");
+  ctx.pointer("pointermove", 194, 130, "touch", ".roman-gallery-zoom-image");
+  ctx.pointer("pointerup", 190, 160, "touch", ".roman-gallery-zoom-image");
+  assert.equal(
+    surface.querySelector("img").src,
+    items[1].zoomSrc,
+    "Vertical gestures do not select slides",
+  );
 });

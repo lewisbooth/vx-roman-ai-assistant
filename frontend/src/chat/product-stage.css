@@ -18,8 +18,7 @@
   overflow: hidden;
   border-radius: 1.5rem;
   background: #ebe6dc;
-  aspect-ratio: 4 / 5;
-  max-height: min(55dvh, 620px);
+  aspect-ratio: 1;
 }
 
 .roman-product-stage-image img {
@@ -137,7 +136,7 @@
   }
   .roman-product-stage-image {
     width: 88px;
-    height: 110px;
+    height: 88px;
     border-radius: 0.85rem;
   }
   .roman-product-stage-content {
@@ -192,7 +191,7 @@
     color: inherit;
     font: inherit;
     cursor: zoom-in;
-    touch-action: pan-y;
+    touch-action: pan-y pinch-zoom;
     user-select: none;
   }
   .roman-gallery-enlarge {
@@ -206,6 +205,25 @@
     border-radius: 50%;
     background: #fffdf8ed;
     box-shadow: 0 2px 14px #402b2b12;
+  }
+  .roman-gallery-slide {
+    display: block;
+    width: 100%;
+    height: 100%;
+    transform: translateX(var(--roman-gallery-drag, 0px));
+    transition: transform 180ms ease-out;
+  }
+  [data-dragging="true"] > .roman-gallery-slide {
+    transition: none;
+  }
+  .roman-gallery-open[data-dragging="true"],
+  .roman-gallery-zoom-image[data-dragging="true"] {
+    cursor: grabbing;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .roman-gallery-slide {
+      transition: none;
+    }
   }
   .roman-product-gallery svg {
     display: block;
@@ -262,7 +280,7 @@
   }
   .roman-gallery-thumbnails button {
     width: 56px;
-    height: 64px;
+    height: 56px;
     flex: 0 0 56px;
     padding: 2px;
     border: 1px solid transparent;
@@ -285,7 +303,7 @@
   }
   .roman-gallery-zoom {
     box-sizing: border-box;
-    width: min(1000px, calc(100vw - 32px));
+    width: min(1000px, calc(100vw - 32px), calc(100dvh - 150px));
     max-width: none;
     max-height: calc(100dvh - 32px);
     padding: 16px;
@@ -312,11 +330,15 @@
   .roman-gallery-zoom-image {
     display: grid;
     place-items: center;
-    height: min(72dvh, 820px);
-    min-height: 160px;
+    width: 100%;
+    aspect-ratio: 1;
+    min-height: 0;
     overflow: hidden;
     border-radius: 12px;
     background: #ebe6dc;
+    touch-action: pan-y pinch-zoom;
+    user-select: none;
+    cursor: grab;
   }
   .roman-gallery-zoom-image img {
     display: block;
@@ -345,9 +367,6 @@
     }
     .roman-gallery-zoom {
       padding: 12px;
-    }
-    .roman-gallery-zoom-image {
-      height: 65dvh;
     }
   }
 }
