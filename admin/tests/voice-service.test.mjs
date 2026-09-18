@@ -195,6 +195,7 @@ function setup() {
         thoughts: [],
         inputs: [],
         replies: [],
+        replyOptions: [],
       };
       const provider = {
         providerId: "live_test",
@@ -218,10 +219,11 @@ function setup() {
           order.push("input-sent");
           await mock.onCustomerInput?.(text);
         },
-        appendReply: async (text) => {
+        appendReply: async (text, options) => {
           record.replies.push(text);
+          record.replyOptions.push(options);
           order.push("reply-sent");
-          await mock.onReply?.(text);
+          await mock.onReply?.(text, options);
         },
       };
       record.provider = provider;
@@ -1364,6 +1366,232 @@ test("a spoken correction cancels earlier work and only returns the updated dele
   await state.stop();
 });
 
+test("a delegated interruption waits for its delayed customer caption instead of losing the request", async () => {
+  const state = setup();
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "first", offsetMs: 200 });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  state.emit({ type: "delegation", delegationId: "correction", offsetMs: 900 });
+  await flush(); // The former fixed 200ms grace has elapsed in this fixture.
+  assert.equal(state.calls.delegate.length, 1);
+  state.emit(
+    transcript({
+      eventId: "late-correction",
+      text: "Actually, black blinds.",
+      startMs: 500,
+      endMs: 800,
+    }),
+  );
+  await flush();
+  assert.equal(state.calls.delegate.length, 2);
+  assert.equal(state.providers[0].commentaries.at(-1)[0], "correction");
+  assert.equal(state.providers[0].closed, false);
+  await state.stop();
+});
+
+test("a redundant delegation without fresh input cannot cancel valid advisor work", async () => {
+  const state = setup();
+  await state.start();
+  const reply = deferred();
+  state.mock.onDelegate = () => reply.promise;
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "first", offsetMs: 200 });
+  await flush();
+  const cancellations = state.calls.cancelDelegation.length;
+  state.emit({ type: "delegation", delegationId: "repeat", offsetMs: 400 });
+  await flush();
+  assert.equal(state.calls.delegate[0][3].aborted, false);
+  assert.equal(state.calls.cancelDelegation.length, cancellations);
+  reply.resolve({ text: "Which room is this for?" });
+  await flush();
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["first", "Which room is this for?"],
+  ]);
+  await state.stop();
+});
+
+test("an old delegation cannot turn later unrelated speech into an unrequested tool turn", async () => {
+  const state = setup();
+  await state.start();
+  state.emit({
+    type: "delegation",
+    delegationId: "unsolicited",
+    offsetMs: 200,
+  });
+  await flush();
+  state.emit(transcript({ eventId: "later-speech", startMs: 500, endMs: 800 }));
+  await flush();
+  assert.equal(state.calls.delegate.length, 0);
+  state.emit({
+    type: "delegation",
+    delegationId: "actual-request",
+    offsetMs: 900,
+  });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].commentaries[0][0], "actual-request");
+  await state.stop();
+});
+
+test("repeated delegation IDs during caption grace coalesce without cancelling or disconnecting", async () => {
+  const state = setup();
+  const grace = deferred();
+  state.mock.delay = async (_ms, _value, { signal }) => {
+    await grace.promise;
+    signal.throwIfAborted();
+  };
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "first", offsetMs: 200 });
+  state.emit({ type: "delegation", delegationId: "repeat-1", offsetMs: 220 });
+  state.emit({ type: "delegation", delegationId: "repeat-2", offsetMs: 240 });
+  await flush();
+  assert.equal(state.providers[0].closed, false);
+  assert.equal(state.calls.cancelDelegation.length, 1);
+  grace.resolve();
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].commentaries[0][0], "first");
+  await state.stop();
+});
+
+test("newer speech during caption drain requires its own delegation cutoff before any work runs", async () => {
+  const state = setup();
+  const grace = deferred();
+  state.mock.delay = async (_ms, _value, { signal }) => {
+    await grace.promise;
+    signal.throwIfAborted();
+  };
+  await state.start();
+  state.emit(
+    transcript({
+      eventId: "request-a",
+      text: "A roller blind",
+      startMs: 100,
+      endMs: 150,
+    }),
+  );
+  state.emit({
+    type: "delegation",
+    delegationId: "authority-a",
+    offsetMs: 200,
+  });
+  await flush();
+  state.emit(
+    transcript({
+      eventId: "request-b",
+      text: "Actually, choose a shutter",
+      startMs: 500,
+      endMs: 800,
+    }),
+  );
+  await flush();
+  grace.resolve();
+  await flush();
+  assert.equal(
+    state.calls.delegate.length,
+    0,
+    "Later input must not run under authority-a",
+  );
+  assert.equal(state.providers[0].commentaries.length, 0);
+  state.emit({
+    type: "delegation",
+    delegationId: "authority-b",
+    offsetMs: 900,
+  });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].commentaries[0][0], "authority-b");
+  await state.stop();
+});
+
+test("an older delegation cannot replace the newer pending authority for delayed speech", async () => {
+  const state = setup();
+  await state.start();
+  state.emit({ type: "delegation", delegationId: "newer", offsetMs: 900 });
+  await flush();
+  const pendingTimer = [...state.timers].find((timer) => timer.ms === 2000);
+  state.emit({ type: "delegation", delegationId: "older", offsetMs: 200 });
+  await flush();
+  assert.equal(state.timers.has(pendingTimer), true);
+  state.emit(transcript({ eventId: "late-speech", startMs: 500, endMs: 800 }));
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].commentaries[0][0], "newer");
+  await state.stop();
+});
+
+test("pending delegation expires or stops without letting a late caption replay it", async () => {
+  for (const ending of ["expiry", "stop"]) {
+    const state = setup();
+    await state.start();
+    state.emit({ type: "delegation", delegationId: "waiting", offsetMs: 900 });
+    await flush();
+    const timer = [...state.timers].find((timer) => timer.ms === 2000);
+    assert.ok(timer);
+    if (ending === "expiry") {
+      timer.callback();
+      await flush();
+    } else await state.stop();
+    assert.equal(state.timers.has(timer), false);
+    if (ending === "expiry") {
+      state.emit(transcript({ eventId: "late", startMs: 500, endMs: 800 }));
+      state.emit({
+        type: "delegation",
+        delegationId: "waiting",
+        offsetMs: 900,
+      });
+      await flush();
+      assert.equal(state.calls.delegate.length, 0);
+      await state.stop();
+    }
+  }
+});
+
+test("accepted UI input retires a pending spoken delegation rather than replaying it later", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  state.emit({ type: "delegation", delegationId: "old-speech", offsetMs: 900 });
+  await flush();
+  const timer = [...state.timers].find((timer) => timer.ms === 2000);
+  assert.ok(timer);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.timers.has(timer), false);
+  assert.equal(state.calls.delegate.length, 1);
+  state.emit(transcript({ eventId: "old-caption", startMs: 500, endMs: 800 }));
+  state.emit({ type: "delegation", delegationId: "old-speech", offsetMs: 900 });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].commentaries.length, 0);
+  await state.stop();
+});
+
+test("a timely caption being saved survives pending-delegation expiry until persistence completes", async () => {
+  const state = setup();
+  await state.start();
+  state.emit({ type: "delegation", delegationId: "waiting", offsetMs: 900 });
+  await flush();
+  const timer = [...state.timers].find((timer) => timer.ms === 2000);
+  const saving = deferred();
+  state.mock.beforeCaption = () => saving.promise;
+  state.emit(transcript({ eventId: "late", startMs: 500, endMs: 800 }));
+  timer.callback();
+  await flush();
+  assert.equal(state.calls.delegate.length, 0);
+  saving.resolve();
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].commentaries[0][0], "waiting");
+  await state.stop();
+});
+
 test("new delegation IDs without new customer captions cannot replay prior actions", async () => {
   const state = setup();
   await state.start();
@@ -1797,6 +2025,128 @@ test("UI input returns after accepted mirroring while the advisor works and Live
     "Which kind of window are you measuring?",
   ]);
   assert.equal(state.providers[0].closed, false);
+  await state.stop();
+});
+
+test("accepted UI input gets one optional spoken acknowledgement without delaying advisor or final reply", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const advisor = deferred();
+  const cue = deferred();
+  state.mock.onDelegate = () => advisor.promise;
+  state.mock.onReply = (_text, options) =>
+    options?.optional ? cue.promise : undefined;
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  const timer = [...state.timers].find((timer) => timer.ms === 250);
+  assert.ok(timer);
+  timer.callback();
+  timer.callback();
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.deepEqual(state.providers[0].replies, [
+    "Okay, I'll check that for you.",
+  ]);
+  assert.deepEqual(plain(state.providers[0].replyOptions), [
+    { optional: true },
+  ]);
+  advisor.resolve({ text: "What is the width?" });
+  await flush();
+  assert.deepEqual(state.providers[0].replies, [
+    "Okay, I'll check that for you.",
+    "What is the width?",
+  ]);
+  cue.resolve();
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.providers[0].closed, false);
+  await state.stop();
+});
+
+test("fast final replies, new speech and stopping suppress late UI acknowledgement cues", async () => {
+  for (const outcome of ["final", "speech", "stop"]) {
+    const state = setup();
+    const input = await answerableVoice(state);
+    const advisor = deferred();
+    state.mock.onDelegate = () => advisor.promise;
+    await state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    );
+    await flush();
+    const timer = [...state.timers].find((timer) => timer.ms === 250);
+    assert.ok(timer);
+    if (outcome === "final") {
+      advisor.resolve({ text: "Your verified next step." });
+      await flush();
+    } else if (outcome === "speech") {
+      // Suppress immediately, even while the fresh caption waits for persistence.
+      const saving = deferred();
+      state.mock.beforeCaption = () => saving.promise;
+      state.emit(
+        transcript({
+          eventId: "correction",
+          text: "Actually, a different window.",
+        }),
+      );
+      timer.callback();
+      assert.equal(state.providers[0].replies.length, 0);
+      saving.resolve();
+      await flush();
+    } else {
+      const stopped = state.stop();
+      advisor.resolve({ text: "Stopped." });
+      await stopped;
+    }
+    assert.equal(state.timers.has(timer), false);
+    timer.callback();
+    assert.equal(
+      state.providers[0].replies.includes("Okay, I'll check that for you."),
+      false,
+    );
+    if (outcome !== "stop") {
+      const stopped = state.stop();
+      advisor.resolve({ text: "Stopped." });
+      await stopped;
+    }
+  }
+});
+
+test("optional UI acknowledgement failure does not cancel useful work or end voice", async () => {
+  const state = setup();
+  const input = await answerableVoice(state);
+  const advisor = deferred();
+  state.mock.onDelegate = () => advisor.promise;
+  state.mock.onReply = (_text, options) => {
+    if (options?.optional) throw new Error("PRIVATE_CUE_ERROR");
+  };
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  [...state.timers].find((timer) => timer.ms === 250).callback();
+  await flush();
+  assert.equal(state.providers[0].closed, false);
+  assert.equal(state.calls.delegate[0][3].aborted, false);
+  assert.match(
+    JSON.stringify(state.logs),
+    /Optional voice acknowledgement unavailable/,
+  );
+  assert.doesNotMatch(JSON.stringify(state.logs), /PRIVATE_CUE_ERROR/);
+  advisor.resolve({ text: "Your actual next question?" });
+  await flush();
+  assert.equal(state.providers[0].replies.at(-1), "Your actual next question?");
   await state.stop();
 });
 

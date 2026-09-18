@@ -268,6 +268,46 @@ test("browser data messages cannot execute tools or upload captions", async (t) 
   assert.deepEqual(errors, []);
 });
 
+test("provider command errors do not close media or decide readiness in the browser", async (t) => {
+  const { connection, media, errors, warnings } = setup(t);
+  await connection.prepare();
+  let ready = false;
+  const connecting = connection.connect("answer", async () => {}).then(() => {
+    ready = true;
+  });
+  const commandError = {
+    error: {
+      type: "invalid_request_error",
+      code: "immutable_field_update",
+      client_event_id: "optional-context",
+    },
+  };
+  media.event("error", commandError);
+  await Promise.resolve();
+  assert.equal(ready, false, "An error is not a startup acknowledgement");
+  assert.equal(media.tracks[0].stopped, false);
+  media.connect();
+  await connecting;
+
+  media.event("error", commandError);
+  assert.equal(media.tracks[0].enabled, true);
+  assert.equal(media.tracks[0].stopped, false);
+  assert.equal(media.peers[0].closed, undefined);
+  assert.equal(media.calls.pause, 0);
+  connection.setMuted(true);
+  media.event("error", { error: { code: null } });
+  assert.equal(media.tracks[0].enabled, false, "Error handling preserves mute");
+  assert.equal(media.tracks[0].stopped, false);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+
+  media.event("session.closed", { reason: "content" });
+  assert.equal(media.tracks[0].stopped, true);
+  assert.equal(media.peers[0].closed, true);
+  assert.equal(errors.length, 1);
+  assert.equal(warnings[0][1].reason, "provider_closed");
+});
+
 test("blocked audio playback closes microphone and reports an actionable error", async (t) => {
   const { connection, media, errors } = setup(t, {
     play: () => Promise.reject(new Error("not allowed")),
@@ -344,7 +384,7 @@ test("a persistent disconnect expires without a new session or replay and record
 });
 
 test("terminal failures and deliberate close cancel an in-progress recovery", async (t) => {
-  for (const reason of ["failed", "closed", "channel", "stop"]) {
+  for (const reason of ["failed", "closed", "channel", "channel-error", "stop"]) {
     const { connection, media, errors, timers } = setup(t);
     await connection.prepare();
     const connecting = connection.connect("answer", async () => {});
@@ -354,6 +394,7 @@ test("terminal failures and deliberate close cancel an in-progress recovery", as
     media.peers[0].onconnectionstatechange();
     const timer = [...timers.values()][0];
     if (reason === "channel") media.peers[0].channel.onclose();
+    else if (reason === "channel-error") media.peers[0].channel.onerror();
     else if (reason === "stop") connection.close();
     else {
       media.peers[0].connectionState = reason;

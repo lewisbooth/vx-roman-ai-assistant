@@ -212,7 +212,6 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
     allowed_server_events: [
       { type: "session.started" },
       { type: "session.closed" },
-      { type: "error" },
     ],
   });
   assert.deepEqual(plain(request.session.input), [
@@ -588,6 +587,114 @@ test("command timeout rejects and initiates bounded close", async () => {
   assert.equal(app.sockets[0].sent.at(-1).type, "session.close");
   app.sockets[0].event(ended);
   await provider.close();
+});
+
+test("optional acknowledgement timeout and delayed command error preserve the live connection", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const cue = provider.appendReply("Okay, I'll check that for you.", {
+    optional: true,
+  });
+  const rejected = assert.rejects(cue, { code: "command_failed" });
+  const commandId = socket.sent[0].event_id;
+  app.fire(3000);
+  await rejected;
+  socket.event({
+    type: "error",
+    event_id: "late-error",
+    error: {
+      client_event_id: commandId,
+      code: "bad_request",
+      message: "PRIVATE_PROVIDER_DETAIL",
+    },
+  });
+  assert.deepEqual(app.events, []);
+  assert.equal(
+    socket.sent.some((event) => event.type === "session.close"),
+    false,
+  );
+  const final = provider.appendReply("Which window is this for?");
+  socket.ack();
+  await final;
+  assert.doesNotMatch(JSON.stringify(app.logs), /PRIVATE_PROVIDER_DETAIL/);
+  assert.equal(app.timers.size, 0);
+});
+
+test("only errors correlated to optional acknowledgement commands are recoverable", async () => {
+  for (const nested of [true, false]) {
+    const app = setup();
+    const provider = await app.connect();
+    const socket = app.sockets[0];
+    const cue = provider.appendReply("Okay, I'll check that for you.", {
+      optional: true,
+    });
+    const rejected = assert.rejects(cue, { code: "command_failed" });
+    const commandId = socket.sent[0].event_id;
+    socket.event({
+      type: "error",
+      event_id: "cue-error",
+      ...(nested ? {} : { client_event_id: commandId }),
+      error: {
+        ...(nested ? { client_event_id: commandId } : {}),
+        code: "bad_request",
+      },
+    });
+    await rejected;
+    assert.deepEqual(app.events, []);
+    const final = provider.appendReply("Your actual result.");
+    const finalRejected = assert.rejects(final, { code: "command_failed" });
+    socket.event({
+      type: "error",
+      event_id: "final-error",
+      error: {
+        client_event_id: socket.sent.at(-1).event_id,
+        code: "bad_request",
+      },
+    });
+    assert.deepEqual(app.events, [{ type: "error", code: "command_failed" }]);
+    socket.event(ended);
+    await finalRejected;
+  }
+});
+
+test("optional acknowledgement identity tracking is bounded without blocking verified replies", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  for (let index = 0; index < 40; index++) {
+    const cue = provider.appendReply("Okay.", { optional: true });
+    socket.ack();
+    await cue;
+  }
+  await assert.rejects(provider.appendReply("Okay.", { optional: true }), {
+    code: "command_failed",
+  });
+  const final = provider.appendReply("Your verified result.");
+  socket.ack();
+  await final;
+  assert.deepEqual(app.events, []);
+});
+
+test("one outstanding optional cue cannot consume the required-context command slots", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const pending = [provider.appendReply("Okay.", { optional: true })];
+  await assert.rejects(
+    provider.appendReply("Another cue.", { optional: true }),
+    { code: "command_failed" },
+  );
+  for (let index = 0; index < 3; index++)
+    pending.push(provider.appendThinking("Current context."));
+  pending.push(provider.appendReply("Your verified result."));
+  assert.equal(socket.sent.length, 5);
+  await assert.rejects(provider.appendReply("Too many required commands."), {
+    code: "command_failed",
+  });
+  for (let index = 0; index < 5; index++) socket.ack(index);
+  await Promise.all(pending);
+  assert.deepEqual(app.events, []);
 });
 
 test("abort before creation never contacts the provider", async () => {

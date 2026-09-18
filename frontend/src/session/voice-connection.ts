@@ -204,7 +204,9 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       channel = peer.createDataChannel("oai-events");
       channel.onmessage = (event) => {
         // Captions and tool execution come only from the authenticated server.
-        // The browser channel is used only to observe connection lifecycle.
+        // The browser channel observes lifecycle only. The authenticated server
+        // classifies command errors and publishes fatal session state; a rejected
+        // optional command does not mean this media connection has ended.
         if (typeof event.data !== "string" || event.data.length > 65_536)
           return;
         let data: unknown;
@@ -218,10 +220,10 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
           mark("sessionStarted");
           started = true;
           checkReady();
-        } else if (data.type === "session.closed" || data.type === "error") {
+        } else if (data.type === "session.closed") {
           fail(
             "Roman's voice session ended. You can continue in text or start voice again.",
-            data.type === "error" ? "provider_error" : "provider_closed",
+            "provider_closed",
           );
         }
       };

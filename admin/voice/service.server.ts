@@ -62,10 +62,21 @@ interface VoiceOwner {
   delegationCount: number;
   seenDelegations: Set<string>;
   delegatedCaption?: string;
+  scheduledCaption?: string;
   /** Fresh UI input is handled directly, never delegated a second time by Live. */
   uiInputCaption?: string;
   latestUserCaption?: string;
   latestUserSequence?: number;
+  latestUserStartMs?: number;
+  pendingSpeech?: {
+    delegationId: string;
+    offsetMs: number;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  inputAcknowledgement?: {
+    caption: string;
+    timer: ReturnType<typeof setTimeout>;
+  };
   delegationController?: AbortController;
   resumeQuestionId?: string;
   resumeController?: AbortController;
@@ -80,6 +91,7 @@ interface VoiceOwner {
 // belong to SQLite. A restart expires old leases rather than replaying work.
 const owners = new Map<string, VoiceOwner>();
 const maxConnections = 4;
+const DELEGATION_TRANSCRIPT_WAIT_MS = 2_000;
 const disconnected = "Voice disconnected. Start voice again to reconnect.";
 
 function fail(owner: VoiceOwner, error: string, category: string) {
@@ -155,28 +167,73 @@ function beginConversation(owner: VoiceOwner) {
 }
 
 type AdvisorRequest =
-  | { kind: "speech"; delegationId: string }
+  | { kind: "speech"; delegationId: string; offsetMs: number }
   | { kind: "input"; requestId: string; caption: string }
   | { kind: "resume"; questionId: string };
 
-function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
-  if (owner.stopping) return;
-  // A spoken correction can arrive while the silent input mirror is in flight.
-  // Its newer work must not be cancelled when that older acknowledgement lands.
-  if (request.kind === "input" && owner.latestUserCaption !== request.caption)
+function clearPendingSpeech(owner: VoiceOwner) {
+  if (owner.pendingSpeech) clearTimeout(owner.pendingSpeech.timer);
+  owner.pendingSpeech = undefined;
+}
+
+function clearInputAcknowledgement(owner: VoiceOwner, caption?: string) {
+  if (caption !== undefined && owner.inputAcknowledgement?.caption !== caption)
     return;
-  if (request.kind === "speech") {
-    if (owner.seenDelegations.has(request.delegationId)) return;
-    if (owner.resumeController && !owner.userSpeechObserved) return;
-    // UI input already owns a backend turn. An unsolicited Live delegation
-    // must not cancel it, replay its actions, or ask the customer to repeat it.
-    if (
-      owner.uiInputCaption &&
-      owner.latestUserCaption === owner.uiInputCaption
-    )
-      return;
-  }
-  if (owner.seenDelegations.size >= 40 || owner.delegationCount >= 2) {
+  if (owner.inputAcknowledgement)
+    clearTimeout(owner.inputAcknowledgement.timer);
+  owner.inputAcknowledgement = undefined;
+}
+
+function acknowledgeInput(
+  owner: VoiceOwner,
+  caption: string,
+  signal: AbortSignal,
+) {
+  const acknowledgement = {
+    caption,
+    timer: setTimeout(() => {
+      if (owner.inputAcknowledgement !== acknowledgement) return;
+      owner.inputAcknowledgement = undefined;
+      if (
+        owner.stopping ||
+        signal.aborted ||
+        owner.latestUserCaption !== caption
+      )
+        return;
+      // The backend is already running. This optional cue neither delays its
+      // result nor claims a particular tool or customer action has succeeded.
+      void owner
+        .provider!.appendReply("Okay, I'll check that for you.", {
+          optional: true,
+        })
+        .catch(() => {
+          if (!owner.stopping && !signal.aborted)
+            console.error(
+              "[Roman] Optional voice acknowledgement unavailable.",
+            );
+        });
+    }, 250),
+  };
+  owner.inputAcknowledgement = acknowledgement;
+  acknowledgement.timer.unref();
+}
+
+function hasFreshSpeech(owner: VoiceOwner) {
+  return (
+    !!owner.latestUserCaption &&
+    owner.latestUserCaption !== owner.delegatedCaption &&
+    owner.latestUserCaption !== owner.scheduledCaption &&
+    owner.latestUserCaption !== owner.uiInputCaption
+  );
+}
+
+function receiveDelegation(
+  owner: VoiceOwner,
+  event: Extract<VoiceProviderEvent, { type: "delegation" }>,
+) {
+  if (owner.stopping || owner.seenDelegations.has(event.delegationId)) return;
+  if (owner.resumeController && !owner.userSpeechObserved) return;
+  if (owner.seenDelegations.size >= 40) {
     fail(
       owner,
       "Voice received too much pending work. Switch to text or start voice again.",
@@ -184,8 +241,58 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     );
     return;
   }
-  if (request.kind === "speech")
-    owner.seenDelegations.add(request.delegationId);
+  owner.seenDelegations.add(event.delegationId);
+  if (owner.pendingSpeech && owner.pendingSpeech.offsetMs > event.offsetMs)
+    return;
+  clearPendingSpeech(owner);
+  if (hasFreshSpeech(owner)) {
+    if (
+      owner.latestUserStartMs !== undefined &&
+      owner.latestUserStartMs > event.offsetMs
+    )
+      return;
+    scheduleAdvisorReply(owner, {
+      kind: "speech",
+      delegationId: event.delegationId,
+      offsetMs: event.offsetMs,
+    });
+    return;
+  }
+  // Delegations and captions arrive independently. Retain this explicit task
+  // authority while its caption catches up, without cancelling useful work.
+  // A later unrelated utterance cannot activate an earlier delegation.
+  const pending = {
+    delegationId: event.delegationId,
+    offsetMs: event.offsetMs,
+    timer: setTimeout(() => {
+      // Captions already received must finish saving before expiry is checked.
+      void owner.events.then(() => {
+        if (owner.pendingSpeech === pending) clearPendingSpeech(owner);
+      });
+    }, DELEGATION_TRANSCRIPT_WAIT_MS),
+  };
+  owner.pendingSpeech = pending;
+  pending.timer.unref();
+}
+
+function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
+  if (owner.stopping) return;
+  // A spoken correction can arrive while the silent input mirror is in flight.
+  // Its newer work must not be cancelled when that older acknowledgement lands.
+  if (request.kind === "input" && owner.latestUserCaption !== request.caption)
+    return;
+  if (request.kind === "speech" && !hasFreshSpeech(owner)) return;
+  if (request.kind === "input") clearPendingSpeech(owner);
+  if (owner.delegationCount >= 2) {
+    fail(
+      owner,
+      "Voice received too much pending work. Switch to text or start voice again.",
+      "delegation_limit",
+    );
+    return;
+  }
+  owner.scheduledCaption = owner.latestUserCaption;
+  clearInputAcknowledgement(owner);
   owner.delegationController?.abort();
   const controller = new AbortController();
   owner.delegationController = controller;
@@ -194,6 +301,8 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     owner.resumeQuestionId = undefined;
   }
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
+  if (request.kind === "input")
+    acknowledgeInput(owner, request.caption, signal);
   // A new delegation may be a spoken correction. Retire pending tools from
   // the earlier request before beginning work from the updated captions.
   const cancelled = cancelVoiceDelegation(owner.conversationId, owner.voiceId);
@@ -207,6 +316,14 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
       if (request.kind === "speech") await delay(200, undefined, { signal });
       await owner.events;
       if (signal.aborted) return;
+      // Draining may reveal a later customer correction. The earlier provider
+      // delegation is not authority to execute that newer request.
+      if (
+        request.kind === "speech" &&
+        owner.latestUserStartMs !== undefined &&
+        owner.latestUserStartMs > request.offsetMs
+      )
+        return;
       if (
         request.kind === "input" &&
         owner.latestUserCaption !== request.caption
@@ -235,6 +352,8 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         signal,
         resumeQuestionId ? { resumeQuestionId } : undefined,
       );
+      if (request.kind === "input")
+        clearInputAcknowledgement(owner, request.caption);
       await owner.events;
       if (signal.aborted) return;
       if (resumeQuestionId && owner.userSpeechObserved) return;
@@ -265,6 +384,8 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         );
     })
     .finally(() => {
+      if (request.kind === "input")
+        clearInputAcknowledgement(owner, request.caption);
       if (owner.resumeController === controller)
         owner.resumeController = undefined;
       owner.delegationCount--;
@@ -303,8 +424,10 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
   }
   // Captions can arrive before the queued readiness write. Do not offer a
   // generic welcome after the customer has already begun their request.
-  if (event.type === "transcript" && event.role === "user")
+  if (event.type === "transcript" && event.role === "user") {
     owner.userSpeechObserved = true;
+    clearInputAcknowledgement(owner);
+  }
   const interruptedResume =
     event.type === "transcript" && event.role === "user"
       ? owner.resumeController
@@ -346,13 +469,20 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
         ) {
           owner.latestUserCaption = event.eventId;
           owner.latestUserSequence = caption.sequence;
+          owner.latestUserStartMs = event.startMs;
+          const pending = owner.pendingSpeech;
+          if (pending) {
+            clearPendingSpeech(owner);
+            if (event.startMs <= pending.offsetMs && hasFreshSpeech(owner))
+              scheduleAdvisorReply(owner, {
+                kind: "speech",
+                delegationId: pending.delegationId,
+                offsetMs: pending.offsetMs,
+              });
+          }
         }
         await cancelledResume;
-      } else
-        scheduleAdvisorReply(owner, {
-          kind: "speech",
-          delegationId: event.delegationId,
-        });
+      } else receiveDelegation(owner, event);
     })
     .catch(() => {
       fail(
@@ -369,6 +499,8 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
 function closeOwner(owner: VoiceOwner): Promise<void> {
   if (owner.closing) return owner.closing;
   owner.stopping = true;
+  clearPendingSpeech(owner);
+  clearInputAcknowledgement(owner);
   if (owner.timer) clearTimeout(owner.timer);
   owner.controller.abort();
   owner.closing = (async () => {
@@ -728,8 +860,11 @@ async function submitVoiceInput(
       // while repeated/draining caption IDs cannot replace its newer sequence.
       owner.latestUserCaption = `answer:${receipt.messageId}`;
       owner.latestUserSequence = receipt.sequence;
+      owner.latestUserStartMs = undefined;
       owner.uiInputCaption = owner.latestUserCaption;
       owner.delegatedCaption = owner.latestUserCaption;
+      clearPendingSpeech(owner);
+      clearInputAcknowledgement(owner);
     }
     return receipt;
   });

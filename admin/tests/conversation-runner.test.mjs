@@ -3105,7 +3105,14 @@ test("terminal numeric replies preserve selected cards, visible text and complet
 test("terminal voice numeric replies retain the current overview and speak the exact method/question once", async () => {
   const env = setup();
   const overview = "The manufacturer's allowance remains unchanged.";
-  const method = `${measurementSelection.instructions} ${measurementSelection.question}`;
+  const widthStep = {
+    ...measurementSelection,
+    label: "Width",
+    instructions:
+      "Measure horizontally from the left recess wall to the right at the top, middle and bottom. Do not make deductions.",
+    question: "What is the smallest of those three width measurements?",
+  };
+  const method = `${widthStep.instructions} ${widthStep.question}`;
   env.streams.push(
     events(completed("", { output: [guideLookup()] })),
     events(
@@ -3117,7 +3124,7 @@ test("terminal voice numeric replies retain the current overview and speak the e
               { type: "output_text", text: `${overview} ${method} ${method}` },
             ],
           },
-          measurementCall({ ...measurementSelection, message: overview }),
+          measurementCall({ ...widthStep, message: overview }),
         ],
       }),
     ),
@@ -3132,6 +3139,8 @@ test("terminal voice numeric replies retain the current overview and speak the e
     guideOrigin,
   );
   assert.equal(reply.text, `${overview} ${method}`);
+  assert.equal(reply.questionPresentation.measurement.instructions, widthStep.instructions);
+  assert.equal(reply.questionPresentation.question, widthStep.question);
   assert.equal(env.calls.requests.length, 2);
 });
 

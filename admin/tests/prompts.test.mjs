@@ -946,7 +946,7 @@ test("numeric and choice widgets share one answer request without duplicate writ
   const live = romanVoicePrompt("marin");
   for (const rule of [
     /Allow only one answer request per reply across ask_question and ask_measurement/,
-    /Speak that step's brief instructions and exact question once/,
+    /Speak that step's complete supported method and exact question once/,
     /do not add another question or insist on the widget when the customer answers aloud/,
     /Delegate numeric answers, corrections, unit changes and requests to stop measuring/,
   ])
@@ -1494,7 +1494,7 @@ test("Live delegates every guidance follow-up and preserves backend source limit
   const live = romanVoicePrompt("marin");
   assert.match(
     live,
-    /Delegate before every measuring, fitting or product-suitability reply, including follow-ups, corrections, a one-word shape answer such as "circular", and requests to repeat instructions/,
+    /Delegate before every measuring, fitting or product-suitability reply, including follow-ups, corrections, a one-word shape answer such as "circular", yes\/no fit-check answers, measurements and requests to repeat instructions/,
   );
   assert.match(
     live,
@@ -1613,7 +1613,7 @@ test("voice waits for verified guidance and gives one customer-facing guide intr
   assert.match(prompt, /wait for the verified briefing before giving its overview or next question/);
   assert.match(prompt, /do not fill it with speculative actions, repeated acknowledgements or a provisional guide introduction/);
   assert.match(prompt, /Do not say "PDP", backend, tool names or other implementation terms to the customer/);
-  assert.match(prompt, /one short phrase such as "I'm pulling up the measuring guide\."/);
+  assert.match(prompt, /one short sentence, never read internal context or repeat the customer's input/);
   assert.match(prompt, /Treat the briefing as the complete next reply, not a request for another introduction/);
   assert.match(prompt, /Do not prepend a second version or repeat an introduction already spoken during this flow/);
   assert.match(prompt, /Do not reject supported library guidance merely because the original product-page link was wrong/);
@@ -1666,6 +1666,33 @@ test('checkout handoff is available in both channels with truthful popup outcome
  }
  assert.match(romanVoicePrompt('marin'),/delegate the customer's checkout request to open_checkout/);
 });
+test("measuring direction survives brevity rules in text, briefings and live speech", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /width is measured horizontally from left to right at the top, middle and bottom/);
+    assert.match(prompt, /drop is measured vertically from top to sill at the left, middle and right/);
+    assert.match(prompt, /Never borrow the drop positions for a width instruction/);
+    assert.match(prompt, /examples do not override a top-only width, an uneven\/tiled recess exception/);
+    assert.match(prompt, /Routine sentence and word targets do not compress a measuring method/);
+  }
+  const live = romanVoicePrompt("marin");
+  assert.match(live, /Preserve the measurement direction, endpoints, positions, result-selection rule and allowances from the briefing/);
+  assert.match(live, /never turn top\/middle\/bottom width positions into left\/middle\/right drop positions/);
+  assert.match(live, /do not repeat an allowance or method you have just spoken/);
+});
+
+test("interrupted short answers delegate while optional UI acknowledgements never replace useful replies", () => {
+  const live = romanVoicePrompt("marin");
+  assert.match(live, /An early answer to the current question is new input even if you were still explaining it/);
+  assert.match(live, /even with "yes", "no", "1200 millimetres" or "that's correct", including while you are speaking/);
+  assert.match(live, /Never use a short answer as permission to invent the next measuring step/);
+  assert.match(live, /listening backchannel that does not answer a pending question/);
+  assert.match(live, /application may supply one short progress acknowledgement/);
+  assert.match(live, /do not add another acknowledgement if you already gave one/);
+  assert.match(live, /Do not guess which task is running or imply anything was saved, configured or added/);
+  assert.match(live, /prioritize it and skip obsolete filler/);
+  assert.match(live, /do not delegate that same input again or replace the result with a bare acknowledgement/);
+});
+
 test('guide-prescribed multiple positions form one measurement step without inventing a universal minimum rule',()=>{
  for(const prompt of [ROMAN_TEXT_PROMPT,ROMAN_VOICE_BRIEFING_PROMPT]){
  assert.match(prompt,/When the verified guide prescribes several positions and one resulting value, treat that as one measuring step/);assert.match(prompt,/smallest, largest or other result in one ask_measurement/);assert.match(prompt,/Keep separate readings only when the guide needs them independently/);assert.match(prompt,/Do not substitute a familiar smallest-of-three method/);
