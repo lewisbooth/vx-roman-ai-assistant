@@ -230,7 +230,7 @@ async function setup(t, options = {}) {
   };
 }
 
-test("composer voice action starts only on its own click and preserves the unsent text draft", async (t) => {
+test("manual composer voice activation preserves the editable welcome and unsent draft", async (t) => {
   const ctx = await setup(t);
   const form = ctx.container.querySelector(".roman-composer form");
   const field = form.querySelector(".roman-composer-field");
@@ -255,13 +255,18 @@ test("composer voice action starts only on its own click and preserves the unsen
   );
   start.click();
   await until(
-    () => ctx.startVoiceCalls.length === 1 && ctx.input().disabled,
+    () =>
+      ctx.startVoiceCalls.length === 1 &&
+      ctx.container.querySelector(".roman-voice-waveform"),
     "Voice did not start explicitly",
   );
   assert.deepEqual(ctx.calls, [], "the voice button must not submit the form");
   assert.equal(ctx.input().value, "Keep these measurements in my draft");
-  assert.equal(form.hidden, true);
-  assert.equal(form.closest(".roman-composer").hidden, true);
+  assert.equal(form.hidden, false);
+  assert.equal(form.closest(".roman-composer").hidden, false);
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.input().readOnly, false);
+  assert.equal(ctx.container.querySelectorAll(".roman-welcome-tile").length, 4);
   const stop = ctx.container.querySelector('[aria-label="End voice"]');
   stop.click();
   await until(
@@ -365,6 +370,7 @@ test("saved guide records stay hidden without fetching products, navigating or s
         busy: false,
         tools: [],
         messages: [
+          message("guide-request", "user", "Help me measure."),
           {
             ...message("guide-message", "assistant", ""),
             parts: [
@@ -381,7 +387,11 @@ test("saved guide records stay hidden without fetching products, navigating or s
       },
     },
   });
-  assert.equal(ctx.container.querySelector(".roman-timeline > li"), null);
+  assert.equal(ctx.container.querySelector(".roman-message-assistant"), null);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-timeline > li").length,
+    1,
+  );
   assert.equal(ctx.container.querySelector(".roman-timeline a"), null);
   assert.doesNotMatch(
     ctx.container.textContent,
@@ -406,6 +416,7 @@ test("malformed or foreign historical guide records create no customer warning o
         busy: false,
         tools: [],
         messages: [
+          message("guide-request", "user", "Help me measure."),
           {
             ...message("unsafe-guide", "assistant", ""),
             parts: [
@@ -427,7 +438,11 @@ test("malformed or foreign historical guide records create no customer warning o
       },
     },
   });
-  assert.equal(ctx.container.querySelector(".roman-timeline > li"), null);
+  assert.equal(ctx.container.querySelector(".roman-message-assistant"), null);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-timeline > li").length,
+    1,
+  );
   assert.doesNotMatch(ctx.container.textContent, /guides are unavailable/);
 });
 
@@ -797,7 +812,7 @@ test("welcome and composer share a same-tick submission guard", async (t) => {
     });
 });
 
-test("welcome tiles do not submit during restoration, pending work or voice ownership", async (t) => {
+test("welcome tiles do not submit during restoration, pending work, stopping or remote voice ownership", async (t) => {
   for (const [name, state] of [
     ["restoring", { restoring: true }],
     ["pending", { pending: true }],
@@ -812,14 +827,6 @@ test("welcome tiles do not submit during restoration, pending work or voice owne
           tools: [],
         },
       },
-    ],
-    [
-      "voice starting",
-      { voice: { status: "starting", muted: false, error: null } },
-    ],
-    [
-      "voice active",
-      { voice: { status: "active", muted: false, error: null } },
     ],
     [
       "voice stopping",
@@ -851,6 +858,120 @@ test("welcome tiles do not submit during restoration, pending work or voice owne
       assert.deepEqual(ctx.calls, []);
       assert.deepEqual(ctx.startVoiceCalls, []);
     });
+});
+
+test("voice startup, lifecycle events and Roman's greeting keep welcome tiles and text editable until a customer responds", async (t) => {
+  for (const voiceStatus of ["starting", "active"])
+    for (const response of ["typed", "tile", "spoken"])
+      await t.test(`${voiceStatus}: ${response}`, async (t) => {
+        const rows = [
+          {
+            ...message("voice-start", "context", ""),
+            parts: [
+              {
+                type: "voice_event",
+                version: 1,
+                voiceId: "voice",
+                event: "started",
+              },
+            ],
+          },
+          {
+            ...message("greeting", "assistant", ""),
+            parts: [
+              {
+                type: "voice",
+                version: 1,
+                voiceId: "voice",
+                text: "Hi! I'm Roman. Where would you like to start?",
+                startMs: 0,
+                endMs: 1000,
+              },
+            ],
+          },
+        ];
+        const conversation = {
+          id: "voice-welcome",
+          status: "active",
+          revision: 1,
+          busy: false,
+          tools: [],
+          messages: rows,
+        };
+        const ctx = await setup(t, {
+          state: {
+            conversation,
+            voice: { status: voiceStatus, muted: false, error: null },
+          },
+          onSend(text) {
+            ctx.update({
+              optimisticMessage: message(
+                "optimistic-input",
+                "user",
+                text,
+                "pending",
+              ),
+            });
+          },
+        });
+        const input = ctx.input();
+        const bar = ctx.container.querySelector(".roman-voice-composer");
+        const tiles = [
+          ...ctx.container.querySelectorAll(".roman-welcome-tile"),
+        ];
+        assert.equal(tiles.length, 4);
+        assert.ok(tiles.every((tile) => !tile.disabled));
+        assert.equal(input.disabled, false);
+        assert.equal(input.readOnly, false);
+        assert.equal(input.closest("form").hidden, false);
+        assert.equal(ctx.container.querySelector(".roman-timeline"), null);
+        await ctx.type("I need blackout blinds for my bedroom.");
+        assert.ok(
+          ctx.container.querySelector(".roman-welcome"),
+          "An unsent draft is not a customer reply",
+        );
+        if (response === "spoken") {
+          ctx.update({
+            conversation: {
+              ...conversation,
+              messages: [
+                ...rows,
+                {
+                  ...message("customer-voice", "user", ""),
+                  parts: [
+                    {
+                      type: "voice",
+                      version: 1,
+                      voiceId: "voice",
+                      text: "I need blackout blinds.",
+                      startMs: 1100,
+                      endMs: 2000,
+                    },
+                  ],
+                },
+              ],
+            },
+          });
+        } else if (response === "tile") tiles[0].click();
+        else
+          ctx.container
+            .querySelector('.roman-composer button[type="submit"]')
+            .click();
+        await until(
+          () => !ctx.container.querySelector(".roman-welcome"),
+          "The first customer response did not open the transcript",
+        );
+        assert.equal(
+          ctx.container.querySelectorAll(".roman-message-user").length,
+          1,
+        );
+        assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
+        assert.equal(ctx.input(), input);
+        assert.equal(input.closest("form").hidden, true);
+        assert.deepEqual(ctx.stopVoiceCalls, []);
+        assert.deepEqual(ctx.startVoiceCalls, []);
+        assert.equal(ctx.calls.length, response === "spoken" ? 0 : 1);
+      });
 });
 
 test("failed welcome submissions show one retryable error and retain the same starter and draft", async (t) => {
@@ -971,13 +1092,13 @@ test("Enter and Send retain composer focus through submission and the model repl
       assert.equal(input.disabled, false);
       assert.equal(input.value, "400 by 500 mm");
       ctx.update({
-        conversation: { ...activeConversation([]), busy: true },
+        conversation: { ...engagedConversation([]), busy: true },
       });
       accept();
       await until(() => input.value === "", "Accepted draft was not cleared");
       assert.equal(input.readOnly, true);
       assert.equal(root.activeElement, input);
-      ctx.update({ conversation: activeConversation([]) });
+      ctx.update({ conversation: engagedConversation([]) });
       await until(() => !input.readOnly, "Reply did not release text entry");
       assert.equal(root.activeElement, input);
       await ctx.type("That's correct");
@@ -999,7 +1120,12 @@ test("a late send completion never takes focus back after the customer moves awa
       await until(() => ctx.input().readOnly, "Send did not become pending");
       let target;
       if (destination === "voice") {
-        ctx.update({ voice: { status: "active", muted: false, error: null } });
+        ctx.update({
+          conversation: engagedConversation([
+            message("sent", "user", "Help me measure"),
+          ]),
+          voice: { status: "active", muted: false, error: null },
+        });
         await until(
           () => !!ctx.container.querySelector('[aria-label="End voice"]'),
           "Voice controls did not appear",
@@ -1124,7 +1250,10 @@ test("transcript renders untrusted text as text and displays failed replies", as
 });
 
 test("new messages preserve a reader's scroll position and resume following at the bottom", async (t) => {
-  let messages = [message("first", "assistant", "Initial reply")];
+  let messages = [
+    message("first-customer", "user", "Help me choose blinds."),
+    message("first", "assistant", "Initial reply"),
+  ];
   const { window, container, update } = await setup(t, {
     state: {
       conversation: { id: "existing", busy: false, messages },
@@ -1175,14 +1304,21 @@ test("new messages preserve a reader's scroll position and resume following at t
   );
 });
 
-function activeConversation(messages) {
+function engagedConversation(messages) {
   return {
     id: "existing",
     status: "active",
     revision: 1,
     tools: [],
     busy: false,
-    messages,
+    // Engaged fixtures represent a real customer request before Roman's
+    // results. Assistant greetings and lifecycle events alone stay at home.
+    messages: messages.some((row) => row.role === "user")
+      ? messages
+      : [
+          message("initial-customer", "user", "Help me choose blinds."),
+          ...messages,
+        ],
   };
 }
 
@@ -1211,7 +1347,7 @@ test("restored carousels hydrate only near the viewport and cancel obsolete disp
     return row;
   });
   const ctx = await setup(t, {
-    state: { conversation: activeConversation(messages) },
+    state: { conversation: engagedConversation(messages) },
     beforeImport: (window) => {
       window.IntersectionObserver = class {
         constructor(callback, options) {
@@ -1288,7 +1424,7 @@ test("product references hydrate once and Choose blind submits intent without na
     resolve = done;
   });
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([productsMessage()]) },
+    state: { conversation: engagedConversation([productsMessage()]) },
     onLoadProducts: () => pending,
   });
   await until(
@@ -1296,7 +1432,7 @@ test("product references hydrate once and Choose blind submits intent without na
     "Product references were not hydrated",
   );
   assert.match(ctx.container.textContent, /Loading products/);
-  ctx.update({ conversation: activeConversation([productsMessage()]) });
+  ctx.update({ conversation: engagedConversation([productsMessage()]) });
   await delay(0);
   assert.equal(
     ctx.productCalls.length,
@@ -1310,7 +1446,7 @@ test("product references hydrate once and Choose blind submits intent without na
   );
   const card = ctx.container.querySelector(".roman-product-card");
   ctx.update({
-    conversation: activeConversation([
+    conversation: engagedConversation([
       productsMessage(),
       message("later", "assistant", "A later streamed response"),
     ]),
@@ -1367,7 +1503,7 @@ test("product cards show only the selected IDs in their recommendation order", a
     url: "https://hd-dev-single.myshopify.com/products/unrelated",
   };
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([selected]) },
+    state: { conversation: engagedConversation([selected]) },
     onLoadProducts: () => ({
       products: [unrelated, catalog.products[0], second],
       messages: [{ type: "info", text: "One selected item is unavailable." }],
@@ -1392,7 +1528,7 @@ test("choosing a blind in voice sends one selection without stopping voice or na
   let release;
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([productsMessage()]),
+      conversation: engagedConversation([productsMessage()]),
       voice: { status: "active", muted: false, error: null },
     },
     onLoadProducts: () => catalog,
@@ -1421,7 +1557,7 @@ test("choosing a blind in voice sends one selection without stopping voice or na
 test("a failed product selection stays retryable with an actionable error", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([productsMessage()]) },
+    state: { conversation: engagedConversation([productsMessage()]) },
     onLoadProducts: () => catalog,
     onSend: (_text, window) => {
       if (++attempts === 1)
@@ -1448,7 +1584,7 @@ test("a failed product selection stays retryable with an actionable error", asyn
 
 test("unrelated lookup matches cannot replace an unavailable selected product", async (t) => {
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([productsMessage()]) },
+    state: { conversation: engagedConversation([productsMessage()]) },
     onLoadProducts: () => ({
       products: [{ ...catalog.products[0], id: "gid://shopify/Product/999" }],
       messages: [],
@@ -1468,7 +1604,7 @@ test("unrelated lookup matches cannot replace an unavailable selected product", 
 test("product errors have an explicit retry, and missing products remain honest", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([productsMessage()]) },
+    state: { conversation: engagedConversation([productsMessage()]) },
     onLoadProducts: (_ids, window) => {
       if (++attempts === 1)
         throw new window.Error("Shopify is unavailable. Please retry.");
@@ -1500,7 +1636,7 @@ test("product errors have an explicit retry, and missing products remain honest"
 test("only Roman navigation uses a notification; manual visits stay hidden and link text stays literal", async (t) => {
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([
+      conversation: engagedConversation([
         {
           ...message("manual", "context", ""),
           parts: [
@@ -1544,7 +1680,7 @@ test("only Roman navigation uses a notification; manual visits stay hidden and l
   assert.equal(entries.length, 2);
   assert.equal(
     ctx.container.querySelectorAll(".roman-timeline > li").length,
-    2,
+    3,
   );
   assert.doesNotMatch(ctx.container.textContent, /Manual browsing page|Viewed/);
   assert.ok(
@@ -1579,7 +1715,7 @@ test("saved cart additions render product and submitted dimensions with a workin
   ];
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation(
+      conversation: engagedConversation(
         products.map((product, index) => ({
           ...message(`cart-${index}`, "context", ""),
           parts: [
@@ -1629,7 +1765,7 @@ test("saved cart additions render product and submitted dimensions with a workin
 test("saved sample additions render as samples rather than full products", async (t) => {
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([
+      conversation: engagedConversation([
         {
           ...message("sample-add", "context", ""),
           parts: [
@@ -1685,7 +1821,7 @@ test("voice lifecycle events remain chronological context and do not retire a pe
     event("voice-disconnected", "disconnected"),
   ];
   const ctx = await setup(t, {
-    state: { conversation: activeConversation(rows) },
+    state: { conversation: engagedConversation(rows) },
   });
   const entries = () => [
     ...ctx.container.querySelectorAll(".roman-voice-event"),
@@ -1711,7 +1847,7 @@ test("voice lifecycle events remain chronological context and do not retire a pe
     question.parts[0].answers.length,
   );
   ctx.update({
-    conversation: activeConversation(rows.map((row) => ({ ...row }))),
+    conversation: engagedConversation(rows.map((row) => ({ ...row }))),
   });
   await delay(0);
   assert.equal(entries().length, 4);
@@ -1727,7 +1863,7 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   });
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([
+      conversation: engagedConversation([
         message("reply", "assistant", "Your saved conversation"),
       ]),
     },
@@ -1764,7 +1900,7 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
 test("an unsuccessful End keeps the conversation and draft available", async (t) => {
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([
+      conversation: engagedConversation([
         message("reply", "assistant", "Keep this conversation"),
       ]),
     },
@@ -1795,7 +1931,7 @@ test("late product loading follows the transcript only while the reader stays at
           resolve = done;
         });
         const ctx = await setup(t, {
-          state: { conversation: activeConversation([productsMessage()]) },
+          state: { conversation: engagedConversation([productsMessage()]) },
           onLoadProducts: () => pending,
         });
         const viewport = ctx.container.querySelector(".roman-chat-scroll");
@@ -1827,7 +1963,7 @@ test("a late card lookup cannot repopulate a cleared conversation", async (t) =>
     resolve = done;
   });
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([productsMessage()]) },
+    state: { conversation: engagedConversation([productsMessage()]) },
     onLoadProducts: () => pending,
   });
   await until(() => ctx.productCalls.length === 1, "Lookup did not start");
@@ -1858,7 +1994,7 @@ test("voice captions render as labelled plain text alongside the existing transc
   };
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([
+      conversation: engagedConversation([
         message("text-message", "user", "My kitchen"),
         caption,
       ]),
@@ -1903,7 +2039,7 @@ test("voice captions hide speech cues and orphaned punctuation for both speakers
   ];
   const original = structuredClone(rows);
   const ctx = await setup(t, {
-    state: { conversation: activeConversation(rows) },
+    state: { conversation: engagedConversation(rows) },
   });
   const captions = () => [
     ...ctx.container.querySelectorAll(".roman-voice-caption p"),
@@ -1923,7 +2059,7 @@ test("voice captions hide speech cues and orphaned punctuation for both speakers
   assert.deepEqual(rows, original);
   const firstCaption = captions()[0];
   ctx.update({
-    conversation: activeConversation([
+    conversation: engagedConversation([
       ...rows.slice(0, 2),
       caption("incoming-caption", "assistant", " [breath] . Found one."),
       rows[3],
@@ -1942,7 +2078,7 @@ test("voice captions hide speech cues and orphaned punctuation for both speakers
 test("the voice composer and dock synchronize mute state and restore the mounted text draft after stopping", async (t) => {
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([
+      conversation: engagedConversation([
         message("user-message", "user", "My kitchen"),
       ]),
     },
@@ -2022,7 +2158,7 @@ test("restored remote voice can be ended explicitly without activating the micro
   const ctx = await setup(t, {
     state: {
       conversation: {
-        ...activeConversation([]),
+        ...engagedConversation([]),
         voice: { id: "voice", clientId: "previous-owner", status: "active" },
       },
     },
@@ -2139,6 +2275,7 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
     stopped = resolve;
   });
   const ctx = await setup(t, {
+    state: { conversation: engagedConversation([]) },
     onStopVoice: () => {
       ctx.update({ voice: { status: "stopping", muted: true, error: null } });
       return accepted;
@@ -2237,7 +2374,10 @@ test("a failed voice start leaves text usable and retries voice only after anoth
     () => ctx.container.querySelector(".roman-voice-waveform"),
     "Explicit voice retry did not connect",
   );
-  assert.equal(input.closest("form").hidden, true);
+  assert.equal(input.closest("form").hidden, false);
+  assert.equal(input.disabled, false);
+  assert.equal(input.readOnly, false);
+  assert.ok(ctx.container.querySelector(".roman-welcome"));
   assert.equal(ctx.input(), input);
   assert.equal(input.value, "Keep this text after a failed microphone request");
   assert.deepEqual(ctx.startVoiceCalls, ["start", "start"]);
@@ -2247,6 +2387,7 @@ test("a failed voice start leaves text usable and retries voice only after anoth
 test("a failed voice shutdown retains an explicit retry and reveals text only after stop acknowledgement", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
+    state: { conversation: engagedConversation([]) },
     onStopVoice: (window) => {
       if (++attempts === 1) throw new window.Error("Stop remains unconfirmed");
     },
@@ -2337,7 +2478,7 @@ test("easy answers render once beneath all cards with a labelled literal questio
     },
   );
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([row]) },
+    state: { conversation: engagedConversation([row]) },
   });
   const parts = ctx.container.querySelector(".roman-message-parts");
   const widget = ctx.container.querySelector(".roman-question");
@@ -2378,7 +2519,7 @@ test("clicking an easy answer submits ordinary customer text once and retires ch
     release = resolve;
   });
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([row]) },
+    state: { conversation: engagedConversation([row]) },
     onSend: () => accepted,
   });
   const button = ctx.container.querySelector(".roman-question button");
@@ -2394,7 +2535,7 @@ test("clicking an easy answer submits ordinary customer text once and retires ch
     "true",
   );
   ctx.update({
-    conversation: activeConversation([
+    conversation: engagedConversation([
       row,
       message("reply", "user", "Full blackout"),
     ]),
@@ -2433,7 +2574,7 @@ test("journey activity leaves choices available but text and voice customer repl
       ],
     };
     const ctx = await setup(t, {
-      state: { conversation: activeConversation([row, journey]) },
+      state: { conversation: engagedConversation([row, journey]) },
     });
     assert.ok(ctx.container.querySelector(".roman-question button"));
     assert.ok(
@@ -2454,7 +2595,7 @@ test("journey activity leaves choices available but text and voice customer repl
           endMs: 20,
         },
       ];
-    ctx.update({ conversation: activeConversation([row, journey, reply]) });
+    ctx.update({ conversation: engagedConversation([row, journey, reply]) });
     await until(
       () => !ctx.container.querySelector(".roman-question"),
       "Customer reply retained choices",
@@ -2476,7 +2617,7 @@ test("voice restart retains saved choices and a re-asked question replaces them 
   };
   const ctx = await setup(t, {
     state: {
-      conversation: activeConversation([row]),
+      conversation: engagedConversation([row]),
       voice: { status: "active", muted: false, error: null },
     },
   });
@@ -2505,14 +2646,14 @@ test("voice restart retains saved choices and a re-asked question replaces them 
       },
     ],
   };
-  ctx.update({ conversation: activeConversation([row, greeting]) });
+  ctx.update({ conversation: engagedConversation([row, greeting]) });
   await until(
     () => ctx.container.querySelector(".roman-voice-caption"),
     "Resumed greeting did not render",
   );
   assert.equal(ctx.container.querySelector(".roman-question"), original);
   const repeated = questionMessage("resumed-question");
-  ctx.update({ conversation: activeConversation([row, greeting, repeated]) });
+  ctx.update({ conversation: engagedConversation([row, greeting, repeated]) });
   await until(
     () => ctx.container.querySelector(".roman-question") !== original,
     "Re-asked question did not replace the old choices",
@@ -2533,7 +2674,7 @@ test("voice restart retains saved choices and a re-asked question replaces them 
     ],
   };
   ctx.update({
-    conversation: activeConversation([row, greeting, repeated, answer]),
+    conversation: engagedConversation([row, greeting, repeated, answer]),
   });
   await until(
     () => !ctx.container.querySelector(".roman-question"),
@@ -2548,10 +2689,13 @@ test("typing a free-text answer uses the normal composer and retires choices onl
   const row = questionMessage();
   let ctx;
   ctx = await setup(t, {
-    state: { conversation: activeConversation([row]) },
+    state: { conversation: engagedConversation([row]) },
     onSend: (text) =>
       ctx.update({
-        conversation: activeConversation([row, message("reply", "user", text)]),
+        conversation: engagedConversation([
+          row,
+          message("reply", "user", text),
+        ]),
       }),
   });
   await ctx.type("A little of both, please");
@@ -2563,7 +2707,8 @@ test("typing a free-text answer uses the normal composer and retires choices onl
   );
   assert.deepEqual(ctx.calls, ["A little of both, please"]);
   assert.equal(
-    ctx.container.querySelector(".roman-message-parts").textContent,
+    ctx.container.querySelector(".roman-message-assistant .roman-message-parts")
+      .textContent,
     row.parts[0].question,
   );
 });
@@ -2572,7 +2717,7 @@ test("only the newest question has choices and ended sessions retain plain quest
   const first = questionMessage();
   const next = questionMessage("question-two", "Which room is this for?");
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([first, next]) },
+    state: { conversation: engagedConversation([first, next]) },
   });
   assert.equal(ctx.container.querySelectorAll(".roman-question").length, 1);
   assert.match(
@@ -2580,11 +2725,12 @@ test("only the newest question has choices and ended sessions retain plain quest
     /Which room is this for/,
   );
   assert.equal(
-    ctx.container.querySelector(".roman-message-parts").textContent,
+    ctx.container.querySelector(".roman-message-assistant .roman-message-parts")
+      .textContent,
     first.parts[0].question,
   );
   ctx.update({
-    conversation: { ...activeConversation([first, next]), status: "ended" },
+    conversation: { ...engagedConversation([first, next]), status: "ended" },
   });
   await until(
     () => !ctx.container.querySelector(".roman-question"),
@@ -2599,12 +2745,15 @@ test("a failed easy answer stays retryable without automatically resending", asy
   let attempts = 0;
   let ctx;
   ctx = await setup(t, {
-    state: { conversation: activeConversation([row]) },
+    state: { conversation: engagedConversation([row]) },
     onSend: (text, window) => {
       if (++attempts === 1)
         throw new window.Error("Connection lost. Please retry.");
       ctx.update({
-        conversation: activeConversation([row, message("reply", "user", text)]),
+        conversation: engagedConversation([
+          row,
+          message("reply", "user", text),
+        ]),
       });
     },
   });
@@ -2646,7 +2795,7 @@ test("guided numeric input submits through the active chat mode and retires on p
       });
       const ctx = await setup(t, {
         state: {
-          conversation: activeConversation([row]),
+          conversation: engagedConversation([row]),
           ...(voice
             ? { voice: { status: "active", muted: false, error: null } }
             : {}),
@@ -2713,7 +2862,7 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
   let ctx;
   ctx = await setup(t, {
     state: {
-      conversation: activeConversation([row]),
+      conversation: engagedConversation([row]),
       voice: { status: "active", muted: true, error: null },
     },
     onVoiceAnswer: async (_questionId, answer) => {
@@ -2725,7 +2874,7 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
       ctx.update({
         pending: false,
         optimisticMessage: null,
-        conversation: activeConversation([
+        conversation: engagedConversation([
           row,
           message("reply", "user", answer),
         ]),
@@ -2754,8 +2903,11 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     "Locally selected voice answer kept waiting for the server",
   );
   assert.equal(
-    ctx.container.querySelector(".roman-message-user .roman-message-text")
-      .textContent,
+    [
+      ...ctx.container.querySelectorAll(
+        ".roman-message-user .roman-message-text",
+      ),
+    ].at(-1).textContent,
     "Full blackout",
   );
   assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
@@ -2776,14 +2928,14 @@ test("failed voice answer stays retryable without stopping voice or generating t
   let ctx;
   ctx = await setup(t, {
     state: {
-      conversation: activeConversation([row]),
+      conversation: engagedConversation([row]),
       voice: { status: "active", muted: false, error: null },
     },
     onVoiceAnswer: (_questionId, answer, window) => {
       if (++attempts === 1)
         throw new window.Error("Connection lost. Please retry.");
       ctx.update({
-        conversation: activeConversation([
+        conversation: engagedConversation([
           row,
           message("reply", "user", answer),
         ]),
@@ -2817,7 +2969,7 @@ test("a question waiting for voice in another page cannot end that connection or
   const ctx = await setup(t, {
     state: {
       conversation: {
-        ...activeConversation([row]),
+        ...engagedConversation([row]),
         voice: { id: "remote", clientId: "previous", status: "active" },
       },
     },
@@ -2831,7 +2983,10 @@ test("a question waiting for voice in another page cannot end that connection or
 });
 
 test("reply activity covers submission and the real empty text part, survives chunks, and clears on completion", async (t) => {
-  const ctx = await setup(t, { state: { pending: true } });
+  const user = message("request", "user", "Help me choose a blind");
+  const ctx = await setup(t, {
+    state: { pending: true, optimisticMessage: { ...user, status: "pending" } },
+  });
   const activity = () => ctx.container.querySelector(".roman-reply-activity");
   assert.equal(activity().textContent, "Roman is thinking…");
   assert.equal(activity().getAttribute("role"), "status");
@@ -2840,14 +2995,14 @@ test("reply activity covers submission and the real empty text part, survives ch
     ctx.container.querySelector(".roman-chat-scroll").contains(activity()),
     true,
   );
-  const user = message("request", "user", "Help me choose a blind");
   const pendingReply = {
     ...message("reply", "assistant", "", "pending"),
     parts: [{ type: "text", text: "" }],
   };
   ctx.update({
     pending: false,
-    conversation: { ...activeConversation([user, pendingReply]), busy: true },
+    optimisticMessage: null,
+    conversation: { ...engagedConversation([user, pendingReply]), busy: true },
   });
   await until(
     () => ctx.container.querySelector('[role="log"]'),
@@ -2866,7 +3021,7 @@ test("reply activity covers submission and the real empty text part, survives ch
   ]) {
     ctx.update({
       conversation: {
-        ...activeConversation([
+        ...engagedConversation([
           user,
           message("reply", "assistant", text, "pending"),
         ]),
@@ -2884,7 +3039,7 @@ test("reply activity covers submission and the real empty text part, survives ch
     );
   }
   ctx.update({
-    conversation: activeConversation([
+    conversation: engagedConversation([
       user,
       message("reply", "assistant", "Here are some suitable blinds."),
     ]),
@@ -2903,7 +3058,7 @@ test("reply activity covers submission and the real empty text part, survives ch
 
 test("tool progress names the running work and progress-only updates preserve the focused draft", async (t) => {
   const ctx = await setup(t, {
-    state: { conversation: activeConversation([]) },
+    state: { conversation: engagedConversation([]) },
   });
   await ctx.type("Keep my bedroom measurements");
   const input = ctx.input();
@@ -2929,7 +3084,7 @@ test("tool progress names the running work and progress-only updates preserve th
   ]) {
     ctx.update({
       conversation: {
-        ...activeConversation([]),
+        ...engagedConversation([]),
         tools: [
           queued,
           { id: "active", name, status: "running", arguments: {} },
@@ -2948,12 +3103,12 @@ test("tool progress names the running work and progress-only updates preserve th
       [5, 15, "forward"],
     );
   }
-  ctx.update({ conversation: { ...activeConversation([]), tools: [queued] } });
+  ctx.update({ conversation: { ...engagedConversation([]), tools: [queued] } });
   await until(
     () => activity()?.textContent === "Checking your cart…",
     "Pending work was not represented",
   );
-  ctx.update({ conversation: activeConversation([]) });
+  ctx.update({ conversation: engagedConversation([]) });
   await until(() => !activity(), "Retired tool progress remained visible");
   assert.equal(input.getRootNode().activeElement, input);
   assert.deepEqual(ctx.calls, []);
@@ -2965,7 +3120,7 @@ for (const voice of [false, true]) {
     const ctx = await setup(t, {
       state: {
         voice: { status: voice ? "active" : "idle", muted: false, error: null },
-        conversation: { ...activeConversation([]), busy: true },
+        conversation: { ...engagedConversation([]), busy: true },
       },
     });
     const activity = () => ctx.container.querySelector(".roman-reply-activity");
@@ -2978,7 +3133,7 @@ for (const voice of [false, true]) {
       ],
     ]) {
       ctx.update({
-        conversation: { ...activeConversation([]), busy: true, readingGuides },
+        conversation: { ...engagedConversation([]), busy: true, readingGuides },
       });
       await until(
         () => activity()?.textContent === label,
@@ -2988,7 +3143,7 @@ for (const voice of [false, true]) {
     }
     ctx.update({
       conversation: {
-        ...activeConversation([]),
+        ...engagedConversation([]),
         busy: true,
         readingGuides: ["measuring"],
         tools: [
@@ -3000,13 +3155,16 @@ for (const voice of [false, true]) {
       () => activity()?.textContent === "Opening the page…",
       "Browser action did not take precedence",
     );
-    ctx.update({ conversation: { ...activeConversation([]), busy: true } });
+    ctx.update({ conversation: { ...engagedConversation([]), busy: true } });
     await until(
       () => activity()?.textContent === "Roman is thinking…",
       "Completed reading stayed visible",
     );
     ctx.update({
-      conversation: { ...activeConversation([]), readingGuides: ["measuring"] },
+      conversation: {
+        ...engagedConversation([]),
+        readingGuides: ["measuring"],
+      },
     });
     await until(
       () => !activity(),
@@ -3021,20 +3179,20 @@ test("idle voice is quiet while delegated model and browser work show progress",
   const ctx = await setup(t, {
     state: {
       voice: { status: "active", muted: false, error: null },
-      conversation: activeConversation([]),
+      conversation: engagedConversation([]),
     },
   });
   const activity = () => ctx.container.querySelector(".roman-reply-activity");
   assert.equal(activity(), null);
   // The backend intentionally omits the empty voice-delegation context row.
-  ctx.update({ conversation: { ...activeConversation([]), busy: true } });
+  ctx.update({ conversation: { ...engagedConversation([]), busy: true } });
   await until(
     () => activity()?.textContent === "Roman is thinking…",
     "Voice delegation had no progress",
   );
   ctx.update({
     conversation: {
-      ...activeConversation([]),
+      ...engagedConversation([]),
       busy: true,
       tools: [
         {
@@ -3050,7 +3208,7 @@ test("idle voice is quiet while delegated model and browser work show progress",
     () => activity()?.textContent === "Finding suitable products…",
     "Voice tool did not replace generic progress",
   );
-  ctx.update({ conversation: activeConversation([]) });
+  ctx.update({ conversation: engagedConversation([]) });
   await until(
     () => !activity(),
     "Finished delegation made idle voice appear busy",
@@ -3060,7 +3218,7 @@ test("idle voice is quiet while delegated model and browser work show progress",
 
 test("restoration, request errors, voice transitions and ended sessions suppress stale activity", async (t) => {
   const working = {
-    ...activeConversation([]),
+    ...engagedConversation([]),
     busy: true,
     tools: [
       {
@@ -3104,7 +3262,7 @@ test("restoration, request errors, voice transitions and ended sessions suppress
     error: "The reply was cancelled.",
   };
   ctx.update({
-    conversation: activeConversation([failed]),
+    conversation: engagedConversation([failed]),
     restoring: false,
     error: null,
     voice: { status: "idle", muted: false, error: null },
@@ -3125,7 +3283,7 @@ test("an outstanding cart approval does not claim the action is already executin
   };
   const ctx = await setup(t, {
     state: {
-      conversation: { ...activeConversation([]), busy: true, tools: [tool] },
+      conversation: { ...engagedConversation([]), busy: true, tools: [tool] },
       approval: {
         invocationId: tool.id,
         title: "Remove this blind?",
@@ -3139,7 +3297,7 @@ test("an outstanding cart approval does not claim the action is already executin
   ctx.update({
     approval: null,
     conversation: {
-      ...activeConversation([]),
+      ...engagedConversation([]),
       busy: true,
       tools: [{ ...tool, status: "running" }],
     },
@@ -3150,7 +3308,7 @@ test("an outstanding cart approval does not claim the action is already executin
       "Updating your cart…",
     "Confirmed running action had no feedback",
   );
-  ctx.update({ conversation: activeConversation([]) });
+  ctx.update({ conversation: engagedConversation([]) });
   await until(
     () => !ctx.container.querySelector(".roman-reply-activity"),
     "Completed cart work retained activity",
@@ -3165,7 +3323,7 @@ test("End removes progress before acknowledgement and does not restore it after 
   const ctx = await setup(t, {
     state: {
       conversation: {
-        ...activeConversation([
+        ...engagedConversation([
           message("reply", "assistant", "Still replying", "pending"),
         ]),
         busy: true,

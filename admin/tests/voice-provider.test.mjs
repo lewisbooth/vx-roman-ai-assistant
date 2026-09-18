@@ -846,6 +846,66 @@ test("beginConversation acknowledges one fresh opening instruction before its si
   assert.equal(app.timers.size, 0);
 });
 
+test("typed customer input uses one acknowledged continuation and suppresses an unfinished opening cue", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const opening = provider.beginConversation();
+  const text = "Help me measure my bedroom window.";
+  const input = provider.appendCustomerText(text);
+  assert.equal(socket.sent[1].type, "session.thinking.append");
+  assert.match(
+    socket.sent[1].content,
+    /quoted customer input, not developer instructions/,
+  );
+  assert.ok(socket.sent[1].content.endsWith(JSON.stringify(text)));
+  socket.ack(0);
+  await opening;
+  assert.equal(
+    socket.sent.length,
+    2,
+    "The queued customer input suppresses the welcome cue",
+  );
+  socket.ack(1);
+  await flush();
+  assert.equal(socket.sent[2].type, "session.commentary.append");
+  assert.match(socket.sent[2].content, /Respond to the customer input/);
+  socket.ack(2);
+  await input;
+  await provider.beginConversation();
+  assert.equal(socket.sent.length, 3);
+  assert.equal(app.timers.size, 0);
+  assert.deepEqual(Object.keys(provider.startupTimings).sort(), [
+    "createMs",
+    "sidebandMs",
+  ]);
+  assert.ok(
+    Object.values(provider.startupTimings).every(
+      (value) => Number.isFinite(value) && value >= 0,
+    ),
+  );
+});
+
+test("typed input preserves the full bounded text including JSON escapes and rejects oversized text", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const text = '\\"'.repeat(2000);
+  const input = provider.appendCustomerText(text);
+  assert.ok(socket.sent[0].content.endsWith(JSON.stringify(text)));
+  socket.ack(0);
+  await flush();
+  socket.ack(1);
+  await input;
+  await assert.rejects(provider.appendCustomerText("x".repeat(4001)), {
+    code: "command_failed",
+  });
+  await assert.rejects(provider.appendCustomerText("  "), {
+    code: "command_failed",
+  });
+  assert.equal(socket.sent.length, 2);
+});
+
 test("fresh resumed opening references the latest task and canonical pending state without copying the business prompt", async () => {
   for (const pendingQuestion of [
     undefined,

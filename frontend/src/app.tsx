@@ -94,7 +94,16 @@ function Assistant({
         : state.conversation?.messages,
     [state.conversation?.messages, state.optimisticMessage],
   );
-  const hasMessages = !!messages?.length;
+  // Voice lifecycle events and Roman's opening are still the welcome state.
+  // An optimistic text/tile reply counts immediately, as does customer speech.
+  const hasCustomerReply = !!messages?.some(
+    (message) =>
+      message.role === "user" &&
+      message.parts.some(
+        (part) =>
+          (part.type === "text" || part.type === "voice") && !!part.text.trim(),
+      ),
+  );
   const selectedProduct = activeProduct(state.conversation);
   const displayedWidgets = useRef<{
     conversationId?: string;
@@ -144,15 +153,19 @@ function Assistant({
     (state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active");
   const voiceMode = localVoice || waitingForVoice;
+  const voiceOnly = voiceMode && hasCustomerReply;
   const textBusy =
     ending ||
     answering ||
     sending ||
-    voiceMode ||
+    voiceOnly ||
+    waitingForVoice ||
+    voice.status === "stopping" ||
+    (voice.status === "error" && voice.muted) ||
     state.pending ||
     state.restoring ||
     !!state.conversation?.busy;
-  const previousVoiceMode = useRef(voiceMode);
+  const previousVoiceMode = useRef(voiceOnly);
   const activeQuestion =
     state.conversation?.status === "active"
       ? latestQuestion(messages ?? [], storefront.url)
@@ -291,8 +304,8 @@ function Assistant({
   useEffect(() => onReady(), [onReady]);
 
   useLayoutEffect(() => {
-    if (previousVoiceMode.current === voiceMode) return;
-    previousVoiceMode.current = voiceMode;
+    if (previousVoiceMode.current === voiceOnly) return;
+    previousVoiceMode.current = voiceOnly;
     const view = conversationView.current;
     if (!view || view.hidden || !view.getClientRects().length) return;
     const active = (view.getRootNode() as ShadowRoot).activeElement;
@@ -305,20 +318,20 @@ function Assistant({
       return;
     view
       .querySelector<HTMLElement>(
-        voiceMode
+        voiceOnly
           ? ".roman-voice-composer button:not(:disabled)"
           : ".roman-composer textarea",
       )
       ?.focus({ preventScroll: true });
-  }, [voiceMode]);
+  }, [voiceOnly]);
 
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
-    if (hasMessages && following.current && scroll) {
+    if (hasCustomerReply && following.current && scroll) {
       manualScroll.current = false;
       scroll.scrollTop = scroll.scrollHeight;
     }
-  }, [hasMessages]);
+  }, [hasCustomerReply]);
 
   useLayoutEffect(() => {
     if (!viewport.current || !window.ResizeObserver) return;
@@ -457,7 +470,7 @@ function Assistant({
                   <p className="roman-chat-restoring" role="status">
                     Restoring your conversation…
                   </p>
-                ) : hasMessages ? (
+                ) : hasCustomerReply ? (
                   <Timeline
                     messages={messages!}
                     session={session}
@@ -487,11 +500,13 @@ function Assistant({
                     onStart={(text) => void startTopic(text)}
                   />
                 )}
-                <ReplyActivity
-                  state={state}
-                  ending={ending}
-                  onContentChange={followConversation}
-                />
+                {hasCustomerReply && (
+                  <ReplyActivity
+                    state={state}
+                    ending={ending}
+                    onContentChange={followConversation}
+                  />
+                )}
               </div>
               {view !== "chat" && (
                 <ReplyActivity
@@ -500,7 +515,7 @@ function Assistant({
                   onContentChange={followConversation}
                 />
               )}
-              {view === "chat" && readingHistory && hasMessages && (
+              {view === "chat" && readingHistory && hasCustomerReply && (
                 <button
                   className="roman-return-current"
                   type="button"
@@ -546,7 +561,7 @@ function Assistant({
                 )}
               <Composer
                 key={chatVersion}
-                hidden={voiceMode}
+                hidden={voiceOnly}
                 busy={textBusy}
                 disabled={ending || state.restoring}
                 error={state.error || startError || endError}

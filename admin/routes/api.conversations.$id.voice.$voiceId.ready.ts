@@ -4,15 +4,15 @@ import {
   handleJsonRequest,
   readJsonObject,
 } from "../conversations/http.server";
-import { voiceClientInput, voiceSessionId } from "../voice/http.server";
+import { voiceReadyInput, voiceSessionId } from "../voice/http.server";
 import { readyVoice } from "../voice/service.server";
 
 function handle({ request, params }: LoaderFunctionArgs) {
   return handleJsonRequest(request, "POST", async () => {
     const conversation = await authenticateConversation(request, params.id);
     const voiceId = voiceSessionId(params.voiceId);
-    const { clientId } = voiceClientInput(await readJsonObject(request));
-    readyVoice(conversation.id, voiceId, clientId);
+    const { clientId, input } = voiceReadyInput(await readJsonObject(request));
+    await readyVoice(conversation.id, voiceId, clientId, input);
     return { ok: true };
   });
 }

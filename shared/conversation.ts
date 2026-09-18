@@ -14,7 +14,11 @@ import type {
 } from "./cart-tools";
 import type { ProductConfigurationToolName } from "./product-configuration";
 import type { ProductGuide, ProductGuideKind } from "./product-guides";
-import type { QuestionPart, QuestionAnswerReference } from "./questions";
+import type {
+  QuestionPart,
+  QuestionAnswerReference,
+  VoiceInputReference,
+} from "./questions";
 import type { NavigationPart } from "./navigation-tool";
 
 export interface TextPart {
@@ -23,6 +27,8 @@ export interface TextPart {
   /** A real customer selection during voice, never an audio transcript. */
   questionAnswer?: QuestionAnswerReference;
   productChoice?: ProductChoiceReference;
+  /** Typed customer input delivered through an active voice connection. */
+  voiceInput?: VoiceInputReference;
 }
 
 export interface ProductListPart {

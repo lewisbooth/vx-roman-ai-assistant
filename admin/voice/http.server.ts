@@ -5,8 +5,12 @@ import {
 } from "../../shared/voice";
 import { UUID_PATTERN } from "../conversations/auth.server";
 import { ConversationError } from "../conversations/errors.server";
-import type { VoiceSelectionInput } from "../../shared/questions";
+import type {
+  VoiceSelectionInput,
+  VoiceTextInput,
+} from "../../shared/questions";
 import { parseProductChoice } from "../../shared/product-choice";
+import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 
 export const VOICE_START_BODY_BYTES = 64 * 1024;
 const MAX_SDP_BYTES = 48 * 1024;
@@ -89,6 +93,7 @@ export function voiceSessionId(value: string | undefined): string {
 export function voiceAnswerInput(
   value: Record<string, unknown>,
 ): VoiceSelectionInput {
+  if ("text" in value) return voiceTextInput(value);
   if ("carouselId" in value) {
     const { clientId, requestId, ...choice } = value;
     try {
@@ -126,4 +131,50 @@ export function voiceAnswerInput(
     questionId: value.questionId as string,
     answer: value.answer,
   };
+}
+
+function voiceTextInput(value: Record<string, unknown>): VoiceTextInput {
+  if (
+    Object.keys(value).length !== 3 ||
+    !["clientId", "requestId"].every(
+      (key) => typeof value[key] === "string" && UUID_PATTERN.test(value[key]),
+    ) ||
+    typeof value.text !== "string" ||
+    !value.text.trim() ||
+    value.text.length > MAX_MESSAGE_LENGTH
+  )
+    throw new ConversationError(
+      400,
+      "Send clientId and requestId UUIDs with a message of up to 4,000 characters.",
+    );
+  return {
+    clientId: value.clientId as string,
+    requestId: value.requestId as string,
+    text: value.text.trim(),
+  };
+}
+
+export function voiceReadyInput(value: Record<string, unknown>): {
+  clientId: string;
+  input?: Omit<VoiceTextInput, "clientId">;
+} {
+  if (!("input" in value)) return voiceClientInput(value);
+  if (
+    Object.keys(value).length !== 2 ||
+    !value.input ||
+    typeof value.input !== "object" ||
+    Array.isArray(value.input) ||
+    Object.keys(value.input).length !== 2 ||
+    !("requestId" in value.input) ||
+    !("text" in value.input)
+  )
+    throw new ConversationError(
+      400,
+      "Send a clientId and optional customer input.",
+    );
+  const { clientId, ...input } = voiceTextInput({
+    ...value.input,
+    clientId: value.clientId,
+  });
+  return { clientId, input };
 }

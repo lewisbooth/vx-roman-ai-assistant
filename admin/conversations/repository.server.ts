@@ -46,6 +46,7 @@ import {
   isQuestionAnswer,
   latestQuestion,
   parseQuestionAnswerReference,
+  parseVoiceInputReference,
   parseQuestionPart,
   parseQuestionSelection,
   type VoiceSelectionInput,
@@ -175,6 +176,14 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
         part.productChoice !== undefined
       ) {
         parseProductChoiceReference(part.productChoice);
+        continue;
+      }
+      if (
+        message.role === "user" &&
+        Object.keys(part).length === 3 &&
+        part.voiceInput !== undefined
+      ) {
+        parseVoiceInputReference(part.voiceInput);
         continue;
       }
     }
@@ -869,6 +878,21 @@ export async function getModelHistory(id: string) {
   return modelHistory(await loadConversation(prisma, id));
 }
 
+/** Read one coherent transcript for voice history and its current UI state. */
+export async function getVoiceStartupContext(id: string) {
+  await recoverVoiceSessions(id);
+  const conversation = await loadConversation(prisma, id);
+  const messages = conversationTimeline(conversation);
+  return {
+    history: modelHistory(conversation),
+    pendingQuestion: latestQuestion(messages),
+    lastPage: messages
+      .flatMap((message) => message.parts)
+      .filter((part) => part.type === "page_view" || part.type === "navigation")
+      .at(-1)?.path,
+  };
+}
+
 type VoiceQuestionAnswerInput = VoiceSelectionInput;
 
 export interface VoiceQuestionAnswerReceipt {
@@ -878,6 +902,7 @@ export interface VoiceQuestionAnswerReceipt {
   question: string;
   answer: string;
   productChoice?: ProductChoice;
+  customerText?: string;
 }
 
 function validateVoiceQuestionAnswer(
@@ -912,6 +937,14 @@ function validateVoiceQuestionAnswer(
         title: input.title,
         productPath: input.productPath,
       });
+    } else if ("text" in input) {
+      if (
+        Object.keys(input).length !== 3 ||
+        typeof input.text !== "string" ||
+        !input.text.trim() ||
+        input.text.length > MAX_MESSAGE_LENGTH
+      )
+        throw new Error("Invalid customer message.");
     } else if (
       Object.keys(input).length !== 4 ||
       typeof input.questionId !== "string" ||
@@ -924,9 +957,10 @@ function validateVoiceQuestionAnswer(
   } catch {
     throw new ConversationError(
       400,
-      "Choose a valid answer or carousel product.",
+      "Send a valid message, offered answer or carousel product.",
     );
   }
+  return "text" in input ? { ...input, text: input.text.trim() } : input;
 }
 
 function selectedCarouselProduct(
@@ -981,6 +1015,27 @@ async function voiceQuestionAnswerReceipt(
       ? parts(existing, conversation.origin)
       : [];
   const part = saved[0];
+  if ("text" in input) {
+    if (
+      !existing ||
+      saved.length !== 1 ||
+      part?.type !== "text" ||
+      part.text !== input.text ||
+      part.voiceInput?.voiceId !== voiceId
+    )
+      throw new ConversationError(
+        400,
+        "This request ID was already used for a different message.",
+      );
+    return {
+      created: false,
+      messageId: existing.id,
+      sequence: existing.sequence,
+      question: "",
+      answer: part.text,
+      customerText: part.text,
+    };
+  }
   if ("carouselId" in input) {
     const choice = selectedCarouselProduct(conversation, input);
     if (
@@ -1042,7 +1097,7 @@ export async function findVoiceQuestionAnswer(
   voiceId: string,
   input: VoiceQuestionAnswerInput,
 ): Promise<VoiceQuestionAnswerReceipt | null> {
-  validateVoiceQuestionAnswer(id, voiceId, input);
+  input = validateVoiceQuestionAnswer(id, voiceId, input);
   return voiceQuestionAnswerReceipt(
     prisma,
     await loadConversation(prisma, id),
@@ -1051,13 +1106,13 @@ export async function findVoiceQuestionAnswer(
   );
 }
 
-/** Persist a clicked choice as customer text without creating a Terra reply or caption. */
+/** Persist voice-connected customer input without creating a Terra reply or caption. */
 export async function appendVoiceQuestionAnswer(
   id: string,
   voiceId: string,
   input: VoiceQuestionAnswerInput,
 ): Promise<VoiceQuestionAnswerReceipt> {
-  validateVoiceQuestionAnswer(id, voiceId, input);
+  input = validateVoiceQuestionAnswer(id, voiceId, input);
   return prisma.$transaction(async (transaction) => {
     const conversation = await loadConversation(transaction, id);
     const receipt = await voiceQuestionAnswerReceipt(
@@ -1096,7 +1151,7 @@ export async function appendVoiceQuestionAnswer(
         : undefined;
     const question = latestQuestion(conversationTimeline(conversation));
     if (
-      !("carouselId" in input) &&
+      "questionId" in input &&
       (question?.invocationId !== input.questionId ||
         !isQuestionAnswer(question, input.answer))
     )
@@ -1109,13 +1164,14 @@ export async function appendVoiceQuestionAnswer(
         message.role === "user" &&
         parts(message, conversation.origin).some(
           (part) =>
-            part.type === "text" && (part.questionAnswer || part.productChoice),
+            part.type === "text" &&
+            (part.questionAnswer || part.productChoice || part.voiceInput),
         ),
     ).length;
     if (answerCount >= maxVoiceQuestionAnswers)
       throw new ConversationError(
         429,
-        "This chat has reached its 40 selected-answer limit. Start a new chat to continue.",
+        "This chat has reached its 40 voice-input limit. Start a new chat to continue.",
       );
     const selected = await transaction.conversation.updateMany({
       where: {
@@ -1143,10 +1199,18 @@ export async function appendVoiceQuestionAnswer(
           {
             type: "text",
             text:
-              "carouselId" in input ? productChoiceText(input) : input.answer,
+              "text" in input
+                ? input.text
+                : "carouselId" in input
+                  ? productChoiceText(input)
+                  : input.answer,
             ...("carouselId" in input
               ? { productChoice: { ...choice, voiceId } }
-              : { questionAnswer: { questionId: input.questionId, voiceId } }),
+              : "text" in input
+                ? { voiceInput: { voiceId } }
+                : {
+                    questionAnswer: { questionId: input.questionId, voiceId },
+                  }),
           },
         ]),
         createdAt: now,
@@ -1157,9 +1221,15 @@ export async function appendVoiceQuestionAnswer(
       created: true,
       messageId: input.requestId,
       sequence: conversation.nextSequence,
-      question: choice ? "" : (question?.question ?? ""),
-      answer: "carouselId" in input ? productChoiceText(input) : input.answer,
+      question: "questionId" in input ? (question?.question ?? "") : "",
+      answer:
+        "text" in input
+          ? input.text
+          : "carouselId" in input
+            ? productChoiceText(input)
+            : input.answer,
       ...(choice ? { productChoice: choice } : {}),
+      ...("text" in input ? { customerText: input.text } : {}),
     };
   });
 }

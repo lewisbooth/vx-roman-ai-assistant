@@ -22,7 +22,8 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
   let timingReported = false;
 
   function mark(stage: string) {
-    stages[stage] = Math.round(performance.now() - beganAt);
+    // First occurrence owns startup timing; recovery events must not rewrite it.
+    stages[stage] ??= Math.round(performance.now() - beganAt);
   }
 
   function reportTiming(status: "ready" | "failed" | "stopped") {
@@ -124,7 +125,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
   }
 
   return {
-    async prepare(): Promise<string> {
+    async prepare(onMicrophoneReady?: () => Promise<void>): Promise<string> {
       if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection)
         throw new Error(
           "Voice needs a browser with microphone access on HTTPS.",
@@ -147,6 +148,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       audio.setAttribute("playsinline", "");
       peer.ontrack = (event) => {
         if (closed || !audio) return;
+        mark("remoteTrack");
         audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
         void audio
           .play()
@@ -169,6 +171,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
         if (closed || !peer) return;
         connected = peer.connectionState === "connected";
         if (connected) {
+          mark("peerConnected");
           window.clearTimeout(disconnectTimer);
           disconnectTimer = undefined;
         } else if (peer.connectionState === "disconnected") {
@@ -212,6 +215,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
         }
         if (!data || typeof data !== "object" || !("type" in data)) return;
         if (data.type === "session.started") {
+          mark("sessionStarted");
           started = true;
           checkReady();
         } else if (data.type === "session.closed" || data.type === "error") {
@@ -233,20 +237,44 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
           "Roman could not connect voice. Please try again.",
           "data_channel_error",
         );
-      const offer = await peer.createOffer();
-      if (closed) throw new Error("Voice was stopped.");
-      await peer.setLocalDescription(offer);
-      const sdp = peer.localDescription?.sdp;
-      if (!sdp || sdp.length > 49_152)
-        throw new Error("Roman could not prepare voice audio.");
-      mark("offer");
-      return sdp;
+      // Permission must precede conversation creation, but its authenticated
+      // bootstrap can run while the browser prepares the local audio offer.
+      const preparingPeer = peer;
+      const prepareOffer = async () => {
+        const offer = await preparingPeer.createOffer();
+        if (closed) throw new Error("Voice was stopped.");
+        await preparingPeer.setLocalDescription(offer);
+        if (closed) throw new Error("Voice was stopped.");
+        const sdp = preparingPeer.localDescription?.sdp;
+        if (!sdp || sdp.length > 49_152)
+          throw new Error("Roman could not prepare voice audio.");
+        mark("offer");
+        return sdp;
+      };
+      const prepareConversation = async () => {
+        if (closed) throw new Error("Voice was stopped.");
+        await onMicrophoneReady?.();
+      };
+      try {
+        const [sdp] = await Promise.all([
+          prepareOffer(),
+          prepareConversation(),
+        ]);
+        if (closed) throw new Error("Voice was stopped.");
+        return sdp;
+      } catch (error) {
+        close();
+        throw error;
+      }
     },
     async connect(
       sdp: string,
       onTransportReady: () => Promise<void>,
     ): Promise<void> {
       if (closed || !peer) throw new Error("Voice was stopped.");
+      // Everything before this is microphone/offer preparation plus the
+      // authenticated bootstrap/start request; later stages isolate WebRTC.
+      mark("answerReceived");
       notifyTransportReady = onTransportReady;
       const waiting = new Promise<void>((resolve, reject) => {
         resolveReady = resolve;

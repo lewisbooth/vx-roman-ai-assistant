@@ -59,6 +59,18 @@ function message(parts) {
   };
 }
 
+function customerMessage(text = "Help me find a blind for my kitchen.") {
+  return {
+    ...message([{ type: "text", text }]),
+    id: "customer-message",
+    role: "user",
+  };
+}
+
+function engagedConversation(messages = []) {
+  return conversation([customerMessage(), ...messages]);
+}
+
 async function setup(t, initial = {}) {
   const dom = new JSDOM(
     `<!doctype html><body class="template-product"><app-provider><main id="main"><h1>Linen blind</h1>
@@ -111,7 +123,7 @@ async function setup(t, initial = {}) {
     .attachShadow({ mode: "open" });
   const listeners = new Set();
   let state = {
-    conversation: conversation([
+    conversation: engagedConversation([
       message([{ type: "text", text: "Let's find your blind." }]),
     ]),
     pending: false,
@@ -193,6 +205,7 @@ async function setup(t, initial = {}) {
     update,
     state: () => state,
     calls,
+    session,
     navigationCalls,
     fetches,
     select,
@@ -264,14 +277,14 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
   const ctx = await setup(t, { conversation: null });
   assert.equal(ctx.container.querySelector(".roman-product-stage"), null);
   ctx.update({
-    conversation: conversation([
+    conversation: engagedConversation([
       message([{ type: "text", text: "Help me choose a blind." }]),
     ]),
   });
   await delay(0);
   assert.equal(ctx.container.querySelector(".roman-product-stage"), null);
   ctx.update({
-    conversation: conversation([
+    conversation: engagedConversation([
       {
         ...message([
           { type: "navigation", path: "/products/linen", title: "Linen blind" },
@@ -301,7 +314,7 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
   assert.equal(ctx.container.querySelector(".roman-product-stage"), null);
   assert.equal(ctx.window.location.pathname, "/products/linen");
   ctx.update({
-    conversation: conversation([
+    conversation: engagedConversation([
       message([{ type: "text", text: "Another room" }]),
     ]),
   });
@@ -313,7 +326,7 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
 
 test("cart additions stay in Chat until View Cart is explicitly chosen", async (t) => {
   const ctx = await setup(t, {
-    conversation: conversation([
+    conversation: engagedConversation([
       message([
         {
           type: "cart_added",
@@ -374,7 +387,7 @@ test("quick answers and pending activity remain visible alongside Cart and Galle
     answers: ["Show me more", "Help me measure"],
   };
   const ctx = await setup(t, {
-    conversation: conversation([message([question])]),
+    conversation: engagedConversation([message([question])]),
   });
   for (const name of ["Cart", "Gallery"]) {
     await ctx.select(name);
@@ -398,7 +411,7 @@ test("quick answers and pending activity remain visible alongside Cart and Galle
 
 test("native cart work preserves selected imagery across tabs without displaying stale price or dimensions", async (t) => {
   const ctx = await setup(t, {
-    conversation: conversation([
+    conversation: engagedConversation([
       {
         ...message([
           { type: "navigation", path: "/products/linen", title: "Linen blind" },
@@ -448,7 +461,7 @@ test("new voice carousel results reveal Chat while historical widgets and repeat
     invocationId: "11111111-1111-4111-8111-111111111111",
     productIds: ["gid://shopify/Product/1"],
   };
-  const original = conversation([message([oldPart])]);
+  const original = engagedConversation([message([oldPart])]);
   const ctx = await setup(t, {
     conversation: original,
     voice: { status: "active", muted: false, error: null },
@@ -534,7 +547,10 @@ test("a new numeric measurement reveals Chat without interrupting voice or reope
   );
   await ctx.select("Cart");
   ctx.update({
-    conversation: { ...conversation([numeric]), id: "restored-conversation" },
+    conversation: {
+      ...engagedConversation([numeric]),
+      id: "restored-conversation",
+    },
   });
   await delay(0);
   assert.equal(
@@ -544,4 +560,216 @@ test("a new numeric measurement reveals Chat without interrupting voice or reope
   );
   assert.equal(ctx.state().voice.status, "active");
   assert.deepEqual(ctx.calls, []);
+});
+
+function voiceOpening() {
+  const voiceId = "44444444-4444-4444-8444-444444444444";
+  return [
+    {
+      ...message([
+        { type: "voice_event", version: 1, voiceId, event: "started" },
+      ]),
+      id: "voice-started",
+      role: "context",
+    },
+    {
+      ...message([
+        {
+          type: "voice",
+          version: 1,
+          voiceId,
+          startMs: 0,
+          endMs: 1_000,
+          text: "Hi! I'm Roman. Where would you like to begin?",
+        },
+      ]),
+      id: "voice-greeting",
+    },
+  ];
+}
+
+function enterText(ctx, text) {
+  const textarea = ctx.container.querySelector("textarea");
+  Object.getOwnPropertyDescriptor(
+    ctx.window.HTMLTextAreaElement.prototype,
+    "value",
+  ).set.call(textarea, text);
+  textarea.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+  return textarea;
+}
+
+test("voice startup and Roman's opening retain live home tiles and focused text until customer speech", async (t) => {
+  const ctx = await setup(t, { conversation: null });
+  const welcome = ctx.container.querySelector(".roman-welcome");
+  const textarea = enterText(ctx, "A blind for my kitchen");
+  // Real layout is visible: exercise the focus transfer rather than JSDOM's
+  // default no-layout guard masking an unwanted move to the voice controls.
+  ctx.container.querySelector(".roman-conversation").getClientRects = () => [
+    {},
+  ];
+  textarea.focus();
+  await delay(0);
+  ctx.update({ voice: { status: "starting", muted: false, error: null } });
+  await until(
+    () => ctx.container.querySelector(".roman-voice-composer"),
+    "Voice controls did not appear",
+  );
+  assert.equal(ctx.container.querySelector(".roman-welcome"), welcome);
+  assert.equal(ctx.container.activeElement, textarea);
+  assert.equal(textarea.closest("[hidden]"), null);
+  assert.equal(textarea.readOnly, false);
+  assert.equal(textarea.disabled, false);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
+    4,
+  );
+  assert.equal(ctx.container.querySelector(".roman-timeline"), null);
+
+  const opening = voiceOpening();
+  ctx.update({
+    conversation: conversation(opening),
+    voice: { status: "active", muted: false, error: null },
+  });
+  await until(
+    () =>
+      ctx.container.querySelector('[aria-label="Mute microphone"]')
+        ?.disabled === false,
+    "Voice did not become active",
+  );
+  assert.equal(ctx.container.querySelector(".roman-welcome"), welcome);
+  assert.equal(ctx.container.activeElement, textarea);
+  assert.equal(textarea.value, "A blind for my kitchen");
+  assert.equal(textarea.readOnly, false);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
+    4,
+  );
+  assert.equal(ctx.container.querySelector(".roman-timeline"), null);
+
+  ctx.update({
+    conversation: conversation([
+      ...opening,
+      {
+        ...customerMessage(),
+        parts: [
+          {
+            ...opening[1].parts[0],
+            text: "I need a kitchen blind",
+            startMs: 1_100,
+            endMs: 2_000,
+          },
+        ],
+      },
+    ]),
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-timeline"),
+    "Customer speech did not reveal the transcript",
+  );
+  assert.equal(ctx.container.querySelector(".roman-welcome"), null);
+  assert.match(
+    ctx.container.querySelector(".roman-timeline").textContent,
+    /I need a kitchen blind/,
+  );
+  assert.ok(textarea.closest("[hidden]"));
+  assert.equal(ctx.state().voice.status, "active");
+  assert.deepEqual(ctx.calls, []);
+});
+
+test("first typed or tile reply immediately opens the transcript while voice remains connected and submission is pending", async (t) => {
+  for (const voiceStatus of ["starting", "active"]) {
+    for (const input of ["text", "tile"]) {
+      const ctx = await setup(t, {
+        conversation: conversation(voiceOpening()),
+        voice: { status: voiceStatus, muted: false, error: null },
+      });
+      let acknowledge;
+      let completed = false;
+      ctx.session.sendMessage = async (text) => {
+        ctx.calls.push(["text", text]);
+        ctx.update({ optimisticMessage: customerMessage(text), pending: true });
+        await new Promise((resolve) => {
+          acknowledge = resolve;
+        });
+        completed = true;
+      };
+      let text;
+      if (input === "text") {
+        text = "Blackout blinds for my bedroom";
+        enterText(ctx, text);
+        await until(
+          () =>
+            !ctx.container.querySelector(
+              '.roman-composer button[type="submit"]',
+            ).disabled,
+          "Text entry stayed unavailable during the opening",
+        );
+        ctx.container
+          .querySelector(".roman-composer form")
+          .dispatchEvent(
+            new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+          );
+      } else {
+        text = "Help me measure my windows for blinds.";
+        ctx.container.querySelector(".roman-welcome-tile").click();
+      }
+      await until(
+        () => ctx.container.querySelector(".roman-timeline"),
+        `${input} did not open the transcript before submission completed`,
+      );
+      assert.equal(completed, false);
+      assert.equal(ctx.container.querySelector(".roman-welcome"), null);
+      assert.ok(
+        ctx.container
+          .querySelector(".roman-timeline")
+          .textContent.includes(text),
+      );
+      assert.equal(ctx.state().voice.status, voiceStatus);
+      assert.ok(ctx.container.querySelector(".roman-voice-composer"));
+      assert.deepEqual(
+        ctx.calls,
+        [["text", text]],
+        "A first visual response must not stop or restart voice",
+      );
+      acknowledge();
+      await until(() => completed, "Submission did not complete");
+    }
+  }
+});
+
+test("restored customer conversation opens the transcript and ending it restores the welcome for the next voice opening", async (t) => {
+  const ctx = await setup(t, { conversation: null, restoring: true });
+  assert.ok(ctx.container.querySelector(".roman-chat-restoring"));
+  ctx.update({
+    restoring: false,
+    conversation: engagedConversation([
+      message([{ type: "text", text: "Let's continue measuring." }]),
+    ]),
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-timeline"),
+    "Restored customer history was mistaken for a new greeting",
+  );
+  assert.equal(ctx.container.querySelector(".roman-welcome"), null);
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(
+    () => ctx.container.querySelector(".roman-welcome"),
+    "End chat did not reset the welcome",
+  );
+  ctx.update({
+    conversation: { ...conversation(voiceOpening()), id: "next-conversation" },
+    voice: { status: "active", muted: false, error: null },
+  });
+  await delay(0);
+  assert.ok(ctx.container.querySelector(".roman-welcome"));
+  assert.equal(ctx.container.querySelector(".roman-timeline"), null);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
+    4,
+  );
+  assert.equal(
+    ctx.container.querySelector("textarea").closest("[hidden]"),
+    null,
+  );
+  assert.deepEqual(ctx.calls, [["end"]]);
 });

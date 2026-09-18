@@ -191,14 +191,14 @@ test("voice start authorizes the conversation and passes only the validated offe
   assert.equal(response.headers.get("Set-Cookie"), null);
 });
 
-test("heartbeat and stop authenticate independently and retain conversation/client scope", async () => {
+test("voice lifecycle routes authenticate independently and retain conversation/client scope", async () => {
   for (const route of ["ready", "heartbeat", "stop"]) {
     const env = setup();
     const response = await run(env, route);
     assert.equal(response.status, 200);
     assert.equal(env.calls.authorize.length, 1);
     assert.deepEqual(env.calls[route], [
-      route === "stop"
+      route !== "heartbeat"
         ? [ID, VOICE_ID, CLIENT_ID, null]
         : [ID, VOICE_ID, CLIENT_ID],
     ]);
@@ -572,6 +572,100 @@ test("voice product choices accept a bounded carousel reference and reject extra
     );
     assert.equal(invalid.calls.answers.length, 0);
   }
+});
+
+test("voice accepts trimmed customer text without interpreting it as an offered answer or tool", async () => {
+  const input = {
+    clientId: CLIENT_ID,
+    requestId: REQUEST_ID,
+    text: "  Help me measure my windows.  ",
+  };
+  const env = setup();
+  assert.equal(
+    (await run(env, "answers", request("answers", { body: input }))).status,
+    200,
+  );
+  assert.deepEqual(env.calls.answers, [
+    [ID, VOICE_ID, { ...input, text: input.text.trim() }],
+  ]);
+  for (const changed of [
+    { text: " " },
+    { text: "x".repeat(4001) },
+    { text: 42 },
+    { requestId: "bad" },
+    { clientId: "bad" },
+    { questionId: ANSWER.questionId },
+    { answer: "Kitchen" },
+    { confirmed: true },
+    { voiceId: VOICE_ID },
+  ]) {
+    const invalid = setup();
+    assert.equal(
+      (
+        await run(
+          invalid,
+          "answers",
+          request("answers", { body: { ...input, ...changed } }),
+        )
+      ).status,
+      400,
+    );
+    assert.equal(invalid.calls.answers.length, 0);
+  }
+});
+
+test("voice readiness accepts only a bounded first customer input alongside its owner", async () => {
+  const body = {
+    clientId: CLIENT_ID,
+    input: { requestId: REQUEST_ID, text: "  Find my style. " },
+  };
+  const env = setup();
+  assert.equal(
+    (await run(env, "ready", request("ready", { body }))).status,
+    200,
+  );
+  assert.deepEqual(env.calls.ready, [
+    [
+      ID,
+      VOICE_ID,
+      CLIENT_ID,
+      { requestId: REQUEST_ID, text: "Find my style." },
+    ],
+  ]);
+  for (const input of [
+    null,
+    [],
+    {},
+    { text: "Hello" },
+    { requestId: REQUEST_ID, text: " " },
+    { requestId: REQUEST_ID, text: "x".repeat(4001) },
+    { requestId: "bad", text: "Hello" },
+    { requestId: REQUEST_ID, text: "Hello", clientId: CLIENT_ID },
+    { requestId: REQUEST_ID, text: "Hello", confirmed: true },
+  ]) {
+    const invalid = setup();
+    assert.equal(
+      (
+        await run(
+          invalid,
+          "ready",
+          request("ready", { body: { ...body, input } }),
+        )
+      ).status,
+      400,
+    );
+    assert.equal(invalid.calls.ready.length, 0);
+  }
+  assert.equal(
+    (
+      await run(
+        setup(),
+        "ready",
+        request("ready", { body: { ...body, extra: true } }),
+      )
+    ).status,
+    400,
+  );
 });
 
 test("voice answers reject forged fields, invalid IDs and non-offered input shapes before service work", async () => {

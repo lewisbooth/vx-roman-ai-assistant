@@ -44,6 +44,7 @@ import {
   isQuestionAnswer,
   latestQuestion,
   parseQuestionAnswerReference,
+  parseVoiceInputReference,
   parseQuestionPart,
   type QuestionAnswerReference,
   type VoiceSelectionInput,
@@ -130,6 +131,15 @@ function validProductChoice(value: unknown) {
 function validQuestionAnswer(value: unknown) {
   try {
     parseQuestionAnswerReference(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validVoiceInput(value: unknown) {
+  try {
+    parseVoiceInputReference(value);
     return true;
   } catch {
     return false;
@@ -297,7 +307,12 @@ function snapshot(value: unknown): value is ConversationSnapshot {
               (part.productChoice === undefined ||
                 (message.role === "user" &&
                   part.questionAnswer === undefined &&
-                  validProductChoice(part.productChoice)))) ||
+                  validProductChoice(part.productChoice))) &&
+              (part.voiceInput === undefined ||
+                (message.role === "user" &&
+                  part.questionAnswer === undefined &&
+                  part.productChoice === undefined &&
+                  validVoiceInput(part.voiceInput)))) ||
               (part.type === "guides" && validGuidePart(part)) ||
               (part.type === "question" && validQuestionPart(part)) ||
               (part.type === "voice_event" &&
@@ -388,6 +403,7 @@ export function createConversationClient(
   };
   let access: ConversationCredential | null = null;
   let resumeAccess: ConversationCredential | null = null;
+  let bootstrapping: { epoch: number; promise: Promise<void> } | undefined;
   let disposed = false;
   let pollTimer: number | undefined;
   let pollFailures = 0;
@@ -404,6 +420,16 @@ export function createConversationClient(
   let heartbeatTimer: number | undefined;
   let voiceLimitTimer: number | undefined;
   let voiceStop: Promise<void> | undefined;
+  let voiceStart: Promise<void> | undefined;
+  let queuedVoiceInput:
+    | {
+        requestId: string;
+        text: string;
+        claimed: boolean;
+        voiceId?: string;
+        cancel?: () => void;
+      }
+    | undefined;
   let voiceStorageWarned = false;
   let journeyQueue: Promise<unknown> = Promise.resolve();
   let processingTool = false;
@@ -544,7 +570,20 @@ export function createConversationClient(
     }
   }
 
-  async function bootstrap(resume: ConversationCredential | null) {
+  function bootstrap(resume: ConversationCredential | null) {
+    // Stopping voice must not race a subsequent text reply into a second chat.
+    if (bootstrapping?.epoch === epoch) return bootstrapping.promise;
+    const attempt = { epoch, promise: requestBootstrap(resume) };
+    bootstrapping = attempt;
+    void attempt.promise
+      .finally(() => {
+        if (bootstrapping === attempt) bootstrapping = undefined;
+      })
+      .catch(() => undefined);
+    return attempt.promise;
+  }
+
+  async function requestBootstrap(resume: ConversationCredential | null) {
     const requestedEpoch = epoch;
     const url = new URL("/apps/roman/bootstrap", window.location.origin);
     url.searchParams.set("storefront_origin", window.location.origin);
@@ -1031,6 +1070,8 @@ export function createConversationClient(
 
   function closeVoiceLocally() {
     voiceEpoch++;
+    queuedVoiceInput?.cancel?.();
+    queuedVoiceInput = undefined;
     voiceConnection?.close();
     voiceConnection = undefined;
     window.clearTimeout(heartbeatTimer);
@@ -1154,27 +1195,28 @@ export function createConversationClient(
   async function sendVoiceSelection(
     selection:
       | { questionId: string; answer: string }
+      | { text: string }
       | import("../../../shared/product-choice").ProductChoice,
   ) {
     if (disposed) throw new Error("Roman has been removed.");
-    const id = voiceId;
+    let id = voiceId;
+    const starting =
+      "text" in selection && state.voice.status === "starting" && voiceStart;
     const startedEpoch = epoch;
     const startedVoiceEpoch = voiceEpoch;
     if (
-      !id ||
-      !access ||
-      state.voice.status !== "active" ||
+      (!starting && (!id || !access || state.voice.status !== "active")) ||
       ending ||
       state.pending ||
       state.restoring ||
       state.conversation?.busy ||
-      state.conversation?.status !== "active"
+      (!starting && state.conversation?.status !== "active")
     )
       throw new Error(
         "Wait until voice is connected here and Roman has finished replying.",
       );
     const question = latestQuestion(
-      state.conversation.messages,
+      state.conversation?.messages ?? [],
       window.location.pathname,
     );
     if (
@@ -1185,7 +1227,7 @@ export function createConversationClient(
       throw new Error("This question is no longer waiting for that answer.");
     if (
       "carouselId" in selection &&
-      !state.conversation.messages.some(
+      !state.conversation?.messages.some(
         (message) =>
           message.status === "complete" &&
           ["assistant", "context"].includes(message.role) &&
@@ -1201,15 +1243,19 @@ export function createConversationClient(
         "Choose a product shown in this conversation's carousel.",
       );
     const answer =
-      "questionId" in selection
-        ? selection.answer
-        : productChoiceText(selection);
+      "text" in selection
+        ? selection.text
+        : "questionId" in selection
+          ? selection.answer
+          : productChoiceText(selection);
     const provenance =
-      "questionId" in selection
+      "questionId" in selection && id
         ? { questionId: selection.questionId, voiceId: id }
         : undefined;
     const productProvenance =
-      "carouselId" in selection ? { ...selection, voiceId: id } : undefined;
+      "carouselId" in selection && id
+        ? { ...selection, voiceId: id }
+        : undefined;
     const current = () =>
       !disposed &&
       !ending &&
@@ -1217,6 +1263,7 @@ export function createConversationClient(
       voiceEpoch === startedVoiceEpoch &&
       voiceId === id;
     const submission =
+      id &&
       uncertainVoiceAnswer?.voiceId === id &&
       Object.entries(selection).every(
         ([key, value]) =>
@@ -1230,7 +1277,22 @@ export function createConversationClient(
             clientId,
             ...selection,
           };
-    uncertainVoiceAnswer = submission;
+    if (id) uncertainVoiceAnswer = { ...submission, voiceId: id };
+    const queued: typeof queuedVoiceInput =
+      starting && "text" in selection
+        ? {
+            requestId: submission.requestId,
+            text: selection.text,
+            claimed: false,
+          }
+        : undefined;
+    if (queued) queuedVoiceInput = queued;
+    const cancelled = queued
+      ? new Promise<void>((_resolve, reject) => {
+          queued.cancel = () =>
+            reject(new Error("Voice was stopped. Please retry your message."));
+        })
+      : undefined;
     update({
       pending: true,
       error: null,
@@ -1242,16 +1304,60 @@ export function createConversationClient(
       ),
     });
     try {
-      await api(`/voice/${id}/answers`, {
-        clientId,
-        requestId: submission.requestId,
-        ...selection,
-      });
+      if (starting) {
+        await Promise.race([starting, cancelled!]);
+        id = voiceId;
+        if (!current() || !id || state.voice.status !== "active")
+          throw new Error(
+            "Voice was stopped before your message could be sent. Please retry your message.",
+          );
+        uncertainVoiceAnswer = { ...submission, voiceId: id };
+      }
+      if (queued?.claimed) {
+        // /ready accepted this customer input before opening Roman's voice.
+        await api();
+      } else {
+        await api(`/voice/${id}/answers`, {
+          clientId,
+          requestId: submission.requestId,
+          ...selection,
+        });
+      }
       if (!current()) return;
       uncertainVoiceAnswer = null;
       pollFailures = 0;
       schedulePoll();
     } catch (error) {
+      if (queued?.claimed && !disposed && !ending && epoch === startedEpoch) {
+        // A lost /ready response can stop voice after the input was saved.
+        // Drain that stop and reconcile before offering a duplicate submission.
+        await voiceStop?.catch(() => undefined);
+        if (!disposed && !ending && epoch === startedEpoch && access) {
+          const accepted = () =>
+            state.conversation?.messages.some(
+              (message) =>
+                message.id === submission.requestId &&
+                message.role === "user" &&
+                message.parts.some(
+                  (part) =>
+                    part.type === "text" &&
+                    part.text === answer &&
+                    part.voiceInput?.voiceId === queued.voiceId,
+                ),
+            );
+          if (!accepted()) {
+            try {
+              await api();
+            } catch {
+              /* Preserve the original voice error. */
+            }
+          }
+          if (!disposed && !ending && epoch === startedEpoch && accepted()) {
+            uncertainVoiceAnswer = null;
+            return;
+          }
+        }
+      }
       if (!current()) throw error;
       const message =
         error instanceof Error
@@ -1274,12 +1380,14 @@ export function createConversationClient(
                   (part) =>
                     part.type === "text" &&
                     part.text === answer &&
-                    ("questionId" in selection
-                      ? part.questionAnswer?.questionId ===
-                          selection.questionId &&
-                        part.questionAnswer.voiceId === id
-                      : JSON.stringify(part.productChoice) ===
-                        JSON.stringify(productProvenance)),
+                    ("text" in selection
+                      ? part.voiceInput?.voiceId === id
+                      : "questionId" in selection
+                        ? part.questionAnswer?.questionId ===
+                            selection.questionId &&
+                          part.questionAnswer.voiceId === id
+                        : JSON.stringify(part.productChoice) ===
+                          JSON.stringify(productProvenance)),
                 ),
             )
           ) {
@@ -1293,6 +1401,8 @@ export function createConversationClient(
       }
       throw new Error(message);
     } finally {
+      if (queued) queued.cancel = undefined;
+      if (queuedVoiceInput === queued) queuedVoiceInput = undefined;
       if (epoch === startedEpoch)
         update({
           ...(!ending ? { pending: false } : {}),
@@ -1337,7 +1447,20 @@ export function createConversationClient(
     }, 20_000);
   }
 
-  async function startVoice() {
+  function startVoice() {
+    if (voiceStart)
+      return Promise.reject(new Error("Voice is already connecting."));
+    const starting = connectVoice();
+    voiceStart = starting;
+    void starting
+      .finally(() => {
+        if (voiceStart === starting) voiceStart = undefined;
+      })
+      .catch(() => undefined);
+    return starting;
+  }
+
+  async function connectVoice() {
     if (
       disposed ||
       ending ||
@@ -1376,9 +1499,12 @@ export function createConversationClient(
     voiceConnection = connection;
     try {
       // Permission precedes bootstrap, so denying the microphone creates no chat.
-      const sdp = await connection.prepare();
-      if (!current()) return;
-      if (!access) await bootstrap(resumeAccess);
+      const sdp = await connection.prepare(async () => {
+        if (!current()) return;
+        if (!access) await bootstrap(resumeAccess);
+        if (!current()) return;
+        await journeyQueue;
+      });
       if (!current()) return;
       await journeyQueue;
       if (!current()) return;
@@ -1406,7 +1532,17 @@ export function createConversationClient(
       schedulePoll();
       await connection.connect(result.sdp, async () => {
         if (!current()) throw new Error("Voice was stopped.");
-        const ready = await rawApi(`/voice/${id}/ready`, { clientId });
+        const input = queuedVoiceInput;
+        if (input) {
+          input.claimed = true;
+          input.voiceId = id;
+        }
+        const ready = await rawApi(`/voice/${id}/ready`, {
+          clientId,
+          ...(input
+            ? { input: { requestId: input.requestId, text: input.text } }
+            : {}),
+        });
         if (!current()) return;
         if (!record(ready) || ready.ok !== true)
           throw new Error("Roman could not begin voice. Please try again.");
@@ -1518,10 +1654,11 @@ export function createConversationClient(
         throw new Error(
           `Enter a message of up to ${MAX_MESSAGE_LENGTH} characters.`,
         );
+      if (state.voice.status === "starting" || state.voice.status === "active")
+        return sendVoiceSelection({ text });
       if (
         ending ||
         voiceId ||
-        state.voice.status === "starting" ||
         state.voice.status === "stopping" ||
         state.conversation?.voice?.status === "starting" ||
         state.conversation?.voice?.status === "active" ||

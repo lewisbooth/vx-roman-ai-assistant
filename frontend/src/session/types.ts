@@ -23,7 +23,7 @@ export interface ConversationClientState {
 export interface ConversationClient {
   getSnapshot(): ConversationClientState;
   subscribe(listener: () => void): () => void;
-  /** Resolves when the server has accepted the message, before generation ends. */
+  /** Uses connected/starting voice when present, otherwise text; resolves on acceptance. */
   sendMessage(text: string): Promise<void>;
   /** Sends a saved suggested answer to this tab's live connection. */
   sendVoiceAnswer(questionId: string, answer: string): Promise<void>;

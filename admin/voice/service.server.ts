@@ -1,10 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { JourneyInput } from "../../shared/conversation";
-import {
-  latestQuestion,
-  type VoiceSelectionInput,
-} from "../../shared/questions";
+import type { VoiceSelectionInput } from "../../shared/questions";
 import {
   DEFAULT_LIVE_VOICE,
   type LiveVoice,
@@ -13,8 +10,7 @@ import {
 import { ConversationError } from "../conversations/errors.server";
 import { recordVoiceUsage } from "../usage/repository.server";
 import {
-  getModelHistory,
-  getSnapshot,
+  getVoiceStartupContext,
   findVoiceQuestionAnswer,
   appendVoiceQuestionAnswer,
 } from "../conversations/repository.server";
@@ -54,6 +50,8 @@ interface VoiceOwner {
   activated: boolean;
   browserReady: boolean;
   openingStarted: boolean;
+  inputReady: boolean;
+  onInputReady?: () => void;
   userSpeechObserved: boolean;
   error?: string;
   timer?: ReturnType<typeof setTimeout>;
@@ -121,6 +119,11 @@ function beginConversation(owner: VoiceOwner) {
         !owner.userSpeechObserved,
       );
       if (owner.stopping || owners.get(owner.conversationId) !== owner) return;
+      owner.inputReady = true;
+      owner.onInputReady?.();
+      // A home tile or typed first request owns the first response. The normal
+      // welcome must not race its acknowledged provider continuation.
+      if (owner.userSpeechObserved) return;
       // Never hold the event queue for speech or playback acknowledgments.
       void owner.provider!.beginConversation().catch(() => {
         if (!owner.stopping)
@@ -420,6 +423,7 @@ export async function startVoice(
     activated: false,
     browserReady: false,
     openingStarted: false,
+    inputReady: false,
     userSpeechObserved: false,
     start: Promise.resolve({ voiceId: input.requestId, sdp: "" }),
     events: Promise.resolve(),
@@ -430,6 +434,7 @@ export async function startVoice(
   };
   owners.set(conversationId, owner);
   owner.start = (async () => {
+    const startedAt = Date.now();
     const reserved = await reserveVoiceSession(conversationId, {
       voiceId: owner.voiceId,
       clientId: owner.clientId,
@@ -442,21 +447,21 @@ export async function startVoice(
     owner.reserved = true;
     owner.controller.signal.throwIfAborted();
     lease(owner, reserved.session.leaseExpiresAt);
-    const initial = await getSnapshot(conversationId);
-    const pendingQuestion = latestQuestion(initial.messages);
+    const reservedAt = Date.now();
+    const { history, pendingQuestion, lastPage } =
+      await getVoiceStartupContext(conversationId);
+    const contextAt = Date.now();
     owner.resumeQuestionId = pendingQuestion?.invocationId;
-    owner.lastPage = initial.messages
-      .flatMap((message) => message.parts)
-      .filter((part) => part.type === "page_view" || part.type === "navigation")
-      .at(-1)?.path;
+    owner.lastPage = lastPage;
     owner.provider = await createVoiceProvider({
       sdp: input.sdp,
       voice,
-      history: await getModelHistory(conversationId),
+      history,
       pendingQuestion,
       signal: owner.controller.signal,
       onEvent: (event) => receive(owner, event),
     });
+    const providerAt = Date.now();
     owner.controller.signal.throwIfAborted();
     await activateVoiceSession(
       conversationId,
@@ -466,6 +471,13 @@ export async function startVoice(
     );
     owner.controller.signal.throwIfAborted();
     owner.activated = true;
+    console.debug("[Roman] Voice server startup timings (ms).", {
+      reserve: Math.max(0, reservedAt - startedAt),
+      context: Math.max(0, contextAt - reservedAt),
+      ...owner.provider.startupTimings,
+      activate: Math.max(0, Date.now() - providerAt),
+      total: Math.max(0, Date.now() - startedAt),
+    });
     beginConversation(owner);
     return { voiceId: owner.voiceId, sdp: owner.provider.sdp };
   })();
@@ -489,6 +501,7 @@ export function readyVoice(
   conversationId: string,
   voiceId: string,
   clientId: string,
+  input?: { requestId: string; text: string },
 ) {
   const owner = owners.get(conversationId);
   if (
@@ -499,6 +512,13 @@ export function readyVoice(
     !owner.activated
   )
     throw new ConversationError(409, disconnected);
+  if (input)
+    return submitVoiceInput(
+      conversationId,
+      voiceId,
+      { clientId, ...input },
+      true,
+    );
   owner.browserReady = true;
   beginConversation(owner);
 }
@@ -566,10 +586,41 @@ export async function stopConversationVoice(conversationId: string) {
 }
 
 /** A selected widget answer is real customer text, never a fabricated caption. */
-export async function answerVoiceQuestion(
+export function answerVoiceQuestion(
   conversationId: string,
   voiceId: string,
   input: VoiceSelectionInput,
+): Promise<void> {
+  return submitVoiceInput(conversationId, voiceId, input);
+}
+
+/** At most one accepted UI input waits for the existing startup gates. */
+function waitForInputReady(owner: VoiceOwner): Promise<void> {
+  if (owner.inputReady) return Promise.resolve();
+  if (owner.stopping)
+    return Promise.reject(new ConversationError(409, disconnected));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      owner.controller.signal.removeEventListener("abort", abort);
+      owner.onInputReady = undefined;
+    };
+    const abort = () => {
+      cleanup();
+      reject(new ConversationError(409, disconnected));
+    };
+    owner.onInputReady = () => {
+      cleanup();
+      resolve();
+    };
+    owner.controller.signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+async function submitVoiceInput(
+  conversationId: string,
+  voiceId: string,
+  input: VoiceSelectionInput,
+  startsConversation = false,
 ): Promise<void> {
   // Read-only receipts can reconcile a lost response even after voice stopped.
   // Persisting the user row is the one-use delivery boundary: never replay it.
@@ -581,8 +632,8 @@ export async function answerVoiceQuestion(
     owner.clientId !== input.clientId ||
     owner.stopping ||
     !owner.activated ||
-    !owner.started ||
-    !owner.browserReady ||
+    (!startsConversation &&
+      (!owner.browserReady || (!owner.started && !("text" in input)))) ||
     !owner.provider
   )
     throw new ConversationError(409, disconnected);
@@ -621,6 +672,11 @@ export async function answerVoiceQuestion(
       voiceId,
       input,
     );
+    if (receipt.customerText) owner.userSpeechObserved = true;
+    if (startsConversation) {
+      owner.browserReady = true;
+      beginConversation(owner);
+    }
     if (
       receipt.created &&
       receipt.sequence > (owner.latestUserSequence ?? -1)
@@ -644,7 +700,13 @@ export async function answerVoiceQuestion(
     try {
       if (owner.stopping || owners.get(conversationId) !== owner)
         throw new ConversationError(409, disconnected);
-      if (receipt.productChoice)
+      // The browser can acknowledge readiness before the trusted sideband's
+      // started event arrives. Keep its typed request and wait at that gate.
+      if (startsConversation || receipt.customerText)
+        await waitForInputReady(owner);
+      if (receipt.customerText)
+        await owner.provider!.appendCustomerText(receipt.customerText);
+      else if (receipt.productChoice)
         await owner.provider!.appendProductChoice(receipt.productChoice);
       else await owner.provider!.appendAnswer(receipt.question, receipt.answer);
     } catch {

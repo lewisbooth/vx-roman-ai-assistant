@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setImmediate } from "node:timers";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { voiceMedia } from "./helpers/voice-media.mjs";
@@ -18,6 +19,8 @@ function setup(t, options) {
     runScripts: "outside-only",
   });
   const { window } = dom;
+  const clock = { now: 0 };
+  Object.defineProperty(window.performance, "now", { value: () => clock.now });
   const media = voiceMedia(window, options);
   const errors = [];
   const warnings = [];
@@ -38,7 +41,7 @@ function setup(t, options) {
     connection.close();
     window.close();
   });
-  return { window, media, errors, warnings, timers, connection };
+  return { window, media, errors, warnings, timers, connection, clock };
 }
 
 test("voice requests audio only on prepare, and waits for started, peer and playback before becoming ready", async (t) => {
@@ -74,18 +77,126 @@ test("voice requests audio only on prepare, and waits for started, peer and play
 
 test("stopping while permission is pending stops a late microphone without creating a peer", async (t) => {
   let allow;
+  let conversationPreparations = 0;
   const { connection, media } = setup(t, {
     getUserMedia: (stream) =>
       new Promise((resolve) => {
         allow = () => resolve(stream);
       }),
   });
-  const preparing = connection.prepare();
+  const preparing = connection.prepare(async () => {
+    conversationPreparations++;
+  });
   connection.close();
   allow();
   await assert.rejects(preparing, /stopped/);
   assert.equal(media.peers.length, 0);
   assert.equal(media.tracks[0].stopped, true);
+  assert.equal(conversationPreparations, 0);
+});
+
+test("conversation preparation starts only after microphone permission and overlaps local SDP work", async (t) => {
+  let allowMicrophone;
+  let allowConversation;
+  let conversationPreparing = false;
+  let prepared = false;
+  const { connection, media } = setup(t, {
+    getUserMedia: (stream) =>
+      new Promise((resolve) => {
+        allowMicrophone = () => resolve(stream);
+      }),
+  });
+  const preparing = connection
+    .prepare(() => {
+      conversationPreparing = true;
+      return new Promise((resolve) => {
+        allowConversation = resolve;
+      });
+    })
+    .then((sdp) => {
+      prepared = true;
+      return sdp;
+    });
+  assert.equal(conversationPreparing, false);
+  assert.equal(media.peers.length, 0);
+  allowMicrophone();
+  await new Promise(setImmediate);
+  assert.equal(conversationPreparing, true);
+  assert.match(media.peers[0].localDescription.sdp, /roman-offer/);
+  assert.equal(prepared, false);
+  allowConversation();
+  assert.match(await preparing, /roman-offer/);
+});
+
+test("conversation bootstrap does not wait for a delayed SDP offer and prepare waits for both", async (t) => {
+  const { connection, window } = setup(t);
+  let allowOffer;
+  let conversationPrepared = false;
+  let prepared = false;
+  window.RTCPeerConnection.prototype.createOffer = () =>
+    new Promise((resolve) => {
+      allowOffer = () => resolve({ type: "offer", sdp: "v=0\r\no=delayed" });
+    });
+  const preparing = connection
+    .prepare(async () => {
+      conversationPrepared = true;
+    })
+    .then((sdp) => {
+      prepared = true;
+      return sdp;
+    });
+  await new Promise(setImmediate);
+  assert.equal(conversationPrepared, true);
+  assert.equal(prepared, false);
+  allowOffer();
+  assert.match(await preparing, /delayed/);
+});
+
+test("denied microphone permission never prepares a conversation", async (t) => {
+  let conversationPreparations = 0;
+  const { connection, media } = setup(t, {
+    getUserMedia: () => Promise.reject(new Error("denied")),
+  });
+  await assert.rejects(
+    connection.prepare(async () => {
+      conversationPreparations++;
+    }),
+    /Allow microphone access/,
+  );
+  assert.equal(conversationPreparations, 0);
+  assert.equal(media.peers.length, 0);
+});
+
+test("either preparation branch failing closes capture and handles the other branch's later rejection", async (t) => {
+  for (const failingBranch of ["offer", "conversation"]) {
+    const { connection, media, window, errors } = setup(t);
+    let rejectOffer;
+    let rejectConversation;
+    window.RTCPeerConnection.prototype.createOffer = () =>
+      new Promise((_, reject) => {
+        rejectOffer = reject;
+      });
+    const preparing = connection.prepare(
+      () =>
+        new Promise((_, reject) => {
+          rejectConversation = reject;
+        }),
+    );
+    const rejected = assert.rejects(preparing, /preparation unavailable/);
+    await new Promise(setImmediate);
+    const failFirst =
+      failingBranch === "offer" ? rejectOffer : rejectConversation;
+    const failLater =
+      failingBranch === "offer" ? rejectConversation : rejectOffer;
+    failFirst(new Error("preparation unavailable"));
+    await rejected;
+    assert.equal(media.tracks[0].stopped, true);
+    assert.equal(media.peers[0].closed, true);
+    assert.equal(media.peers[0].channel.closed, true);
+    failLater(new Error("late failure"));
+    await new Promise(setImmediate);
+    assert.deepEqual(errors, []);
+  }
 });
 
 test("native startup remains pending until delayed playback succeeds and lifecycle events do not restart audio", async (t) => {
@@ -345,4 +456,53 @@ test("failed or cancelled readiness never leaves microphone or playback active",
     assert.equal(errors.length, cancellation ? 0 : 1);
     assert.equal(media.calls.debug.length, 1);
   }
+});
+
+test("startup timing separates answer arrival, WebRTC and opening without recovery overwriting first milestones", async (t) => {
+  const { connection, media, clock } = setup(t);
+  clock.now = 10;
+  await connection.prepare();
+  let acknowledgeReady;
+  clock.now = 20;
+  const connecting = connection.connect(
+    "answer",
+    () =>
+      new Promise((resolve) => {
+        acknowledgeReady = resolve;
+      }),
+  );
+  await new Promise(setImmediate);
+  const peer = media.peers[0];
+  clock.now = 30;
+  peer.connectionState = "connected";
+  peer.onconnectionstatechange();
+  clock.now = 40;
+  peer.ontrack({ track: media.tracks[0], streams: [media.stream] });
+  await Promise.resolve();
+  clock.now = 50;
+  media.event("session.started");
+  await Promise.resolve();
+  clock.now = 60;
+  media.event("session.started");
+  peer.onconnectionstatechange();
+  clock.now = 70;
+  acknowledgeReady();
+  await connecting;
+  assert.equal(media.calls.debug.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(media.calls.debug[0][1])), {
+    status: "ready",
+    elapsedMs: {
+      microphone: 10,
+      offer: 10,
+      answerReceived: 20,
+      answer: 20,
+      peerConnected: 30,
+      remoteTrack: 40,
+      playback: 40,
+      sessionStarted: 50,
+      transportReady: 50,
+      openingAccepted: 70,
+      total: 70,
+    },
+  });
 });

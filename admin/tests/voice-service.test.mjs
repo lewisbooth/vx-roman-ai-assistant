@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
     contents: `export * from './admin/voice/service.server';
+    export { latestQuestion } from './shared/questions';
     export { ConversationError } from './admin/conversations/errors.server';`,
     resolveDir: process.cwd(),
   },
@@ -39,8 +40,7 @@ const bundle = await build({
             contents = `export const cancelVoiceDelegation = (...args) => mock.cancelDelegation(...args);
         export const runVoiceDelegation = (...args) => mock.delegate(...args);`;
           else if (args.path.includes("conversations"))
-            contents = `export const getModelHistory = (...args) => mock.history(...args);
-            export const getSnapshot = (...args) => mock.snapshot(...args);
+            contents = `export const getVoiceStartupContext = (...args) => mock.context(...args);
             export const findVoiceQuestionAnswer = (...args) => mock.findAnswer(...args);
             export const appendVoiceQuestionAnswer = (...args) => mock.saveAnswer(...args);`;
           else if (args.path.includes("usage"))
@@ -77,6 +77,7 @@ function setup() {
   const captionSequences = new Map();
   const providers = [];
   const logs = [];
+  const timings = [];
   const order = [];
   const timers = new Set();
   const answerReceipts = new Map();
@@ -127,6 +128,19 @@ function setup() {
     },
     history: async () => [{ role: "user", text: "My earlier typed message" }],
     snapshot: async () => ({ messages: [] }),
+    context: async (...args) => {
+      const { messages } = await mock.snapshot(...args);
+      return {
+        history: await mock.history(...args),
+        pendingQuestion: api.latestQuestion(messages),
+        lastPage: messages
+          .flatMap((message) => message.parts)
+          .filter(
+            (part) => part.type === "page_view" || part.type === "navigation",
+          )
+          .at(-1)?.path,
+      };
+    },
     findAnswer: async (conversationId, voiceId, input) => {
       const previous = answerReceipts.get(input.requestId);
       if (!previous) return null;
@@ -146,6 +160,9 @@ function setup() {
         sequence: 100,
         question: "Which room?",
         answer: input.answer,
+        ...("text" in input
+          ? { customerText: input.text, answer: input.text, question: "" }
+          : {}),
         ...("carouselId" in input
           ? {
               productChoice: {
@@ -177,10 +194,12 @@ function setup() {
         thoughts: [],
         answers: [],
         products: [],
+        texts: [],
       };
       const provider = {
         providerId: "live_test",
         sdp: "v=0\r\nanswer",
+        startupTimings: { createMs: 700, sidebandMs: 80 },
         beginConversation: async () => {
           order.push("opening-sent");
           record.openingCount++;
@@ -203,6 +222,11 @@ function setup() {
           record.products.push(choice);
           order.push("product-sent");
           await mock.onProductChoice?.(choice);
+        },
+        appendCustomerText: async (text) => {
+          record.texts.push(text);
+          order.push("text-sent");
+          await mock.onCustomerText?.(text);
         },
       };
       record.provider = provider;
@@ -309,7 +333,10 @@ function setup() {
       return timer;
     },
     clearTimeout: (timer) => timers.delete(timer),
-    console: { error: (...args) => logs.push(args) },
+    console: {
+      error: (...args) => logs.push(args),
+      debug: (...args) => timings.push(args),
+    },
   });
   api = module.exports;
   const conversationId = randomUUID();
@@ -325,6 +352,7 @@ function setup() {
     rows,
     providers,
     logs,
+    timings,
     order,
     timers,
     conversationId,
@@ -417,6 +445,24 @@ test("voice returns SDP before readiness and opens once after both transports ar
   );
   assert.equal(state.calls.delegate.length, 0);
   assert.equal(state.calls.caption.length, 0);
+  assert.equal(state.timings.length, 1);
+  const [timingLabel, timing] = state.timings[0];
+  assert.match(timingLabel, /Voice server startup timings/);
+  assert.deepEqual(Object.keys(timing).sort(), [
+    "activate",
+    "context",
+    "createMs",
+    "reserve",
+    "sidebandMs",
+    "total",
+  ]);
+  assert.equal(timing.createMs, 700);
+  assert.equal(timing.sidebandMs, 80);
+  assert.ok(
+    Object.values(timing).every(
+      (value) => typeof value === "number" && value >= 0,
+    ),
+  );
   await state.stop();
 });
 
@@ -513,7 +559,7 @@ test("a customer caption received before the queued readiness write suppresses w
     [state.conversationId, state.input.requestId, state.input.clientId, false],
   ]);
   assert.equal(state.calls.delegate.length, 0);
-  assert.equal(state.providers[0].openingCount, 1);
+  assert.equal(state.providers[0].openingCount, 0);
   await state.stop();
 });
 
@@ -1581,6 +1627,192 @@ async function answerableVoice(state) {
     answer: "Kitchen",
   };
 }
+
+test("typed first input is saved before readiness and replaces the welcome with one continuation", async () => {
+  for (const startedFirst of [false, true]) {
+    const state = setup();
+    await state.start();
+    if (startedFirst) state.emit({ type: "started", eventId: "started" });
+    const input = {
+      requestId: randomUUID(),
+      text: "Help me measure my windows.",
+    };
+    const save = deferred();
+    state.mock.beforeAnswerSave = () => save.promise;
+    const ready = state.api.readyVoice(
+      state.conversationId,
+      state.input.requestId,
+      state.input.clientId,
+      input,
+    );
+    await flush();
+    assert.equal(state.calls.started.length, 0);
+    assert.equal(state.providers[0].openingCount, 0);
+    assert.equal(state.providers[0].texts.length, 0);
+    save.resolve();
+    await flush();
+    if (!startedFirst) {
+      assert.equal(state.calls.started.length, 0);
+      assert.equal(state.providers[0].texts.length, 0);
+      state.emit({ type: "started", eventId: "started" });
+    }
+    await ready;
+    assert.deepEqual(state.providers[0].texts, [input.text]);
+    assert.equal(state.providers[0].openingCount, 0);
+    assert.equal(state.calls.started.length, 1);
+    assert.equal(
+      state.calls.started[0][3],
+      false,
+      "A customer request does not create the welcome menu",
+    );
+    assert.ok(
+      state.order.indexOf("answer-saved") < state.order.indexOf("start-saved"),
+    );
+    assert.ok(
+      state.order.indexOf("start-saved") < state.order.indexOf("text-sent"),
+    );
+    await state.api.readyVoice(
+      state.conversationId,
+      state.input.requestId,
+      state.input.clientId,
+      input,
+    );
+    await state.ready();
+    assert.equal(state.providers[0].texts.length, 1);
+    assert.equal(state.providers[0].openingCount, 0);
+    state.emit({
+      type: "delegation",
+      eventId: "typed-request",
+      delegationId: "typed-request",
+      offsetMs: 1,
+    });
+    await flush();
+    assert.equal(state.calls.delegate.length, 1);
+    await state.stop();
+  }
+});
+
+test("stopping before provider readiness cancels a saved first typed input without greeting or delivery", async () => {
+  const state = setup();
+  await state.start();
+  const ready = state.api.readyVoice(
+    state.conversationId,
+    state.input.requestId,
+    state.input.clientId,
+    {
+      requestId: randomUUID(),
+      text: "Explore products for my kitchen.",
+    },
+  );
+  const rejected = assert.rejects(ready, {
+    status: 503,
+    message: /answer was saved/,
+  });
+  await flush();
+  assert.equal(state.calls.answer.length, 1);
+  await state.stop();
+  await rejected;
+  assert.equal(state.providers[0].texts.length, 0);
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.providers[0].closed, true);
+});
+
+test("ordinary typed inputs keep connected voice and durable delivery idempotency", async () => {
+  const state = setup();
+  await answerableVoice(state);
+  const input = {
+    clientId: state.input.clientId,
+    requestId: randomUUID(),
+    text: "I need blackout blinds for my bedroom.",
+  };
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  assert.deepEqual(state.providers[0].texts, [input.text]);
+  assert.equal(state.providers[0].answers.length, 0);
+  assert.equal(state.providers[0].closed, false);
+  await state.stop();
+});
+
+test("typed input after browser readiness waits for the trusted startup and replaces the welcome", async () => {
+  const state = setup();
+  await state.start();
+  const input = {
+    clientId: state.input.clientId,
+    requestId: randomUUID(),
+    text: "Help me measure my bedroom window.",
+  };
+  await assert.rejects(
+    state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    ),
+    { status: 409 },
+  );
+  assert.equal(state.calls.answer.length, 0);
+  state.ready();
+  const submitted = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal(state.calls.answer.length, 1);
+  assert.equal(state.calls.started.length, 0);
+  assert.equal(state.providers[0].texts.length, 0);
+  assert.equal(state.providers[0].openingCount, 0);
+  state.emit({ type: "started", eventId: "delayed-started" });
+  await submitted;
+  assert.deepEqual(state.providers[0].texts, [input.text]);
+  assert.equal(state.calls.started.length, 1);
+  assert.equal(state.calls.started[0][3], false);
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.ok(
+    state.order.indexOf("answer-saved") < state.order.indexOf("start-saved"),
+  );
+  assert.ok(
+    state.order.indexOf("start-saved") < state.order.indexOf("text-sent"),
+  );
+  await state.stop();
+});
+
+test("stop cancels typed input waiting after browser readiness without a late delivery", async () => {
+  const state = setup();
+  await state.start();
+  state.ready();
+  const input = {
+    clientId: state.input.clientId,
+    requestId: randomUUID(),
+    text: "Help me choose a no-drill blind.",
+  };
+  const submitted = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  const rejected = assert.rejects(submitted, {
+    status: 503,
+    message: /answer was saved/,
+  });
+  await flush();
+  assert.equal(state.calls.answer.length, 1);
+  await state.stop();
+  await rejected;
+  state.emit({ type: "started", eventId: "too-late-started" });
+  await flush();
+  assert.equal(state.calls.started.length, 0);
+  assert.equal(state.providers[0].texts.length, 0);
+  assert.equal(state.providers[0].openingCount, 0);
+  assert.equal(state.providers[0].closed, true);
+});
 
 test("clicked voice answers persist before context delivery without a text turn or voice restart", async () => {
   const state = setup();

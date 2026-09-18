@@ -2807,10 +2807,6 @@ test("voice starts explicitly, polls while idle, heartbeats, and drains before t
   ctx.respond(3, { ok: true });
   await delay(0);
   assert.ok([...ctx.timers.values()].some((timer) => timer.ms === 20_000));
-  await assert.rejects(
-    ctx.client.sendMessage("Hello in text"),
-    /current reply/,
-  );
   ctx.client.setVoiceMuted(true);
   assert.equal(ctx.media.tracks[0].enabled, false);
   assert.equal(ctx.client.getSnapshot().voice.muted, true);
@@ -3284,7 +3280,7 @@ test("selected voice is fixed during startup and active media, then can change a
   const ctx = setup(t, { mediaOptions: {}, savedVoice: "gleam" });
   const activating = activeVoice(ctx);
   assert.throws(() => ctx.client.setVoice("willow"), /End voice/);
-  await assert.rejects(ctx.client.startVoice(), /current session/);
+  await assert.rejects(ctx.client.startVoice(), /already connecting/);
   const voice = await activating;
   assert.equal(ctx.calls[1].body.voice, "gleam");
   assert.equal(ctx.media.calls.microphone, 1);
@@ -3555,3 +3551,310 @@ test("measurements reject a mismatched product result and a late response after 
   assert.equal(ctx.calls.length, 5);
   assert.equal(ctx.client.getSnapshot().conversation, null);
 });
+
+function acceptedVoiceText(input, voice) {
+  return {
+    ...empty,
+    revision: 2,
+    voice,
+    messages: [
+      {
+        id: input.requestId,
+        role: "user",
+        status: "complete",
+        createdAt: "2026-09-18T10:00:00Z",
+        parts: [
+          { type: "text", text: input.text, voiceInput: { voiceId: voice.id } },
+        ],
+      },
+    ],
+  };
+}
+
+test("a typed welcome reply enters the connected voice without stopping audio", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  ctx.client.setVoiceMuted(true);
+  const sending = ctx.client.sendMessage(" Help me measure my windows. ");
+  const call = ctx.calls[3];
+  assert.match(call.url, /\/answers$/);
+  assert.equal(call.body.text, "Help me measure my windows.");
+  assert.equal(
+    ctx.client.getSnapshot().optimisticMessage.parts[0].text,
+    call.body.text,
+  );
+  ctx.respond(3, acceptedVoiceText(call.body, voice));
+  await sending;
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.ok(!ctx.calls.some((call) => /\/(?:stop|messages)$/.test(call.url)));
+});
+
+test("a welcome tile clicked while connecting is immediate and included once in readiness", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const starting = ctx.client.startVoice();
+  const sending = ctx.client.sendMessage(
+    "Help me find no-drill blinds for my home.",
+  );
+  const optimistic = ctx.client.getSnapshot().optimisticMessage;
+  assert.equal(optimistic.role, "user");
+  assert.equal(ctx.client.getSnapshot().pending, true);
+  await assert.rejects(
+    ctx.client.sendMessage("duplicate"),
+    /finished replying/,
+  );
+  await until(() => ctx.calls.length === 1, "No bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "No voice start");
+  const voice = {
+    id: ctx.calls[1].body.requestId,
+    clientId: ctx.calls[1].body.clientId,
+    status: "active",
+  };
+  ctx.respond(1, { voiceId: voice.id, sdp: "answer" });
+  await until(() => !!ctx.media.peers[0].remoteDescription, "No SDP applied");
+  ctx.media.connect();
+  await starting;
+  const input = ctx.readyCalls[0].body.input;
+  assert.equal(input.requestId, optimistic.id);
+  assert.equal(input.text, optimistic.parts[0].text);
+  await until(() => ctx.calls.length >= 3, "No queued-input refresh");
+  for (let i = 2; i < ctx.calls.length; i++)
+    ctx.respond(i, acceptedVoiceText(input, voice));
+  await sending;
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(
+    ctx.client.getSnapshot().conversation.messages[0].parts[0].text,
+    input.text,
+  );
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.readyCalls.length, 1);
+  assert.ok(
+    !ctx.calls.some((call) => /\/(?:answers|stop|messages)$/.test(call.url)),
+  );
+});
+
+test("a typed reply arriving after readiness dispatch uses the active voice input path once", async (t) => {
+  const ctx = setup(t, { mediaOptions: {}, holdReady: true });
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 1, "No bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "No voice start");
+  const voice = {
+    id: ctx.calls[1].body.requestId,
+    clientId: ctx.calls[1].body.clientId,
+    status: "active",
+  };
+  ctx.respond(1, { voiceId: voice.id, sdp: "answer" });
+  await until(() => !!ctx.media.peers[0].remoteDescription, "No SDP applied");
+  ctx.media.connect();
+  await until(() => ctx.readyCalls.length === 1, "No ready");
+  assert.equal(ctx.readyCalls[0].body.input, undefined);
+  const sending = ctx.client.sendMessage("I need blinds for my kitchen.");
+  assert.equal(
+    ctx.client.getSnapshot().optimisticMessage.parts[0].text,
+    "I need blinds for my kitchen.",
+  );
+  ctx.respondReady(0, { ok: true });
+  await starting;
+  await until(
+    () => ctx.calls.some((call) => call.url.endsWith("/answers")),
+    "No voice input",
+  );
+  const inputIndex = ctx.calls.findIndex((call) =>
+    call.url.endsWith("/answers"),
+  );
+  const snapshot = acceptedVoiceText(ctx.calls[inputIndex].body, voice);
+  for (let i = 2; i < ctx.calls.length; i++) ctx.respond(i, snapshot);
+  await sending;
+  assert.equal(
+    ctx.calls.filter((call) => call.url.endsWith("/answers")).length,
+    1,
+  );
+  assert.equal(ctx.media.tracks[0].stopped, false);
+});
+
+test("stopping voice cancels queued welcome input without waiting for microphone permission", async (t) => {
+  let permit;
+  const ctx = setup(t, {
+    mediaOptions: {
+      getUserMedia: (stream) =>
+        new Promise((resolve) => {
+          permit = () => resolve(stream);
+        }),
+    },
+  });
+  const starting = ctx.client.startVoice();
+  const sending = ctx.client.sendMessage("Help me measure.");
+  const rejected = assert.rejects(sending, /Voice was stopped/);
+  await ctx.client.stopVoice();
+  await rejected;
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(ctx.calls.length, 0);
+  permit();
+  await starting;
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.media.tracks[0].stopped, true);
+});
+
+test("a lost readiness response reconciles its saved welcome input without asking the customer to resend it", async (t) => {
+  const ctx = setup(t, { mediaOptions: {}, holdReady: true });
+  const starting = ctx.client.startVoice().catch(() => undefined);
+  let outcome;
+  const sending = ctx.client.sendMessage("Help me measure my windows.").then(
+    () => {
+      outcome = { accepted: true };
+    },
+    (error) => {
+      outcome = { accepted: false, error };
+    },
+  );
+  await until(() => ctx.calls.length === 1, "No bootstrap");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "No voice start");
+  const voice = {
+    id: ctx.calls[1].body.requestId,
+    clientId: ctx.calls[1].body.clientId,
+    status: "active",
+  };
+  ctx.respond(1, { voiceId: voice.id, sdp: "answer" });
+  await until(() => !!ctx.media.peers[0].remoteDescription, "No SDP applied");
+  ctx.media.connect();
+  await until(() => ctx.readyCalls.length === 1, "No readiness input");
+  const input = ctx.readyCalls[0].body.input;
+  assert.equal(input.text, "Help me measure my windows.");
+  const saved = {
+    ...acceptedVoiceText(input, voice),
+    revision: 3,
+    voice: { ...voice, status: "failed", error: "Voice disconnected." },
+  };
+  // The server saved and accepted the message, but its HTTP response was lost.
+  ctx.readyCalls[0].reject(new TypeError("Connection lost after acceptance"));
+  let answered = 2;
+  await until(() => {
+    while (answered < ctx.calls.length) ctx.respond(answered++, saved);
+    return !!outcome;
+  }, "Saved readiness input did not reconcile");
+  await sending;
+  await starting;
+  assert.equal(outcome.accepted, true, outcome.error?.message);
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 1);
+  assert.equal(
+    ctx.client.getSnapshot().conversation.messages[0].id,
+    input.requestId,
+  );
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.equal(ctx.readyCalls.length, 1);
+  assert.ok(
+    !ctx.calls.some((call) => /\/(?:answers|messages)$/.test(call.url)),
+  );
+});
+
+test("a text retry after stopping an in-flight voice bootstrap shares that same conversation", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 1, "No voice bootstrap");
+  await ctx.client.stopVoice();
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  const sending = ctx.client.sendMessage("Help me find no-drill blinds.");
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Text started a second conversation bootstrap",
+  );
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(
+    () => ctx.calls.length === 2,
+    "Text did not use the completed bootstrap",
+  );
+  assert.equal(
+    ctx.calls[1].url,
+    `${access.apiBaseUrl}/${conversationId}/messages`,
+  );
+  assert.equal(ctx.calls[1].body.text, "Help me find no-drill blinds.");
+  ctx.respond(1, {
+    ...pending,
+    messages: [
+      {
+        ...pending.messages[0],
+        requestId: ctx.calls[1].body.requestId,
+        parts: [{ type: "text", text: ctx.calls[1].body.text }],
+      },
+      pending.messages[1],
+    ],
+  });
+  await sending;
+  await starting;
+  assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
+  assert.equal(ctx.client.getSnapshot().pending, false);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(
+    ctx.calls.filter((call) => call.url.includes("/apps/roman/bootstrap"))
+      .length,
+    1,
+  );
+  assert.ok(!ctx.calls.some((call) => /\/(?:voice|answers)$/.test(call.url)));
+});
+
+for (const [name, role, voiceInput, extra] of [
+  [
+    "assistant provenance",
+    "assistant",
+    { voiceId: "22222222-2222-4222-8222-222222222222" },
+    {},
+  ],
+  ["invalid voice ID", "user", { voiceId: "invalid" }, {}],
+  [
+    "unexpected reference fields",
+    "user",
+    { voiceId: "22222222-2222-4222-8222-222222222222", confirmed: true },
+    {},
+  ],
+  [
+    "conflicting question provenance",
+    "user",
+    { voiceId: "22222222-2222-4222-8222-222222222222" },
+    {
+      questionAnswer: {
+        voiceId: "22222222-2222-4222-8222-222222222222",
+        questionId: "33333333-3333-4333-8333-333333333333",
+      },
+    },
+  ],
+]) {
+  test(`typed voice input rejects ${name} without replacing valid history`, async (t) => {
+    const ctx = setup(t, { saved: access });
+    await resume(ctx);
+    const before = ctx.client.getSnapshot().conversation;
+    ctx.client.clearError();
+    ctx.respond(2, {
+      ...complete,
+      revision: 3,
+      messages: [
+        {
+          ...complete.messages[0],
+          role,
+          parts: [
+            { type: "text", text: "Help me measure.", voiceInput, ...extra },
+          ],
+        },
+      ],
+    });
+    await until(
+      () => !!ctx.client.getSnapshot().error,
+      "Invalid voice input was accepted",
+    );
+    assert.match(
+      ctx.client.getSnapshot().error,
+      /invalid conversation response/,
+    );
+    assert.equal(ctx.client.getSnapshot().conversation, before);
+  });
+}

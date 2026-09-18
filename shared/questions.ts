@@ -25,9 +25,20 @@ export interface VoiceAnswerInput extends QuestionAnswerReference {
   answer: string;
 }
 
+export interface VoiceInputReference {
+  voiceId: string;
+}
+
+export interface VoiceTextInput {
+  clientId: string;
+  requestId: string;
+  text: string;
+}
+
 export type VoiceSelectionInput =
   | Omit<VoiceAnswerInput, "voiceId">
-  | ({ clientId: string; requestId: string } & ProductChoice);
+  | ({ clientId: string; requestId: string } & ProductChoice)
+  | VoiceTextInput;
 
 export interface QuestionSelection {
   question: string;
@@ -269,6 +280,14 @@ export function parseQuestionAnswerReference(
   )
     throw new Error("Invalid question answer reference.");
   return { questionId: value.questionId, voiceId: value.voiceId };
+}
+
+export function parseVoiceInputReference(input: unknown): VoiceInputReference {
+  const value = object(input);
+  exact(value, ["voiceId"]);
+  if (typeof value.voiceId !== "string" || !uuidPattern.test(value.voiceId))
+    throw new Error("Invalid voice input reference.");
+  return { voiceId: value.voiceId };
 }
 
 /** Customer turns retire questions; leaving a product also retires its numeric input. */

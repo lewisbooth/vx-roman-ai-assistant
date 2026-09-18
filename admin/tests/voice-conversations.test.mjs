@@ -1123,6 +1123,44 @@ async function questionDuringVoice(measurement = false) {
   return { session, input, question };
 }
 
+test("voice startup projects its history, pending question and page from one conversation read", async () => {
+  const { question } = await questionDuringVoice();
+  await journey();
+  const findUnique = database.conversation.findUnique;
+  let transcriptReads = 0;
+  database.conversation.findUnique = (...args) => {
+    if (args[0]?.include?.messages) transcriptReads++;
+    return findUnique.apply(database.conversation, args);
+  };
+  let context;
+  try {
+    context = await conversation.getVoiceStartupContext(id);
+  } finally {
+    database.conversation.findUnique = findUnique;
+  }
+  assert.equal(transcriptReads, 1);
+  assert.deepEqual(context.history, await conversation.getModelHistory(id));
+  assert.deepEqual(context.pendingQuestion, question);
+  assert.equal(context.lastPage, "/products/blackout-roller");
+});
+
+test("voice startup does not revive an answered or departed numeric question", async () => {
+  const { session, question } = await questionDuringVoice(true);
+  await conversation.appendJourney(id, {
+    requestId: randomUUID(),
+    title: "Another product",
+    path: "/products/another-blind",
+    occurredAt: new Date(clock).toISOString(),
+  });
+  const context = await conversation.getVoiceStartupContext(id);
+  assert.equal(context.pendingQuestion, undefined);
+  assert.equal(context.lastPage, "/products/another-blind");
+  assert.ok(
+    context.history.some((message) => message.text.includes(question.question)),
+  );
+  await voice.cancelVoiceSession(id, session.id, clientId);
+});
+
 test("startup question refresh reserves no work after an answer or a numeric product departure", async () => {
   const { session, question, input } = await questionDuringVoice(true);
   const before = await database.conversation.findUniqueOrThrow({
@@ -1578,6 +1616,193 @@ test("concurrent retries persist one answer receipt and a second choice cannot a
       ...receipts[0],
       created: false,
     },
+  );
+});
+
+test("typed voice input persists before browser readiness and reconciles after end without a caption or text turn", async () => {
+  const session = await startVoice();
+  await voice.activateVoiceSession(
+    id,
+    session.id,
+    clientId,
+    "provider-early-message",
+  );
+  const input = {
+    clientId,
+    requestId: randomUUID(),
+    text: "  Help me measure my windows.  ",
+  };
+  const receipt = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  assert.equal(receipt.created, true);
+  assert.equal(receipt.customerText, input.text.trim());
+  assert.equal(receipt.question, "");
+  assert.equal(receipt.answer, input.text.trim());
+  const snapshot = await conversation.getSnapshot(id);
+  assert.equal(snapshot.busy, false);
+  assert.equal(snapshot.voice.status, "active");
+  assert.deepEqual(snapshot.messages.at(-1).parts, [
+    {
+      type: "text",
+      text: input.text.trim(),
+      voiceInput: { voiceId: session.id },
+    },
+  ]);
+  assert.deepEqual((await conversation.getModelHistory(id)).at(-1), {
+    role: "user",
+    text: input.text.trim(),
+  });
+  assert.equal(await database.voiceTranscript.count(), 0);
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "assistant" } }),
+    0,
+  );
+  await voice.closeVoiceSession(id, session.id, clientId);
+  await conversation.endConversation(id);
+  clock++;
+  const restarted = load().conversation;
+  assert.deepEqual(
+    await restarted.findVoiceQuestionAnswer(id, session.id, input),
+    { ...receipt, created: false },
+  );
+  assert.deepEqual(
+    await restarted.appendVoiceQuestionAnswer(id, session.id, input),
+    { ...receipt, created: false },
+  );
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    1,
+  );
+});
+
+test("typed voice input retries require the same text, input kind and voice owner", async () => {
+  const { session, input: choice } = await questionDuringVoice();
+  const input = { clientId, requestId: randomUUID(), text: "Help me measure." };
+  const receipts = await Promise.all([
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+  ]);
+  assert.deepEqual(receipts.map((receipt) => receipt.created).sort(), [
+    false,
+    true,
+  ]);
+  for (const changed of [
+    { ...input, text: "Explore products." },
+    { ...choice, requestId: input.requestId },
+  ])
+    await assert.rejects(
+      conversation.findVoiceQuestionAnswer(id, session.id, changed),
+      { status: 400 },
+    );
+  await assert.rejects(
+    conversation.findVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      clientId: randomUUID(),
+    }),
+    { status: 404 },
+  );
+  await assert.rejects(
+    conversation.findVoiceQuestionAnswer(id, randomUUID(), input),
+    { status: 404 },
+  );
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    1,
+  );
+});
+
+test("typed voice inputs cannot bypass active ownership, text bounds or pending work", async () => {
+  const session = await startVoice();
+  const input = { clientId, requestId: randomUUID(), text: "Find my style." };
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { status: 409 },
+  );
+  await voice.activateVoiceSession(
+    id,
+    session.id,
+    clientId,
+    "provider-text-validation",
+  );
+  for (const changed of [
+    { text: " " },
+    { text: "x".repeat(4001) },
+    { text: null },
+    { confirmed: true },
+    { questionId: randomUUID() },
+  ])
+    await assert.rejects(
+      conversation.appendVoiceQuestionAnswer(id, session.id, {
+        ...input,
+        ...changed,
+      }),
+      { status: 400 },
+    );
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      clientId: randomUUID(),
+    }),
+    { status: 404 },
+  );
+  const turn = await conversation.beginTurn(id, textInput(""), session.id);
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { status: 409 },
+  );
+  await conversation.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "Ready",
+    voiceId: session.id,
+  });
+  await voice.closeVoiceSession(id, session.id, clientId);
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { status: 409 },
+  );
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    0,
+  );
+});
+
+test("typed voice messages share the bounded selection allowance without losing retry receipts", async () => {
+  const session = await startVoice();
+  await voice.activateVoiceSession(
+    id,
+    session.id,
+    clientId,
+    "provider-text-limit",
+  );
+  const input = { clientId, requestId: randomUUID(), text: "Help me measure." };
+  const first = await conversation.appendVoiceQuestionAnswer(
+    id,
+    session.id,
+    input,
+  );
+  for (let index = 1; index < 40; index++)
+    await conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      requestId: randomUUID(),
+      text: `Reply ${index}`,
+    });
+  await assert.rejects(
+    conversation.appendVoiceQuestionAnswer(id, session.id, {
+      ...input,
+      requestId: randomUUID(),
+    }),
+    { status: 429 },
+  );
+  assert.deepEqual(
+    await conversation.appendVoiceQuestionAnswer(id, session.id, input),
+    { ...first, created: false },
+  );
+  assert.equal(
+    await database.conversationMessage.count({ where: { role: "user" } }),
+    40,
   );
 });
 
