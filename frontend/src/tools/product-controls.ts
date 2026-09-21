@@ -12,23 +12,34 @@ export function isCurrentProduct(productPath: string): boolean {
 }
 
 /** The theme's configured-product form is separate from samples and cart forms. */
-export function currentProductForm(productPath: string): HTMLFormElement {
-  if (!isCurrentProduct(productPath))
-    throw new Error("Open the matching product page before configuring it.");
+export function findCurrentProductForm(
+  productPath: string,
+): HTMLFormElement | null {
+  if (!isCurrentProduct(productPath)) return null;
   const forms = document.querySelectorAll<HTMLFormElement>(
     "app-provider > main#main dynamic-pricing > form[data-dynamic-pricing-form]",
   );
-  if (
-    forms.length !== 1 ||
-    // variant-loading persists until the first price; blocking marks invalid
-    // configuration. Both still allow the customer to edit enabled controls.
-    forms[0].matches(".loading,.adding,.adding-sample") ||
-    forms[0].closest("dynamic-pricing.loading")
-  )
+  return forms.length === 1 ? forms[0] : null;
+}
+
+export function isProductFormUpdating(form: HTMLFormElement): boolean {
+  // variant-loading persists until the first price; blocking marks invalid
+  // configuration. Both still allow the customer to edit enabled controls.
+  return (
+    form.matches(".loading,.adding,.adding-sample") ||
+    !!form.closest("dynamic-pricing.loading")
+  );
+}
+
+export function currentProductForm(productPath: string): HTMLFormElement {
+  if (!isCurrentProduct(productPath))
+    throw new Error("Open the matching product page before configuring it.");
+  const form = findCurrentProductForm(productPath);
+  if (!form || isProductFormUpdating(form))
     throw new Error(
       "Wait for the product controls and price to finish updating.",
     );
-  return forms[0];
+  return form;
 }
 
 export function controlVisible(element: Element): boolean {

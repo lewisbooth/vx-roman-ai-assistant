@@ -150,21 +150,6 @@
   }
   .roman-gallery {
     max-width: 700px;
-    margin: 12dvh auto 0;
-    text-align: center;
-  }
-  .roman-gallery h1 {
-    font-size: clamp(36px, 4vw, 56px);
-    font-weight: 400;
-    margin: 18px 0;
-  }
-  .roman-gallery p {
-    font-size: 22px;
-    line-height: 1.5;
-  }
-  .roman-gallery .roman-gallery-note {
-    font-size: 15px;
-    color: #80756b;
   }
 
   .roman-workspace {
@@ -184,32 +169,30 @@
     min-height: 0;
     flex-direction: column;
   }
-  .roman-cart-stage {
+  .roman-cart-stage,
+  .roman-gallery {
     width: 100%;
-    max-width: 1320px;
     min-width: 0;
     margin: 0 auto;
     padding: 24px 8px;
+    font-size: 16px;
+    line-height: 1.5;
     text-align: center;
   }
-  .roman-cart-stage h2 {
+  .roman-cart-stage {
+    max-width: 1320px;
+  }
+  .roman-cart-stage h2,
+  .roman-gallery h2 {
     font-size: 36px;
     font-weight: 400;
     margin: 12px 0 28px;
-  }
-  .roman-stage-eyebrow {
-    font:
-      500 11px/1.4 system-ui,
-      sans-serif;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #866c5f;
   }
   .roman-cart-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
-    gap: 24px;
+    gap: 40px;
     text-align: left;
   }
   .roman-cart-items {
@@ -339,11 +322,11 @@
   .roman-cart-summary {
     min-width: 0;
     padding: 24px;
-    border: 1px solid #4e0e0e;
+    border: 1px solid #e3e0d8;
     border-radius: 24px;
     background: #f7f5ef;
     color: #4e0e0e;
-    box-shadow: 0 6px 18px #4e0e0e1a;
+    box-shadow: 0 6px 30px #4e0e0e06;
   }
   .roman-cart-total {
     display: flex;
@@ -377,7 +360,7 @@
   @media (min-width: 1024px) {
     .roman-cart-layout {
       grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
-      gap: 32px;
+      gap: 56px;
     }
   }
   .roman-return-current {
@@ -862,6 +845,7 @@
   }
 
   @keyframes roman-action-shine {
+    /* One full 300%-wide background tile, matching the header's seamless loop. */
     from {
       background-position:
         0 0,
@@ -870,7 +854,7 @@
     to {
       background-position:
         0 0,
-        -100% 0;
+        -50% 0;
     }
   }
 
@@ -1322,10 +1306,12 @@
     .roman-workspace {
       flex-direction: column;
     }
-    .roman-cart-stage {
+    .roman-cart-stage,
+    .roman-gallery {
       padding: 8px 0;
     }
-    .roman-cart-stage h2 {
+    .roman-cart-stage h2,
+    .roman-gallery h2 {
       font-size: 26px;
       margin: 8px 0 12px;
     }

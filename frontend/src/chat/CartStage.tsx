@@ -81,7 +81,6 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
       aria-label="Your Shopify cart"
       aria-busy={loading}
     >
-      <span className="roman-stage-eyebrow">Your selection</span>
       <h2>Your cart</h2>
       {loading ? (
         <p role="status">Updating your cart…</p>

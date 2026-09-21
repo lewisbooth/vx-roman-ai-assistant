@@ -12,14 +12,38 @@ import { ProductGallery } from "./ProductGallery";
 type ProductDetails = {
   title: string;
   configuration: ReturnType<typeof readProductConfigurationDisplay>;
+  onAction: (action: "cart" | "sample") => Promise<void>;
+  disabled: boolean;
 };
 
 function Details({
   title,
   configuration,
   compact = false,
-  expanded = false,
-}: ProductDetails & { compact?: boolean; expanded?: boolean }) {
+  onAction,
+  disabled,
+}: ProductDetails & { compact?: boolean }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  async function request(action: "cart" | "sample") {
+    if (disabled || inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onAction(action);
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Your request could not be sent. Please try again.",
+      );
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  }
   const measurements = configuration?.measurements;
   const selected =
     configuration?.controls.flatMap((control) =>
@@ -52,16 +76,7 @@ function Details({
           </p>
         )}
       {!compact && selected.length > 0 && (
-        <details
-          className="roman-product-stage-configuration"
-          open={expanded || undefined}
-        >
-          <summary>
-            Your configuration{" "}
-            <span>
-              {selected.length} {selected.length === 1 ? "option" : "options"}
-            </span>
-          </summary>
+        <div className="roman-product-stage-configuration">
           <dl>
             {selected.map((option) => (
               <div key={option.key}>
@@ -75,7 +90,27 @@ function Details({
               </div>
             ))}
           </dl>
-        </details>
+        </div>
+      )}
+      {!compact && (
+        <div className="roman-product-actions">
+          <button
+            type="button"
+            disabled={disabled || submitting}
+            onClick={() => void request("cart")}
+          >
+            Add to Cart
+          </button>
+          <button
+            type="button"
+            className="roman-product-sample"
+            disabled={disabled || submitting}
+            onClick={() => void request("sample")}
+          >
+            Order Sample
+          </button>
+          {error && <p role="alert">{error}</p>}
+        </div>
       )}
     </div>
   );
@@ -101,6 +136,8 @@ function ExpandedProduct({
   gallery,
   pending,
   close,
+  onAction,
+  disabled,
 }: ProductDetails & {
   gallery: readonly ProductGalleryImage[];
   pending: boolean;
@@ -147,6 +184,7 @@ function ExpandedProduct({
       }}
     >
       <header>
+        <span>Your selection</span>
         <button
           ref={collapse}
           className="roman-product-expand"
@@ -163,7 +201,15 @@ function ExpandedProduct({
         pending={pending}
         allowZoom={false}
       />
-      <Details title={title} configuration={configuration} expanded />
+      <Details
+        title={title}
+        configuration={configuration}
+        disabled={disabled}
+        onAction={async (action) => {
+          await onAction(action);
+          close();
+        }}
+      />
     </dialog>
   );
 }
@@ -175,6 +221,8 @@ export function ProductStageView({
   gallery,
   pending,
   hidden,
+  onAction,
+  disabled,
 }: ProductDetails & {
   gallery: readonly ProductGalleryImage[];
   pending: boolean;
@@ -235,7 +283,13 @@ export function ProductStageView({
           hidden={hidden}
         />
       )}
-      <Details title={title} configuration={configuration} compact={compact} />
+      <Details
+        title={title}
+        configuration={configuration}
+        compact={compact}
+        onAction={onAction}
+        disabled={disabled}
+      />
       {compact && (
         <button
           className="roman-product-expand"
@@ -258,6 +312,8 @@ export function ProductStageView({
           gallery={gallery}
           pending={pending}
           close={close}
+          onAction={onAction}
+          disabled={disabled}
         />
       )}
     </aside>

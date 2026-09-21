@@ -71,7 +71,7 @@ function engagedConversation(messages = []) {
   return conversation([customerMessage(), ...messages]);
 }
 
-async function setup(t, initial = {}) {
+async function setup(t, initial = {}, options = {}) {
   const dom = new JSDOM(
     `<!doctype html><body class="template-product"><app-provider><main id="main"><h1>Linen blind</h1>
       <div data-main-product-media-gallery><swiper-container id="product-main-swiper-initial"><img data-testid="pdp-product-image-main" src="/cdn/shop/files/linen.jpg"></swiper-container></div>
@@ -91,6 +91,11 @@ async function setup(t, initial = {}) {
   );
   const { window } = dom;
   Object.assign(window, { Request, Response, Headers });
+  window.matchMedia = (query) => ({
+    matches: !!options.mobile && /max-width:\s*(767|1023)px/.test(query),
+    addEventListener() {},
+    removeEventListener() {},
+  });
   window.document.documentElement.setAttribute("data-roman-open", "");
   window.HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute("open", "");
@@ -159,6 +164,7 @@ async function setup(t, initial = {}) {
     setVoiceMuted: (muted) => update({ voice: { ...state.voice, muted } }),
     end: async () => {
       calls.push(["end"]);
+      await options.onEnd?.();
       update({
         conversation: null,
         voice: { status: "idle", muted: false, error: null },
@@ -167,6 +173,7 @@ async function setup(t, initial = {}) {
     loadProducts: async () => ({ products: [], messages: [] }),
   };
   const navigationCalls = [];
+  const toolCalls = [];
   let page = { url: window.location.href, pending: false, error: null };
   const navigationListeners = new Set();
   let ready = false;
@@ -182,7 +189,12 @@ async function setup(t, initial = {}) {
       },
       navigate: async (path) => navigationCalls.push(path),
     },
-    tools: { execute: async () => ({}) },
+    tools: {
+      execute: async (...args) => {
+        toolCalls.push(args);
+        return {};
+      },
+    },
     onReady: () => {
       ready = true;
     },
@@ -214,6 +226,7 @@ async function setup(t, initial = {}) {
     calls,
     session,
     navigationCalls,
+    toolCalls,
     fetches,
     select,
     nativeCart() {
@@ -511,6 +524,184 @@ test("native cart work preserves selected imagery across tabs without displaying
     [],
     "Returning to Chat must not silently reload the configured PDP",
   );
+});
+
+function selectedConversation() {
+  return engagedConversation([
+    {
+      ...message([
+        { type: "navigation", path: "/products/linen", title: "Linen blind" },
+      ]),
+      role: "context",
+    },
+  ]);
+}
+
+test("selected-product actions share the message queue while busy and preserve connected voice", async (t) => {
+  const ctx = await setup(t, {
+    conversation: { ...selectedConversation(), busy: true },
+    voice: { status: "active", muted: false, error: null },
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-product-stage-price"),
+    "Product details loaded",
+  );
+  const voice = ctx.container.querySelector(".roman-voice-bar");
+  const actions = ctx.container.querySelectorAll(
+    ".roman-product-actions button",
+  );
+  assert.ok([...actions].every((button) => !button.disabled));
+  actions[0].click();
+  await until(
+    () => ctx.container.querySelectorAll(".roman-queued-message").length === 1,
+    "Cart intent is queued while Roman is working",
+  );
+  await until(
+    () => !actions[1].disabled,
+    "Enqueue acceptance unlocks product actions",
+  );
+  actions[1].click();
+  await until(
+    () => ctx.container.querySelectorAll(".roman-queued-message").length === 2,
+    "Sample intent uses the same queue",
+  );
+  assert.deepEqual(ctx.calls, []);
+  assert.deepEqual(ctx.toolCalls, []);
+  assert.deepEqual(ctx.navigationCalls, []);
+  const queued = [
+    ...ctx.container.querySelectorAll(".roman-queued-message p"),
+  ].map((element) => element.textContent);
+  assert.match(
+    queued[0],
+    /add the Linen blind to my cart.*review the configuration/i,
+  );
+  assert.match(queued[1], /order a sample of the Linen blind, if available/i);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
+  ctx.update({ conversation: { ...ctx.state().conversation, busy: false } });
+  await until(
+    () => ctx.calls.length === 2,
+    "Queued requests drain through the session client",
+  );
+  assert.deepEqual(
+    ctx.calls,
+    queued.map((text) => ["text", text]),
+  );
+  assert.equal(ctx.state().voice.status, "active");
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
+  assert.equal(
+    ctx.fetches.length,
+    1,
+    "Actions do not directly mutate or refetch Shopify cart",
+  );
+});
+
+test("product actions stay disabled during restoration, end confirmation and ending", async (t) => {
+  let releaseEnd;
+  const ctx = await setup(
+    t,
+    { conversation: selectedConversation() },
+    {
+      onEnd: () =>
+        new Promise((resolve) => {
+          releaseEnd = resolve;
+        }),
+    },
+  );
+  const buttons = () => [
+    ...ctx.container.querySelectorAll(".roman-product-actions button"),
+  ];
+  await until(() => buttons().length === 2, "Product actions appeared");
+  ctx.update({ restoring: true });
+  await until(
+    () => buttons().every((button) => button.disabled),
+    "Restoration disables actions",
+  );
+  buttons().forEach((button) => button.click());
+  assert.deepEqual(ctx.calls, []);
+  ctx.update({ restoring: false });
+  await until(
+    () => buttons().every((button) => !button.disabled),
+    "Restoration completion unlocks actions",
+  );
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(
+    () => ctx.container.querySelector(".roman-dialog-primary"),
+    "End confirmation opens",
+  );
+  assert.ok(buttons().every((button) => button.disabled));
+  ctx.container.querySelector(".roman-dialog-primary").click();
+  await until(() => releaseEnd, "End starts");
+  assert.ok(buttons().every((button) => button.disabled));
+  assert.deepEqual(ctx.calls, [["end"]]);
+  releaseEnd();
+  await until(
+    () => !ctx.container.querySelector(".roman-product-stage"),
+    "End clears selected product",
+  );
+});
+
+test("mobile product action closes only after queue acceptance and preserves its modal on queue overflow", async (t) => {
+  const ctx = await setup(
+    t,
+    {
+      conversation: { ...selectedConversation(), busy: true },
+      voice: { status: "active", muted: false, error: null },
+    },
+    { mobile: true },
+  );
+  await until(
+    () => ctx.container.querySelector('[aria-label="Expand selected product"]'),
+    "Mobile selected product appears",
+  );
+  assert.equal(ctx.container.querySelector(".roman-product-actions"), null);
+  for (let index = 0; index < 5; index++) {
+    ctx.container
+      .querySelector('[aria-label="Expand selected product"]')
+      .click();
+    await until(
+      () => ctx.container.querySelector(".roman-product-expanded[open]"),
+      "Product expanded",
+    );
+    const dialog = ctx.container.querySelector(".roman-product-expanded");
+    assert.equal(
+      dialog.querySelector("header > span").textContent,
+      "Your selection",
+    );
+    dialog.querySelectorAll(".roman-product-actions button")[index % 2].click();
+    await until(
+      () => !ctx.container.querySelector(".roman-product-expanded"),
+      "Accepted action returns to conversation",
+    );
+    assert.equal(
+      ctx.container.querySelectorAll(".roman-queued-message").length,
+      index + 1,
+    );
+  }
+  ctx.container.querySelector('[aria-label="Expand selected product"]').click();
+  await until(
+    () => ctx.container.querySelector(".roman-product-expanded[open]"),
+    "Product reopens at queue capacity",
+  );
+  const dialog = ctx.container.querySelector(".roman-product-expanded");
+  dialog.querySelector(".roman-product-sample").click();
+  await until(
+    () => dialog.querySelector('[role="alert"]'),
+    "Queue rejection is actionable inside the modal",
+  );
+  assert.match(
+    dialog.querySelector('[role="alert"]').textContent,
+    /queue up to five/,
+  );
+  assert.ok(dialog.open);
+  assert.equal(dialog.querySelector(".roman-product-sample").disabled, false);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-queued-message").length,
+    5,
+  );
+  assert.equal(ctx.state().voice.status, "active");
+  assert.deepEqual(ctx.calls, []);
+  assert.deepEqual(ctx.toolCalls, []);
+  assert.deepEqual(ctx.navigationCalls, []);
 });
 
 test("new voice carousel results reveal Chat while historical widgets and repeated snapshots respect the chosen tab", async (t) => {

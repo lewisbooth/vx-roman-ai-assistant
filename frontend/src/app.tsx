@@ -412,6 +412,8 @@ function Assistant({
                 selectedPath={selectedProduct.path}
                 selectedTitle={selectedProduct.title}
                 hidden={view !== "chat" || toolsOpen}
+                onMessage={sendMessage}
+                disabled={ending || state.restoring || confirmEnd}
               />
             )}
             <div className="roman-dialogue">
@@ -473,16 +475,10 @@ function Assistant({
                         className="roman-gallery"
                         aria-label="Your gallery"
                       >
-                        <span className="roman-stage-eyebrow">
-                          Your home, imagined
-                        </span>
-                        <h1>Your gallery</h1>
+                        <h2>Your gallery</h2>
                         <p>
                           Your room photos and Roman’s visualizations will live
                           here.
-                        </p>
-                        <p className="roman-gallery-note">
-                          Photo uploads and visualizations are coming soon.
                         </p>
                       </section>
                     )}

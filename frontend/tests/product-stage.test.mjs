@@ -12,13 +12,13 @@ const bundle = await build({
       import { flushSync } from 'react-dom';
       import { useSyncExternalStore } from 'react';
       import { ProductStage } from './frontend/src/chat/ProductStage';
-      function Stage({navigation, session}) {
+      function Stage({navigation, session, onMessage}) {
         const page = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot);
-        return page.selectedPath ? <ProductStage key={page.selectedPath} navigation={navigation} session={session} selectedPath={page.selectedPath} selectedTitle="Selected blind" hidden={page.hidden} /> : null;
+        return page.selectedPath ? <ProductStage key={page.selectedPath} navigation={navigation} session={session} selectedPath={page.selectedPath} selectedTitle="Selected blind" hidden={page.hidden} disabled={page.disabled} onMessage={onMessage} /> : null;
       }
-      export function mount(container, navigation, session) {
+      export function mount(container, navigation, session, onMessage) {
         const root = createRoot(container);
-        flushSync(() => root.render(<Stage navigation={navigation} session={session} />));
+        flushSync(() => root.render(<Stage navigation={navigation} session={session} onMessage={onMessage} />));
         return () => flushSync(() => root.unmount());
       }
     `,
@@ -78,6 +78,7 @@ async function setup(
     loadGallery,
     hidden = false,
     mobile = false,
+    onMessage,
   } = {},
 ) {
   const dom = new JSDOM(
@@ -91,8 +92,7 @@ async function setup(
   const { window } = dom;
   const errors = [];
   window.console.error = (...error) => errors.push(error);
-  window.fetch = () =>
-    assert.fail("The selected product stage must not fetch");
+  window.fetch = () => assert.fail("The selected product stage must not fetch");
   const mediaQueries = new Map();
   window.matchMedia = (query) => {
     if (!mediaQueries.has(query)) {
@@ -150,6 +150,7 @@ async function setup(
     },
   };
   const galleryReads = [];
+  const messages = [];
   const session = {
     loadProductGallery: (url, signal) => {
       galleryReads.push({ url, signal });
@@ -168,7 +169,15 @@ async function setup(
   shell.addEventListener("keydown", (event) => shellKeys.push(event.key));
   shell.append(content);
   container.append(shell);
-  const unmount = window.StageTest.mount(content, navigation, session);
+  const unmount = window.StageTest.mount(
+    content,
+    navigation,
+    session,
+    async (message) => {
+      messages.push(message);
+      await onMessage?.(message, window);
+    },
+  );
   let disposed = false;
   const dispose = () => {
     if (!disposed) {
@@ -191,6 +200,7 @@ async function setup(
     container,
     listeners,
     galleryReads,
+    messages,
     dialogs,
     closedDialogs,
     shellKeys,
@@ -246,30 +256,185 @@ test("stage uses the canonical PDP gallery, live quote and supported current sel
   );
 });
 
-test("native changes update the stage and stale prices disappear during asynchronous pricing", async (t) => {
-  const { window, container } = await setup(t);
-  const form = window.document.querySelector("form");
-  form.classList.add("loading");
+test("known theme update states retain same-product choices while hiding the old quote, then refresh together", async (t) => {
+  for (const state of [
+    "loading",
+    "adding",
+    "adding-sample",
+    "dynamic-pricing.loading",
+  ]) {
+    await t.test(state, async (t) => {
+      const { window, container } = await setup(t);
+      const form = window.document.querySelector("form");
+      const target =
+        state === "dynamic-pricing.loading" ? form.parentElement : form;
+      const flag = state === "dynamic-pricing.loading" ? "loading" : state;
+      target.classList.add(flag);
+      await until(
+        () => !container.querySelector(".roman-product-stage-price"),
+        "Stale quote is removed",
+      );
+      assert.match(container.querySelector("dl").textContent, /FittingRecess/);
+      assert.match(container.textContent, /500 × 600 mm/);
+      form.querySelector("[data-width-input]").value = "750";
+      form.querySelector('[value="Exact##7"]').checked = true;
+      form.querySelector("[data-dynamic-price]").textContent = "£70.00";
+      form.dispatchEvent(new window.Event("change", { bubbles: true }));
+      await delay(35);
+      assert.match(container.querySelector("dl").textContent, /FittingRecess/);
+      assert.match(container.textContent, /500 × 600 mm/);
+      assert.equal(container.querySelector(".roman-product-stage-price"), null);
+      target.classList.remove(flag);
+      await until(
+        () => container.textContent.includes("£70.00"),
+        "Settled quote updates",
+      );
+      assert.match(container.textContent, /750 × 600 mm/);
+      assert.match(container.querySelector("dl").textContent, /FittingExact/);
+    });
+  }
+});
+
+test("retained transient configuration clears when its form is unsupported, departed or replaced", async (t) => {
+  for (const transition of ["unsupported", "departed", "replacement"]) {
+    await t.test(transition, async (t) => {
+      const ctx = await setup(t);
+      const form = ctx.window.document.querySelector("form");
+      form.classList.add("adding-sample");
+      await until(
+        () => !ctx.container.querySelector(".roman-product-stage-price"),
+        "Transient quote hides",
+      );
+      assert.ok(ctx.container.querySelector("dl"));
+      if (transition === "unsupported") form.remove();
+      else if (transition === "departed") {
+        ctx.window.history.pushState({}, "", "/cart");
+        ctx.update({ url: ctx.window.location.href });
+      } else {
+        ctx.replace("/products/another", "Another blind");
+        ctx.window.document.querySelector("dynamic-pricing").remove();
+      }
+      await until(
+        () =>
+          !ctx.container.querySelector(
+            ".roman-product-stage-configuration, .roman-product-stage-measurements, .roman-product-stage-price",
+          ),
+        "Unrelated or unsupported pages must not retain old configuration",
+      );
+      assert.equal(ctx.messages.length, 0);
+    });
+  }
+});
+
+test("a replaced same-path loading form cannot inherit the previous form's display snapshot", async (t) => {
+  const ctx = await setup(t);
+  const original = ctx.window.document.querySelector("form");
+  original.classList.add("loading");
   await until(
-    () => !container.querySelector(".roman-product-stage-price"),
-    "Stale quote is removed",
+    () => !ctx.container.querySelector(".roman-product-stage-price"),
+    "Old quote hides",
   );
-  form.classList.remove("loading");
-  form.querySelector("[data-width-input]").value = "750";
-  form
-    .querySelector("[data-width-input]")
-    .dispatchEvent(new window.Event("input", { bubbles: true }));
-  form.querySelector('[value="Exact##7"]').checked = true;
-  form
-    .querySelector('[value="Exact##7"]')
-    .dispatchEvent(new window.Event("change", { bubbles: true }));
-  form.querySelector("[data-dynamic-price]").textContent = "£70.00";
+  assert.match(ctx.container.textContent, /500 × 600 mm/);
+  const replacement = original.cloneNode(true);
+  original.replaceWith(replacement);
   await until(
-    () => container.textContent.includes("£70.00"),
-    "Live quote updates",
+    () =>
+      !ctx.container.querySelector(
+        ".roman-product-stage-measurements, .roman-product-stage-configuration",
+      ),
+    "A distinct loading form with the same read fingerprint must clear old settings",
   );
-  assert.match(container.textContent, /750 × 600 mm/);
-  assert.match(container.querySelector("dl").textContent, /FittingExact/);
+  replacement.querySelector("[data-width-input]").value = "900";
+  replacement.querySelector('[value="Exact##7"]').checked = true;
+  replacement.querySelector("[data-dynamic-price]").textContent = "£90.00";
+  replacement.classList.remove("loading");
+  await until(
+    () => ctx.container.textContent.includes("£90.00"),
+    "Replacement form settles",
+  );
+  assert.match(ctx.container.textContent, /900 × 600 mm/);
+  assert.match(ctx.container.querySelector("dl").textContent, /FittingExact/);
+});
+
+test("returning to a still-loading product after a genuine departure does not revive its old settings", async (t) => {
+  const ctx = await setup(t);
+  ctx.window.document.querySelector("form").classList.add("loading");
+  await until(
+    () => !ctx.container.querySelector(".roman-product-stage-price"),
+    "Loading hides quote",
+  );
+  ctx.window.history.pushState({}, "", "/cart");
+  ctx.update({ url: ctx.window.location.href });
+  await until(
+    () => !ctx.container.querySelector(".roman-product-stage-measurements"),
+    "Departure clears fields",
+  );
+  ctx.window.history.pushState({}, "", "/products/linen");
+  ctx.update({ url: ctx.window.location.href });
+  await delay(35);
+  assert.equal(
+    ctx.container.querySelector(
+      ".roman-product-stage-measurements, .roman-product-stage-configuration, .roman-product-stage-price",
+    ),
+    null,
+  );
+});
+
+test("revealing a hidden product after background departure reads its replacement form before showing configuration", async (t) => {
+  const ctx = await setup(t);
+  ctx.update({ hidden: true });
+  await until(
+    () => ctx.container.querySelector("aside").hidden,
+    "Cart or Gallery hides the selected product",
+  );
+  ctx.window.history.pushState({}, "", "/cart");
+  ctx.window.document.querySelector("main").innerHTML = "<h1>Cart</h1>";
+  ctx.update({ url: ctx.window.location.href });
+  await delay(35);
+
+  ctx.window.history.pushState({}, "", "/products/linen");
+  ctx.window.document.querySelector("main").innerHTML = markup();
+  const replacement = ctx.window.document.querySelector("form");
+  replacement.classList.add("loading");
+  ctx.update({ url: ctx.window.location.href });
+  await delay(35);
+  const visibleConfigurations = [];
+  const observer = new ctx.window.MutationObserver(() => {
+    if (!ctx.container.querySelector("aside").hidden)
+      visibleConfigurations.push(
+        ctx.container.querySelector(
+          ".roman-product-stage-measurements, .roman-product-stage-configuration, .roman-product-stage-price",
+        ),
+      );
+  });
+  observer.observe(ctx.shell, {
+    attributes: true,
+    childList: true,
+    subtree: true,
+  });
+  t.after(() => observer.disconnect());
+  ctx.update({ hidden: false });
+  await until(
+    () => visibleConfigurations.length > 0,
+    "Returning to Chat reveals the refreshed product",
+  );
+  observer.disconnect();
+  assert.ok(
+    visibleConfigurations.every((configuration) => configuration === null),
+  );
+
+  replacement.querySelector("[data-width-input]").value = "900";
+  replacement.querySelector("[data-drop-input]").value = "700";
+  replacement.querySelector('[value="Exact##7"]').checked = true;
+  replacement.querySelector("[data-dynamic-price]").textContent = "£90.00";
+  replacement.classList.remove("loading");
+  await until(
+    () => ctx.container.textContent.includes("£90.00"),
+    "The replacement form settles with its own configuration",
+  );
+  assert.match(ctx.container.textContent, /900 × 700 mm/);
+  assert.match(ctx.container.querySelector("dl").textContent, /FittingExact/);
+  assert.deepEqual(ctx.messages, []);
 });
 
 test("navigation keeps a marked prior selection with no quote, restores cancellation and replaces safely", async (t) => {
@@ -279,10 +444,7 @@ test("navigation keeps a marked prior selection with no quote, restores cancella
     () => ctx.container.textContent.includes("Opening your next page"),
     "Pending navigation has a status without a selection eyebrow",
   );
-  assert.equal(
-    ctx.container.querySelector(".roman-product-stage-price"),
-    null,
-  );
+  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
   assert.match(ctx.container.textContent, /Calm linen blind/);
   ctx.update({ pending: false });
   await until(
@@ -333,8 +495,7 @@ test("stage cleans up navigation subscriptions and queued theme observations on 
   ctx.dispose();
   assert.equal(ctx.listeners.size, 0);
   ctx.update({ pending: true });
-  ctx.window.document.querySelector("main").innerHTML =
-    markup("Removed stage");
+  ctx.window.document.querySelector("main").innerHTML = markup("Removed stage");
   await delay(35);
   assert.equal(ctx.container.textContent, "");
 });
@@ -345,10 +506,7 @@ test("selected imagery survives the empty DOM between a PDP and another backgrou
   ctx.window.document.querySelector("main").replaceChildren();
   await delay(40);
   assert.equal(ctx.container.querySelector("img").src, image);
-  assert.equal(
-    ctx.container.querySelector(".roman-product-stage-price"),
-    null,
-  );
+  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
   ctx.window.history.pushState({}, "", "/products/unselected");
   ctx.window.document.querySelector("main").innerHTML = markup(
     "Not the selected blind",
@@ -357,10 +515,7 @@ test("selected imagery survives the empty DOM between a PDP and another backgrou
   await delay(40);
   assert.equal(ctx.container.querySelector("img").src, image);
   assert.doesNotMatch(ctx.container.textContent, /Not the selected blind/);
-  assert.equal(
-    ctx.container.querySelector(".roman-product-stage-price"),
-    null,
-  );
+  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
 });
 
 test("a restored selection loads its own large image once from another page and retains it through navigation", async (t) => {
@@ -376,10 +531,7 @@ test("a restored selection loads its own large image once from another page and 
   assert.equal(ctx.galleryReads.length, 1);
   assert.equal(ctx.galleryReads[0].url, "/products/linen");
   assert.ok(ctx.galleryReads[0].signal);
-  assert.equal(
-    ctx.container.querySelector(".roman-product-stage-price"),
-    null,
-  );
+  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
   ctx.update({ pending: true });
   await delay(10);
   ctx.window.history.pushState({}, "", "/");
@@ -422,10 +574,7 @@ test("replacement and ending release image work and cannot display an obsolete r
   );
   assert.equal(ctx.galleryReads[2].signal.aborted, true);
   pending[2](
-    gallery(
-      "https://shop.example/cdn/shop/files/late.jpg",
-      "/products/third",
-    ),
+    gallery("https://shop.example/cdn/shop/files/late.jpg", "/products/third"),
   );
   await delay(10);
   assert.equal(ctx.container.textContent, "");
@@ -509,10 +658,7 @@ test("live supporting and feature images update the gallery without losing it on
       .src,
     /remote.jpg/,
   );
-  assert.equal(
-    ctx.container.querySelector(".roman-product-stage-price"),
-    null,
-  );
+  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
 });
 
 test("hidden selected-product panels defer and cancel gallery recovery until visible", async (t) => {
@@ -535,10 +681,7 @@ test("hidden selected-product panels defer and cancel gallery recovery until vis
   await delay(10);
   assert.equal(ctx.container.querySelector("img"), null);
   ctx.update({ hidden: false });
-  await until(
-    () => pending.length === 2,
-    "Reopening restores current imagery",
-  );
+  await until(() => pending.length === 2, "Reopening restores current imagery");
   pending[1](gallery("https://shop.example/cdn/shop/files/current.jpg"));
   await until(
     () => ctx.container.querySelector("img")?.src.includes("current.jpg"),
@@ -585,6 +728,86 @@ async function expandSelectedProduct(ctx) {
   return ctx.container.querySelector(".roman-product-expanded");
 }
 
+test("desktop product actions submit one contextual message each without changing the native product", async (t) => {
+  let release;
+  const ctx = await setup(t, {
+    onMessage: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  });
+  const themeBefore = ctx.window.document.querySelector("main").innerHTML;
+  const actions = ctx.container.querySelectorAll(
+    ".roman-product-actions button",
+  );
+  assert.deepEqual(
+    [...actions].map((button) => button.textContent),
+    ["Add to Cart", "Order Sample"],
+  );
+  actions[0].click();
+  actions[0].click();
+  await until(
+    () => ctx.messages.length === 1,
+    "Cart request was not submitted",
+  );
+  assert.match(
+    ctx.messages[0],
+    /add the Calm linen blind to my cart.*review the configuration/i,
+  );
+  assert.ok([...actions].every((button) => button.disabled));
+  release();
+  await until(
+    () => !actions[1].disabled,
+    "Action did not unlock after acceptance",
+  );
+  actions[1].click();
+  await until(
+    () => ctx.messages.length === 2,
+    "Sample request was not submitted",
+  );
+  assert.match(
+    ctx.messages[1],
+    /order a sample of the Calm linen blind, if available/i,
+  );
+  assert.equal(
+    ctx.window.document.querySelector("main").innerHTML,
+    themeBefore,
+  );
+  release();
+});
+
+test("mobile product actions are hidden until expanded and a rejected request stays visible and retryable", async (t) => {
+  let attempts = 0;
+  const ctx = await setup(t, {
+    mobile: true,
+    onMessage: (_message, window) => {
+      if (++attempts === 1)
+        throw new window.Error("Please remove a queued message first.");
+    },
+  });
+  assert.equal(ctx.container.querySelector(".roman-product-actions"), null);
+  const dialog = await expandSelectedProduct(ctx);
+  const sample = dialog.querySelector(".roman-product-sample");
+  sample.click();
+  await until(
+    () => dialog.querySelector('[role="alert"]'),
+    "Rejected action should display an error",
+  );
+  assert.ok(dialog.open);
+  assert.match(
+    dialog.querySelector('[role="alert"]').textContent,
+    /remove a queued message/,
+  );
+  assert.equal(sample.disabled, false);
+  sample.click();
+  await until(
+    () => !ctx.container.querySelector(".roman-product-expanded"),
+    "Accepted retry should collapse the mobile view",
+  );
+  assert.equal(attempts, 2);
+  assert.equal(ctx.container.querySelector(".roman-product-actions"), null);
+});
+
 test("mobile selection stays compact and expands the existing gallery without fetching or changing the theme", async (t) => {
   const ctx = await setup(t, { mobile: true });
   const thumbnail = ctx.container.querySelector("img");
@@ -620,9 +843,11 @@ test("mobile selection stays compact and expands the existing gallery without fe
   );
   assert.ok(dialog.querySelector(".roman-product-gallery"));
   assert.equal(
-    dialog.querySelector(".roman-product-stage-configuration").open,
-    true,
+    dialog.querySelector("header > span").textContent,
+    "Your selection",
   );
+  assert.equal(dialog.querySelector("details, summary"), null);
+  assert.doesNotMatch(dialog.textContent, /Your configuration|1 option/);
   assert.match(dialog.querySelector("dl").textContent, /FittingRecess/);
   assert.equal(
     dialog.querySelector(".roman-gallery-enlarge"),
@@ -667,6 +892,8 @@ test("expanded mobile selection reflects current native measurements, quote and 
     () => !dialog.querySelector(".roman-product-stage-price"),
     "Expanded view hides stale pricing",
   );
+  assert.match(dialog.textContent, /500 × 600 mm/);
+  assert.match(dialog.querySelector("dl").textContent, /FittingRecess/);
   form.classList.remove("loading");
   form.querySelector("[data-width-input]").value = "750";
   form.querySelector('[value="Exact##7"]').checked = true;
@@ -718,13 +945,7 @@ test("native cancellation closes the expanded product and modal keys never escap
 });
 
 test("expanded product releases its native modal on hiding, shell closure, replacement, desktop resize and unmount", async (t) => {
-  for (const transition of [
-    "hide",
-    "shell",
-    "replace",
-    "desktop",
-    "unmount",
-  ]) {
+  for (const transition of ["hide", "shell", "replace", "desktop", "unmount"]) {
     await t.test(transition, async (t) => {
       const ctx = await setup(t, { mobile: true });
       const dialog = await expandSelectedProduct(ctx);
@@ -766,9 +987,7 @@ test("expanded product releases its native modal on hiding, shell closure, repla
         );
       } else if (transition === "desktop") {
         assert.equal(
-          ctx.container.querySelector(
-            '[aria-label="Expand selected product"]',
-          ),
+          ctx.container.querySelector('[aria-label="Expand selected product"]'),
           null,
         );
         assert.ok(ctx.container.querySelector(".roman-product-gallery"));

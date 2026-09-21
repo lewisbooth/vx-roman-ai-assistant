@@ -68,27 +68,12 @@
 }
 .roman-product-stage-configuration {
   margin-top: 1rem;
+  padding-top: 0.7rem;
   border-top: 1px solid #4e0e0e22;
   font-size: 0.85rem;
 }
-.roman-product-stage-configuration summary {
-  cursor: pointer;
-  min-height: 44px;
-  padding: 0.8rem 0;
-}
-.roman-product-stage-configuration summary:focus-visible {
-  outline: 2px solid #4e0e0e;
-  outline-offset: 3px;
-}
-.roman-product-stage-configuration summary span {
-  color: #79665c;
-  margin-left: 0.45rem;
-}
 .roman-product-stage-configuration dl {
   margin: 0;
-  max-height: 22dvh;
-  overflow: auto;
-  overscroll-behavior: contain;
 }
 .roman-product-stage-configuration dl > div {
   display: grid;
@@ -102,6 +87,43 @@
 .roman-product-stage-configuration dd {
   margin: 0;
   text-align: right;
+}
+.roman-product-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+.roman-product-actions button {
+  min-height: 48px;
+  padding: 12px 18px;
+  border: 1px solid #4e0e0e;
+  border-radius: 12px;
+  background: #4e0e0e;
+  color: #f7f5ef;
+  font: inherit;
+  cursor: pointer;
+}
+.roman-product-actions button:hover {
+  background: #681b1b;
+}
+.roman-product-actions .roman-product-sample {
+  background: #f7f5ef;
+  color: #4e0e0e;
+}
+.roman-product-actions .roman-product-sample:hover {
+  background: #ebe6dc;
+}
+.roman-product-actions button:focus-visible {
+  outline: 2px solid #4e0e0e;
+  outline-offset: 3px;
+}
+.roman-product-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.roman-product-actions [role="alert"] {
+  margin: 0;
+  font-size: 0.85rem;
 }
 .roman-product-stage-loading {
   position: absolute;
@@ -157,9 +179,6 @@
   .roman-product-stage-configuration {
     margin-top: 0.4rem;
     font-size: 0.75rem;
-  }
-  .roman-product-stage-configuration dl {
-    max-height: calc(var(--roman-visible-height, 100dvh) * 0.18);
   }
   .roman-product-stage-loading {
     inset: auto 0 0;
@@ -426,9 +445,12 @@
   top: 0;
   z-index: 2;
   display: flex;
-  justify-content: flex-end;
-  padding: max(8px, env(safe-area-inset-top)) 12px 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: max(8px, env(safe-area-inset-top)) 12px 8px 24px;
   background: #f7f5ef;
+  font-size: 1.2rem;
 }
 .roman-product-expanded .roman-product-stage-image {
   width: 100%;
@@ -468,10 +490,6 @@
 .roman-product-expanded .roman-product-stage-configuration {
   margin-top: 20px;
   font-size: 0.9rem;
-}
-.roman-product-expanded .roman-product-stage-configuration dl {
-  max-height: none;
-  overflow: visible;
 }
 @media (max-width: 1023px) {
   .roman-product-stage > .roman-product-stage-content h2 {

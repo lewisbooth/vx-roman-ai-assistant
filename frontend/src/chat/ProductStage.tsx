@@ -1,9 +1,18 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { storefrontPageTitle } from "../session/page-title";
 import { readProductConfigurationDisplay } from "../tools/product-configuration";
-import { isCurrentProduct } from "../tools/product-controls";
+import {
+  isCurrentProduct,
+  findCurrentProductForm,
+  isProductFormUpdating,
+} from "../tools/product-controls";
 import {
   readProductGallery,
   type ProductGallerySnapshot,
@@ -27,15 +36,20 @@ type ProductStageState = {
   title: string;
   gallery?: ProductGallerySnapshot;
   configuration: ReturnType<typeof readProductConfigurationDisplay>;
+  updating: boolean;
+  form: HTMLFormElement | null;
 };
 
 function readProductStage(path: string): ProductStageState | null {
   if (!isCurrentProduct(path)) return null;
+  const form = findCurrentProductForm(path);
   return {
     path,
     title: storefrontPageTitle(path),
     gallery: readProductGallery(document, window.location.href),
     configuration: readProductConfigurationDisplay(path),
+    updating: !!form && isProductFormUpdating(form),
+    form,
   };
 }
 
@@ -46,12 +60,16 @@ export function ProductStage({
   selectedPath,
   selectedTitle,
   hidden = false,
+  onMessage,
+  disabled = false,
 }: {
   navigation: StorefrontNavigation;
   session: Pick<ConversationClient, "loadProductGallery">;
   selectedPath: string;
   selectedTitle: string;
   hidden?: boolean;
+  onMessage: (message: string) => Promise<void>;
+  disabled?: boolean;
 }) {
   const page = useSyncExternalStore(
     navigation.subscribe,
@@ -61,16 +79,25 @@ export function ProductStage({
   const [product, setProduct] = useState<ProductStageState | null>(null);
   const [imagery, setImagery] = useState<ProductGallerySnapshot>();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Keep the preceding product visible while navigation resolves. It cannot
     // supply an active quote until the new page and its theme controls settle.
-    if (page.pending || hidden) return;
+    if (page.pending) return;
     if (!path || path !== selectedPath) {
+      setProduct((previous) =>
+        previous
+          ? { ...previous, configuration: null, form: null, updating: false }
+          : null,
+      );
       return;
     }
+    if (hidden) return;
+    // Refresh before paint when returning from Cart/Gallery, whose hidden
+    // product view deliberately suspends observations of theme changes.
     let disposed = false;
     let frame: number | undefined;
     let last = "";
+    let lastForm: HTMLFormElement | null = null;
     const read = () => {
       frame = undefined;
       if (disposed) return;
@@ -80,10 +107,30 @@ export function ProductStage({
       } catch {
         // An unsupported/replacing theme must not take down the conversation.
       }
-      const fingerprint = JSON.stringify(next);
-      if (last !== fingerprint) {
+      // Form identity is a display boundary, not serializable snapshot data.
+      const fingerprint = JSON.stringify(next && { ...next, form: undefined });
+      const form = next?.form ?? null;
+      if (last !== fingerprint || lastForm !== form) {
         last = fingerprint;
-        setProduct(next);
+        lastForm = form;
+        setProduct((previous) => {
+          if (
+            next?.updating &&
+            previous?.path === next.path &&
+            previous.form === next.form &&
+            previous.configuration
+          )
+            return {
+              ...next,
+              configuration: {
+                ...previous.configuration,
+                // Retain display choices, never advertise the preceding quote
+                // as current while the theme is recalculating it.
+                configuredPrice: null,
+              },
+            };
+          return next;
+        });
         if (next?.gallery?.items.length)
           setImagery((previous) =>
             JSON.stringify(previous) === JSON.stringify(next.gallery)
@@ -204,6 +251,14 @@ export function ProductStage({
       gallery={gallery}
       pending={page.pending}
       hidden={hidden}
+      disabled={disabled}
+      onAction={(action) =>
+        onMessage(
+          action === "cart"
+            ? `I'd like to add the ${title} to my cart. Please review the configuration with me first.`
+            : `I'd like to order a sample of the ${title}, if available.`,
+        )
+      }
     />
   );
 }
