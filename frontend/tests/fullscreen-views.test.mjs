@@ -238,7 +238,11 @@ test("Cart and Gallery use memory navigation while retaining the transcript and 
   ).set.call(textarea, "Keep my draft");
   textarea.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
   await delay(0);
-  assert.equal(ctx.fetches.length, 1, "The open assistant reads the shared cart once for its badge");
+  assert.equal(
+    ctx.fetches.length,
+    1,
+    "The open assistant reads the shared cart once for its badge",
+  );
   await ctx.select("Cart");
   await until(
     () => ctx.container.textContent.includes("Your cart is empty"),
@@ -265,14 +269,11 @@ test("active voice remains connected and retains its controls through every Roma
   const ctx = await setup(t, {
     voice: { status: "active", muted: false, error: null },
   });
-  const controls = ctx.container.querySelector(".roman-voice-composer");
+  const controls = ctx.container.querySelector(".roman-voice-bar");
   assert.ok(controls);
   for (const name of ["Gallery", "Cart", "Chat"]) {
     await ctx.select(name);
-    assert.equal(
-      ctx.container.querySelector(".roman-voice-composer"),
-      controls,
-    );
+    assert.equal(ctx.container.querySelector(".roman-voice-bar"), controls);
     assert.equal(ctx.state().voice.status, "active");
     assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
   }
@@ -310,8 +311,11 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
   );
   await ctx.select("Cart");
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
-  ctx.container.querySelector(".roman-end-confirm").click();
+  await until(
+    () => ctx.container.querySelector(".roman-dialog-primary"),
+    "Confirmation missing",
+  );
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
     () => !ctx.container.querySelector(".roman-end-chat"),
     "Conversation did not end",
@@ -347,7 +351,11 @@ test("cart additions stay in Chat until View Cart is explicitly chosen", async (
     voice: { status: "active", muted: false, error: null },
   });
   assert.equal(ctx.container.querySelector(".roman-chat-scroll").hidden, false);
-  assert.equal(ctx.fetches.length, 1, "The cart badge shares its background read without showing Cart");
+  assert.equal(
+    ctx.fetches.length,
+    1,
+    "The cart badge shares its background read without showing Cart",
+  );
   ctx.container.querySelector(".roman-cart-added a").click();
   await until(
     () => ctx.container.querySelector(".roman-cart-stage"),
@@ -475,7 +483,7 @@ test("new voice carousel results reveal Chat while historical widgets and repeat
     conversation: original,
     voice: { status: "active", muted: false, error: null },
   });
-  const controls = ctx.container.querySelector(".roman-voice-composer");
+  const controls = ctx.container.querySelector(".roman-voice-bar");
   await ctx.select("Cart");
   ctx.update({ conversation: JSON.parse(JSON.stringify(original)) });
   await delay(0);
@@ -502,7 +510,7 @@ test("new voice carousel results reveal Chat while historical widgets and repeat
     () => !ctx.container.querySelector(".roman-chat-scroll").hidden,
     "New voice carousel stayed hidden on Cart",
   );
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), controls);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), controls);
   assert.equal(ctx.state().voice.status, "active");
   await ctx.select("Gallery");
   for (let revision = 2; revision < 5; revision++)
@@ -607,7 +615,7 @@ function enterText(ctx, text) {
   return textarea;
 }
 
-test("voice startup and Roman's opening retain live home tiles and focused text until customer speech", async (t) => {
+test("voice startup and Roman's opening retain live home tiles until customer speech", async (t) => {
   const ctx = await setup(t, { conversation: null });
   const welcome = ctx.container.querySelector(".roman-welcome");
   const textarea = enterText(ctx, "A blind for my kitchen");
@@ -620,14 +628,12 @@ test("voice startup and Roman's opening retain live home tiles and focused text 
   await delay(0);
   ctx.update({ voice: { status: "starting", muted: false, error: null } });
   await until(
-    () => ctx.container.querySelector(".roman-voice-composer"),
+    () => ctx.container.querySelector(".roman-voice-bar"),
     "Voice controls did not appear",
   );
   assert.equal(ctx.container.querySelector(".roman-welcome"), welcome);
-  assert.equal(ctx.container.activeElement, textarea);
-  assert.equal(textarea.closest("[hidden]"), null);
-  assert.equal(textarea.readOnly, false);
-  assert.equal(textarea.disabled, false);
+  assert.equal(ctx.container.querySelector("textarea"), null);
+  assert.equal(ctx.container.querySelector('[type="submit"]'), null);
   assert.equal(
     ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
     4,
@@ -640,15 +646,11 @@ test("voice startup and Roman's opening retain live home tiles and focused text 
     voice: { status: "active", muted: false, error: null },
   });
   await until(
-    () =>
-      ctx.container.querySelector('[aria-label="Mute microphone"]')
-        ?.disabled === false,
+    () => ctx.container.querySelector(".roman-voice-waveform"),
     "Voice did not become active",
   );
   assert.equal(ctx.container.querySelector(".roman-welcome"), welcome);
-  assert.equal(ctx.container.activeElement, textarea);
-  assert.equal(textarea.value, "A blind for my kitchen");
-  assert.equal(textarea.readOnly, false);
+  assert.equal(ctx.container.querySelector("textarea"), null);
   assert.equal(
     ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
     4,
@@ -680,71 +682,80 @@ test("voice startup and Roman's opening retain live home tiles and focused text 
     ctx.container.querySelector(".roman-timeline").textContent,
     /I need a kitchen blind/,
   );
-  assert.equal(textarea.closest("[hidden]"), null);
-  assert.equal(textarea.disabled, false);
-  assert.equal(textarea.readOnly, false);
+  assert.equal(ctx.container.querySelector("textarea"), null);
   assert.equal(ctx.state().voice.status, "active");
   assert.deepEqual(ctx.calls, []);
+  ctx.update({ voice: { status: "idle", muted: false, error: null } });
+  await until(
+    () => ctx.container.querySelector("textarea"),
+    "Text did not return after voice ended",
+  );
+  assert.equal(
+    ctx.container.querySelector("textarea").value,
+    "A blind for my kitchen",
+  );
 });
 
-test("first typed or tile reply immediately opens the transcript while voice remains connected and submission is pending", async (t) => {
-  for (const voiceStatus of ["starting", "active"]) {
-    for (const input of ["text", "tile"]) {
-      const ctx = await setup(t, {
-        conversation: conversation(voiceOpening()),
-        voice: { status: voiceStatus, muted: false, error: null },
+test("first text or tile reply immediately opens the transcript and tiles preserve active voice", async (t) => {
+  for (const { voiceStatus, input } of [
+    { voiceStatus: "idle", input: "text" },
+    { voiceStatus: "starting", input: "tile" },
+    { voiceStatus: "active", input: "tile" },
+  ]) {
+    const ctx = await setup(t, {
+      conversation: conversation(voiceOpening()),
+      voice: { status: voiceStatus, muted: false, error: null },
+    });
+    let acknowledge;
+    let completed = false;
+    ctx.session.sendMessage = async (text) => {
+      ctx.calls.push(["text", text]);
+      ctx.update({ optimisticMessage: customerMessage(text), pending: true });
+      await new Promise((resolve) => {
+        acknowledge = resolve;
       });
-      let acknowledge;
-      let completed = false;
-      ctx.session.sendMessage = async (text) => {
-        ctx.calls.push(["text", text]);
-        ctx.update({ optimisticMessage: customerMessage(text), pending: true });
-        await new Promise((resolve) => {
-          acknowledge = resolve;
-        });
-        completed = true;
-      };
-      let text;
-      if (input === "text") {
-        text = "Blackout blinds for my bedroom";
-        enterText(ctx, text);
-        await until(
-          () =>
-            !ctx.container.querySelector(
-              '.roman-composer button[type="submit"]',
-            ).disabled,
-          "Text entry stayed unavailable during the opening",
-        );
-        ctx.container
-          .querySelector(".roman-composer form")
-          .dispatchEvent(
-            new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
-          );
-      } else {
-        text = "Help me measure my windows for blinds.";
-        ctx.container.querySelector(".roman-welcome-tile").click();
-      }
+      completed = true;
+    };
+    let text;
+    if (input === "text") {
+      text = "Blackout blinds for my bedroom";
+      enterText(ctx, text);
       await until(
-        () => ctx.container.querySelector(".roman-timeline"),
-        `${input} did not open the transcript before submission completed`,
+        () =>
+          !ctx.container.querySelector('.roman-composer button[type="submit"]')
+            .disabled,
+        "Text entry stayed unavailable during the opening",
       );
-      assert.equal(completed, false);
-      assert.equal(ctx.container.querySelector(".roman-welcome"), null);
-      assert.ok(
-        ctx.container
-          .querySelector(".roman-timeline")
-          .textContent.includes(text),
-      );
-      assert.equal(ctx.state().voice.status, voiceStatus);
-      assert.ok(ctx.container.querySelector(".roman-voice-composer"));
-      assert.deepEqual(
-        ctx.calls,
-        [["text", text]],
-        "A first visual response must not stop or restart voice",
-      );
-      acknowledge();
-      await until(() => completed, "Submission did not complete");
+      ctx.container
+        .querySelector(".roman-composer form")
+        .dispatchEvent(
+          new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+        );
+    } else {
+      text = "Help me measure my windows for blinds.";
+      ctx.container.querySelector(".roman-welcome-tile").click();
     }
+    await until(
+      () => ctx.container.querySelector(".roman-timeline"),
+      `${input} did not open the transcript before submission completed`,
+    );
+    assert.equal(completed, false);
+    assert.equal(ctx.container.querySelector(".roman-welcome"), null);
+    assert.ok(
+      ctx.container.querySelector(".roman-timeline").textContent.includes(text),
+    );
+    assert.equal(ctx.state().voice.status, voiceStatus);
+    assert.equal(
+      !!ctx.container.querySelector(".roman-voice-bar"),
+      voiceStatus !== "idle",
+    );
+    assert.deepEqual(
+      ctx.calls,
+      [["text", text]],
+      "A first visual response must not stop or restart voice",
+    );
+    acknowledge();
+    await until(() => completed, "Submission did not complete");
   }
 });
 
@@ -763,8 +774,11 @@ test("restored customer conversation opens the transcript and ending it restores
   );
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
-  ctx.container.querySelector(".roman-end-confirm").click();
+  await until(
+    () => ctx.container.querySelector(".roman-dialog-primary"),
+    "Confirmation missing",
+  );
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "End chat did not reset the welcome",
@@ -780,9 +794,7 @@ test("restored customer conversation opens the transcript and ending it restores
     ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
     4,
   );
-  assert.equal(
-    ctx.container.querySelector("textarea").closest("[hidden]"),
-    null,
-  );
+  assert.equal(ctx.container.querySelector("textarea"), null);
+  assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
   assert.deepEqual(ctx.calls, [["end"]]);
 });

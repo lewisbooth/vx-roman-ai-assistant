@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { cwd } from "node:process";
 import { test } from "node:test";
 import { build } from "esbuild";
@@ -41,9 +41,7 @@ function setup(t) {
   const calls = [];
   const view = dom.window.api.mount(container, {
     setVoiceMuted: (muted) => calls.push(["mute", muted]),
-    stopVoice: async () => {
-      calls.push(["stop"]);
-    },
+    stopVoice: async () => calls.push(["stop"]),
   });
   t.after(() => {
     view.dispose();
@@ -52,61 +50,41 @@ function setup(t) {
   return { ...view, container, calls };
 }
 
-test("active voice presents decorative activity and labelled mute/end actions", (t) => {
+test("active voice fills the bar with decorative activity and only End voice", (t) => {
   const { render, container, calls } = setup(t);
   render({ voice: { status: "active", muted: false, error: null } });
   const waveform = container.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
-  assert.equal(waveform.children.length, 7);
-  assert.equal(
-    container.querySelector('[role="status"]').textContent,
-    "Voice is on",
-  );
-  assert.ok(
-    container
-      .querySelector(".roman-voice-status")
-      .classList.contains("sr-only"),
-  );
-  const mute = container.querySelector('[aria-label="Mute microphone"]');
-  assert.equal(mute.getAttribute("aria-pressed"), "false");
-  assert.equal(mute.title, "Mute microphone");
-  mute.click();
-  render({ voice: { status: "active", muted: true, error: null } });
-  const unmute = container.querySelector('[aria-label="Unmute microphone"]');
-  assert.equal(unmute.getAttribute("aria-pressed"), "true");
-  assert.equal(!!container.querySelector(".roman-voice-waveform"), false);
-  assert.equal(
-    container.querySelector('[role="status"]').textContent,
-    "Microphone muted",
-  );
-  assert.ok(container.querySelector(".roman-voice-bar > .roman-voice-notice"));
-  unmute.click();
-  container.querySelector('[aria-label="End voice"]').click();
-  assert.deepEqual(calls, [["mute", true], ["mute", false], ["stop"]]);
+  assert.equal(waveform.children.length, 39);
+  assert.equal(container.querySelector('[role="status"]'), null);
+  assert.equal(container.querySelectorAll("button").length, 1);
+  const end = container.querySelector('[aria-label="End voice"]');
+  assert.equal(end.type, "button");
+  end.click();
+  assert.deepEqual(calls, [["stop"]]);
   assert.equal(container.querySelector("textarea, input"), null);
+  render({ voice: { status: "active", muted: true, error: null } });
+  assert.ok(container.querySelector(".roman-voice-waveform[data-muted]"));
+  assert.equal(container.querySelectorAll("button").length, 1);
 });
 
-test("connecting, stopping, restored and uncertain voice remain stoppable with inactive mute", (t) => {
+test("connecting, stopping, restored and uncertain voice expose only safe cancellation", (t) => {
   const { render, container, calls } = setup(t);
   for (const props of [
     { voice: { status: "starting", muted: false, error: null } },
     { voice: { status: "stopping", muted: true, error: null } },
     { voice: { status: "idle", muted: false, error: null }, waiting: true },
-    {
-      voice: {
-        status: "error",
-        muted: true,
-        error: "Voice could not finish. End voice to retry.",
-      },
-    },
+    { voice: { status: "error", muted: true, error: "End voice to retry." } },
   ]) {
     render(props);
-    const mute = container.querySelector('[aria-label$="microphone"]');
     const end = container.querySelector('[aria-label="End voice"]');
-    assert.equal(mute.disabled, true);
-    mute.click();
-    assert.equal(!!container.querySelector(".roman-voice-waveform"), false);
-    assert.ok(container.querySelector(".roman-voice-bar > .roman-voice-notice"));
+    assert.equal(container.querySelectorAll("button").length, 1);
+    assert.equal(container.querySelector(".roman-voice-waveform"), null);
+    assert.ok(
+      container.querySelector(
+        ".roman-voice-bar > .roman-voice-notice[role='status']",
+      ),
+    );
     assert.equal(end.disabled, props.voice.status === "stopping");
     const before = calls.length;
     end.click();
@@ -114,41 +92,48 @@ test("connecting, stopping, restored and uncertain voice remain stoppable with i
       calls.length,
       before + (props.voice.status === "stopping" ? 0 : 1),
     );
-    if (props.voice.error)
-      assert.equal(
-        container.querySelector('[role="alert"]').textContent,
-        props.voice.error,
-      );
   }
   assert.ok(calls.every(([name]) => name === "stop"));
 });
 
-test("collapsed dock keeps compact text actions and terminal errors remain visible without a fake call", (t) => {
-  const { render, container } = setup(t);
+test("collapsed dock retains microphone control independently of the single-action composer", (t) => {
+  const { render, container, calls } = setup(t);
   render({
     dock: true,
     voice: { status: "active", muted: false, error: null },
   });
   assert.ok(container.querySelector(".roman-voice-dock"));
   assert.equal(container.querySelector(".roman-voice-waveform"), null);
+  const mute = container.querySelector('[aria-label="Mute microphone"]');
+  assert.equal(mute.getAttribute("aria-pressed"), "false");
+  mute.click();
+  render({ dock: true, voice: { status: "active", muted: true, error: null } });
+  const unmute = container.querySelector('[aria-label="Unmute microphone"]');
+  assert.equal(unmute.getAttribute("aria-pressed"), "true");
+  unmute.click();
+  assert.deepEqual(calls, [
+    ["mute", true],
+    ["mute", false],
+  ]);
   assert.deepEqual(
-    [...container.querySelectorAll("button")].map(
-      (button) => button.textContent,
-    ),
-    ["Mute microphone", "Stop voice"],
+    [...container.querySelectorAll("button")].map((b) => b.textContent),
+    ["Unmute microphone", "Stop voice"],
   );
-  render({
-    voice: {
+});
+
+test("stopped or denied voice does not create an empty second bar or inline permission prompt", (t) => {
+  const { render, container } = setup(t);
+  for (const voice of [
+    {
       status: "error",
       muted: false,
-      error: "Microphone permission was denied.",
+      error: "Permission was denied.",
+      errorCode: "microphone_denied",
     },
-  });
-  assert.equal(
-    container.querySelector('[role="alert"]').textContent,
-    "Microphone permission was denied.",
-  );
-  assert.equal(container.querySelector(".roman-voice-bar, button"), null);
-  render({ voice: { status: "idle", muted: false, error: null } });
-  assert.equal(container.textContent, "");
+    { status: "idle", muted: false, error: null },
+  ]) {
+    render({ voice });
+    assert.equal(container.textContent, "");
+    assert.equal(container.querySelector("button, .roman-voice-bar"), null);
+  }
 });

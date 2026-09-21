@@ -5,6 +5,10 @@ export function createComposerFocus(container: HTMLElement) {
   const cancel = () => observer?.disconnect();
   const focus = () => {
     cancel();
+    // Opening Roman must not summon an on-screen keyboard. Customers can still
+    // focus the field themselves; desktop opening keeps its typing shortcut.
+    if (window.matchMedia?.("(max-width: 1023px), (pointer: coarse)").matches)
+      return;
     if (!container.isConnected || container.closest("[hidden]")) return;
     const input = container.querySelector<HTMLTextAreaElement>(
       "textarea[data-roman-composer]:not(:disabled)",

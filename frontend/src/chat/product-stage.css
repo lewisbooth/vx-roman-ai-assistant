@@ -128,7 +128,7 @@
     flex: 0 1 auto;
     width: 100%;
     max-width: none;
-    max-height: 24dvh;
+    max-height: calc(var(--roman-visible-height, 100dvh) * 0.24);
     display: grid;
     grid-template-columns: 88px minmax(0, 1fr);
     gap: 1rem;
@@ -166,7 +166,7 @@
     font-size: 0.75rem;
   }
   .roman-product-stage-configuration dl {
-    max-height: 18dvh;
+    max-height: calc(var(--roman-visible-height, 100dvh) * 0.18);
   }
   .roman-product-stage-loading {
     inset: auto 0 0;

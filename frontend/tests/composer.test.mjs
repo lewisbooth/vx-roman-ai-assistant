@@ -17,7 +17,8 @@ const bundle = await build({
         return {
           render({voice, queued, ...props}) {
             flushSync(() => root.render(<Composer {...props}
-              voiceControls={voice && <VoiceControls session={session} voice={voice} />}
+              voiceControls={voice && ['starting', 'active', 'stopping'].includes(voice.status)
+                ? <VoiceControls session={session} voice={voice} /> : undefined}
               queuedMessages={queued && <section aria-label="Queued messages">{queued}</section>}
             />));
           },
@@ -120,7 +121,7 @@ test("working Roman keeps text editable and accepts a queued message with focus 
   assert.equal(ctx.window.document.activeElement, ctx.input());
 });
 
-test("an idle voice slot does not hide Start voice and queued work blocks only microphone startup", async (t) => {
+test("empty input offers voice, typed input replaces it with Send, and queued work blocks only microphone startup", async (t) => {
   let starts = 0;
   const ctx = setup(t, {
     voice: { status: "idle", muted: false, error: null },
@@ -130,16 +131,21 @@ test("an idle voice slot does not hide Start voice and queued work blocks only m
   });
   const start = () => ctx.container.querySelector('[aria-label="Start voice"]');
   assert.ok(start());
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), null);
+  assert.equal(ctx.send(), null);
   start().click();
   assert.equal(starts, 1);
   ctx.render({ busy: true });
-  await ctx.type("Queue this while Roman works");
   assert.equal(start().disabled, true);
-  assert.equal(ctx.send().disabled, false);
-  assert.equal(ctx.input().readOnly, false);
   start().click();
   assert.equal(starts, 1);
+  await ctx.type("Queue this while Roman works");
+  assert.equal(start(), null);
+  assert.equal(ctx.send().disabled, false);
+  assert.equal(ctx.input().readOnly, false);
+  await ctx.type("   ");
+  assert.ok(start());
+  assert.equal(ctx.send(), null);
 });
 
 test("an enqueue acknowledgement cannot erase newer typing or steal focus", async (t) => {
@@ -231,34 +237,42 @@ test("lifecycle locks alone disable entry and Enter respects composition and mul
   assert.deepEqual(ctx.calls, ["A message"]);
 });
 
-test("one combined bar retains text through voice states and voice buttons never submit text", async (t) => {
+test("voice takes over the whole bar and preserves an unsent text draft until it ends", async (t) => {
   const ctx = setup(t);
   await ctx.type("A voice follow-up I am typing");
-  const input = ctx.input();
+  const form = ctx.input().closest("form");
   for (const status of ["starting", "active", "stopping"]) {
     ctx.render({ voice: { status, muted: false, error: null }, busy: true });
-    assert.equal(ctx.input(), input);
-    assert.equal(input.value, "A voice follow-up I am typing");
-    assert.equal(input.disabled, false);
-    assert.equal(input.readOnly, false);
-    assert.equal(input.closest("form").hidden, false);
-    const embedded = ctx.container.querySelector(".roman-voice-composer");
-    assert.equal(embedded.closest("form"), input.closest("form"));
+    assert.equal(ctx.input(), null);
+    assert.equal(ctx.send(), null);
+    assert.equal(form.hidden, false);
+    const embedded = ctx.container.querySelector(".roman-voice-bar");
+    assert.equal(embedded.closest("form"), form);
     assert.equal(ctx.container.querySelectorAll("form").length, 1);
+    assert.equal(form.querySelectorAll("button").length, 1);
+    assert.equal(
+      form.querySelector("button").getAttribute("aria-label"),
+      "End voice",
+    );
     if (status === "active") {
       assert.equal(
         embedded.querySelectorAll(".roman-voice-waveform span").length,
-        7,
+        39,
       );
-      embedded.querySelector('[aria-label="Mute microphone"]').click();
       embedded.querySelector('[aria-label="End voice"]').click();
     } else assert.equal(embedded.querySelector(".roman-voice-waveform"), null);
   }
-  assert.deepEqual(ctx.voiceCalls, [["mute", true], ["stop"]]);
+  assert.deepEqual(ctx.voiceCalls, [["stop"]]);
   assert.deepEqual(ctx.calls, []);
-  ctx.render({ voice: { status: "active", muted: false, error: null } });
+  // Even a direct form submit cannot send a hidden text draft over voice.
+  form.dispatchEvent(
+    new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
+  );
+  assert.deepEqual(ctx.calls, []);
+  ctx.render({ voice: { status: "idle", muted: false, error: null } });
+  assert.equal(ctx.input().value, "A voice follow-up I am typing");
   ctx.send().click();
   await delay(0);
   assert.deepEqual(ctx.calls, ["A voice follow-up I am typing"]);
-  assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
+  assert.equal(ctx.container.querySelector('[aria-label="End voice"]'), null);
 });

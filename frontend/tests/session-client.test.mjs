@@ -2782,13 +2782,32 @@ test("unoffered and remote voice answers are rejected without contacting the bac
 
 test("microphone denial creates no conversation or API request", async (t) => {
   const ctx = setup(t, {
-    mediaOptions: { getUserMedia: () => Promise.reject(new Error("denied")) },
+    mediaOptions: {
+      getUserMedia: () => Promise.reject({ name: "NotAllowedError" }),
+    },
   });
   await assert.rejects(ctx.client.startVoice(), /Allow microphone/);
   assert.equal(ctx.calls.length, 0);
   assert.equal(ctx.client.getSnapshot().conversation, null);
   assert.equal(ctx.client.getSnapshot().voice.status, "error");
+  assert.equal(ctx.client.getSnapshot().voice.errorCode, "microphone_denied");
   assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+});
+
+test("device failures stay distinct from permission denial and a new start clears stale denial", async (t) => {
+  let name = "NotAllowedError";
+  const ctx = setup(t, {
+    mediaOptions: { getUserMedia: () => Promise.reject({ name }) },
+  });
+  await assert.rejects(ctx.client.startVoice(), /Allow microphone/);
+  assert.equal(ctx.client.getSnapshot().voice.errorCode, "microphone_denied");
+  name = "NotReadableError";
+  const starting = ctx.client.startVoice();
+  assert.equal(ctx.client.getSnapshot().voice.errorCode, undefined);
+  await assert.rejects(starting, /connected and available/);
+  assert.equal(ctx.client.getSnapshot().voice.errorCode, undefined);
+  assert.equal(ctx.client.getSnapshot().voice.status, "error");
+  assert.equal(ctx.calls.length, 0);
 });
 
 test("voice starts explicitly, polls while idle, heartbeats, and drains before text is allowed", async (t) => {

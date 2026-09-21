@@ -1,3 +1,10 @@
+export class MicrophonePermissionError extends Error {
+  constructor() {
+    super("Allow microphone access in your browser to talk to Roman.");
+    this.name = "MicrophonePermissionError";
+  }
+}
+
 /** One explicitly started microphone/peer connection. No credentials or transcript handling. */
 export function createVoiceConnection(onFailure: (message: string) => void) {
   let closed = false;
@@ -133,9 +140,17 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mark("microphone");
-      } catch {
+      } catch (error) {
+        const name =
+          error && typeof error === "object" && "name" in error
+            ? error.name
+            : undefined;
+        if (name === "NotAllowedError" || name === "SecurityError")
+          throw new MicrophonePermissionError();
         throw new Error(
-          "Allow microphone access in your browser to talk to Roman.",
+          name === "NotFoundError"
+            ? "No microphone was found. Connect a microphone and try voice again."
+            : "Roman could not access your microphone. Check that it is connected and available, then try again.",
         );
       }
       if (closed) {

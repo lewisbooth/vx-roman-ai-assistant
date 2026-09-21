@@ -211,9 +211,14 @@ async function setup(t, options = {}) {
     ).set.call(input(), text);
     input().dispatchEvent(new window.Event("input", { bubbles: true }));
     await until(
-      () =>
-        !container.querySelector('.roman-composer button[type="submit"]')
-          .disabled,
+      () => {
+        const send = container.querySelector(
+          '.roman-composer button[type="submit"]',
+        );
+        return text.trim()
+          ? send && !send.disabled
+          : !send && input().value === text;
+      },
       "Composer did not accept typed text",
     );
   }
@@ -238,7 +243,7 @@ async function setup(t, options = {}) {
   };
 }
 
-test("manual composer voice activation preserves the editable welcome and unsent draft", async (t) => {
+test("manual composer voice replaces the empty input in place and preserves the welcome", async (t) => {
   const ctx = await setup(t);
   const form = ctx.container.querySelector(".roman-composer form");
   const field = form.querySelector(".roman-composer-field");
@@ -249,10 +254,9 @@ test("manual composer voice activation preserves the editable welcome and unsent
   assert.ok(start, "Start voice should be in the composer form");
   assert.equal(start.type, "button");
   assert.equal(start.getAttribute("aria-label"), "Start voice");
-  assert.equal(field.contains(start), false);
+  assert.equal(field.contains(start), true);
   assert.equal(field.contains(ctx.input()), true);
-  assert.equal(field.contains(send), true);
-  assert.equal(send.getAttribute("aria-label"), "Send");
+  assert.equal(send, null, "empty text offers voice rather than Send");
   assert.deepEqual(ctx.startVoiceCalls, []);
   start.focus();
   await ctx.type("Keep these measurements in my draft");
@@ -261,7 +265,9 @@ test("manual composer voice activation preserves the editable welcome and unsent
     [],
     "focusing or typing must not start microphone work",
   );
-  start.click();
+  assert.equal(ctx.container.querySelector('[aria-label="Start voice"]'), null);
+  await ctx.type("");
+  ctx.container.querySelector('[aria-label="Start voice"]').click();
   await until(
     () =>
       ctx.startVoiceCalls.length === 1 &&
@@ -269,19 +275,19 @@ test("manual composer voice activation preserves the editable welcome and unsent
     "Voice did not start explicitly",
   );
   assert.deepEqual(ctx.calls, [], "the voice button must not submit the form");
-  assert.equal(ctx.input().value, "Keep these measurements in my draft");
+  assert.equal(ctx.input(), null);
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
-  assert.equal(ctx.input().disabled, false);
-  assert.equal(ctx.input().readOnly, false);
+  assert.equal(form.querySelectorAll("button").length, 1);
+  assert.equal(form.querySelector('button[type="submit"]'), null);
   assert.equal(ctx.container.querySelectorAll(".roman-welcome-tile").length, 4);
   const stop = ctx.container.querySelector('[aria-label="End voice"]');
   stop.click();
   await until(
-    () => !ctx.input().disabled,
+    () => ctx.input() && !ctx.input().disabled,
     "Switching back did not restore text editing",
   );
-  assert.equal(ctx.input().value, "Keep these measurements in my draft");
+  assert.equal(ctx.input().value, "");
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
@@ -298,14 +304,15 @@ test("the in-field Send submits the draft once and blocks voice while its local 
   const send = ctx.container.querySelector(
     '.roman-composer-field button[type="submit"]',
   );
-  const voice = [
-    ...ctx.container.querySelectorAll(".roman-composer button"),
-  ].find((button) => button.textContent === "Start voice");
+  assert.equal(ctx.container.querySelector('[aria-label="Start voice"]'), null);
   send.click();
   await until(
-    () => ctx.calls.length === 1 && send.disabled && voice.disabled,
+    () =>
+      ctx.calls.length === 1 &&
+      ctx.container.querySelector('[aria-label="Start voice"]')?.disabled,
     "Pending send did not block both actions",
   );
+  const voice = ctx.container.querySelector('[aria-label="Start voice"]');
   assert.deepEqual(ctx.calls, ["Show me blackout blinds"]);
   assert.equal(ctx.input().value, "");
   voice.click();
@@ -317,7 +324,7 @@ test("the in-field Send submits the draft once and blocks voice while its local 
     () => ctx.input().value === "" && !voice.disabled,
     "Accepted text did not reset the composer",
   );
-  assert.equal(send.disabled, true, "empty text must keep Send disabled");
+  assert.equal(ctx.container.querySelector('button[type="submit"]'), null);
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
 
@@ -408,10 +415,7 @@ test("saved guide records stay hidden without fetching products, navigating or s
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.productCalls, []);
   assert.deepEqual(fetches, []);
-  assert.equal(
-    ctx.container.querySelector(".roman-composer textarea").disabled,
-    false,
-  );
+  assert.equal(ctx.container.querySelector(".roman-composer textarea"), null);
   assert.match(ctx.voiceDock.textContent, /Voice is on.*Stop voice/);
 });
 
@@ -890,9 +894,9 @@ test("welcome tiles queue during pending work or unavailable voice but restorati
     });
 });
 
-test("voice startup, lifecycle events and Roman's greeting keep welcome tiles and text editable until a customer responds", async (t) => {
+test("voice startup and greeting keep welcome tiles until a customer chooses a tile or speaks", async (t) => {
   for (const voiceStatus of ["starting", "active"])
-    for (const response of ["typed", "tile", "spoken"])
+    for (const response of ["tile", "spoken"])
       await t.test(`${voiceStatus}: ${response}`, async (t) => {
         const rows = [
           {
@@ -944,22 +948,17 @@ test("voice startup, lifecycle events and Roman's greeting keep welcome tiles an
             });
           },
         });
-        const input = ctx.input();
-        const bar = ctx.container.querySelector(".roman-voice-composer");
+        const form = ctx.container.querySelector(".roman-composer form");
+        const bar = ctx.container.querySelector(".roman-voice-bar");
         const tiles = [
           ...ctx.container.querySelectorAll(".roman-welcome-tile"),
         ];
         assert.equal(tiles.length, 4);
         assert.ok(tiles.every((tile) => !tile.disabled));
-        assert.equal(input.disabled, false);
-        assert.equal(input.readOnly, false);
-        assert.equal(input.closest("form").hidden, false);
+        assert.equal(ctx.input(), null);
+        assert.equal(form.querySelectorAll("button").length, 1);
+        assert.ok(form.querySelector('[aria-label="End voice"]'));
         assert.equal(ctx.container.querySelector(".roman-timeline"), null);
-        await ctx.type("I need blackout blinds for my bedroom.");
-        assert.ok(
-          ctx.container.querySelector(".roman-welcome"),
-          "An unsent draft is not a customer reply",
-        );
         if (response === "spoken") {
           ctx.update({
             conversation: {
@@ -982,11 +981,7 @@ test("voice startup, lifecycle events and Roman's greeting keep welcome tiles an
               ],
             },
           });
-        } else if (response === "tile") tiles[0].click();
-        else
-          ctx.container
-            .querySelector('.roman-composer button[type="submit"]')
-            .click();
+        } else tiles[0].click();
         await until(
           () => !ctx.container.querySelector(".roman-welcome"),
           "The first customer response did not open the transcript",
@@ -995,9 +990,9 @@ test("voice startup, lifecycle events and Roman's greeting keep welcome tiles an
           ctx.container.querySelectorAll(".roman-message-user").length,
           1,
         );
-        assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
-        assert.equal(ctx.input(), input);
-        assert.equal(input.closest("form").hidden, false);
+        assert.equal(ctx.container.querySelector(".roman-voice-bar"), bar);
+        assert.equal(ctx.input(), null);
+        assert.equal(ctx.container.querySelector(".roman-composer form"), form);
         assert.deepEqual(ctx.stopVoiceCalls, []);
         assert.deepEqual(ctx.startVoiceCalls, []);
         assert.equal(ctx.calls.length, response === "spoken" ? 0 : 1);
@@ -1178,13 +1173,13 @@ test("a late send completion never takes focus back after the customer moves awa
       }
       target.focus();
       accept();
-      await until(() => ctx.input().value === "", "Send did not complete");
-      assert.equal(target.getRootNode().activeElement, target);
-      assert.equal(
-        ctx.input().disabled,
-        false,
-        "Text remains editable during local voice",
+      await until(
+        () => !ctx.container.querySelector(".roman-queued-message"),
+        "Send did not complete",
       );
+      assert.equal(target.getRootNode().activeElement, target);
+      if (destination === "voice") assert.equal(ctx.input(), null);
+      else assert.equal(ctx.input().disabled, false);
     });
 });
 
@@ -1611,7 +1606,7 @@ test("choosing a blind in voice sends one selection without stopping voice or na
   assert.deepEqual(ctx.stopVoiceCalls, []);
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.calls, []);
-  assert.ok(ctx.container.querySelector(".roman-voice-composer"));
+  assert.ok(ctx.container.querySelector(".roman-voice-bar"));
   release();
 });
 
@@ -1925,17 +1920,17 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   end.click();
   end.click();
   await until(
-    () => ctx.container.querySelector(".roman-end-dialog[open]"),
+    () => ctx.container.querySelector(".roman-dialog[open]"),
     "End confirmation did not open",
   );
   assert.deepEqual(ctx.endCalls, []);
   assert.equal(ctx.input().value, "Unsent draft");
-  const confirm = ctx.container.querySelector(".roman-end-confirm");
+  const confirm = ctx.container.querySelector(".roman-dialog-primary");
   confirm.click();
   confirm.click();
   await until(() => ctx.input().disabled, "Ending did not lock the composer");
   assert.deepEqual(ctx.endCalls, ["end"]);
-  const dialog = ctx.container.querySelector(".roman-end-dialog");
+  const dialog = ctx.container.querySelector(".roman-dialog");
   dialog.dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));
   assert.ok(
     dialog.open,
@@ -1982,10 +1977,10 @@ test("an unsuccessful End keeps its confirmation, conversation and draft availab
   await ctx.type("Keep this draft");
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-end-confirm"),
+    () => ctx.container.querySelector(".roman-dialog-primary"),
     "Confirmation missing",
   );
-  ctx.container.querySelector(".roman-end-confirm").click();
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
     () => ctx.container.querySelector('[role="alert"]'),
     "End failure was hidden",
@@ -1999,18 +1994,18 @@ test("an unsuccessful End keeps its confirmation, conversation and draft availab
     "Open confirmation keeps background entry locked",
   );
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
-  assert.ok(ctx.container.querySelector(".roman-end-dialog[open]"));
+  assert.ok(ctx.container.querySelector(".roman-dialog[open]"));
   assert.equal(
-    ctx.container.querySelector(".roman-end-confirm").disabled,
+    ctx.container.querySelector(".roman-dialog-primary").disabled,
     false,
   );
-  ctx.container.querySelector(".roman-end-confirm").click();
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "Retry did not finish End",
   );
   assert.deepEqual(ctx.endCalls, ["end", "end"]);
-  assert.equal(ctx.container.querySelector(".roman-end-dialog"), null);
+  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
 });
 
 test("cancelling End preserves chat and lets the native dialog own Escape and Tab", async (t) => {
@@ -2029,10 +2024,10 @@ test("cancelling End preserves chat and lets the native dialog own Escape and Ta
   for (const method of ["button", "escape"]) {
     ctx.container.querySelector(".roman-end-chat").click();
     await until(
-      () => ctx.container.querySelector(".roman-end-dialog[open]"),
+      () => ctx.container.querySelector(".roman-dialog[open]"),
       "Confirmation missing",
     );
-    const dialog = ctx.container.querySelector(".roman-end-dialog");
+    const dialog = ctx.container.querySelector(".roman-dialog");
     const cancel = dialog.querySelector("button");
     assert.equal(ctx.container.getRootNode().activeElement, cancel);
     assert.match(
@@ -2064,7 +2059,7 @@ test("cancelling End preserves chat and lets the native dialog own Escape and Ta
       );
     }
     await until(
-      () => !ctx.container.querySelector(".roman-end-dialog"),
+      () => !ctx.container.querySelector(".roman-dialog"),
       "Cancel did not dismiss confirmation",
     );
     assert.deepEqual(ctx.endCalls, []);
@@ -2228,7 +2223,7 @@ test("voice captions hide speech cues and orphaned punctuation for both speakers
   assert.deepEqual(ctx.errors, []);
 });
 
-test("the voice composer and dock synchronize mute state and restore the mounted text draft after stopping", async (t) => {
+test("the voice bar reflects dock mute state and restores the saved text draft after stopping", async (t) => {
   const ctx = await setup(t, {
     state: {
       conversation: engagedConversation([
@@ -2245,61 +2240,55 @@ test("the voice composer and dock synchronize mute state and restore the mounted
   await ctx.type("Save my kitchen dimensions");
   const input = ctx.input();
   const form = input.closest("form");
-  button("Start voice").click();
+  ctx.update({ voice: { status: "active", muted: false, error: null } });
   await until(
-    () => !!button("Mute microphone"),
+    () => !!button("End voice"),
     "Voice controls did not become active",
   );
-  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.input(), null);
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
-  const bar = ctx.container.querySelector(
-    ".roman-voice-composer > .roman-voice-bar",
-  );
+  const bar = ctx.container.querySelector(".roman-voice-bar");
   const waveform = bar.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
-  assert.equal(waveform.children.length, 7);
-  assert.equal(
-    button("Mute microphone").getAttribute("title"),
-    "Mute microphone",
-  );
+  assert.ok(waveform.children.length > 7, "waveform spans the full bar");
+  assert.equal(button("Mute microphone"), undefined);
+  assert.equal(bar.querySelectorAll("button").length, 1);
   assert.equal(button("End voice").type, "button");
   assert.ok(button("Stop voice", ctx.voiceDock));
   assert.equal(ctx.container.contains(ctx.voiceDock), false);
   button("Mute microphone", ctx.voiceDock).click();
   await until(
-    () => !!button("Unmute microphone"),
+    () => waveform.dataset.muted === "true",
     "Mute did not synchronize with sidebar",
   );
   assert.equal(
-    button("Unmute microphone").getAttribute("aria-pressed"),
+    button("Unmute microphone", ctx.voiceDock).getAttribute("aria-pressed"),
     "true",
   );
-  assert.equal(!!bar.querySelector(".roman-voice-waveform"), false);
-  assert.equal(
-    bar.querySelector(".roman-voice-notice").textContent,
-    "Microphone muted",
-  );
+  assert.equal(bar.querySelector(".roman-voice-waveform"), waveform);
+  assert.equal(bar.querySelector(".roman-voice-notice"), null);
   assert.deepEqual(ctx.muteCalls, [true]);
-  button("Unmute microphone").click();
+  button("Unmute microphone", ctx.voiceDock).click();
   await until(
-    () => bar.querySelector(".roman-voice-waveform"),
+    () => !waveform.dataset.muted,
     "Unmute did not restore the decorative waveform",
   );
   assert.equal(!!bar.querySelector(".roman-voice-notice"), false);
   assert.deepEqual(ctx.muteCalls, [true, false]);
   assert.ok(button("Mute microphone", ctx.voiceDock));
   button("Stop voice", ctx.voiceDock).click();
-  await until(() => !!button("Start voice"), "Stop did not return to text");
+  await until(() => ctx.input(), "Stop did not return to text");
   assert.equal(ctx.input().disabled, false);
-  assert.equal(ctx.input(), input);
-  assert.equal(input.value, "Save my kitchen dimensions");
+  assert.notEqual(ctx.input(), input);
+  assert.equal(ctx.input().value, "Save my kitchen dimensions");
+  assert.ok(button("Send"), "restored non-empty draft offers Send");
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), null);
   assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
-  assert.deepEqual(ctx.startVoiceCalls, ["start"]);
+  assert.deepEqual(ctx.startVoiceCalls, []);
   assert.deepEqual(ctx.calls, []);
   assert.match(
     ctx.container.querySelector(".roman-timeline").textContent,
@@ -2317,32 +2306,31 @@ test("restored remote voice can be ended explicitly without activating the micro
     },
   });
   assert.match(
-    ctx.container.querySelector(".roman-voice-status").textContent,
+    ctx.container.querySelector(".roman-voice-notice").textContent,
     /Voice is active in another page/,
   );
   const end = ctx.container.querySelector('[aria-label="End voice"]');
   assert.ok(end);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
-  assert.equal(mute.disabled, true);
-  mute.click();
+  assert.equal(mute, null);
   assert.deepEqual(ctx.muteCalls, []);
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
   assert.ok(
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
   );
-  assert.equal(ctx.input().disabled, false);
-  assert.equal(ctx.input().closest("form").hidden, false);
-  assert.equal(ctx.input().closest(".roman-composer").hidden, false);
+  assert.equal(ctx.input(), null);
+  assert.equal(ctx.container.querySelector(".roman-composer form").hidden, false);
   assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.startVoiceCalls, []);
   end.click();
   await until(
     () =>
-      !ctx.container.querySelector(".roman-voice-composer") &&
+      !ctx.container.querySelector(".roman-voice-bar") &&
+      ctx.input() &&
       !ctx.input().disabled,
     "Ending remote voice did not restore the text composer",
   );
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), null);
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
@@ -2425,7 +2413,7 @@ test("voice selection stays out of the customer controls when developer tools ar
   );
 });
 
-test("connecting and stopping voice keep the text draft mounted and prevent repeated shutdown", async (t) => {
+test("connecting and stopping voice retain the hidden draft and prevent repeated shutdown", async (t) => {
   let stopped;
   const accepted = new Promise((resolve) => {
     stopped = resolve;
@@ -2439,6 +2427,7 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
   });
   await ctx.type("My saved draft before connecting");
   const input = ctx.input();
+  const form = input.closest("form");
   ctx.update({ voice: { status: "starting", muted: false, error: null } });
   await until(
     () => ctx.container.querySelector('[aria-label="End voice"]'),
@@ -2449,13 +2438,13 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
   );
   assert.match(
-    ctx.container.querySelector(".roman-voice-status").textContent,
+    ctx.container.querySelector(".roman-voice-notice").textContent,
     /Connecting voice/,
   );
-  assert.equal(input.closest("form").hidden, false);
+  assert.equal(form.hidden, false);
+  assert.equal(ctx.input(), null);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
-  assert.equal(mute.disabled, true);
-  mute.click();
+  assert.equal(mute, null);
   assert.deepEqual(ctx.muteCalls, []);
   assert.deepEqual(
     ctx.startVoiceCalls,
@@ -2468,7 +2457,7 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
     "Shutdown did not disable End voice",
   );
   assert.match(
-    ctx.container.querySelector(".roman-voice-status").textContent,
+    ctx.container.querySelector(".roman-voice-notice").textContent,
     /Ending voice/,
   );
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
@@ -2478,16 +2467,18 @@ test("connecting and stopping voice keep the text draft mounted and prevent repe
   stopped();
   await until(
     () =>
-      !ctx.container.querySelector(".roman-voice-composer") && !input.disabled,
+      !ctx.container.querySelector(".roman-voice-bar") &&
+      ctx.input() &&
+      !ctx.input().disabled,
     "Completed shutdown did not restore editing",
   );
-  assert.equal(ctx.input(), input);
-  assert.equal(input.value, "My saved draft before connecting");
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), null);
+  assert.notEqual(ctx.input(), input);
+  assert.equal(ctx.input().value, "My saved draft before connecting");
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), null);
   assert.deepEqual(ctx.calls, []);
 });
 
-test("a failed voice start leaves text usable and retries voice only after another explicit click", async (t) => {
+test("an unavailable microphone leaves text usable and retries only after another explicit click", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
     onStartVoice: (window) => {
@@ -2496,27 +2487,25 @@ test("a failed voice start leaves text usable and retries voice only after anoth
           voice: {
             status: "error",
             muted: false,
-            error: "Allow microphone access to use voice.",
+            error: "No microphone was found. Connect a microphone and try voice again.",
           },
         });
         throw new window.Error("Microphone unavailable");
       }
     },
   });
-  await ctx.type("Keep this text after a failed microphone request");
   const input = ctx.input();
   ctx.container.querySelector('[aria-label="Start voice"]').click();
   await until(
-    () =>
-      ctx.container.textContent.includes(
-        "Allow microphone access to use voice.",
-      ),
+    () => ctx.container.textContent.includes("No microphone was found."),
     "Voice startup error was hidden",
   );
   assert.equal(input.closest("form").hidden, false);
   assert.equal(input.closest(".roman-composer").hidden, false);
   assert.equal(input.disabled, false);
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), null);
+  assert.equal(ctx.container.querySelector("dialog"), null);
+  await ctx.type("Keep this text after a failed microphone request");
   assert.equal(input.value, "Keep this text after a failed microphone request");
   assert.deepEqual(ctx.startVoiceCalls, ["start"]);
   ctx.update({ selectedVoice: "gleam" });
@@ -2526,22 +2515,109 @@ test("a failed voice start leaves text usable and retries voice only after anoth
     ["start"],
     "An unrelated state update retried voice",
   );
+  await ctx.type("");
   ctx.container.querySelector('[aria-label="Start voice"]').click();
   await until(
     () => ctx.container.querySelector(".roman-voice-waveform"),
     "Explicit voice retry did not connect",
   );
-  assert.equal(input.closest("form").hidden, false);
-  assert.equal(input.disabled, false);
-  assert.equal(input.readOnly, false);
+  assert.equal(ctx.input(), null);
   assert.ok(ctx.container.querySelector(".roman-welcome"));
-  assert.equal(ctx.input(), input);
-  assert.equal(input.value, "Keep this text after a failed microphone request");
   assert.deepEqual(ctx.startVoiceCalls, ["start", "start"]);
   assert.deepEqual(ctx.calls, []);
 });
 
-test("a failed voice shutdown retains an explicit retry while text remains editable", async (t) => {
+test("an explicit denied-microphone attempt opens the branded dialog and only a new click retries", async (t) => {
+  let attempts = 0;
+  const ctx = await setup(t, {
+    onStartVoice: async (window) => {
+      if (++attempts === 1) {
+        ctx.update({ voice: { status: "starting", muted: false, error: null } });
+        await until(() => !ctx.input(), "Connection did not replace the input");
+        ctx.update({
+          voice: {
+            status: "error",
+            muted: false,
+            error: "Allow microphone access in your browser to talk to Roman.",
+            errorCode: "microphone_denied",
+          },
+        });
+        throw new window.Error("Microphone permission was denied");
+      }
+    },
+  });
+  const originalTrigger = ctx.container.querySelector('[aria-label="Start voice"]');
+  originalTrigger.focus();
+  originalTrigger.click();
+  await until(
+    () => ctx.container.querySelector("dialog[open]"),
+    "An explicit denied voice attempt did not explain the permission issue",
+  );
+  const dialog = ctx.container.querySelector("dialog");
+  assert.ok(dialog.classList.contains("roman-dialog"));
+  assert.equal(
+    dialog.querySelector("h2").textContent,
+    "Microphone access is off",
+  );
+  assert.equal(dialog.querySelector("img").alt, "Roman by SelectBlinds");
+  assert.match(dialog.textContent, /browser.*site settings/);
+  assert.match(dialog.textContent, /keep chatting by text/);
+  assert.equal(ctx.container.querySelector(".roman-composer [role=alert]"), null);
+  assert.equal(ctx.input().disabled, false);
+  dialog.querySelector("button").click();
+  await until(
+    () => !ctx.container.querySelector("dialog"),
+    "Permission dialog did not close",
+  );
+  const currentTrigger = ctx.container.querySelector('[aria-label="Start voice"]');
+  assert.notEqual(currentTrigger, originalTrigger);
+  assert.equal(ctx.container.getRootNode().activeElement, currentTrigger);
+  await ctx.type("I can still use text");
+  ctx.update({ selectedVoice: "gleam" });
+  await delay(0);
+  assert.deepEqual(ctx.startVoiceCalls, ["start"]);
+  assert.equal(ctx.container.querySelector("dialog"), null);
+  await ctx.type("");
+  ctx.container.querySelector('[aria-label="Start voice"]').click();
+  await until(
+    () => ctx.container.querySelector(".roman-voice-waveform"),
+    "Explicit voice retry did not connect",
+  );
+  assert.equal(ctx.container.querySelector("dialog"), null);
+  assert.deepEqual(ctx.startVoiceCalls, ["start", "start"]);
+  assert.deepEqual(ctx.calls, []);
+});
+
+test("a denied microphone snapshot from autostart quietly restores text without opening a popup", async (t) => {
+  const ctx = await setup(t, {
+    state: { voice: { status: "starting", muted: false, error: null } },
+  });
+  assert.equal(ctx.input(), null);
+  ctx.update({
+    voice: {
+      status: "error",
+      muted: false,
+      error: "Allow microphone access in your browser to talk to Roman.",
+      errorCode: "microphone_denied",
+    },
+  });
+  await until(() => ctx.input(), "Autostart denial did not restore text");
+  assert.equal(ctx.container.querySelector("dialog"), null);
+  assert.equal(ctx.container.querySelector(".roman-composer [role=alert]"), null);
+  assert.equal(ctx.container.querySelector(".roman-voice-notice"), null);
+  assert.ok(ctx.container.querySelector('[aria-label="Start voice"]'));
+  assert.ok(ctx.container.querySelector(".roman-welcome"));
+  await ctx.type("Help me measure");
+  ctx.container.querySelector('button[type="submit"]').click();
+  await until(
+    () => ctx.calls.length === 1,
+    "Text did not work after denied autostart",
+  );
+  assert.deepEqual(ctx.calls, ["Help me measure"]);
+  assert.deepEqual(ctx.startVoiceCalls, []);
+});
+
+test("a failed voice shutdown retains an explicit retry and preserves the hidden draft", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
     state: { conversation: engagedConversation([]) },
@@ -2551,6 +2627,7 @@ test("a failed voice shutdown retains an explicit retry while text remains edita
   });
   await ctx.type("Do not discard my unsent measurements");
   const input = ctx.input();
+  const composer = input.closest(".roman-composer");
   ctx.update({
     voice: {
       status: "error",
@@ -2563,14 +2640,10 @@ test("a failed voice shutdown retains an explicit retry while text remains edita
     () => ctx.container.querySelector('[aria-label="End voice"]'),
     "Unconfirmed stop did not expose recovery",
   );
-  assert.equal(input.closest("form").hidden, false);
-  assert.equal(
-    input.closest(".roman-composer").hidden,
-    false,
-    "Connection diagnostics and text stay visible while voice needs recovery",
-  );
+  assert.equal(ctx.input(), null);
+  assert.equal(composer.hidden, false);
   assert.match(
-    input.closest(".roman-composer").textContent,
+    composer.textContent,
     /Connection needs attention/,
   );
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
@@ -2578,8 +2651,7 @@ test("a failed voice shutdown retains an explicit retry while text remains edita
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
   );
   const mute = ctx.container.querySelector('[aria-label="Unmute microphone"]');
-  assert.equal(mute.disabled, true);
-  mute.click();
+  assert.equal(mute, null);
   assert.deepEqual(ctx.muteCalls, []);
   ctx.container.querySelector('[aria-label="End voice"]').click();
   await until(
@@ -2587,16 +2659,18 @@ test("a failed voice shutdown retains an explicit retry while text remains edita
     "Stop retry was not attempted",
   );
   await delay(0);
-  assert.equal(input.closest("form").hidden, false);
+  assert.equal(ctx.input(), null);
   assert.equal(input.value, "Do not discard my unsent measurements");
   ctx.container.querySelector('[aria-label="End voice"]').click();
   await until(
     () =>
-      !ctx.container.querySelector(".roman-voice-composer") && !input.disabled,
+      !ctx.container.querySelector(".roman-voice-bar") &&
+      ctx.input() &&
+      !ctx.input().disabled,
     "Acknowledged stop did not restore text",
   );
-  assert.equal(ctx.input(), input);
-  assert.equal(input.value, "Do not discard my unsent measurements");
+  assert.notEqual(ctx.input(), input);
+  assert.equal(ctx.input().value, "Do not discard my unsent measurements");
   assert.deepEqual(ctx.stopVoiceCalls, ["stop", "stop"]);
   assert.deepEqual(ctx.startVoiceCalls, []);
   assert.deepEqual(ctx.calls, []);
@@ -3058,7 +3132,7 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     ctx.container.querySelector(".roman-question-hint").textContent,
     "Reply aloud or choose an answer.",
   );
-  const bar = ctx.container.querySelector(".roman-voice-composer");
+  const bar = ctx.container.querySelector(".roman-voice-bar");
   const button = ctx.container.querySelector(".roman-question button");
   button.click();
   button.click();
@@ -3083,14 +3157,15 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     ].at(-1).textContent,
     "Full blackout",
   );
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), bar);
   accept();
   await until(
     () => !ctx.container.querySelector(".roman-question"),
     "Accepted answer retained choices",
   );
-  assert.equal(ctx.container.querySelector(".roman-voice-composer"), bar);
-  assert.ok(ctx.container.querySelector('[aria-label="Unmute microphone"]'));
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), bar);
+  assert.equal(bar.querySelector(".roman-voice-waveform").dataset.muted, "true");
+  assert.ok(ctx.voiceDock.querySelector('[aria-label="Unmute microphone"]'));
   assert.deepEqual(ctx.muteCalls, []);
   assert.deepEqual(ctx.stopVoiceCalls, []);
 });
@@ -3510,14 +3585,14 @@ test("End removes progress before acknowledgement and does not restore it after 
   );
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-end-confirm"),
+    () => ctx.container.querySelector(".roman-dialog-primary"),
     "Confirmation missing",
   );
   assert.ok(
     ctx.container.querySelector(".roman-reply-activity"),
     "Merely opening confirmation must not interrupt the reply",
   );
-  ctx.container.querySelector(".roman-end-confirm").click();
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
     () =>
       ctx.container.querySelector(".roman-end-chat")?.textContent === "Ending…",

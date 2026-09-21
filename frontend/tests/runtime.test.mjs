@@ -175,9 +175,12 @@ test("runtime reports confirmed conversation activity, not an open panel or save
   [...ctx.container.querySelectorAll("button")]
     .find((button) => button.textContent === "End chat")
     .click();
-  await until(() => ctx.container.querySelector(".roman-end-confirm"), "Confirmation missing");
+  await until(
+    () => ctx.container.querySelector(".roman-dialog-primary"),
+    "Confirmation missing",
+  );
   assert.equal(resolveEnd, undefined, "Opening confirmation must not send End");
-  ctx.container.querySelector(".roman-end-confirm").click();
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(() => !!resolveEnd, "End request was not sent");
   assert.equal(
     activity.at(-1),
@@ -201,7 +204,10 @@ test("opening requests microphone once and permission denial leaves text usable 
     value: {
       async getUserMedia() {
         permissionRequests++;
-        throw new Error("Permission denied");
+        throw new ctx.window.DOMException(
+          "Permission denied",
+          "NotAllowedError",
+        );
       },
     },
     configurable: true,
@@ -219,10 +225,16 @@ test("opening requests microphone once and permission denial leaves text usable 
     "closed restoration must not request microphone",
   );
   mounted.runtime.setOpen(true);
+  await delay(0);
   await until(
-    () => ctx.container.textContent.includes("Allow microphone access"),
-    "permission failure was not explained",
+    () =>
+      permissionRequests === 1 &&
+      ctx.container.querySelector(".roman-composer textarea") &&
+      ctx.container.querySelector('[aria-label="Start voice"]'),
+    "permission denial did not restore text mode",
   );
+  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
+  assert.doesNotMatch(ctx.container.textContent, /Allow microphone access/);
   const textarea = ctx.container.querySelector(".roman-composer textarea");
   assert.ok(textarea);
   assert.equal(textarea.disabled, false);

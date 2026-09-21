@@ -97,4 +97,5 @@ export interface VoiceClientState {
   status: "idle" | "starting" | "active" | "stopping" | "error";
   muted: boolean;
   error: string | null;
+  errorCode?: "microphone_denied";
 }

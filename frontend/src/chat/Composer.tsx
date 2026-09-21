@@ -1,11 +1,4 @@
-import {
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { MAX_MESSAGE_LENGTH } from "../../../shared/conversation";
 import { StartVoiceButton } from "./VoiceControls";
 
@@ -15,7 +8,7 @@ type ComposerProps = {
   voiceControls?: ReactNode;
   queuedMessages?: ReactNode;
   error: string | null;
-  onClearError: () => void;
+  onClearError?: () => void;
   onSend: (message: string) => Promise<void>;
   onStartVoice?: () => Promise<void>;
 };
@@ -41,17 +34,10 @@ export function Composer({
   const displayedError = error || sendError;
   const sendLabel = busy ? "Queue message" : "Send";
 
-  useLayoutEffect(() => {
-    const input = textarea.current;
-    if (!input) return;
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
-  }, [message]);
-
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const text = message.trim();
-    if (!text || disabled || submitting.current) return;
+    if (!text || disabled || voiceControls || submitting.current) return;
     // Focus during the user's submission, never after the network response: a
     // later completion must not steal focus from another control or voice mode.
     textarea.current?.focus({ preventScroll: true });
@@ -82,7 +68,7 @@ export function Composer({
       {displayedError && (
         <p className="roman-chat-error" role="alert">
           {displayedError}
-          {error && (
+          {error && onClearError && (
             <button
               type="button"
               className="roman-chat-retry"
@@ -97,68 +83,72 @@ export function Composer({
         </p>
       )}
       <form onSubmit={(event) => void submit(event)} aria-busy={sending}>
-        <label htmlFor={id} className="sr-only">
-          Message Roman
-        </label>
-        <div className="roman-composer-field">
-          <textarea
-            ref={textarea}
-            data-roman-composer
-            id={id}
-            value={message}
-            onChange={(event) => {
-              draftRevision.current++;
-              setMessage(event.target.value);
-            }}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            rows={1}
-            maxLength={MAX_MESSAGE_LENGTH}
-            placeholder="Ask Roman…"
-            disabled={disabled}
-          />
-          <button
-            type="submit"
-            className="roman-composer-action roman-send-button"
-            aria-label={sendLabel}
-            disabled={sendDisabled || !message.trim()}
-          >
-            <span className="roman-action-label" aria-hidden="true">
-              {sendLabel}
-            </span>
-            <span className="roman-action-icon" aria-hidden="true">
-              <svg
-                width="22"
-                height="22"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="m21 3-6.5 18-4-7.5L3 9.5 21 3Z" />
-                <path d="m10.5 13.5 5-5" />
-              </svg>
-            </span>
-          </button>
-        </div>
-        {voiceControls}
-        {onStartVoice && (
-          <div className="roman-composer-voice">
-            <StartVoiceButton
-              onStart={onStartVoice}
-              disabled={disabled || sending || busy}
-            />
-          </div>
+        {voiceControls || (
+          <>
+            <label htmlFor={id} className="sr-only">
+              Message Roman
+            </label>
+            <div className="roman-composer-field">
+              <textarea
+                ref={textarea}
+                data-roman-composer
+                id={id}
+                value={message}
+                onChange={(event) => {
+                  draftRevision.current++;
+                  setMessage(event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+                rows={1}
+                maxLength={MAX_MESSAGE_LENGTH}
+                placeholder="Ask Roman…"
+                disabled={disabled}
+              />
+              {message.trim() ? (
+                <button
+                  type="submit"
+                  className="roman-composer-action"
+                  aria-label={sendLabel}
+                  disabled={sendDisabled || !message.trim()}
+                >
+                  <span className="roman-action-label" aria-hidden="true">
+                    {sendLabel}
+                  </span>
+                  <span className="roman-action-icon" aria-hidden="true">
+                    <svg
+                      width="22"
+                      height="22"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m21 3-6.5 18-4-7.5L3 9.5 21 3Z" />
+                      <path d="m10.5 13.5 5-5" />
+                    </svg>
+                  </span>
+                </button>
+              ) : (
+                onStartVoice && (
+                  <StartVoiceButton
+                    onStart={onStartVoice}
+                    disabled={disabled || sending || busy}
+                  />
+                )
+              )}
+            </div>
+          </>
         )}
       </form>
     </div>

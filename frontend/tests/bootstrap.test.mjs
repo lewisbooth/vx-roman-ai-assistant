@@ -215,6 +215,41 @@ test("first lazy mount focuses the welcome composer only once visible, and reope
   assert.equal(mounts[0].open.at(-1), true);
 });
 
+test("mobile opening, restoration and reopening never summon the text keyboard", async (t) => {
+  for (const restore of [false, true]) {
+    await t.test(restore ? "restored" : "first open", async (t) => {
+      const ctx = setup(
+        t,
+        (window) => {
+          window.matchMedia = () => ({ matches: true });
+        },
+        { storage: restore ? { [openStorageKey]: "1" } : {} },
+      );
+      const ready = deferred();
+      if (!restore) ctx.launcher().click();
+      const mounts = installRuntime(ctx.window, () => ready.promise);
+      await until(() => loadingScript(ctx.document), "Runtime was not requested");
+      loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+      await until(() => mounts.length === 1, "Runtime did not mount");
+      const { input } = addRuntimeComposer(mounts[0], true);
+      ready.resolve();
+      await until(() => !hidden(mounts[0].container), "Runtime stayed hidden");
+      input.disabled = false;
+      await delay(0);
+      assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+      input.focus();
+      assert.equal(
+        ctx.host.shadowRoot.activeElement,
+        input,
+        "Deliberate typing stays available",
+      );
+      ctx.close().click();
+      ctx.launcher().click();
+      assert.equal(ctx.host.shadowRoot.activeElement, ctx.close());
+    });
+  }
+});
+
 test("opening during restoration waits for the composer but respects a later customer focus choice", async (t) => {
   for (const destination of ["input", "voice", "shell-close", "close", "remove"])
     await t.test(destination, async (t) => {

@@ -152,19 +152,52 @@ test("conversation bootstrap does not wait for a delayed SDP offer and prepare w
   assert.match(await preparing, /delayed/);
 });
 
-test("denied microphone permission never prepares a conversation", async (t) => {
-  let conversationPreparations = 0;
-  const { connection, media } = setup(t, {
-    getUserMedia: () => Promise.reject(new Error("denied")),
-  });
-  await assert.rejects(
-    connection.prepare(async () => {
-      conversationPreparations++;
-    }),
-    /Allow microphone access/,
-  );
-  assert.equal(conversationPreparations, 0);
-  assert.equal(media.peers.length, 0);
+test("denied microphone permission is classified without preparing a conversation", async (t) => {
+  for (const name of ["NotAllowedError", "SecurityError"]) {
+    let conversationPreparations = 0;
+    const { connection, media, window } = setup(t, {
+      getUserMedia: () => Promise.reject({ name }),
+    });
+    await assert.rejects(
+      connection.prepare(async () => {
+        conversationPreparations++;
+      }),
+      (error) => {
+        assert.ok(error instanceof window.Voice.MicrophonePermissionError);
+        assert.match(error.message, /Allow microphone access/);
+        return true;
+      },
+    );
+    assert.equal(conversationPreparations, 0);
+    assert.equal(media.peers.length, 0);
+  }
+});
+
+test("missing, busy and unknown microphone failures do not claim permission was denied", async (t) => {
+  for (const name of [
+    "NotFoundError",
+    "NotReadableError",
+    "AbortError",
+    "Error",
+  ]) {
+    const { connection, media, window } = setup(t, {
+      getUserMedia: () => Promise.reject({ name }),
+    });
+    await assert.rejects(connection.prepare(), (error) => {
+      assert.equal(
+        error instanceof window.Voice.MicrophonePermissionError,
+        false,
+      );
+      assert.match(
+        error.message,
+        name === "NotFoundError"
+          ? /No microphone was found/
+          : /connected and available/,
+      );
+      return true;
+    });
+    assert.equal(media.peers.length, 0);
+  }
 });
 
 test("either preparation branch failing closes capture and handles the other branch's later rejection", async (t) => {

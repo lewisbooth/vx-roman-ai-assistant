@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { cwd } from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
@@ -373,12 +373,12 @@ test("ending chat retains the real cart snapshot and its badge without another r
   ctx.show("cart");
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-end-confirm"),
+    () => ctx.container.querySelector(".roman-dialog-primary"),
     "End chat review opens",
   );
-  ctx.container.querySelector(".roman-end-confirm").click();
+  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
-    () => !ctx.container.querySelector(".roman-end-dialog"),
+    () => !ctx.container.querySelector(".roman-dialog"),
     "Confirmed chat ends",
   );
   assert.equal(ctx.badge().textContent, "3");

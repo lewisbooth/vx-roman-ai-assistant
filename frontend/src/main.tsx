@@ -11,7 +11,9 @@ import { createJourneyObserver } from "./session/journey";
 import { createVoiceAutostart } from "./session/voice-autostart";
 import { isConversationStorefront } from "../../shared/storefronts";
 import { createComposerFocus } from "./chat/composer-focus";
+import { createAssistantViewport } from "./assistant-viewport";
 import styles from "./styles.css?inline";
+import viewportStyles from "./assistant-viewport.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
 let firstLoadingDeadline: number | undefined;
@@ -54,6 +56,7 @@ export function mountAssistant(
   let readyTimer: number | undefined;
   let sidebarOpen = false;
   const composerFocus = createComposerFocus(container);
+  const viewport = createAssistantViewport(host);
   const voiceDock = document.createElement("div");
   voiceDock.hidden = true;
   host.shadowRoot?.append(voiceDock);
@@ -97,7 +100,7 @@ export function mountAssistant(
     root = createRoot(container);
     root.render(
       <StrictMode>
-        <style>{styles}</style>
+        <style>{styles + viewportStyles}</style>
         <RouterProvider router={router} />
       </StrictMode>,
     );
@@ -107,6 +110,7 @@ export function mountAssistant(
     window.clearTimeout(readyTimer);
     root?.unmount();
     composerFocus.dispose();
+    viewport.dispose();
     router?.dispose();
     tools.dispose();
     executor.dispose();
@@ -128,6 +132,7 @@ export function mountAssistant(
     setOpen(open) {
       if (!disposed) {
         sidebarOpen = open;
+        viewport.setOpen(open);
         if (!open) composerFocus.cancel();
         syncVoiceDock();
         voiceAutostart?.setOpen(open);
@@ -141,6 +146,7 @@ export function mountAssistant(
       );
       root?.unmount();
       composerFocus.dispose();
+      viewport.dispose();
       router?.dispose();
       tools.dispose();
       executor.dispose();

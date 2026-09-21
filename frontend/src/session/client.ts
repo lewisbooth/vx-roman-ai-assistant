@@ -65,7 +65,10 @@ import type {
 } from "./storefront-executor";
 import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
-import { createVoiceConnection } from "./voice-connection";
+import {
+  createVoiceConnection,
+  MicrophonePermissionError,
+} from "./voice-connection";
 import { setVoiceAutostartPreference } from "./voice-preference";
 import {
   DEFAULT_LIVE_VOICE,
@@ -1580,8 +1583,17 @@ export function createConversationClient(
         voiceEpoch !== stoppedVoiceEpoch
       )
         return;
-      update({ voice: { status: "error", muted: false, error: message } });
-      throw new Error(message);
+      update({
+        voice: {
+          status: "error",
+          muted: false,
+          error: message,
+          ...(error instanceof MicrophonePermissionError
+            ? { errorCode: "microphone_denied" as const }
+            : {}),
+        },
+      });
+      throw error instanceof Error ? error : new Error(message);
     }
   }
 

@@ -25,6 +25,7 @@ import { ToolApproval } from "./chat/ToolApproval";
 import { ProductStage } from "./chat/ProductStage";
 import { CartStage } from "./chat/CartStage";
 import { EndChatDialog } from "./chat/EndChatDialog";
+import { BrandedDialog } from "./chat/BrandedDialog";
 import { useCart } from "./chat/useCart";
 import { useMessageQueue } from "./chat/useMessageQueue";
 import { MessageQueue } from "./chat/MessageQueue";
@@ -139,6 +140,7 @@ function Assistant({
   }, [state.conversation, showView]);
   const [ending, setEnding] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
+  const [microphoneDenied, setMicrophoneDenied] = useState(false);
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
   const [chatVersion, setChatVersion] = useState(0);
@@ -163,6 +165,7 @@ function Assistant({
     ending || confirmEnd || answering,
   );
   const textBusy = ending || answering || messageQueue.busy;
+  const chatError = state.error || startError || endError;
   const activeQuestion =
     state.conversation?.status === "active"
       ? latestQuestion(messages ?? [], storefront.url)
@@ -175,6 +178,25 @@ function Assistant({
     showView("chat");
     following.current = true;
     messageQueue.enqueue(text);
+  }
+
+  async function startVoice() {
+    setStartError(null);
+    try {
+      await session.startVoice();
+    } catch (error) {
+      // Autostart calls the session directly. Only a deliberate button press
+      // opens this explanation; other voice errors remain visible in the bar.
+      const failedVoice = session.getSnapshot().voice;
+      if (failedVoice.errorCode === "microphone_denied")
+        setMicrophoneDenied(true);
+      else if (!failedVoice.error)
+        setStartError(
+          error instanceof Error
+            ? error.message
+            : "Voice could not start. Please try again.",
+        );
+    }
   }
 
   async function startTopic(text: string) {
@@ -554,23 +576,30 @@ function Assistant({
                   />
                 }
                 voiceControls={
-                  <VoiceControls
-                    session={session}
-                    voice={voice}
-                    waiting={waitingForVoice}
-                  />
+                  voiceMode ? (
+                    <VoiceControls
+                      session={session}
+                      voice={voice}
+                      waiting={waitingForVoice}
+                    />
+                  ) : undefined
                 }
-                error={state.error || startError || endError}
-                onClearError={() => {
-                  setEndError(null);
-                  setStartError(null);
-                  session.clearError();
-                }}
+                error={
+                  chatError ||
+                  (voice.errorCode !== "microphone_denied" ? voice.error : null)
+                }
+                onClearError={
+                  chatError
+                    ? () => {
+                        setEndError(null);
+                        setStartError(null);
+                        session.clearError();
+                      }
+                    : undefined
+                }
                 onSend={sendMessage}
                 onStartVoice={
-                  !localVoice && !waitingForVoice
-                    ? () => session.startVoice()
-                    : undefined
+                  !localVoice && !waitingForVoice ? startVoice : undefined
                 }
               />
             </div>
@@ -584,6 +613,23 @@ function Assistant({
             onCancel={() => setConfirmEnd(false)}
             onConfirm={() => void endChat()}
           />
+        )}
+        {microphoneDenied && (
+          <BrandedDialog
+            logoUrl={logoUrl}
+            title="Microphone access is off"
+            description="Allow microphone access in your browser’s site settings, then choose Start voice again. You can keep chatting by text."
+            onClose={() => setMicrophoneDenied(false)}
+            returnFocus="[data-roman-start-voice]"
+          >
+            <button
+              type="button"
+              className="roman-dialog-primary"
+              onClick={() => setMicrophoneDenied(false)}
+            >
+              Got it
+            </button>
+          </BrandedDialog>
         )}
         {showTools && (
           <ToolDrawer

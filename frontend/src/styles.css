@@ -224,7 +224,9 @@
     list-style: none;
     margin: 10px 18px 0;
     padding: 0;
-    font: 12px/1.5 system-ui, sans-serif;
+    font:
+      12px/1.5 system-ui,
+      sans-serif;
     text-align: left;
   }
   .roman-cart-discounts li,
@@ -249,7 +251,9 @@
   }
   .roman-cart-savings {
     margin: 0 0 18px;
-    font: 13px/1.5 system-ui, sans-serif;
+    font:
+      13px/1.5 system-ui,
+      sans-serif;
   }
   .roman-cart-configuration {
     margin: 0 18px 18px;
@@ -306,11 +310,12 @@
     outline-offset: 4px;
   }
   .roman-response-dock {
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-height: 0;
     width: min(100%, 840px);
     margin: 0 auto;
     padding: 0 28px;
-    max-height: 38dvh;
+    max-height: 38%;
     overflow: auto;
     overscroll-behavior: contain;
   }
@@ -852,7 +857,7 @@
     @apply shrink-0 text-[14px];
   }
 
-  .roman-end-dialog {
+  .roman-dialog {
     position: fixed;
     inset: 0;
     width: min(460px, calc(100% - 40px));
@@ -862,30 +867,30 @@
     text-align: center;
     color: #4e0e0e;
   }
-  .roman-end-dialog::backdrop {
+  .roman-dialog::backdrop {
     background: #27171966;
     backdrop-filter: blur(4px);
   }
-  .roman-end-dialog img {
+  .roman-dialog img {
     margin: 0 auto 24px;
   }
-  .roman-end-dialog h2 {
+  .roman-dialog h2 {
     margin-bottom: 12px;
     font-size: 30px;
     font-weight: 400;
   }
-  .roman-end-dialog p {
+  .roman-dialog p {
     line-height: 1.5;
   }
-  .roman-end-dialog .roman-action-buttons {
+  .roman-dialog .roman-action-buttons {
     justify-content: center;
     margin-top: 24px;
   }
-  .roman-end-dialog .roman-end-confirm {
+  .roman-dialog .roman-dialog-primary {
     background: #4e0e0e;
     color: #f7f5ef;
   }
-  .roman-end-dialog .roman-end-confirm:not(:disabled):hover {
+  .roman-dialog .roman-dialog-primary:not(:disabled):hover {
     background: #681c1c;
     color: #f7f5ef;
   }
@@ -938,30 +943,25 @@
   }
 
   .roman-voice-bar {
-    @apply flex min-h-[44px] items-center gap-[4px];
-  }
-
-  .roman-voice-composer {
-    width: auto;
-    max-width: 184px;
-    margin: 0;
-    padding: 0;
-    background: transparent;
-  }
-
-  .roman-voice-composer .roman-chat-error {
-    padding: 6px 4px 0;
-    font-size: 12px;
+    @apply relative flex h-[54px] min-w-0 w-full items-center pr-[54px];
   }
 
   .roman-voice-waveform {
-    @apply flex h-[44px] w-[42px] shrink-0 items-center justify-center gap-[2px] px-[4px] text-[#4e0e0e];
+    @apply flex h-[44px] min-w-0 flex-1 items-center justify-evenly gap-[2px] overflow-hidden px-[16px] text-[#4e0e0e];
   }
 
   .roman-voice-waveform span {
     @apply h-[24px] w-[3px] shrink-0 rounded-full bg-current;
     transform: scaleY(0.2);
     animation: roman-voice-wave 1.4s ease-in-out infinite;
+  }
+
+  .roman-voice-waveform[data-muted] {
+    opacity: 0.35;
+  }
+
+  .roman-voice-waveform[data-muted] span {
+    animation-play-state: paused;
   }
 
   .roman-voice-waveform span:nth-child(3n) {
@@ -987,24 +987,8 @@
     }
   }
 
-  .roman-voice-actions {
-    @apply flex shrink-0 items-center gap-[6px];
-  }
-
-  .roman-voice-icon {
-    @apply inline-flex size-[44px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-[#f7f5ef] p-0 text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
-  }
-
-  .roman-voice-icon:last-child {
-    @apply bg-[#4e0e0e] text-[#f7f5ef];
-  }
-
-  .roman-voice-icon[aria-pressed="true"] {
-    background-color: #e3d5d1;
-  }
-
   .roman-voice-notice {
-    @apply min-w-0 flex-1 px-[4px] text-[12px] leading-[18px] text-[#797366];
+    @apply min-w-0 flex-1 px-[18px] text-[14px] leading-[20px] text-[#797366];
   }
 
   .roman-voice-controls {
@@ -1130,7 +1114,7 @@
   }
 
   .roman-composer textarea {
-    @apply block min-h-[54px] w-full resize-none rounded-[27px] border-0 bg-transparent py-[15px] pr-[54px] pl-[18px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
+    @apply block h-[54px] w-full resize-none overflow-y-auto rounded-[27px] border-0 bg-transparent py-[15px] pr-[54px] pl-[18px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
     font-family: inherit;
     outline: none;
     box-shadow: none;
@@ -1146,28 +1130,15 @@
     outline-offset: 3px;
   }
 
-  .roman-composer-voice {
-    @apply relative size-[54px] shrink-0;
-  }
-
   .roman-composer button {
     font-family: inherit;
   }
 
   .roman-composer-action {
-    @apply absolute inline-flex cursor-pointer items-center rounded-full border-0 p-0 text-[15px] whitespace-nowrap disabled:cursor-default disabled:opacity-50;
+    @apply absolute right-[5px] bottom-[5px] z-[2] inline-flex cursor-pointer items-center rounded-full border-0 bg-[#4e0e0e] p-0 text-[15px] whitespace-nowrap text-[#f7f5ef] disabled:cursor-default disabled:opacity-50;
+    --roman-action-size: 44px;
     height: var(--roman-action-size);
     min-width: var(--roman-action-size);
-  }
-
-  .roman-send-button {
-    @apply right-[5px] bottom-[5px] z-[2] bg-[#f7f5ef] text-[#4e0e0e];
-    --roman-action-size: 44px;
-  }
-
-  .roman-start-voice {
-    @apply right-0 bottom-0 z-[3] bg-[#4e0e0e] text-[#f7f5ef];
-    --roman-action-size: 54px;
   }
 
   .roman-action-icon {
@@ -1328,7 +1299,7 @@
     }
     .roman-response-dock {
       padding: 0 16px;
-      max-height: 34dvh;
+      max-height: 34%;
     }
     .roman-action-panel {
       padding: 14px;
@@ -1407,13 +1378,10 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
-      max-height: max(150px, 50%);
+      max-height: min(100%, max(150px, 50%));
     }
     .roman-composer:has(.roman-message-queue) > form {
       flex-shrink: 0;
-    }
-    .roman-composer:has(.roman-message-queue) textarea {
-      max-height: min(150px, 12dvh);
     }
     .roman-composer:has(.roman-message-queue) .roman-message-queue {
       min-height: 0;
@@ -1421,18 +1389,7 @@
       overscroll-behavior: contain;
     }
 
-    .roman-voice-composer {
-      max-width: 150px;
-      padding: 0;
-    }
-
-    .roman-voice-composer .roman-voice-waveform {
-      width: 28px;
-      gap: 1px;
-      padding: 0;
-    }
-
-    .roman-voice-composer .roman-voice-waveform span {
+    .roman-voice-waveform span {
       width: 2px;
     }
 

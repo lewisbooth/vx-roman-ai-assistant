@@ -1,0 +1,22 @@
+/* The shell covers the layout viewport even when the OS keyboard resizes or
+   pans the visual viewport. Only the inner app follows its available height. */
+.roman-panel {
+  height: 100%;
+}
+.roman-frame {
+  top: var(--roman-visible-top, 0px);
+  height: var(--roman-visible-height, 100%);
+}
+.roman-close {
+  top: calc(var(--roman-visible-top, 0px) + 12px);
+}
+
+.roman-dialog {
+  top: calc(
+    var(--roman-visible-top, 0px) + var(--roman-visible-height, 100dvh) / 2
+  );
+  bottom: auto;
+  margin-block: 0;
+  max-height: calc(var(--roman-visible-height, 100dvh) - 40px);
+  transform: translateY(-50%);
+}
