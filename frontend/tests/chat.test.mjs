@@ -1419,6 +1419,128 @@ test("new messages preserve a reader's scroll position and resume following at t
   );
 });
 
+test("mobile manual vertical history scrolling dismisses the focused composer without changing its draft", async (t) => {
+  for (const mobile of [true, false]) {
+    for (const gesture of ["touch", "wheel"]) {
+      await t.test(
+        `${mobile ? "mobile" : "desktop"}: ${gesture}`,
+        async (t) => {
+          const ctx = await setup(t, {
+            state: {
+              conversation: engagedConversation([
+                message("reply", "assistant", "Your existing reply"),
+              ]),
+            },
+            beforeImport(window) {
+              window.matchMedia = (query) => ({
+                matches: mobile && query === "(max-width: 1023px)",
+                addEventListener() {},
+                removeEventListener() {},
+              });
+            },
+          });
+          await ctx.type("Keep my draft");
+          const input = ctx.input();
+          const flow = ctx.container.querySelector(".roman-chat-scroll");
+          Object.defineProperties(flow, {
+            scrollHeight: { get: () => 1400 },
+            clientHeight: { get: () => 600 },
+          });
+          input.focus();
+          flow.scrollTop = 500;
+          if (gesture === "wheel") {
+            flow.dispatchEvent(
+              new ctx.window.WheelEvent("wheel", {
+                deltaY: -100,
+                bubbles: true,
+              }),
+            );
+          } else {
+            for (const [type, y] of [
+              ["touchstart", 100],
+              ["touchmove", 150],
+            ]) {
+              const event = new ctx.window.Event(type, { bubbles: true });
+              Object.defineProperty(event, "touches", {
+                value: [{ identifier: 1, clientX: 100, clientY: y }],
+              });
+              flow.dispatchEvent(event);
+            }
+          }
+          flow.scrollTop = 400;
+          flow.dispatchEvent(new ctx.window.Event("scroll"));
+          assert.equal(input.getRootNode().activeElement === input, !mobile);
+          assert.equal(input.value, "Keep my draft");
+          assert.deepEqual(ctx.calls, []);
+        },
+      );
+    }
+  }
+});
+
+test("automatic scrolling, taps and horizontal carousel gestures keep the mobile composer focused", async (t) => {
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([productsMessage()]) },
+    onLoadProducts: () => catalog,
+    beforeImport(window) {
+      window.matchMedia = (query) => ({
+        matches: query === "(max-width: 1023px)",
+        addEventListener() {},
+        removeEventListener() {},
+      });
+    },
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-product-scroll"),
+    "Carousel loads",
+  );
+  const flow = ctx.container.querySelector(".roman-chat-scroll");
+  const carousel = ctx.container.querySelector(".roman-product-scroll");
+  const input = ctx.input();
+  input.focus();
+  function touch(type, x, y) {
+    const event = new ctx.window.Event(type, { bubbles: true });
+    Object.defineProperty(event, "touches", {
+      value: [{ identifier: 1, clientX: x, clientY: y }],
+    });
+    carousel.dispatchEvent(event);
+  }
+  function scroll(top) {
+    flow.scrollTop = top;
+    flow.dispatchEvent(new ctx.window.Event("scroll"));
+    assert.equal(input.getRootNode().activeElement, input);
+  }
+  scroll(100); // Native keyboard resize or automatic following, without user intent.
+  touch("touchstart", 100, 100);
+  touch("touchmove", 102, 103);
+  scroll(120); // Tap jitter must not arm dismissal.
+  touch("touchmove", 180, 108);
+  carousel.dispatchEvent(new ctx.window.Event("scroll", { bubbles: true }));
+  scroll(140); // Horizontal movement must not arm a later viewport scroll.
+  touch("touchend", 180, 108);
+  flow.dispatchEvent(
+    new ctx.window.WheelEvent("wheel", {
+      deltaX: 100,
+      deltaY: 2,
+      bubbles: true,
+    }),
+  );
+  scroll(160);
+  touch("touchstart", 100, 100);
+  touch("touchmove", 100, 150);
+  touch("touchcancel", 100, 150);
+  scroll(180);
+  ctx.update({
+    conversation: engagedConversation([
+      productsMessage(),
+      message("later", "assistant", "A new reply should not steal focus."),
+    ]),
+  });
+  await delay(50);
+  assert.equal(input.getRootNode().activeElement, input);
+  assert.deepEqual(ctx.calls, []);
+});
+
 function engagedConversation(messages) {
   return {
     id: "existing",
@@ -3660,6 +3782,13 @@ test("reply activity covers submission and the real empty text part, survives ch
   await until(
     () => !activity(),
     "Completed reply retained its working indicator",
+  );
+  await until(
+    () =>
+      ctx.container
+        .querySelector('[role="log"]')
+        .textContent.includes("Here are some suitable blinds"),
+    "Completed reply did not finish its text reveal",
   );
   assert.match(
     ctx.container.querySelector('[role="log"]').textContent,

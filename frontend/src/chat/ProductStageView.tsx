@@ -11,6 +11,7 @@ import { ProductGallery } from "./ProductGallery";
 
 type ProductDetails = {
   title: string;
+  startingPrice?: string | null;
   configuration: ReturnType<typeof readProductConfigurationDisplay>;
   onAction: (action: "cart" | "sample") => Promise<void>;
   disabled: boolean;
@@ -19,6 +20,7 @@ type ProductDetails = {
 function Details({
   title,
   configuration,
+  startingPrice,
   compact = false,
   onAction,
   disabled,
@@ -45,6 +47,12 @@ function Details({
     }
   }
   const measurements = configuration?.measurements;
+  const hasMeasurements =
+    !!measurements?.unit &&
+    measurements.width !== null &&
+    measurements.height !== null;
+  const price =
+    configuration?.configuredPrice || (compact ? startingPrice : null);
   const selected =
     configuration?.controls.flatMap((control) =>
       control.options
@@ -62,19 +70,23 @@ function Details({
   return (
     <div className="roman-product-stage-content">
       <h2>{title}</h2>
-      {configuration?.configuredPrice && (
+      {price && (
         <p className="roman-product-stage-price">
-          <span>{configuration.configuredPrice}</span>
+          <span>{price}</span>
         </p>
       )}
-      {measurements?.unit &&
-        measurements.width !== null &&
-        measurements.height !== null && (
-          <p className="roman-product-stage-measurements">
-            {measurements.width} × {measurements.height} {measurements.unit}
-            <span> Width × drop</span>
+      {hasMeasurements ? (
+        <p className="roman-product-stage-measurements">
+          {measurements.width} × {measurements.height} {measurements.unit}
+          {!compact && <span> Width × drop</span>}
+        </p>
+      ) : (
+        compact && (
+          <p className="roman-product-stage-measurements roman-product-stage-dimensions-prompt">
+            Add dimensions for a quote
           </p>
-        )}
+        )
+      )}
       {!compact && selected.length > 0 && (
         <div className="roman-product-stage-configuration">
           <dl>
@@ -219,6 +231,7 @@ function ExpandedProduct({
 /** Responsive presentation reuses the stage's one live product/gallery snapshot. */
 export function ProductStageView({
   title,
+  startingPrice,
   configuration,
   gallery,
   pending,
@@ -264,8 +277,8 @@ export function ProductStageView({
               key={thumbnail.src}
               src={thumbnail.thumbnailSrc}
               alt=""
-              width={88}
-              height={88}
+              width={52}
+              height={52}
               onError={(event) => {
                 event.currentTarget.style.visibility = "hidden";
               }}
@@ -287,6 +300,7 @@ export function ProductStageView({
       )}
       <Details
         title={title}
+        startingPrice={startingPrice}
         configuration={configuration}
         compact={compact}
         onAction={onAction}

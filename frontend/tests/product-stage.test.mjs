@@ -1046,3 +1046,125 @@ test("selection offers Add to Cart only with a current verified price on desktop
     });
   }
 });
+
+test("compact selection distinguishes native starting price from a configured quote", async (t) => {
+  const ctx = await setup(t, { mobile: true });
+  const form = ctx.window.document.querySelector("form");
+  const width = form.querySelector("[data-width-input]");
+  const drop = form.querySelector("[data-drop-input]");
+  ctx.window.document
+    .querySelector("h1")
+    .insertAdjacentHTML(
+      "afterend",
+      '<p data-testid="pdp-product-no-sale-price"><span class="sr-only">Regular price</span>GBP 33.66</p>',
+    );
+  width.value = "";
+  drop.value = "";
+  form.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+  await until(
+    () => ctx.container.querySelector(".roman-product-stage-dimensions-prompt"),
+    "Empty dimensions have a useful prompt",
+  );
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price").textContent,
+    "From GBP 33.66",
+  );
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-measurements")
+      .textContent,
+    "Add dimensions for a quote",
+  );
+  assert.doesNotMatch(ctx.container.textContent, /Regular price/);
+  assert.equal(ctx.container.querySelector(".roman-product-actions"), null);
+  const dialog = await expandSelectedProduct(ctx);
+  assert.equal(
+    dialog.querySelector(".roman-product-stage-price"),
+    null,
+    "A starting price is never promoted to the expanded configured quote",
+  );
+  assert.deepEqual(
+    [...dialog.querySelectorAll(".roman-product-actions button")].map(
+      (button) => button.textContent,
+    ),
+    ["Order Sample"],
+  );
+  dialog.querySelector('[aria-label="Collapse selected product"]').click();
+  await until(
+    () => !ctx.container.querySelector(".roman-product-expanded"),
+    "Return to compact summary",
+  );
+  width.value = "700";
+  drop.value = "800";
+  form.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+  await until(
+    () =>
+      !ctx.container.querySelector(".roman-product-stage-dimensions-prompt"),
+    "Confirmed fields replace placeholder",
+  );
+  assert.doesNotMatch(
+    ctx.container.querySelector(".roman-product-stage-price").textContent,
+    /From/,
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-product-stage-measurements")
+      .textContent,
+    /700.*800 mm/,
+  );
+  assert.doesNotMatch(
+    ctx.container.querySelector(".roman-product-stage-measurements")
+      .textContent,
+    /Width/,
+  );
+  ctx.setMobile(false);
+  await until(
+    () => ctx.container.querySelector(".roman-product-gallery"),
+    "Desktop gallery remains available",
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-product-stage-measurements")
+      .textContent,
+    /Width/,
+  );
+});
+
+test("compact starting price belongs to the selected primary product and follows its visible sale amount", async (t) => {
+  const ctx = await setup(t, { mobile: true });
+  const main = ctx.window.document.querySelector("main");
+  const primary = ctx.window.document.createElement("main-product");
+  primary.setAttribute("update-url", "true");
+  primary.setAttribute("product-url", "/products/linen");
+  primary.append(...main.childNodes);
+  main.append(primary);
+  primary.insertAdjacentHTML(
+    "afterbegin",
+    '<p data-testid="pdp-product-no-sale-price">GBP 30.00</p><p data-testid="pdp-product-sale-price"><span class="sr-only">Sale price</span>GBP 20.00</p><main-product><p data-testid="pdp-product-sale-price">GBP 1.00</p></main-product>',
+  );
+  const form = primary.querySelector("form");
+  form.querySelector("[data-width-input]").value = "";
+  form.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-product-stage-price")?.textContent ===
+      "From GBP 20.00",
+    "Uses primary visible sale amount, not recommendation price",
+  );
+  primary.querySelector('[data-testid="pdp-product-sale-price"]').textContent =
+    "GBP 18.00";
+  await until(
+    () =>
+      ctx.container.querySelector(".roman-product-stage-price")?.textContent ===
+      "From GBP 18.00",
+    "Native starting-price changes refresh",
+  );
+  primary.querySelector('[data-testid="pdp-product-sale-price"]').textContent =
+    "Unavailable";
+  await until(
+    () => !ctx.container.querySelector(".roman-product-stage-price"),
+    "Invalid native amount does not become a price",
+  );
+  assert.ok(
+    ctx.container.querySelector(".roman-product-stage-dimensions-prompt"),
+  );
+  assert.deepEqual(ctx.messages, []);
+  assert.deepEqual(ctx.galleryReads, []);
+});

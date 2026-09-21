@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -10,7 +11,7 @@ import type { ConversationClient } from "../session/types";
 import { ProductImage } from "./ProductImage";
 import { ProductCarousel } from "./ProductCarousel";
 
-export function ProductCards({
+function ProductCardsView({
   productIds,
   carouselId,
   session,
@@ -220,3 +221,6 @@ export function ProductCards({
     </div>,
   );
 }
+
+// The transcript's reveal clock must not repeatedly measure historical carousels.
+export const ProductCards = memo(ProductCardsView);

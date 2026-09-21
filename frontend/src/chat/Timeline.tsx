@@ -10,6 +10,7 @@ import { VOICE_EVENT_LABELS } from "../../../shared/voice";
 import { voiceCaptionText } from "../../../shared/voice-transcript";
 import type { CatalogProduct } from "../../../shared/catalog";
 import { productChoiceText } from "../../../shared/product-choice";
+import { useReplyReveal } from "./useReplyReveal";
 
 export function Timeline({
   messages,
@@ -37,6 +38,7 @@ export function Timeline({
     product: CatalogProduct,
   ) => Promise<void>;
 }) {
+  const reveal = useReplyReveal(messages, onContentChange);
   // Keep the current question below every widget and later journey event.
   // Text questions stay visible as history. Voice questions own controls only: recorded
   // captions own spoken history, even when speech was interrupted or absent.
@@ -81,7 +83,13 @@ export function Timeline({
       aria-relevant="additions text"
     >
       {rows.map((row, rowIndex) => {
-        if (row.kind === "question")
+        if (row.kind === "question") {
+          if (
+            row.part.invocationId === activeQuestionId &&
+            !row.part.voiceReply &&
+            reveal.holdQuestion
+          )
+            return null;
           return (
             <Question
               key={row.id}
@@ -93,12 +101,23 @@ export function Timeline({
               currentTurn={rowIndex >= lastCustomer}
             />
           );
+        }
         const { message, parts } = row;
+        const revealing = parts.some((part) => {
+          if (part.type !== "text") return false;
+          const text = reveal.parts.get(part);
+          return text && text.visible < text.prepared.length;
+        });
         return (
           <li
             key={row.id}
             className={`roman-message roman-message-${message.role}`}
             data-current-turn={rowIndex >= lastCustomer ? "true" : undefined}
+            aria-busy={
+              (message.role === "assistant" &&
+                (revealing || message.status === "pending")) ||
+              undefined
+            }
           >
             {message.role !== "context" && (
               <span className="sr-only">
@@ -114,6 +133,8 @@ export function Timeline({
                       text={part.text}
                       navigation={navigation}
                       pending={message.status === "pending"}
+                      prepared={reveal.parts.get(part)?.prepared}
+                      visibleCharacters={reveal.parts.get(part)?.visible}
                     />
                   ) : (
                     <p key={index} className="roman-message-text">

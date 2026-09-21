@@ -12,7 +12,9 @@ import {
   isCurrentProduct,
   findCurrentProductForm,
   isProductFormUpdating,
+  controlVisible,
 } from "../tools/product-controls";
+import { displayedPrice } from "../tools/product-pricing";
 import {
   readProductGallery,
   type ProductGallerySnapshot,
@@ -34,11 +36,44 @@ function productPath(url: string): string | undefined {
 type ProductStageState = {
   path: string;
   title: string;
+  startingPrice: string | null;
   gallery?: ProductGallerySnapshot;
   configuration: ReturnType<typeof readProductConfigurationDisplay>;
   updating: boolean;
   form: HTMLFormElement | null;
 };
+
+/** Native catalog display only: never a quote for the chosen configuration. */
+function readStartingPrice(path: string): string | null {
+  const main = document.querySelector("app-provider > main#main");
+  if (!main) return null;
+  const primaries = main.querySelectorAll('main-product[update-url="true"]');
+  if (
+    primaries.length > 1 ||
+    (primaries.length === 1 &&
+      primaries[0].getAttribute("product-url") !== path)
+  )
+    return null;
+  const root = primaries[0] ?? main;
+  const candidates = [
+    ...root.querySelectorAll(
+      '[data-testid="pdp-product-sale-price"], [data-testid="pdp-product-no-sale-price"]',
+    ),
+  ].filter((element) => {
+    const product = element.closest("main-product");
+    return (!product || product === root) && controlVisible(element);
+  });
+  const sales = candidates.filter(
+    (element) =>
+      element.getAttribute("data-testid") === "pdp-product-sale-price",
+  );
+  const prices = sales.length ? sales : candidates;
+  if (prices.length !== 1) return null;
+  const label = prices[0].cloneNode(true) as Element;
+  label.querySelectorAll(".sr-only").forEach((element) => element.remove());
+  const price = displayedPrice(label);
+  return price ? `From ${price}` : null;
+}
 
 function readProductStage(path: string): ProductStageState | null {
   if (!isCurrentProduct(path)) return null;
@@ -46,6 +81,7 @@ function readProductStage(path: string): ProductStageState | null {
   return {
     path,
     title: storefrontPageTitle(path),
+    startingPrice: readStartingPrice(path),
     gallery: readProductGallery(document, window.location.href),
     configuration: readProductConfigurationDisplay(path),
     updating: !!form && isProductFormUpdating(form),
@@ -157,7 +193,7 @@ export function ProductStage({
           return (
             record.type === "childList" ||
             !!element?.closest(
-              "dynamic-pricing,h1,[data-main-product-media-gallery]",
+              'dynamic-pricing,h1,[data-main-product-media-gallery],[data-testid^="pdp-product-"]',
             )
           );
         })
@@ -247,6 +283,7 @@ export function ProductStage({
     <ProductStageView
       key={selectedPath}
       title={title}
+      startingPrice={display?.startingPrice ?? null}
       configuration={configuration ?? null}
       gallery={gallery}
       pending={page.pending}

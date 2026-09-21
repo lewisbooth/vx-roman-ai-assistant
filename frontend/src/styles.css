@@ -1009,19 +1009,19 @@
   }
 
   .roman-composer {
-    @apply z-10 shrink-0 px-[26px] pt-[14px] pb-[24px];
+    @apply z-10 shrink-0 px-[26px] pt-[8px] pb-[16px];
     width: min(100%, 840px);
     margin: 0 auto;
-    padding-bottom: max(24px, env(safe-area-inset-bottom));
-    background: linear-gradient(transparent, #f7f5ef 14px);
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, #f7f5ef 8px);
   }
 
   .roman-voice-bar {
-    @apply relative flex h-[54px] min-w-0 w-full items-center pr-[54px];
+    @apply relative flex h-[44px] min-w-0 w-full items-center pr-[52px];
   }
 
   .roman-voice-waveform {
-    @apply flex h-[44px] min-w-0 flex-1 items-center justify-evenly gap-[2px] overflow-hidden px-[16px] text-[#4e0e0e];
+    @apply flex h-[44px] min-w-0 flex-1 items-center justify-evenly gap-[2px] overflow-hidden px-[12px] text-[#4e0e0e];
   }
 
   .roman-voice-waveform span {
@@ -1180,7 +1180,7 @@
   }
 
   .roman-composer form {
-    @apply flex items-center gap-[6px] rounded-[32px] border border-solid border-[#e3e0d8] bg-white p-[5px];
+    @apply flex items-center gap-[6px] rounded-[26px] border border-solid border-[#e3e0d8] bg-white p-[3px];
   }
 
   .roman-composer-field {
@@ -1188,7 +1188,7 @@
   }
 
   .roman-composer textarea {
-    @apply block h-[54px] w-full resize-none overflow-y-auto rounded-[27px] border-0 bg-transparent py-[15px] pr-[54px] pl-[18px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
+    @apply block h-[44px] w-full resize-none overflow-y-auto rounded-[22px] border-0 bg-transparent py-[11px] pr-[52px] pl-[12px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
     font-family: inherit;
     outline: none;
     box-shadow: none;
@@ -1209,7 +1209,7 @@
   }
 
   .roman-composer-action {
-    @apply absolute right-[5px] bottom-[5px] z-[2] inline-flex cursor-pointer items-center rounded-full border-0 bg-[#4e0e0e] p-0 text-[15px] whitespace-nowrap text-[#f7f5ef] disabled:cursor-default disabled:opacity-50;
+    @apply absolute right-0 bottom-0 z-[2] inline-flex cursor-pointer items-center rounded-full border-0 bg-[#4e0e0e] p-0 text-[15px] whitespace-nowrap text-[#f7f5ef] disabled:cursor-default disabled:opacity-50;
     --roman-action-size: 44px;
     height: var(--roman-action-size);
     min-width: var(--roman-action-size);
@@ -1454,8 +1454,8 @@
     }
 
     .roman-composer {
-      @apply px-[16px] pt-[10px];
-      padding-bottom: max(12px, env(safe-area-inset-bottom));
+      @apply px-[16px] pt-[6px];
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
     }
 
     /* Queued messages remain separate from the shared conversation flow. */

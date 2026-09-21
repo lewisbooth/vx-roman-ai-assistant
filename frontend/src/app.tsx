@@ -94,6 +94,8 @@ function Assistant({
   const scrollPositions = useRef({ chat: 0, cart: 0, gallery: 0 });
   const following = useRef(true);
   const manualScroll = useRef(false);
+  const manualScrollTop = useRef(0);
+  const scrollTouch = useRef<{ id: number; x: number; y: number }>();
   const [readingHistory, setReadingHistory] = useState(false);
   const messages = useMemo(
     () =>
@@ -350,6 +352,11 @@ function Assistant({
     }
   }, [hasCustomerReply, view]);
 
+  function markManualScroll(scroll: HTMLDivElement) {
+    manualScroll.current = true;
+    manualScrollTop.current = scroll.scrollTop;
+  }
+
   useLayoutEffect(() => {
     const scroll = viewport.current;
     if (scroll) scroll.scrollTop = scrollPositions.current[view];
@@ -420,15 +427,35 @@ function Assistant({
                   view === "chat" ? "Conversation history" : `Roman ${view}`
                 }
                 onWheel={(event) => {
-                  if (view === "chat" && event.deltaY)
-                    manualScroll.current = true;
+                  if (Math.abs(event.deltaY) > Math.abs(event.deltaX))
+                    markManualScroll(event.currentTarget);
                 }}
-                onTouchMove={() => {
-                  if (view === "chat") manualScroll.current = true;
+                onTouchStart={(event) => {
+                  const touch = event.touches.length === 1 && event.touches[0];
+                  scrollTouch.current = touch
+                    ? { id: touch.identifier, x: touch.clientX, y: touch.clientY }
+                    : undefined;
+                  manualScroll.current = false;
+                }}
+                onTouchMove={(event) => {
+                  const start = scrollTouch.current;
+                  const touch = event.touches.length === 1 && event.touches[0];
+                  if (!start || !touch || touch.identifier !== start.id) return;
+                  const x = Math.abs(touch.clientX - start.x);
+                  const y = Math.abs(touch.clientY - start.y);
+                  if (y >= 8 && y > x) markManualScroll(event.currentTarget);
+                }}
+                onTouchEnd={() => {
+                  scrollTouch.current = undefined;
+                  manualScroll.current = false;
+                }}
+                onTouchCancel={() => {
+                  scrollTouch.current = undefined;
+                  manualScroll.current = false;
                 }}
                 onPointerDown={(event) => {
                   if (view === "chat" && event.target === event.currentTarget)
-                    manualScroll.current = true;
+                    markManualScroll(event.currentTarget);
                 }}
                 onKeyDown={(event) => {
                   if (
@@ -444,12 +471,29 @@ function Assistant({
                       " ",
                     ].includes(event.key)
                   )
-                    manualScroll.current = true;
+                    markManualScroll(event.currentTarget);
                 }}
                 onScroll={(event) => {
                   const scroll = event.currentTarget;
+                  if (
+                    event.target === scroll &&
+                    manualScroll.current &&
+                    scroll.scrollTop !== manualScrollTop.current &&
+                    window.matchMedia?.("(max-width: 1023px)").matches
+                  ) {
+                    const active = (scroll.getRootNode() as Document | ShadowRoot)
+                      .activeElement;
+                    if (
+                      active instanceof HTMLTextAreaElement &&
+                      active.matches("[data-roman-composer]")
+                    )
+                      active.blur();
+                  }
                   scrollPositions.current[view] = scroll.scrollTop;
-                  if (view !== "chat") return;
+                  if (view !== "chat") {
+                    manualScroll.current = false;
+                    return;
+                  }
                   const atBottom =
                     scroll.scrollHeight -
                       scroll.scrollTop -

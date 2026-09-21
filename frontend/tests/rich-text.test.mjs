@@ -10,13 +10,15 @@ const bundle = await build({
       import { createRoot } from 'react-dom/client';
       import { flushSync } from 'react-dom';
       import { RichText } from './frontend/src/chat/RichText';
+      export { prepareRichText } from './frontend/src/chat/RichText';
       import { Timeline } from './frontend/src/chat/Timeline';
       export { bufferIncompleteMarkdownLinks } from './frontend/src/chat/streaming-markdown';
       export function mount(container, navigation) {
         const root = createRoot(container);
         return {
-          render(text, pending = false) {
-            flushSync(() => root.render(<RichText text={text} navigation={navigation} pending={pending} />));
+          render(text, pending = false, visibleCharacters, prepared) {
+            flushSync(() => root.render(<RichText text={text} navigation={navigation} pending={pending}
+              visibleCharacters={visibleCharacters} prepared={prepared} />));
           },
           timeline(messages) {
             flushSync(() => root.render(<Timeline messages={messages} navigation={navigation}
@@ -49,7 +51,7 @@ const bundle = await build({
           contents: `import Markdown from 'react-markdown';
           export default function CountedMarkdown(props) {
             window.romanMarkdownRenders = (window.romanMarkdownRenders || 0) + 1;
-            return <Markdown {...props} />;
+            return Markdown(props);
           }`,
           loader: "jsx",
           resolveDir: cwd(),
@@ -113,6 +115,99 @@ test("unchanged history and control renders do not reparse Markdown; one changed
   messages[39].parts[0].text += " More streamed text.";
   timeline(messages);
   assert.equal(window.romanMarkdownRenders, 41);
+});
+
+test("character reveal preserves rendered Markdown without parsing again on each tick", (t) => {
+  const { window, container, render } = setup(t);
+  const text =
+    "**Bold** and [Store help](/pages/help).\n\n- _First_\n- `Second`";
+  const prepared = window.RomanRichTextTest.prepareRichText(text);
+  assert.equal(window.romanMarkdownRenders, 1);
+  assert.ok(prepared.length < text.length);
+  render(text, false, 0, prepared);
+  assert.equal(container.textContent, "");
+  assert.equal(container.querySelector("a, strong, li"), null);
+  for (let count = 1; count <= prepared.length; count++) {
+    render(text, false, count, prepared);
+    assert.doesNotMatch(container.textContent, /\*|\[|\/pages\/|`/);
+    assert.ok(
+      [...container.querySelectorAll("li")].every((node) =>
+        node.textContent.trim(),
+      ),
+    );
+  }
+  assert.equal(
+    window.romanMarkdownRenders,
+    1,
+    "Reveal ticks must not reparse Markdown",
+  );
+  assert.equal(container.querySelector("strong").textContent, "Bold");
+  assert.equal(container.querySelector("em").textContent, "First");
+  assert.equal(container.querySelector("code").textContent, "Second");
+  assert.equal(container.querySelector("a").textContent, "Store help");
+  assert.equal(container.querySelectorAll("li").length, 2);
+
+  // The standalone caller also memoizes source parsing when no prepared tree is supplied.
+  for (let count = 0; count <= prepared.length; count++)
+    render(text, false, count);
+  assert.equal(window.romanMarkdownRenders, 2);
+});
+
+test("reveal counts Unicode graphemes without splitting emoji modifiers or combining marks", (t) => {
+  const { window, container, render } = setup(t);
+  const text = "A**👩🏽‍🔧e\u0301** Z";
+  const prepared = window.RomanRichTextTest.prepareRichText(text);
+  assert.equal(prepared.length, 5);
+  for (const [count, expected] of [
+    [0, ""],
+    [1, "A"],
+    [2, "A👩🏽‍🔧"],
+    [3, "A👩🏽‍🔧e\u0301"],
+    [4, "A👩🏽‍🔧e\u0301 "],
+    [5, "A👩🏽‍🔧e\u0301 Z"],
+  ]) {
+    render(text, false, count, prepared);
+    assert.equal(container.textContent, expected);
+  }
+  assert.equal(container.querySelector("strong").textContent, "👩🏽‍🔧e\u0301");
+});
+
+test("every revealed prefix hides PDF captions, URLs, HTML and unfinished streaming links", (t) => {
+  const { window, container, render } = setup(t);
+  const text =
+    "Let's measure.\n\n[Open the private guide](https://cdn.shopify.com/secret.pdf)\n\n**Width first.**\n<script>window.compromised=true</script>\n\n[Unfinished source](https://cdn.shopify.com/leaking";
+  const prepared = window.RomanRichTextTest.prepareRichText(text, true);
+  for (let count = 0; count <= prepared.length; count++) {
+    render(text, true, count, prepared);
+    assert.doesNotMatch(
+      container.textContent,
+      /private|secret|Unfinished|source|leaking|https|compromised/,
+    );
+    assert.equal(container.querySelector("script, img, iframe, a"), null);
+    assert.equal(window.compromised, undefined);
+  }
+  assert.equal(container.querySelector("strong").textContent, "Width first.");
+  assert.equal(window.romanMarkdownRenders, 1);
+});
+
+test("link focus and navigation survive reveal ticks and a newly prepared suffix", (t) => {
+  const { window, container, calls, render } = setup(t);
+  const initial = "[Help](/pages/help) with **measuring**.";
+  const prepared = window.RomanRichTextTest.prepareRichText(initial);
+  render(initial, false, 4, prepared);
+  const link = container.querySelector("a");
+  link.focus();
+  for (let count = 5; count <= prepared.length; count++) {
+    render(initial, false, count, prepared);
+    assert.equal(container.querySelector("a"), link);
+    assert.equal(container.getRootNode().activeElement, link);
+  }
+  const extended = `${initial}\n\nNext paragraph.`;
+  render(extended, false, prepared.length + 3);
+  assert.equal(container.querySelector("a"), link);
+  link.click();
+  assert.deepEqual(calls, ["https://hd-dev-single.myshopify.com/pages/help"]);
+  assert.equal(window.romanMarkdownRenders, 2);
 });
 
 test("assistant CommonMark has semantic paragraphs, emphasis, nested lists, headings and code", (t) => {
@@ -494,7 +589,7 @@ test("paired ordinary brackets, bare URLs, code and escaped link examples remain
 });
 
 test("only pending assistant display is buffered; finished and failed text and stored parts stay exact", (t) => {
-  const { container, timeline } = setup(t);
+  const { container, render, timeline } = setup(t);
   const text = "Keep this. [Unfinished guide](https://example.com/source";
   const part = Object.freeze({ type: "text", text });
   function message(role, status) {
@@ -506,13 +601,13 @@ test("only pending assistant display is buffered; finished and failed text and s
       parts: [part],
     };
   }
-  timeline([message("assistant", "pending")]);
+  render(text, true);
   assert.equal(
     container.querySelector(".roman-rich-text").textContent,
     "Keep this.",
   );
   for (const status of ["complete", "failed"]) {
-    timeline([message("assistant", status)]);
+    render(message("assistant", status).parts[0].text);
     assert.equal(container.querySelector(".roman-rich-text").textContent, text);
   }
   timeline([message("user", "pending")]);

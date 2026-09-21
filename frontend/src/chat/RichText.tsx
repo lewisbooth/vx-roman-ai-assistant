@@ -1,5 +1,12 @@
-import { memo, useMemo } from "react";
-import Markdown, { type Components } from "react-markdown";
+import {
+  cloneElement,
+  isValidElement,
+  memo,
+  useMemo,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import Markdown from "react-markdown";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { isPdfLink, StorefrontLink } from "./StorefrontLink";
 import { bufferIncompleteMarkdownLinks } from "./streaming-markdown";
@@ -137,40 +144,120 @@ function remarkProseParagraphs() {
 
 const remarkPlugins = [remarkHidePdfLinks, remarkProseParagraphs];
 
+type PreparedNode =
+  | { text: string; ends: number[]; length: number }
+  | {
+      element: ReactElement<{ children?: ReactNode; href?: string }>;
+      children: PreparedNode[];
+      length: number;
+    };
+
+export type PreparedRichText = {
+  /** Rendered graphemes and line breaks, after Markdown/PDF filtering. */
+  length: number;
+  nodes: PreparedNode[];
+};
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function prepareNodes(value: ReactNode): PreparedNode[] {
+  if (typeof value === "string" || typeof value === "number") {
+    const text = String(value);
+    const ends = Array.from(
+      graphemes.segment(text),
+      ({ index, segment }) => index + segment.length,
+    );
+    return [{ text, ends, length: ends.length }];
+  }
+  if (Array.isArray(value)) return value.flatMap(prepareNodes);
+  if (!isValidElement<{ children?: ReactNode; href?: string }>(value))
+    return [];
+  const children = prepareNodes(value.props.children);
+  const length =
+    value.type === "br" || value.type === "hr"
+      ? 1
+      : children.reduce((total, child) => total + child.length, 0);
+  return [{ element: value, children, length }];
+}
+
+/** Parse once per source update; reveal ticks only trim the safe rendered tree. */
+export function prepareRichText(
+  text: string,
+  pending = false,
+): PreparedRichText {
+  // react-markdown's synchronous export is a hook-free parse/render function.
+  const nodes = prepareNodes(
+    Markdown({
+      skipHtml: true,
+      remarkPlugins,
+      allowedElements,
+      children: pending ? bufferIncompleteMarkdownLinks(text) : text,
+    }),
+  );
+  return {
+    nodes,
+    length: nodes.reduce((total, node) => total + node.length, 0),
+  };
+}
+
+function revealNodes(
+  nodes: PreparedNode[],
+  visibleCharacters: number,
+  navigation: StorefrontNavigation,
+): ReactNode[] {
+  let remaining = visibleCharacters;
+  return nodes.map((node, index) => {
+    if (remaining <= 0 || !node.length) return null;
+    const count = Math.min(remaining, node.length);
+    remaining -= count;
+    if ("text" in node)
+      return count >= node.length
+        ? node.text
+        : node.text.slice(0, node.ends[count - 1]);
+    const { element } = node;
+    const key = element.key ?? index;
+    const children = revealNodes(node.children, count, navigation);
+    if (element.type === "a")
+      return element.props.href?.trim() ? (
+        <StorefrontLink
+          key={key}
+          url={element.props.href}
+          navigation={navigation}
+        >
+          {children}
+        </StorefrontLink>
+      ) : (
+        <span key={key}>{children}</span>
+      );
+    return cloneElement(element, { key }, ...children);
+  });
+}
+
 export const RichText = memo(function RichText({
   text,
   navigation,
   pending = false,
+  prepared,
+  visibleCharacters,
 }: {
   text: string;
   navigation: StorefrontNavigation;
   pending?: boolean;
+  prepared?: PreparedRichText;
+  visibleCharacters?: number;
 }) {
-  // Keep link components stable while streamed text updates, preserving focus.
-  const components = useMemo<Components>(
-    () => ({
-      a: ({ href, children }) =>
-        href?.trim() ? (
-          <StorefrontLink url={href} navigation={navigation}>
-            {children}
-          </StorefrontLink>
-        ) : (
-          <span>{children}</span>
-        ),
-    }),
-    [navigation],
+  const content = useMemo(
+    () => prepared ?? prepareRichText(text, pending),
+    [prepared, text, pending],
   );
+  const count =
+    visibleCharacters === undefined
+      ? content.length
+      : Math.max(0, Math.floor(visibleCharacters));
 
   return (
     <div className="roman-rich-text">
-      <Markdown
-        skipHtml
-        remarkPlugins={remarkPlugins}
-        allowedElements={allowedElements}
-        components={components}
-      >
-        {pending ? bufferIncompleteMarkdownLinks(text) : text}
-      </Markdown>
+      {revealNodes(content.nodes, count, navigation)}
     </div>
   );
 });
