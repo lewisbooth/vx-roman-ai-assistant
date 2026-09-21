@@ -469,7 +469,7 @@ test("first voice after a text product-and-sample journey does not revive its an
     type: "question",
     version: 1,
     invocationId: randomUUID(),
-    question: "Where would you like to start?",
+    question: "Where would you like to begin?",
     answers: ["Help me measure", "Explore products", "Find my style"],
   };
   const history = [

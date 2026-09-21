@@ -1006,7 +1006,7 @@ test("fresh resumed opening references the latest task and canonical pending sta
   for (const pendingQuestion of [
     undefined,
     {
-      question: "Where would you like to start?",
+      question: "Where would you like to begin?",
       answers: ["Help me measure", "Explore products", "Find my style"],
     },
   ]) {
@@ -1286,7 +1286,7 @@ test("resumed voice retains the chosen product and confirmed sample around an ov
   const app = setup();
   const history = [
     questionReference({
-      question: "Where would you like to start?",
+      question: "Where would you like to begin?",
       answers: ["Help me measure", "Explore products"],
     }),
     {

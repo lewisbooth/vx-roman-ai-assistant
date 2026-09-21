@@ -51,11 +51,11 @@ const {
 test("the generic welcome offers canonical quick answers without repeating text or voice openings", () => {
   assert.equal(
     ROMAN_PREAMBLE,
-    "Hi! I'm Roman, your digital shop-at-home advisor. I can help you to measure your windows, explain our product lines, or find your style. Where would you like to start?",
+    "Hi! I'm Roman. Where would you like to begin?",
   );
   assert.equal(
     ROMAN_WELCOME_QUESTION.question,
-    "Where would you like to start?",
+    "Where would you like to begin?",
   );
   assert.deepEqual(JSON.parse(JSON.stringify(ROMAN_WELCOME_QUESTION.answers)), [
     "Help me measure",
@@ -78,6 +78,17 @@ test("the generic welcome offers canonical quick answers without repeating text 
   assert.match(
     ROMAN_TEXT_PROMPT,
     /specific request[\s\S]*use the next useful question rather than the generic welcome menu/,
+  );
+  assert.equal(ROMAN_WELCOME_INTRO, "Hi! I'm Roman.");
+  assert.ok(
+    ROMAN_TEXT_PROMPT.includes(
+      `If the customer starts with a specific request, include only "Hi! I'm Roman, your digital shop-at-home advisor." as the introduction`,
+    ),
+    "Specific quick starts retain their short advisor introduction",
+  );
+  assert.doesNotMatch(
+    ROMAN_VOICE_OPENING_PROMPTS.newConversation,
+    /I can help you to|digital shop-at-home advisor/,
   );
   assert.match(
     ROMAN_TEXT_PROMPT,

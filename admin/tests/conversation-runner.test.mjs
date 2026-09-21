@@ -4991,7 +4991,7 @@ test("carousel title data never rewrites the model selected browsing question", 
 
 test("validated model questions remain authoritative without hidden menu substitutions", async () => {
   const welcome = {
-    question: "Where would you like to start?",
+    question: "Where would you like to begin?",
     answers: ["Help me measure", "Explore products", "Find my style"],
   };
   const nextActions = {

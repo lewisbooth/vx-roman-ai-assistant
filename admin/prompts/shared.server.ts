@@ -3,11 +3,10 @@ import { ROMAN_UPSELL_GUIDANCE } from "./knowledge-base/upsell";
 import { ROMAN_HANDOFF_GUIDANCE } from "./knowledge-base/handoff";
 
 // Shared identity and backend policy. Speech and text presentation have separate owners.
-export const ROMAN_WELCOME_INTRO =
-  "Hi! I'm Roman, your digital shop-at-home advisor. I can help you to measure your windows, explain our product lines, or find your style.";
+export const ROMAN_WELCOME_INTRO = "Hi! I'm Roman.";
 
 export const ROMAN_WELCOME_QUESTION = {
-  question: "Where would you like to start?",
+  question: "Where would you like to begin?",
   answers: ["Help me measure", "Explore products", "Find my style"],
 } as const;
 
