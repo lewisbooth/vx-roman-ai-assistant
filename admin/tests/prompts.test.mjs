@@ -399,7 +399,7 @@ test("browsing refinements request new choices while explicit redisplay remains 
     assert.match(prompt, /Compare candidate IDs with the historical product-card IDs and seek new matching products/);
     assert.match(prompt, /reordering or refreshing the same products does not make them new options/);
     assert.match(prompt, /For Different colours, ask one useful colour preference when it is missing/);
-    assert.match(prompt, /Preserve the established blind type, room, fitting constraints and other filters unless the customer changes them/);
+    assert.match(prompt, /Preserve that current goal's established blind type, room, fitting constraints and other filters unless the customer changes them/);
     assert.match(prompt, /If no suitable new choices are found, explain briefly/);
     assert.match(prompt, /explicit request to show earlier cards or a named product again; fulfill that redisplay normally/);
   }
@@ -425,11 +425,11 @@ test("explicit product choices load once and replacements require conversational
 test("recommendation discovery asks only missing room and requirements and preserves direct product intent", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     assert.match(prompt, /Before recommending products, establish which room the customer is shopping for and their main requirements/);
-    assert.match(prompt, /Reuse details already supplied; ask only for what is missing, one useful quick-answer question at a time/);
+    assert.match(prompt, /Reuse details already supplied for the current discovery goal; ask only for what is missing, one useful quick-answer question at a time/);
     assert.match(prompt, /A room alone does not imply blackout, moisture resistance or another requirement/);
     assert.match(prompt, /Do not run a fixed checklist or repeat intake when the room and relevant needs are already clear/);
     assert.match(prompt, /A direct request to choose or configure a specific blind, revisit known cards, or answer a factual question is not a new recommendation intake/);
-    assert.match(prompt, /A request to see more preserves the established room, requirements and filters rather than restarting intake/);
+    assert.match(prompt, /Within an unfinished discovery goal, a request to see more preserves its established room, requirements and filters rather than restarting intake/);
     assert.match(prompt, /When the blind type is undecided, first use ask_question to offer two or three relevant product categories plus "Show me everything", with at most four answers in total, before showing a broad recommendation carousel/);
     assert.match(prompt, /An explicit request to browse across categories, including "Show me everything", resolves this choice for the current flow, even when supplied upfront; do not ask it again/);
     assert.match(prompt, /It means a varied selection relevant to the established room, requirements and fitting constraints, not removal of those filters/);
@@ -446,6 +446,37 @@ test("recommendation discovery asks only missing room and requirements and prese
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
     assert.doesNotMatch(prompt, /\bTerra\b/);
   }
+});
+
+test("post-cart discovery scope is identical for text, backend voice and live speech", () => {
+  const prompts = [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")];
+  const scopes = prompts.map((prompt) => prompt.match(/After a verified full-product addition, an open-ended request[^\n]+/)?.[0]);
+  assert.ok(scopes[0]);
+  for (const [index, prompt] of prompts.entries()) {
+    assert.equal(scopes[index], scopes[0], "All channels use the same shopping-scope rule");
+    assert.equal(prompt.split(scopes[0]).length, 2, "The scope rule has one canonical occurrence");
+    for (const rule of [
+      /"Find more products", "Explore products" or "Keep Shopping" starts a fresh discovery goal/,
+      /Ask which room or window they are shopping for next through ask_question, before searching or showing recommendations/,
+      /Then establish its main requirements and category/,
+      /historical context, not filters for this new goal; do not assume they want coordinating blinds/,
+      /Preserve only preferences the customer explicitly makes relevant to the next goal, including a stated whole-home preference/,
+      /"Find more products" should lead to "Which room are we shopping for next\?" with room choices, not a matching-product carousel/,
+      /"More blackout blinds for the same living room", retain those explicit requirements/,
+      /If they provide the next room and needs upfront, ask only what is still missing or proceed when discovery is complete/,
+      /an older cart addition must not restart intake on every turn/,
+      /A specific product request, revisiting earlier cards, changing the cart or explicitly continuing the same window follows that intent/,
+      /Sample additions alone do not complete a full-product flow/,
+      /Starting discovery does not clear the cart, transcript, saved drafts or visible active blind/,
+    ]) assert.match(scopes[index], rule);
+  }
+  for (const prompt of prompts.slice(0, 2)) {
+    assert.match(prompt, /Within an unfinished discovery goal, a request to see more preserves its established room, requirements and filters/);
+    assert.match(prompt, /Within the current discovery goal, requests such as "Show me more"/);
+    assert.doesNotMatch(prompt, /you may search relevant alternatives while clarifying/);
+  }
+  assert.match(prompts[2], /more results within an unfinished discovery goal/);
+  assert.match(prompts[2], /After a full-product addition, delegate the fresh-discovery rule in Shopping interface/);
 });
 
 test("broad discovery retrieves and balances genuine families within the existing lookup budget", () => {
@@ -1152,11 +1183,11 @@ test("moving to another window after adding a full product establishes fresh int
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
       /After a verified full-product addition, continue any next task already requested; otherwise offer contextual next actions with ask_question/,
-      /Ask whether to use the same blind again or explore something different unless their latest request already makes that choice unambiguous/,
+      /For an ambiguous request to measure another window, ask whether to use the same blind again or explore something different[\s\S]*Skip this same-blind clarification once fresh discovery has begun/,
       /A new bedroom or other use case alone does not select the previous product/,
-      /you may search relevant alternatives while clarifying, but do not start modifying the old product/,
+      /establish the new discovery goal before recommendations and do not start modifying the old product/,
       /The still-open PDP is a page observation, not intent for the new window/,
-      /Preserve useful preferences and conversation history without carrying over the completed blind's approvals/,
+      /Preserve conversation history and preferences explicitly relevant to the new goal without carrying over the completed blind's approvals/,
       /previous saved values or a configured form are not approval to reuse them, even for the same product/,
       /A clear request to reuse particular settings can establish those choices, but the new window still needs its own dimension confirmation, consent for any paid guarantee and explicit product-add request/,
       /Reuse relevant original guide evidence when valid, not the old window's physical-fit conclusions/,
@@ -1168,7 +1199,7 @@ test("moving to another window after adding a full product establishes fresh int
   }
   for (const rule of [
     /After a confirmed full-product addition, delegate the useful next actions or the customer's already-requested next task/,
-    /delegate one same-blind-or-different choice unless their latest request already settles it/,
+    /For an ambiguous request to measure another window, delegate one same-blind-or-different choice; skip it once fresh discovery has begun/,
     /A still-open PDP or new room mention does not choose the old product/,
     /do not carry the completed blind's dimensions, fitting conclusions, option approvals, guarantee decision or final add approval into the new window, even for the same product/,
     /A sample addition is not this full-product handoff/,
