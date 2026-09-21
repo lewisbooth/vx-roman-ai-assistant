@@ -456,9 +456,41 @@ export function conversationTimeline(
         row.sequence >= reply.afterSequence &&
         !isBackgroundObservation(row.message),
     );
-    // The next message/delegation ends this response. Completion itself may
+    if (!nextMessage) return [];
+    const responseStartMs = conversation.voiceTranscripts.reduce(
+      (startMs, fragment) =>
+        fragment.voiceId === reply.voiceId &&
+        fragment.role === "assistant" &&
+        fragment.sequence >= reply.afterSequence &&
+        fragment.sequence < nextMessage.sequence
+          ? Math.min(startMs, fragment.startMs)
+          : startMs,
+      Infinity,
+    );
+    // A spoken reply already separates the old response from the next one.
+    // Its delegation row can arrive after Roman starts acknowledging it (even
+    // between "Alright," and "the kitchen"); that bookkeeping is not another
+    // speech boundary. Keep the boundary when no new customer input is known.
+    if (
+      nextMessage.message.role === "context" &&
+      nextMessage.message.status !== "failed" &&
+      (nextMessage.message.parts.length === 0 ||
+        nextMessage.message.parts.some(voiceAssociation)) &&
+      conversation.voiceTranscripts.some(
+        (fragment) =>
+          fragment.voiceId === reply.voiceId &&
+          fragment.role === "user" &&
+          fragment.sequence >= reply.afterSequence &&
+          fragment.sequence < nextMessage.sequence &&
+          // ASR can arrive late: delivery after completion alone does not make
+          // it a new turn. The customer must speak after this response begins.
+          fragment.startMs > responseStartMs,
+      )
+    )
+      return [];
+    // Other messages/delegations end this response. Completion itself may
     // happen midway through Roman's sentence; the projector handles it below.
-    return nextMessage ? [nextMessage.sequence] : [];
+    return [nextMessage.sequence];
   });
   const captions = groupVoiceTranscript(
     conversation.voiceTranscripts.map((fragment) => {
@@ -471,7 +503,8 @@ export function conversationTimeline(
       };
     }),
     // Reserved result rows and background page changes do not interrupt speech.
-    // Customer input, visible events and the next delegation remain boundaries.
+    // Customer input and visible events remain boundaries; the next delegation
+    // adds one only when customer speech has not already separated the replies.
     rows
       .filter(
         (row) =>

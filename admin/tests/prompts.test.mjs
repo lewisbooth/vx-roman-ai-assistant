@@ -459,6 +459,26 @@ test("recommendation discovery asks only missing room and requirements and prese
   }
 });
 
+test("category discovery uses the opening and coverage intent in both advisor modes", () => {
+  const prompts = [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT];
+  const choices = prompts.map((prompt) => prompt.match(/When the blind type is undecided,[\s\S]+?(?=\n\nFor that broad discovery)/)?.[0]);
+  assert.ok(choices[0]);
+  assert.equal(choices[0], choices[1], "Text and voice research share the same category policy");
+  for (const [index, prompt] of prompts.entries()) {
+    assert.equal(prompt.split(choices[index]).length, 2);
+    assert.match(choices[index], /whole-opening versus individual-pane coverage/);
+    assert.match(choices[index], /not a fixed menu or evidence of stock or suitability/);
+    assert.match(choices[index], /wide bifold\/patio opening[\s\S]*vertical or panel\/gliding systems where stocked/);
+    assert.match(choices[index], /Do not substitute clip-in blinds for individual door panels after the customer chose whole-opening coverage/);
+    assert.match(choices[index], /individual glazed panels[\s\S]*pleated\/cellular or Venetian systems/);
+    assert.match(choices[index], /roof window[\s\S]*compatible roof-window systems/);
+    assert.match(choices[index], /unknown dimensions or clearance remain unverified/);
+  }
+  const speech = romanVoicePrompt("marin");
+  assert.match(speech, /Category choices belong to the backend advisor/);
+  assert.match(speech, /pass on the customer's room, opening, access and whole-opening versus individual-pane intent/);
+});
+
 test("post-cart discovery scope is identical for text, backend voice and live speech", () => {
   const prompts = [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")];
   const scopes = prompts.map((prompt) => prompt.match(/After a verified full-product addition, an open-ended request[^\n]+/)?.[0]);

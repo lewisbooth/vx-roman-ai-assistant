@@ -973,6 +973,137 @@ for (const widgetKinds of [
     }
   });
 
+test("a delayed delegation does not split Roman's acknowledgement after a new spoken customer turn", () => {
+  const voiceId = randomUUID();
+  const question = (id, sequence, afterSequence) => ({
+    id,
+    sequence,
+    role: "context",
+    status: "complete",
+    createdAt: new Date(),
+    partsJson: JSON.stringify([
+      {
+        type: "question",
+        version: 1,
+        invocationId: randomUUID(),
+        question: "What matters most?",
+        answers: ["Privacy", "Light"],
+        voiceReply: { voiceId, afterSequence },
+      },
+    ]),
+  });
+  const fragment = (sequence, text, role, startMs, endMs) => ({
+    id: `caption-${sequence}`,
+    voiceId,
+    sequence,
+    role,
+    text,
+    startMs,
+    endMs,
+    createdAt: new Date(),
+  });
+  for (const [opening, continuation] of [
+    ["Alright,", " the kitchen."],
+    ["Okay,", " bifold doors."],
+    ["One", " across the full opening."],
+  ]) {
+    const previousQuestion = question("previous-question", 0, 1);
+    const nextQuestion = question("next-question", 5, 7);
+    const voiceTranscripts = [
+      fragment(1, "Which", "assistant", 0, 100),
+      // The end of the old response arrives after the customer's ASR, but its
+      // audio time still belongs before it. Do not lose that existing ordering.
+      fragment(2, "For my kitchen", "user", 500, 800),
+      fragment(3, " room?", "assistant", 100, 200),
+      fragment(4, opening, "assistant", 1000, 1200),
+      // Native zero-gap speech interrupted only by the reserved result row.
+      fragment(6, continuation, "assistant", 1200, 1600),
+      fragment(7, " What matters most?", "assistant", 1800, 2100),
+    ];
+    for (const pending of [true, false]) {
+      const messages = [
+        previousQuestion,
+        pending
+          ? { ...nextQuestion, status: "pending", partsJson: "[]" }
+          : nextQuestion,
+      ];
+      const input = {
+        origin: "https://hd-dev-single.myshopify.com",
+        messages,
+        voiceTranscripts,
+      };
+      const original = structuredClone(input);
+      for (const count of [4, 5, 6]) {
+        const rows = conversation.conversationTimeline({
+          ...input,
+          voiceTranscripts: voiceTranscripts.slice(0, count),
+        });
+        const speech = rows.filter((row) => row.parts[0]?.type === "voice");
+        assert.deepEqual(
+          speech.map((row) => [row.id, row.role, row.parts[0].text]),
+          [
+            ["caption-1", "assistant", "Which room?"],
+            ["caption-2", "user", "For my kitchen"],
+            [
+              "caption-4",
+              "assistant",
+              opening +
+                (count >= 5 ? continuation : "") +
+                (count >= 6 ? " What matters most?" : ""),
+            ],
+          ],
+        );
+        assert.ok(
+          rows.findIndex((row) => row.id === previousQuestion.id) <
+            rows.findIndex((row) => row.id === "caption-2"),
+        );
+        if (!pending && count === 6)
+          assert.ok(
+            rows.findIndex((row) => row.id === nextQuestion.id) >
+              rows.findIndex((row) => row.id === "caption-4"),
+          );
+      }
+      assert.deepEqual(input, original);
+    }
+  }
+  // The initiating ASR may arrive after the response started. It must not be
+  // mistaken for a newer customer turn solely because its sequence is later.
+  const previousQuestion = question("previous-question", 0, 1);
+  const nextQuestion = question("next-question", 4, 6);
+  for (const pending of [true, false]) {
+    const rows = conversation.conversationTimeline({
+      origin: "https://hd-dev-single.myshopify.com",
+      messages: [
+        previousQuestion,
+        pending
+          ? { ...nextQuestion, status: "pending", partsJson: "[]" }
+          : nextQuestion,
+      ],
+      voiceTranscripts: [
+        fragment(1, "Here are options.", "assistant", 500, 800),
+        fragment(2, "Find some blinds", "user", 0, 400),
+        fragment(3, " Pick one.", "assistant", 800, 1000),
+        fragment(5, "Now something unrelated.", "assistant", 1200, 1500),
+        fragment(6, " Choose a colour.", "assistant", 1500, 1700),
+      ],
+    });
+    assert.deepEqual(
+      rows
+        .filter((row) => row.parts[0]?.type === "voice")
+        .map((row) => [row.id, row.parts[0].text]),
+      [
+        ["caption-2", "Find some blinds"],
+        ["caption-1", "Here are options. Pick one."],
+        ["caption-5", "Now something unrelated. Choose a colour."],
+      ],
+    );
+    assert.ok(
+      rows.findIndex((row) => row.id === previousQuestion.id) <
+        rows.findIndex((row) => row.id === "caption-5"),
+    );
+  }
+});
+
 test("combined voice products and question persist after captions without crossing later customer replies", async () => {
   const session = await startVoice();
   await caption(session, "Show me this blind.", 0);
