@@ -424,7 +424,7 @@ export async function generateReply(
         {
           model: TEXT_MODEL,
           service_tier: TEXT_SERVICE_TIER,
-          reasoning: { effort: "low" },
+          reasoning: { effort: "medium" },
           instructions:
             mode === "voice" ? ROMAN_VOICE_BRIEFING_PROMPT : ROMAN_TEXT_PROMPT,
           input: [

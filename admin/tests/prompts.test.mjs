@@ -79,6 +79,14 @@ test("the generic welcome offers canonical quick answers without repeating text 
     ROMAN_TEXT_PROMPT,
     /If Roman has already spoken in text or voice, or a historical Roman question-widget record shows an earlier reply, continue naturally without reintroducing yourself/,
   );
+  assert.match(
+    ROMAN_TEXT_PROMPT,
+    /Never make up a missed greeting later: after the entry-product question or any widget-only reply, answer the next input directly/,
+  );
+  assert.ok(
+    ROMAN_TEXT_PROMPT.indexOf("An introduction belongs only in Roman's very first reply.") <
+      ROMAN_TEXT_PROMPT.indexOf("Only when Roman has not replied yet, use the following opening rules."),
+  );
   assert.ok(
     ROMAN_VOICE_OPENING_PROMPTS.newConversation.includes(
       `Say this complete welcome exactly: "${ROMAN_PREAMBLE}"`,
@@ -371,6 +379,18 @@ test("functional filters preserve unknown colour preferences and limited catalog
       /A recommendation, even a single result, is not a customer selection/,
     );
   }
+});
+
+test("browsing refinements request new choices while explicit redisplay remains available", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /Compare candidate IDs with the historical product-card IDs and seek new matching products/);
+    assert.match(prompt, /reordering or refreshing the same products does not make them new options/);
+    assert.match(prompt, /For Different colours, ask one useful colour preference when it is missing/);
+    assert.match(prompt, /Preserve the established blind type, room, fitting constraints and other filters unless the customer changes them/);
+    assert.match(prompt, /If no suitable new choices are found, explain briefly/);
+    assert.match(prompt, /explicit request to show earlier cards or a named product again; fulfill that redisplay normally/);
+  }
+  assert.match(romanVoicePrompt("marin"), /Distinguish requests for more or different options from requests to show earlier cards again when delegating/);
 });
 
 test("explicit product choices load once and replacements require conversational confirmation in every channel", () => {
