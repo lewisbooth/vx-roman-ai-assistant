@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { cwd } from "node:process";
 import { test } from "node:test";
 import { build } from "esbuild";
 
@@ -9,7 +10,7 @@ const bundle = await build({
       export { ROMAN_VOICE_BRIEFING_PROMPT } from './admin/prompts/voice.server';
       export { ROMAN_UPSELL_GUIDANCE } from './admin/prompts/knowledge-base/upsell';
     `,
-    resolveDir: process.cwd(),
+    resolveDir: cwd(),
   },
   bundle: true,
   write: false,
@@ -31,7 +32,7 @@ for (const [channel, prompt] of [
   ["text", ROMAN_TEXT_PROMPT],
   ["voice", ROMAN_VOICE_BRIEFING_PROMPT],
 ]) {
-  test(`${channel} final review offers concrete native choices through the shared upsell policy`, () => {
+  test(`${channel} configuration completion offers concrete native choices through the shared upsell policy`, () => {
     assert.equal(prompt.split(ROMAN_UPSELL_GUIDANCE).length - 1, 1);
     assert.match(
       prompt,
@@ -82,11 +83,11 @@ for (const [channel, prompt] of [
     );
     assert.match(
       prompt,
-      /before the usual final configuration review; accepting it does not authorize adding the full product/,
+      /Resolve a selected paid guarantee before adding; accepting it alone does not authorize adding the full product/,
     );
     assert.match(
       prompt,
-      /then returns to the compact updated review before adding/,
+      /a concrete option choice follows the normal configuration rules and useful completion follow-ups/,
     );
   });
 }

@@ -746,7 +746,7 @@ test("the actual model client sets fast/low/store=false, passes the signal and k
   );
   assert.match(
     input.instructions,
-    /full-product addition needs one conversational configuration review/,
+    /An explicit full-product add request is sufficient authorization for that verified configuration/,
   );
   assert.match(
     input.instructions,
@@ -783,7 +783,7 @@ test("voice backend requests retain tool policy without text greetings or presen
   );
   assert.match(
     instructions,
-    /full-product addition needs one conversational configuration review/,
+    /An explicit full-product add request is sufficient authorization for that verified configuration/,
   );
   assert.match(
     instructions,
@@ -1626,7 +1626,7 @@ test("measurement application never unlocks a cart add in the same text or voice
       });
 });
 
-test("an applied measurement can read configuration and ask a final-review question", async () => {
+test("an applied measurement can read configuration and offer next actions", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
     env.streams.push(
@@ -1981,7 +1981,7 @@ test("configuration cap allows three choices and one measurement application, th
   ]);
 });
 
-test("an accepted final review refreshes configuration before adding in the next text or voice reply", async () => {
+test("an explicit add request can verify and add in text or voice without a prior conversational review", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();
     env.streams.push(
@@ -2007,13 +2007,7 @@ test("an accepted final review refreshes configuration before adding in the next
     );
     const executions = [];
     await env.api.generateReply(
-      [
-        {
-          role: "assistant",
-          text: "500 mm wide x 500 mm drop. Ready to add it?",
-        },
-        { role: "user", text: "Add product to cart" },
-      ],
+      [{ role: "user", text: "Add product to cart" }],
       () => {},
       new AbortController().signal,
       async (id, name) => {
@@ -2030,6 +2024,7 @@ test("an accepted final review refreshes configuration before adding in the next
                 height: 500,
                 availableUnits: ["mm"],
               },
+              configuredPrice: "£45.00",
               message: "Current configuration.",
             }
           : { status: "added", message: "Added." };

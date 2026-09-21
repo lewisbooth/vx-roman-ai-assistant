@@ -13,7 +13,7 @@ export function BrandedDialog({
 }: {
   logoUrl: string;
   title: string;
-  description: ReactNode;
+  description?: ReactNode;
   pending?: boolean;
   error?: string | null;
   onClose: () => void;
@@ -43,7 +43,7 @@ export function BrandedDialog({
       ref={dialog}
       className="roman-action-panel roman-dialog"
       aria-labelledby={`${id}-title`}
-      aria-describedby={`${id}-description`}
+      aria-describedby={description ? `${id}-description` : undefined}
       aria-busy={pending}
       onKeyDown={(event) => {
         // Let the native dialog, rather than the enclosing assistant, own keys.
@@ -57,7 +57,7 @@ export function BrandedDialog({
     >
       <img src={logoUrl} alt="Roman by SelectBlinds" width={121} height={50} />
       <h2 id={`${id}-title`}>{title}</h2>
-      <p id={`${id}-description`}>{description}</p>
+      {description && <p id={`${id}-description`}>{description}</p>}
       <div className="roman-action-buttons">{children}</div>
       {error && (
         <p role="alert" className="roman-chat-error">

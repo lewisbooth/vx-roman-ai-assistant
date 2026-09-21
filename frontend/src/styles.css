@@ -966,6 +966,10 @@
     background: #4e0e0e;
     color: #f7f5ef;
   }
+  .roman-dialog .roman-dialog-secondary {
+    background: #f7f5ef;
+    border-color: #4e0e0e;
+  }
   .roman-dialog .roman-dialog-primary:not(:disabled):hover {
     background: #681c1c;
     color: #f7f5ef;

@@ -238,7 +238,7 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
   assert.match(request.session.instructions, /backend advisor/);
   assert.match(
     request.session.instructions,
-    /delegate the final configuration review first/,
+    /delegate the addition directly/,
   );
   assert.match(
     request.session.instructions,

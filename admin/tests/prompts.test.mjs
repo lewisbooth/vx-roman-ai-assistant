@@ -14,6 +14,7 @@ const bundle = await build({
       export { ROMAN_VOICE_BRIEFING_PROMPT, ROMAN_VOICE_OPENING_PROMPTS, ROMAN_VOICE_PENDING_QUESTION_OPENING, romanVoicePrompt } from './admin/prompts/voice.server';
       export { productGuidesToolDefinition } from './shared/product-guides';
       export { catalogToolDefinitions } from './shared/catalog-tools';
+      export { cartToolDefinitions } from './shared/cart-tools';
       export { storeSupportToolDefinition } from './shared/store-support';
     `,
     resolveDir: cwd(),
@@ -41,6 +42,7 @@ const {
   romanVoicePrompt,
   productGuidesToolDefinition,
   catalogToolDefinitions,
+  cartToolDefinitions,
   storeSupportToolDefinition,
 } = module.exports;
 
@@ -1130,7 +1132,7 @@ test("moving to another window after adding a full product establishes fresh int
       /The still-open PDP is a page observation, not intent for the new window/,
       /Preserve useful preferences and conversation history without carrying over the completed blind's approvals/,
       /previous saved values or a configured form are not approval to reuse them, even for the same product/,
-      /A clear request to reuse particular settings can establish those choices, but the new window still needs its own dimension confirmation, explicit measurement-guarantee decision and final product review/,
+      /A clear request to reuse particular settings can establish those choices, but the new window still needs its own dimension confirmation, consent for any paid guarantee and explicit product-add request/,
       /Reuse relevant original guide evidence when valid, not the old window's physical-fit conclusions/,
       /Do not clear the transcript or erase saved work merely to move on/,
       /Sample additions alone do not complete the full-product flow/,
@@ -1149,20 +1151,66 @@ test("moving to another window after adding a full product establishes fresh int
     assert.match(romanVoicePrompt("marin"), rule);
 });
 
-test("configuration followups use real paged choices and retain final review before a full-product addition", () => {
+test("explicit product additions skip conversational re-review without weakening verification or consent", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
-      /After every successful option change or measurement application, call get_product_configuration again before the next change or final review/,
+      /Silently verify[\s\S]*settled configuredPrice with a fresh get_product_configuration read/,
+      /valid and priced, call add_to_cart in this reply without a conversational recap or reconfirmation/,
+      /missing or invalid configuration, an unresolved fitting concern, an unconsented paid choice, or a material mismatch/,
+      /Native validation remains authoritative; unknown or stale prices are not a settled quote/,
+      /A product selection or measurement confirmation alone is not a request to add either/,
+      /these three actions still require the shopper to review and confirm that specific action/,
+      /read the cart and explain uncertainty, never automatically repeat the write/,
+      /Do not interrupt an explicit add request with an offer for an unselected guarantee/,
+      /already selected without an explicit answer, make that state clear and ask whether to keep or remove it/,
+    ])
+      assert.match(prompt, rule);
+    assert.doesNotMatch(
+      prompt,
+      /complete the final configuration review|needs one conversational configuration review|finish with the single final configuration review|prior add request made before this review/,
+    );
+  }
+  const live = romanVoicePrompt("marin");
+  assert.match(
+    live,
+    /explicitly asks to add their chosen full product, delegate the addition directly/,
+  );
+  assert.match(
+    live,
+    /silently verifies the supported current native configuration and settled quote/,
+  );
+  assert.doesNotMatch(
+    live,
+    /delegate the final configuration review first|first ask whether they have finished configuring/,
+  );
+  const add = cartToolDefinitions.find(({ name }) => name === "add_to_cart");
+  assert.match(add.description, /shopper explicitly requests the addition/);
+  assert.match(add.description, /without a conversational recap or reconfirmation/);
+  assert.match(
+    add.description,
+    /Product selection or dimension confirmation alone is not an add request/,
+  );
+  assert.match(
+    add.description,
+    /Resolve missing or invalid configuration and unconsented paid choices first/,
+  );
+  assert.doesNotMatch(add.description, /accepts Roman's single final review/);
+});
+
+test("configuration completion offers real paged choices without requiring an extra review for an explicit addition", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    for (const rule of [
+      /After every successful option change or measurement application, call get_product_configuration again before the next change or completion summary/,
       /use ask_question for one real option at a time with choices from the fresh read/,
       /Skip already-selected matching choices/,
       /After each completed configuration request, continue any meaningful pending measuring or option question/,
-      /Otherwise offer relevant next actions through ask_question using the final review below/,
+      /When no explicit add request can be completed in this reply, offer relevant next actions through ask_question/,
       /use a fresh get_product_configuration result from the matching current PDP after its last change/,
       /more than four choices exist, paginate the actual choices with "More options" within the four-answer limit rather than dropping choices or inventing replacements/,
       /Do not change recess, lining or other preferences arbitrarily/,
       /"Keep configuring" when editable options remain but no helpful concrete suggestion fits/,
-      /This one question is the final review and add decision together/,
-      /After the customer chooses Add product to cart[\s\S]*read the current configuration again and add that same product/,
+      /This is a next-step invitation, never a prerequisite to acting on an explicit add request/,
+      /Choosing Add product to cart[\s\S]*Follow Cart changes directly; do not ask whether they have finished configuring/,
     ])
       assert.match(prompt, rule);
   }
@@ -1203,7 +1251,7 @@ test("dependent configuration changes stay bounded, freshly verified and separat
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
       /at most three distinct successful configure_product changes and one apply_measurements call for the same product in a reply/,
-      /After every successful option change or measurement application, call get_product_configuration again before the next change or final review; conditional controls may have changed/,
+      /After every successful option change or measurement application, call get_product_configuration again before the next change or completion summary; conditional controls may have changed/,
       /do not ask for another approval of an unambiguous established setting/,
       /Stop the action sequence on an uncertain or failed result, do not replay it/,
       /If the budget is reached with work remaining, preserve the outstanding intent and say what remains rather than claiming configuration is complete/,
@@ -1224,7 +1272,7 @@ test("new dependent options use context and sensible defaults but surface meanin
       /Use established customer intent or unambiguous measurement meaning to resolve them/,
       /Retain a sensible default compatible with the known context when it leaves no meaningful customer decision unresolved; not every default needs a question/,
       /Preselection alone does not establish a customer preference/,
-      /When intent is unknown and a choice materially affects the stated goal, control or use, included hardware, compatibility or extra cost, use ask_question for that useful unresolved choice before final review/,
+      /When intent is unknown and a choice materially affects the stated goal, control or use, included hardware, compatibility or extra cost, use ask_question for that useful unresolved choice before completing configuration/,
       /Do not infer physical compatibility or buy an arbitrary upgrade/,
       /Skip already-selected matching choices when established customer intent resolves them/,
       /Preserve established choices, avoid an unrelated full option wizard and do not question unchanged defaults again on every turn/,
@@ -1234,7 +1282,7 @@ test("new dependent options use context and sensible defaults but surface meanin
   }
   assert.match(
     romanVoicePrompt("marin"),
-    /Delegate inspection of newly revealed or enabled dependent choices before final review/,
+    /Delegate inspection of newly revealed or enabled dependent choices before completing configuration/,
   );
   assert.match(
     romanVoicePrompt("marin"),
@@ -1301,11 +1349,11 @@ test("configuration reviews may quote only the current verified theme price", ()
   );
 });
 
-test("measurement guarantees require their own informed answer before full-product review", () => {
+test("selected measurement guarantees require informed consent without interrupting direct adds for unselected extras", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
     for (const rule of [
       /control with purpose measurement_guarantee is an explicit-consent exception to sensible defaults/,
-      /always offer an available guarantee before the final full-product review or addition unless the customer already explicitly accepted or declined it for this product and window at its current guarantee fee and material terms/,
+      /always offer an available guarantee before completing that flow unless the customer already explicitly accepted or declined it for this product and window at its current guarantee fee and material terms/,
       /Use its returned description and the actual native yes\/no choices, including the accepting option's priceLabel/,
       /briefly explain the guarantee fee and material conditions once, then call ask_question with two clear choices/,
       /Preserve returned conditions such as same-blind replacement and charges for larger measurements when stated/,
@@ -1316,14 +1364,14 @@ test("measurement guarantees require their own informed answer before full-produ
       /For a new explicit yes\/no answer, call configure_product even if that option is already selected: the native action records the customer decision and prevents a default from overriding it/,
       /do not ask again unless the window, product, guarantee fee or material terms change/,
       /Within the same window, changes only to blind configuration or configuredPrice do not reopen that answer/,
-      /accepting it does not authorize adding the full product/,
-      /This fresh read needs no extra customer question unless an available guarantee lacks an explicit answer for this window and product at its current guarantee fee and material terms/,
+      /accepting it alone does not authorize adding the full product/,
+      /Do not interrupt an explicit add request with an offer for an unselected guarantee/,
     ])
       assert.match(prompt, rule);
     assert.doesNotMatch(prompt, /12\.00/);
   }
   for (const rule of [
-    /Delegate an available measurement guarantee before final product review so the backend explains its current native guarantee fee and material terms and obtains an explicit answer/,
+    /During measuring or configuration, delegate an available measurement guarantee so the backend explains its current native guarantee fee and material terms and obtains an explicit answer/,
     /Neither native preselection nor dimensions\/final-add agreement is guarantee consent/,
     /Delegate that answer for the native update even when the option is already selected/,
     /Say the backend's brief conditions and exact question once, without adding an approval/,
@@ -1381,7 +1429,7 @@ test("one shared business knowledge prompt supplies grounded upsells and guarant
     /names are search leads, not proof of availability, performance or suitability/,
     /Verify alternatives through the current store's catalog, options and charges through the current native PDP controls, and measuring\/fitting compatibility through the matching original guide/,
     /never enable paid extras from a default or inferred preference/,
-    /do not interrupt a sample-only request, an unresolved measuring step or a final add already approved just to make an unrelated offer/,
+    /do not interrupt a sample-only request, an unresolved measuring step or an explicit product-add request just to make an unrelated offer/,
     /do not restart discovery or force an upsell at every turn/,
   ])
     assert.match(ROMAN_UPSELL_GUIDANCE, rule);

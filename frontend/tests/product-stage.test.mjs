@@ -752,7 +752,7 @@ test("desktop product actions submit one contextual message each without changin
   );
   assert.match(
     ctx.messages[0],
-    /add the Calm linen blind to my cart.*review the configuration/i,
+    /^I'd like to add the Calm linen blind to my cart\.$/,
   );
   assert.ok([...actions].every((button) => button.disabled));
   release();

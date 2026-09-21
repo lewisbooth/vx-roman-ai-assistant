@@ -450,7 +450,14 @@
   gap: 16px;
   padding: max(8px, env(safe-area-inset-top)) 12px 8px 24px;
   background: #f7f5ef;
-  font-size: 1.2rem;
+}
+.roman-product-expanded > header > span {
+  color: #80756b;
+  font:
+    500 12px/1.4 system-ui,
+    sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 .roman-product-expanded .roman-product-stage-image {
   width: 100%;

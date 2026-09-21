@@ -13,6 +13,7 @@ import { isConversationStorefront } from "../../shared/storefronts";
 import { createComposerFocus } from "./chat/composer-focus";
 import { createAssistantViewport } from "./assistant-viewport";
 import { createStorefrontScroll } from "./storefront-scroll";
+import { createStorefrontCartNotification } from "./storefront-cart-notification";
 import styles from "./styles.css?inline";
 import viewportStyles from "./assistant-viewport.css?inline";
 
@@ -37,6 +38,7 @@ export function mountAssistant(
   });
   let router: ReturnType<typeof createAssistantRouter> | undefined;
   const storefrontScroll = createStorefrontScroll();
+  const cartNotification = createStorefrontCartNotification();
   const navigation = createStorefrontNavigation(host, storefrontScroll);
   const tools = createAssistantTools(
     host,
@@ -114,6 +116,7 @@ export function mountAssistant(
     composerFocus.dispose();
     viewport.dispose();
     storefrontScroll.dispose();
+    cartNotification.dispose();
     router?.dispose();
     tools.dispose();
     executor.dispose();
@@ -136,6 +139,7 @@ export function mountAssistant(
       if (!disposed) {
         sidebarOpen = open;
         storefrontScroll.setLocked(open);
+        cartNotification.setOpen(open);
         viewport.setOpen(open);
         if (!open) composerFocus.cancel();
         syncVoiceDock();
@@ -152,6 +156,7 @@ export function mountAssistant(
       composerFocus.dispose();
       viewport.dispose();
       storefrontScroll.dispose();
+      cartNotification.dispose();
       router?.dispose();
       tools.dispose();
       executor.dispose();

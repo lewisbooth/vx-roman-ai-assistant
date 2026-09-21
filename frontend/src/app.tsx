@@ -27,6 +27,7 @@ import { ProductStage } from "./chat/ProductStage";
 import { CartStage } from "./chat/CartStage";
 import { EndChatDialog } from "./chat/EndChatDialog";
 import { BrandedDialog } from "./chat/BrandedDialog";
+import { CartAddedDialog } from "./chat/CartAddedDialog";
 import { useCart } from "./chat/useCart";
 import { useMessageQueue } from "./chat/useMessageQueue";
 import { MessageQueue } from "./chat/MessageQueue";
@@ -602,6 +603,19 @@ function Assistant({
             </div>
           </div>
         </div>
+        <CartAddedDialog
+          conversation={state.conversation}
+          restoring={state.restoring}
+          blocked={
+            confirmEnd ||
+            ending ||
+            microphoneDenied ||
+            !!state.approval ||
+            toolsOpen
+          }
+          logoUrl={logoUrl}
+          onViewCart={() => showView("cart")}
+        />
         {confirmEnd && (
           <EndChatDialog
             logoUrl={logoUrl}

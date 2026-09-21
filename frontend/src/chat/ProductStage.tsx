@@ -255,7 +255,7 @@ export function ProductStage({
       onAction={(action) =>
         onMessage(
           action === "cart"
-            ? `I'd like to add the ${title} to my cart. Please review the configuration with me first.`
+            ? `I'd like to add the ${title} to my cart.`
             : `I'd like to order a sample of the ${title}, if available.`,
         )
       }

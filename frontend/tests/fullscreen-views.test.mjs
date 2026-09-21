@@ -571,10 +571,7 @@ test("selected-product actions share the message queue while busy and preserve c
   const queued = [
     ...ctx.container.querySelectorAll(".roman-queued-message p"),
   ].map((element) => element.textContent);
-  assert.match(
-    queued[0],
-    /add the Linen blind to my cart.*review the configuration/i,
-  );
+  assert.match(queued[0], /^I'd like to add the Linen blind to my cart\.$/);
   assert.match(queued[1], /order a sample of the Linen blind, if available/i);
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
   ctx.update({ conversation: { ...ctx.state().conversation, busy: false } });
@@ -1028,4 +1025,177 @@ test("restored customer conversation opens the transcript and ending it restores
   assert.equal(ctx.container.querySelector("textarea"), null);
   assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
   assert.deepEqual(ctx.calls, [["end"]]);
+});
+
+function cartReceipt(id, sample = false) {
+  return {
+    ...message([
+      sample
+        ? {
+            type: "cart_sample_added",
+            version: 1,
+            invocationId: id,
+            sample: { title: "Linen blind", productPath: "/products/linen" },
+          }
+        : {
+            type: "cart_added",
+            version: 1,
+            invocationId: id,
+            product: { title: "Linen blind", productPath: "/products/linen" },
+          },
+    ]),
+    id,
+    role: "context",
+  };
+}
+
+function receiveCart(ctx, id, sample = false) {
+  ctx.update({
+    conversation: {
+      ...ctx.state().conversation,
+      messages: [...ctx.state().conversation.messages, cartReceipt(id, sample)],
+    },
+  });
+}
+
+function noticeTimers(ctx) {
+  const timers = new Map();
+  const set = ctx.window.setTimeout.bind(ctx.window);
+  const clear = ctx.window.clearTimeout.bind(ctx.window);
+  let id = 100000;
+  ctx.window.setTimeout = (callback, ms, ...args) => {
+    if (ms !== 2000) return set(callback, ms, ...args);
+    timers.set(++id, callback);
+    return id;
+  };
+  ctx.window.clearTimeout = (key) => {
+    timers.delete(key);
+    clear(key);
+  };
+  return timers;
+}
+
+const addedDialog = (ctx) =>
+  [...ctx.container.querySelectorAll("dialog[open]")].find((dialog) =>
+    dialog.querySelector("h2")?.textContent.includes("added to cart"),
+  );
+
+async function waitForAdded(ctx) {
+  await until(
+    () => addedDialog(ctx),
+    "Confirmed addition opens Roman's shared modal",
+  );
+  return addedDialog(ctx);
+}
+
+test("cart receipt opens one two-second confirmation; repeated snapshots do not reset it or replay history", async (t) => {
+  const ctx = await setup(t, {
+    conversation: engagedConversation([cartReceipt("restored")]),
+  });
+  const timers = noticeTimers(ctx);
+  assert.equal(addedDialog(ctx), undefined);
+  receiveCart(ctx, "fresh");
+  const dialog = await waitForAdded(ctx);
+  assert.equal(
+    dialog.querySelector("h2").textContent,
+    "Linen blind added to cart",
+  );
+  await until(() => timers.size === 1, "Auto-dismiss timer was set");
+  const [timerId, expire] = [...timers][0];
+  ctx.update({ conversation: structuredClone(ctx.state().conversation) });
+  await delay(10);
+  assert.equal(addedDialog(ctx), dialog);
+  assert.deepEqual([...timers.keys()], [timerId]);
+  expire();
+  await until(
+    () => !addedDialog(ctx),
+    "Two-second callback dismisses confirmation",
+  );
+  assert.equal(timers.size, 0);
+  ctx.update({ conversation: structuredClone(ctx.state().conversation) });
+  await delay(10);
+  assert.equal(addedDialog(ctx), undefined);
+  receiveCart(ctx, "sample", true);
+  const sample = await waitForAdded(ctx);
+  assert.equal(
+    sample.querySelector("h2").textContent,
+    "Linen blind sample added to cart",
+  );
+  sample.querySelector(".roman-dialog-secondary").click();
+  await until(() => !addedDialog(ctx), "Keep Shopping dismisses immediately");
+  assert.equal(timers.size, 0);
+  assert.equal(
+    ctx.container.querySelector('[aria-current="page"]').textContent,
+    "Chat",
+  );
+});
+
+test("View Cart is immediate memory navigation with no message, tool or voice interruption", async (t) => {
+  const ctx = await setup(t, {
+    voice: { status: "active", muted: false, error: null },
+  });
+  noticeTimers(ctx);
+  const voice = ctx.container.querySelector(".roman-voice-bar");
+  const url = ctx.window.location.href;
+  receiveCart(ctx, "added");
+  const dialog = await waitForAdded(ctx);
+  dialog.querySelector(".roman-dialog-primary").click();
+  await until(
+    () =>
+      ctx.container.querySelector('[aria-current="page"]').textContent ===
+      "Cart",
+    "Cart tab opens",
+  );
+  assert.equal(addedDialog(ctx), undefined);
+  assert.deepEqual(ctx.calls, []);
+  assert.deepEqual(ctx.toolCalls, []);
+  assert.deepEqual(ctx.navigationCalls, []);
+  assert.equal(ctx.window.location.href, url);
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
+});
+
+test("closed, restored and blocked cart receipts are consumed without later flashes", async (t) => {
+  const ctx = await setup(t);
+  const timers = noticeTimers(ctx);
+  ctx.window.document.documentElement.removeAttribute("data-roman-open");
+  receiveCart(ctx, "while-closed");
+  await delay(10);
+  ctx.window.document.documentElement.setAttribute("data-roman-open", "");
+  await delay(10);
+  assert.equal(addedDialog(ctx), undefined);
+  ctx.update({ restoring: true });
+  receiveCart(ctx, "restoring");
+  await delay(10);
+  ctx.update({ restoring: false });
+  await delay(10);
+  assert.equal(addedDialog(ctx), undefined);
+  ctx.update({
+    approval: { invocationId: "clear", title: "Empty your cart?", details: [] },
+  });
+  receiveCart(ctx, "while-approving");
+  await delay(10);
+  ctx.update({ approval: null });
+  await delay(10);
+  assert.equal(addedDialog(ctx), undefined);
+  receiveCart(ctx, "visible");
+  await waitForAdded(ctx);
+  ctx.window.document.documentElement.removeAttribute("data-roman-open");
+  await until(() => !addedDialog(ctx), "Closing Roman closes its native modal");
+  assert.equal(timers.size, 0);
+  ctx.window.document.documentElement.setAttribute("data-roman-open", "");
+  await delay(10);
+  assert.equal(addedDialog(ctx), undefined);
+  receiveCart(ctx, "new-visible");
+  await waitForAdded(ctx);
+  ctx.update({
+    conversation: {
+      ...engagedConversation([cartReceipt("another-session")]),
+      id: "another",
+    },
+  });
+  await until(
+    () => !addedDialog(ctx),
+    "New session cannot inherit a notification",
+  );
+  assert.equal(timers.size, 0);
 });
