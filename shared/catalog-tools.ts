@@ -8,7 +8,7 @@ export const catalogToolDefinitions = [
     type: "function",
     name: "search_products",
     description:
-      "Search this store's current product catalog for candidates matching known customer needs. Inspect each candidate's returned description before recommending it; use lookup_catalog for a shortlist or get_product for one when needed details are missing. Search rank, titles and images alone are not product evidence. Verify known fitting constraints through relevant store guidance before recommending candidates, not after the customer chooses. Results are not a fitted-product quote or proof of suitability.",
+      "Search this store's current product catalog for up to ten ranked candidates matching one query, not an exhaustive or category-balanced range. For cross-category discovery, make separate targeted queries for relevant blind families while preserving known customer needs and fitting constraints; results from all successful searches in this reply remain available to show_products. Inspect each candidate's returned description before recommending it; use lookup_catalog for a shortlist or get_product for one when needed details are missing. Search rank, titles and images alone are not product evidence. Verify known fitting constraints through relevant store guidance before recommending candidates, not after the customer chooses. Results are not a fitted-product quote or proof of suitability.",
     strict: true,
     parameters: {
       type: "object",

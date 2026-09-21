@@ -14,6 +14,7 @@ const bundle = await build({
       export { ROMAN_VOICE_BRIEFING_PROMPT, ROMAN_VOICE_OPENING_PROMPTS, ROMAN_VOICE_PENDING_QUESTION_OPENING, romanVoicePrompt } from './admin/prompts/voice.server';
       export { productGuidesToolDefinition } from './shared/product-guides';
       export { catalogToolDefinitions } from './shared/catalog-tools';
+      export { showProductsDefinition } from './admin/conversations/presentation.server';
       export { cartToolDefinitions } from './shared/cart-tools';
       export { storeSupportToolDefinition } from './shared/store-support';
     `,
@@ -42,6 +43,7 @@ const {
   romanVoicePrompt,
   productGuidesToolDefinition,
   catalogToolDefinitions,
+  showProductsDefinition,
   cartToolDefinitions,
   storeSupportToolDefinition,
 } = module.exports;
@@ -226,6 +228,15 @@ test("catalog tool context distinguishes candidate discovery from evidence and b
   assert.match(descriptions.lookup_catalog, /Batch a shortlist in one call/);
   assert.match(descriptions.lookup_catalog, /a lookup cannot verify facts it does not return/);
   assert.match(descriptions.lookup_catalog, /Do not repeat a sufficient current-turn read/);
+});
+
+test("catalog and presentation tools expose ranked-search scope and pooled selection", () => {
+  const search = catalogToolDefinitions.find(({ name }) => name === "search_products");
+  assert.match(search.description, /up to ten ranked candidates matching one query, not an exhaustive or category-balanced range/);
+  assert.match(search.description, /separate targeted queries for relevant blind families while preserving known customer needs and fitting constraints/);
+  assert.match(search.description, /results from all successful searches in this reply remain available to show_products/);
+  assert.match(showProductsDefinition.description, /select IDs from their combined results in the intended display order/);
+  assert.match(showProductsDefinition.description, /This display call does not consume a storefront call/);
 });
 
 test("both backend modes use concise card recommendations and terminal questions without weakening action approvals", () => {
@@ -424,7 +435,6 @@ test("recommendation discovery asks only missing room and requirements and prese
     assert.match(prompt, /It means a varied selection relevant to the established room, requirements and fitting constraints, not removal of those filters/);
     assert.match(prompt, /For that broad discovery, aim for up to ten distinct, relevant verified products across suitable families/);
     assert.match(prompt, /Prefer this category choice over a colour-only question/);
-    assert.match(prompt, /broaden the search across relevant families while retaining the confirmed requirements and fitting constraints/);
     assert.match(prompt, /Never add unsuitable products merely for variety/);
     assert.match(prompt, /Reuse an explicit blind type, chosen product or established preference; do not reopen it or force another intake turn/);
     assert.match(prompt, /Never add unsuitable products merely for variety or to reach ten; show fewer when fewer are verified/);
@@ -435,6 +445,22 @@ test("recommendation discovery asks only missing room and requirements and prese
   assert.match(romanVoicePrompt("marin"), /When blind type is undecided, delegate the category-choice question with relevant families and Show me everything before broad results, unless the customer already requested cross-category browsing/);
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
     assert.doesNotMatch(prompt, /\bTerra\b/);
+  }
+});
+
+test("broad discovery retrieves and balances genuine families within the existing lookup budget", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /Search two or three promising families separately with search_products, retaining the confirmed requirements and fitting constraints in each query/);
+    assert.match(prompt, /colour, motorisation and no-drill fitting variants do not count as separate families/);
+    assert.match(prompt, /If a generic search has already run, spend remaining searches on missing relevant families rather than repeating it/);
+    assert.match(prompt, /Work within the normal four storefront calls: usually up to three targeted searches, leaving a call for a needed batched lookup or guidance read/);
+    assert.match(prompt, /prioritize verified suitability over the number of families or cards/);
+    assert.match(prompt, /Choose show_products IDs from the combined current-turn results, not just the last search/);
+    assert.match(prompt, /First choose the strongest supported match from each suitable family/);
+    assert.match(prompt, /interleave families in display order so the first cards show the range/);
+    assert.match(prompt, /A smaller balanced carousel is better than padding it with near-identical choices from one family/);
+    assert.match(prompt, /Preserve a customer's specific-family request instead of widening it/);
+    assert.match(prompt, /without claiming the entire store lacks alternatives/);
   }
 });
 

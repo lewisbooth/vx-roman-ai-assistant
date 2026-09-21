@@ -5076,6 +5076,75 @@ test("explicit browsing and completed product choices each author their own term
   }
 });
 
+test("broad discovery can pool three family searches and needed details into ten ordered cards within four storefront calls", async (t) => {
+  const searches = [
+    { family: "Roller", query: "living room roller blinds privacy daylight", ids: [101, 102, 103, 104, 105, 106, 107, 108, 109, 110] },
+    { family: "Roman", query: "living room Roman blinds privacy daylight", ids: [201, 202, 203, 204] },
+    { family: "Pleated", query: "living room pleated cellular blinds privacy daylight", ids: [301, 302, 303, 304] },
+  ];
+  const selected = [101, 201, 301, 102, 202, 302, 103, 203, 303, 204];
+  const detailIds = [101, 201, 301];
+  for (const mode of ["text", "voice"]) {
+    await t.test(mode, async () => {
+      const env = setup();
+      env.streams.push(
+        ...searches.map(({ query }, index) => events(completed("", {
+          output: [catalogCall(`family-${index}`, "search_products", { query })],
+        }))),
+        events(completed("", {
+          output: [catalogCall("missing-details", "lookup_catalog", {
+            ids: detailIds.map(productGid),
+          })],
+        })),
+        events(completed("", { output: [showCall(selected)] })),
+        events(completed("", { output: [questionCall()] })),
+      );
+      const dispatched = [];
+      const reply = await env.api.generateReply(
+        [
+          { role: "user", text: "Living room blinds for privacy with daylight." },
+          { role: "assistant", text: "Would you like roller, Roman, pleated blinds, or to see everything?" },
+          { role: "user", text: "Show me everything" },
+        ],
+        () => {},
+        new AbortController().signal,
+        async (callId, name, args) => {
+          dispatched.push({ callId, name, args });
+          const ids = name === "lookup_catalog"
+            ? detailIds
+            : searches.find(({ query }) => query === args.query).ids;
+          const result = catalogResult(...ids);
+          for (const product of result.products) {
+            const family = searches.find(({ ids }) => ids.some((id) => productGid(id) === product.id)).family;
+            product.title = `${family} ${product.title}`;
+            product.description = "Light-filtering fabric allows daylight while providing daytime privacy.";
+          }
+          return result;
+        },
+        mode,
+      );
+      assert.deepEqual(dispatched.map(({ name }) => name), [
+        "search_products", "search_products", "search_products", "lookup_catalog",
+      ]);
+      assert.deepEqual(plain(reply.presentation), {
+        callId: "show-1",
+        productIds: selected.map(productGid),
+      });
+      const lastCatalogRequest = env.calls.requests[4].input;
+      assert.equal(allowedToolNames(lastCatalogRequest).includes("search_products"), false);
+      assert.equal(allowedToolNames(lastCatalogRequest).includes("show_products"), true);
+      assert.equal(allowedToolNames(lastCatalogRequest).includes("ask_question"), true);
+      assert.equal(
+        lastCatalogRequest.input.filter(({ type }) => type === "function_call_output").length,
+        4,
+        "All family search evidence remains available when selecting cards",
+      );
+      assert.equal(env.calls.requests.length, 6);
+      assert.ok(reply.questionPresentation);
+    });
+  }
+});
+
 test("an explicit follow-up can show refreshed recommendations after text or an earlier carousel", async (t) => {
   for (const earlierCarousel of [false, true]) {
     await t.test(
