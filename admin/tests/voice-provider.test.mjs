@@ -235,7 +235,7 @@ test("Live uses server credentials, constrained WebRTC and client delegation", a
     output: { voice: "marin" },
   });
   assert.match(request.session.instructions, /Interruption policy:/);
-  assert.match(request.session.instructions, /Terra/);
+  assert.match(request.session.instructions, /backend advisor/);
   assert.match(
     request.session.instructions,
     /delegate the final configuration review first/,

@@ -52,7 +52,7 @@ const runnerBundle = await build({
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
-            ? `export const TEXT_MODEL="gpt-5.6-terra"; export const generateReply=(...args)=>mock.generate(...args);`
+            ? `export const TEXT_MODEL="gpt-5.6-luna"; export const generateReply=(...args)=>mock.generate(...args);`
             : path.endsWith("browser-tools.server")
               ? `export const requestBrowserTool=()=>{throw new Error("Unexpected browser call")};`
               : path.endsWith("service.server")
@@ -156,7 +156,7 @@ function setup() {
         yield {
           type: "response.completed",
           response: {
-            model: "gpt-5.6-terra",
+            model: "gpt-5.6-luna",
             service_tier: "priority",
             output,
             usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25 },
@@ -341,8 +341,8 @@ test("failed PDP read falls back to a discovered library, selected same-kind ori
   assert.match(serializedOutputs, /Diagrams and videos were not interpreted/);
   assert.match(serializedOutputs, /Angled bay guide/);
   for (const request of state.requests) {
-    assert.equal(request.model, "gpt-5.6-terra");
-    assert.equal(request.reasoning.effort, "medium");
+    assert.equal(request.model, "gpt-5.6-luna");
+    assert.equal(request.reasoning.effort, "low");
     assert.equal(request.service_tier, "fast");
     assert.equal(request.store, false);
   }
@@ -1033,7 +1033,7 @@ function runnerSetup() {
 
 const successfulReply = {
   text: "Verified guidance.",
-  model: "gpt-5.6-terra",
+  model: "gpt-5.6-luna",
   serviceTier: "priority",
 };
 

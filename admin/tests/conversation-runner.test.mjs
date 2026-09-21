@@ -709,7 +709,7 @@ test("completed request replays never call the model again or duplicate messages
   );
 });
 
-test("the actual model client sets fast/medium/store=false, passes the signal and keeps customer text out of instructions", async () => {
+test("the actual model client sets fast/low/store=false, passes the signal and keeps customer text out of instructions", async () => {
   const env = setup();
   env.streams.push(
     (async function* () {
@@ -724,9 +724,9 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   const reply = await env.api.generateReply(history, () => {}, signal);
   assert.equal(reply.text, "A completed reply.");
   const { input, options } = env.calls.requests[0];
-  assert.equal(input.model, "gpt-5.6-terra");
+  assert.equal(input.model, "gpt-5.6-luna");
   assert.equal(input.service_tier, "fast");
-  assert.deepEqual(plain(input.reasoning), { effort: "medium" });
+  assert.deepEqual(plain(input.reasoning), { effort: "low" });
   assert.equal(input.store, false);
   assert.equal(input.stream, true);
   assert.equal(input.max_output_tokens, 1600);
@@ -1788,7 +1788,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   ]);
   for (const { input } of env.calls.requests) {
     assert.equal(input.service_tier, "fast");
-    assert.deepEqual(input.reasoning, { effort: "medium" });
+    assert.deepEqual(input.reasoning, { effort: "low" });
     assert.deepEqual(input.include, ["reasoning.encrypted_content"]);
     assert.equal(input.store, false);
     assert.equal(input.parallel_tool_calls, false);
@@ -3094,9 +3094,9 @@ test("terminal numeric replies preserve selected cards, visible text and complet
   assert.ok(
     env.calls.requests.every(
       ({ input }) =>
-        input.model === "gpt-5.6-terra" &&
+        input.model === "gpt-5.6-luna" &&
         input.service_tier === "fast" &&
-        input.reasoning.effort === "medium" &&
+        input.reasoning.effort === "low" &&
         input.store === false,
     ),
   );
@@ -3687,9 +3687,9 @@ test("original guide prefixes and scoped cache keys survive different history an
   assert.ok(
     env.calls.requests.every(
       ({ input }) =>
-        input.model === "gpt-5.6-terra" &&
+        input.model === "gpt-5.6-luna" &&
         input.service_tier === "fast" &&
-        input.reasoning.effort === "medium" &&
+        input.reasoning.effort === "low" &&
         input.store === false,
     ),
   );
@@ -5437,7 +5437,7 @@ function voiceHistory(env, history) {
   };
 }
 
-test("voice delegation forwards canonical caption history to Terra without a fabricated customer message", async () => {
+test("voice delegation forwards canonical caption history to the advisor without a fabricated customer message", async () => {
   const env = setup();
   const history = [
     { role: "user", text: "I need blinds for my kitchen." },
@@ -5476,7 +5476,7 @@ test("voice delegation forwards canonical caption history to Terra without a fab
     env.calls.requests[0].input.instructions,
     /Except after a verified open_checkout result, complete the backend reply with exactly one terminal ask_question or ask_measurement/,
   );
-  assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
+  assert.equal(env.calls.requests[0].input.model, "gpt-5.6-luna");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");
   assert.equal(env.calls.requests[0].input.store, false);
   assert.equal(env.rows.get("voice").messages.length, 1);
@@ -5615,7 +5615,7 @@ test("stopping voice aborts a waiting navigation and never retries the action", 
   assert.equal(env.logs.length, 0);
 });
 
-test("cancel during voice initialization finishes the reserved work without calling Terra", async () => {
+test("cancel during voice initialization finishes the reserved work without calling the advisor", async () => {
   const env = setup();
   voiceHistory(env, [{ role: "user", text: "Open a product." }]);
   const begin = deferred();

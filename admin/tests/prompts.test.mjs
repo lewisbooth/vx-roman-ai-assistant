@@ -204,7 +204,7 @@ test("known compatibility constraints are checked before a shortlist rather than
     assert.match(prompt, /clearly distinguish exploratory products from fit recommendations/);
     assert.match(prompt, /Do not ask the customer to repeat the constraint or choose a product simply to discover whether the whole family is unsuitable/);
   }
-  assert.match(romanVoicePrompt("marin"), /Include already-known fitting constraints so Terra verifies support before presenting recommendations/);
+  assert.match(romanVoicePrompt("marin"), /Include already-known fitting constraints so the backend advisor verifies support before presenting recommendations/);
 });
 
 test("catalog tool context distinguishes candidate discovery from evidence and batches missing details", () => {
@@ -360,7 +360,7 @@ test("functional filters preserve unknown colour preferences and limited catalog
     );
     assert.match(
       prompt,
-      /short overview and a small carousel of verified options before the question/,
+      /Keep any carousel overview brief and let verified cards illustrate the choice/,
     );
     assert.match(
       prompt,
@@ -397,9 +397,20 @@ test("recommendation discovery asks only missing room and requirements and prese
     assert.match(prompt, /Do not run a fixed checklist or delay recommendations when the room and relevant needs are already clear/);
     assert.match(prompt, /A direct request to choose or configure a specific blind, revisit known cards, or answer a factual question is not a new recommendation intake/);
     assert.match(prompt, /A request to see more preserves the established room, requirements and filters rather than restarting intake/);
+    assert.match(prompt, /When the blind type is undecided, help compare meaningfully different suitable product families/);
+    assert.match(prompt, /Either show a varied, evidence-backed selection[\s\S]*or use ask_question to narrow the category/);
+    assert.match(prompt, /Prefer that category decision over a colour-only question while the type remains open/);
+    assert.match(prompt, /broaden the search across relevant families while retaining the confirmed requirements and fitting constraints/);
+    assert.match(prompt, /Never add unsuitable products merely for variety/);
+    assert.match(prompt, /Reuse an explicit blind type, chosen product or established preference; do not reopen it, force another intake turn/);
+    assert.match(prompt, /Once the category is established, use ask_question for the next useful colour or style preference when it helps narrow the choice/);
     assert.doesNotMatch(prompt, /Search with what you already know instead of putting another question/);
   }
   assert.match(romanVoicePrompt("marin"), /Before new recommendations, establish the room and main requirements/);
+  assert.match(romanVoicePrompt("marin"), /When blind type is undecided, delegate a varied suitable-family comparison or a useful category question before defaulting to colour choices/);
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
+    assert.doesNotMatch(prompt, /\bTerra\b/);
+  }
 });
 
 test("all advisor channels keep browsing and configuration inside Roman and only show a requested cart", () => {

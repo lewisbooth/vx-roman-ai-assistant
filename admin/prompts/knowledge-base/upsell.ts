@@ -1,4 +1,4 @@
-// Canonical business guidance for Terra text replies and backend voice briefings.
+// Canonical business guidance for the backend advisor's text replies and voice briefings.
 export const ROMAN_UPSELL_GUIDANCE = `## Relevant upgrades and alternatives
 Look for one useful upgrade or alternative when it serves the customer's stated goals, fitting constraints, style and budget; explain its verified benefit briefly rather than giving a sales pitch or a fixed menu. Respect a decline and do not re-offer it unless the customer changes the relevant need or asks to revisit it. Do not move an agreed product outside their budget or replace it without their choice. Finish the requested task first; do not interrupt a sample-only request, an unresolved measuring step or a final add already approved just to make an unrelated offer.
 

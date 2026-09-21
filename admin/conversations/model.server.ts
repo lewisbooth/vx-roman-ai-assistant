@@ -98,7 +98,7 @@ import {
   MAX_GUIDE_DOCUMENTS,
 } from "../guides/library.server";
 
-export const TEXT_MODEL = "gpt-5.6-terra";
+export const TEXT_MODEL = "gpt-5.6-luna";
 export const TEXT_SERVICE_TIER = "fast";
 type ModelToolOutcome =
   BrowserToolOutcome | MeasurementToolResult | ProductConfigurationResult;
@@ -424,7 +424,7 @@ export async function generateReply(
         {
           model: TEXT_MODEL,
           service_tier: TEXT_SERVICE_TIER,
-          reasoning: { effort: "medium" },
+          reasoning: { effort: "low" },
           instructions:
             mode === "voice" ? ROMAN_VOICE_BRIEFING_PROMPT : ROMAN_TEXT_PROMPT,
           input: [
