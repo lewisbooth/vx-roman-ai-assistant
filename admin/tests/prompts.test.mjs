@@ -1155,28 +1155,40 @@ test("resumed numeric steps retain their input type and require current guide an
   );
 });
 
-test("sample outcomes continue contextually without replaying an addition or resetting saved work", () => {
-  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+test("sample continuation has one shared owner for text, backend voice and live speech", () => {
+  const prompts = [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")];
+  const scopes = prompts.map((prompt) => prompt.match(/Sample continuation: [^\n]+/)?.[0]);
+  assert.ok(scopes[0]);
+  for (const [index, prompt] of prompts.entries()) {
+    assert.equal(scopes[index], scopes[0], "Every channel preserves the same sample continuation rule");
+    assert.equal(prompt.split(scopes[0]).length, 2, "Sample continuation has one canonical occurrence");
     for (const rule of [
-      /After a confirmed sample addition or already_in_cart, continue any next work the customer already requested/,
-      /otherwise call ask_question with two or three useful next actions from the current context/,
-      /such as Find more products, Measure another window or View cart/,
-      /Do not stop at the sample acknowledgment, repeat its add action or force a full-product configuration review/,
-      /Preserve the current product, preferences and measurement drafts/,
-      /a next-step menu does not reset the conversation or erase saved values/,
-      /already_in_cart means the requested sample was already there, so do not claim another addition/,
-      /handed_off, uncertain, timeout or a lost result mean a change may still complete[\s\S]*never automatically repeat the write/,
-    ])
-      assert.match(prompt, rule);
+      /after a confirmed sample addition or already_in_cart/,
+      /resume the unfinished task for that blind/,
+      /Ordering a sample is a side task, not completion of measuring or configuration/,
+      /Preserve the current product, preferences, guide evidence, measurements and unresolved choices/,
+      /Use ask_question or ask_measurement for the next relevant unanswered step/,
+      /do not advance a step merely because the sample was ordered/,
+      /Use established current-task context even if the sample request replaced its visible question; never revive a step already answered or abandoned/,
+      /if inside\/outside fitting was unanswered, return to that question with its quick answers/,
+      /not "What would you like to do next\?" or a new room question/,
+      /"Keep Shopping" after a sample means continue that current task/,
+      /A previous full-product cart addition does not override this sample continuation/,
+      /Follow an explicit different goal instead, using details the customer has supplied/,
+      /Only when no unfinished task or requested next work remains, offer two or three useful contextual next actions/,
+      /Never repeat the sample addition, force a full-product configuration review or reset saved work/,
+    ]) assert.match(scopes[index], rule);
+    assert.match(prompt, /This handoff applies to that completed full-product task, not a later sample side task or another unfinished task/);
+    assert.doesNotMatch(prompt, /otherwise call ask_question with two or three useful next actions from the current context/);
   }
-  assert.match(
-    romanVoicePrompt("marin"),
-    /After either confirmed sample outcome, continue the requested next work or say the backend's contextual next-action question once instead of stopping at the acknowledgment/,
-  );
-  assert.match(
-    romanVoicePrompt("marin"),
-    /Preserve preferences and measurement drafts without a generic welcome or redundant configuration recap/,
-  );
+  for (const prompt of prompts.slice(0, 2)) {
+    assert.match(prompt, /follow Sample continuation in Shopping interface/);
+    assert.match(prompt, /already_in_cart means the requested sample was already there, so do not claim another addition/);
+    assert.match(prompt, /handed_off, uncertain, timeout or a lost result mean a change may still complete[\s\S]*never automatically repeat the write/);
+  }
+  assert.match(prompts[2], /delegate Sample continuation in Shopping interface and say its relevant unfinished question once/);
+  assert.match(prompts[2], /do not invent a next-task menu or restart room discovery/);
+  assert.match(prompts[2], /Preserve preferences and measurement drafts without a generic welcome or redundant configuration recap/);
 });
 
 test("moving to another window after adding a full product establishes fresh intent and approvals", () => {
@@ -1449,7 +1461,7 @@ test("guarantee costs remain separate from the configured price and never interr
     );
     assert.match(
       prompt,
-      /After a confirmed sample addition or already_in_cart, continue any next work the customer already requested/,
+      /After either confirmed sample outcome, follow Sample continuation in Shopping interface/,
     );
   }
   assert.match(
