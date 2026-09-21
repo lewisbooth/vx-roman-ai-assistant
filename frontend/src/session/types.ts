@@ -41,6 +41,8 @@ export interface ConversationClient {
     signal?: AbortSignal,
   ): Promise<MeasurementToolResult>;
   loadProducts(ids: string[], signal?: AbortSignal): Promise<CatalogResult>;
+  /** Fresh display-cache entries only; never starts a request or renews the cache. */
+  getCachedProducts(ids: readonly string[]): CatalogProduct[];
   loadProductImage(
     url: string,
     signal: AbortSignal,

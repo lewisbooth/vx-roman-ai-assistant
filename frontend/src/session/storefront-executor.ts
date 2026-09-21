@@ -673,6 +673,10 @@ export function createStorefrontExecutor(
       approvals.delete(approval);
       return enqueue("foreground", (signal) => owned.execute(signal), signal);
     },
+    getCachedProducts(ids: readonly string[]): CatalogProduct[] {
+      if (disposed || window.location.origin !== storefrontOrigin) return [];
+      return [...displaySelection(ids).products.values()];
+    },
     async loadProducts(
       ids: readonly string[],
       signal?: AbortSignal,

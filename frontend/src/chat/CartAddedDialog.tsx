@@ -9,12 +9,14 @@ export function CartAddedDialog({
   blocked,
   logoUrl,
   onViewCart,
+  onKeepShopping,
 }: {
   conversation: ConversationSnapshot | null;
   restoring: boolean;
   blocked: boolean;
   logoUrl: string;
   onViewCart: () => void;
+  onKeepShopping: (message: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(() =>
     document.documentElement.hasAttribute("data-roman-open"),
@@ -26,6 +28,7 @@ export function CartAddedDialog({
     conversationId: string;
     id: string;
     title: string;
+    continuation: string;
   } | null>(null);
 
   useEffect(() => {
@@ -49,6 +52,7 @@ export function CartAddedDialog({
               {
                 id: part.invocationId,
                 title: `${part.product.title} added to cart`,
+                continuation: `I'd like to keep shopping after adding the ${part.product.title} to my cart.`,
               },
             ]
           : part.type === "cart_sample_added"
@@ -56,6 +60,7 @@ export function CartAddedDialog({
                 {
                   id: part.invocationId,
                   title: `${part.sample.title} sample added to cart`,
+                  continuation: `I'd like to keep shopping after adding a sample of the ${part.sample.title} to my cart.`,
                 },
               ]
             : [],
@@ -85,12 +90,6 @@ export function CartAddedDialog({
     if (latest) setNotice({ ...latest, conversationId: conversation.id });
   }, [conversation, restoring, blocked, open]);
 
-  useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 2000);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
   if (
     !notice ||
     !open ||
@@ -102,17 +101,68 @@ export function CartAddedDialog({
     return null;
 
   return (
-    <BrandedDialog
+    <CartAddedNotice
       key={notice.id}
       logoUrl={logoUrl}
       title={notice.title}
-      onClose={() => setNotice(null)}
+      onClose={() =>
+        setNotice((current) => (current?.id === notice.id ? null : current))
+      }
+      onViewCart={onViewCart}
+      onKeepShopping={() => onKeepShopping(notice.continuation)}
+    />
+  );
+}
+
+function CartAddedNotice({
+  logoUrl,
+  title,
+  onClose,
+  onViewCart,
+  onKeepShopping,
+}: {
+  logoUrl: string;
+  title: string;
+  onClose: () => void;
+  onViewCart: () => void;
+  onKeepShopping: () => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sending = useRef(false);
+  async function keepShopping() {
+    if (sending.current) return;
+    sending.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      await onKeepShopping();
+      onClose();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Your message could not be sent. Please try again.",
+      );
+    } finally {
+      sending.current = false;
+      setPending(false);
+    }
+  }
+  return (
+    <BrandedDialog
+      logoUrl={logoUrl}
+      title={title}
+      pending={pending}
+      error={error}
+      onClose={onClose}
     >
       <button
         type="button"
+        disabled={pending}
         className="roman-dialog-primary"
         onClick={() => {
-          setNotice(null);
+          onClose();
           onViewCart();
         }}
       >
@@ -120,8 +170,9 @@ export function CartAddedDialog({
       </button>
       <button
         type="button"
+        disabled={pending}
         className="roman-dialog-secondary"
-        onClick={() => setNotice(null)}
+        onClick={() => void keepShopping()}
       >
         Keep Shopping
       </button>

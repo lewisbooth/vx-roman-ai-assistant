@@ -94,13 +94,15 @@ function Details({
       )}
       {!compact && (
         <div className="roman-product-actions">
-          <button
-            type="button"
-            disabled={disabled || submitting}
-            onClick={() => void request("cart")}
-          >
-            Add to Cart
-          </button>
+          {configuration?.configuredPrice && (
+            <button
+              type="button"
+              disabled={disabled || submitting}
+              onClick={() => void request("cart")}
+            >
+              Add to Cart
+            </button>
+          )}
           <button
             type="button"
             className="roman-product-sample"

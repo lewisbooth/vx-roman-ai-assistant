@@ -131,7 +131,10 @@ export function ProductCards({
         </button>
       </div>,
     );
-  if (!result)
+  if (!result) {
+    const titles = new Map(
+      session.getCachedProducts(productIds).map(({ id, title }) => [id, title]),
+    );
     return frame(
       <div className="roman-products">
         <p className="sr-only" role="status">
@@ -144,9 +147,12 @@ export function ProductCards({
                 <div className="roman-product-card roman-product-skeleton">
                   <span className="roman-product-image" />
                   <span className="roman-product-title">
-                    <span />
-                    <span />
-                    <span />
+                    {titles.get(id) ?? (
+                      <>
+                        <span />
+                        <span />
+                      </>
+                    )}
                   </span>
                   <span className="roman-product-price">
                     <span />
@@ -158,6 +164,7 @@ export function ProductCards({
         </ProductCarousel>
       </div>,
     );
+  }
   return frame(
     <div className="roman-products">
       {result.products.length > 0 ? (

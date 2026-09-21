@@ -3446,6 +3446,31 @@ test("product widgets use the display lookup without changing fresh model execut
   assert.deepEqual(calls, [ids]);
 });
 
+test("cached product previews require an active conversation and never start network work", async (t) => {
+  const reads = [];
+  const ids = ["gid://shopify/Product/123"];
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      getCachedProducts: (requested) => {
+        reads.push(requested);
+        return catalogResult.products;
+      },
+      execute: () => assert.fail("Preview must not execute storefront work"),
+    },
+  });
+  assert.equal(ctx.client.getCachedProducts(ids).length, 0);
+  assert.equal(reads.length, 0);
+  await resume(ctx);
+  const requests = ctx.calls.length;
+  assert.equal(ctx.client.getCachedProducts(ids), catalogResult.products);
+  assert.deepEqual(reads, [ids]);
+  assert.equal(ctx.calls.length, requests);
+  ctx.client.dispose();
+  assert.equal(ctx.client.getCachedProducts(ids).length, 0);
+  assert.equal(reads.length, 1);
+});
+
 test("product images use their separate display owner and stop after client disposal", async (t) => {
   const calls = [];
   const image = "https://cdn.shopify.com/main.jpg";

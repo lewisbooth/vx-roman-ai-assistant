@@ -152,6 +152,41 @@ test("display hydration reuses a pending search and concurrent card lookups with
   assert.equal(calls.length, 1, "two carousels reuse the one real search");
 });
 
+test("synchronous display previews expose only fresh requested products without calls, mutation or TTL renewal", async () => {
+  const other = {
+    ...product,
+    id: "gid://shopify/Product/456",
+    title: "Other shade",
+  };
+  const ctx = setup(async () => ({ products: [product, other] }));
+  assert.deepEqual(plain(ctx.executor.getCachedProducts([product.id])), []);
+  assert.equal(ctx.calls.length, 0);
+  await ctx.executor.execute("search_products", { query: "shade" });
+  const selected = ctx.executor.getCachedProducts([
+    other.id,
+    product.id,
+    other.id,
+  ]);
+  assert.deepEqual(plain(selected.map(({ id }) => id)), [other.id, product.id]);
+  selected[0].title = "Modified by a card";
+  assert.equal(ctx.executor.getCachedProducts([other.id])[0].title, other.title);
+  ctx.clock.now += 59_999;
+  assert.equal(ctx.executor.getCachedProducts([product.id]).length, 1);
+  ctx.location.origin = "https://another-store.example";
+  assert.deepEqual(plain(ctx.executor.getCachedProducts([product.id])), []);
+  ctx.location.origin = origin;
+  ctx.clock.now++;
+  assert.deepEqual(plain(ctx.executor.getCachedProducts([product.id])), []);
+  assert.equal(
+    ctx.calls.length,
+    1,
+    "Preview reads never fetch or renew a cached entry",
+  );
+  await ctx.executor.execute("search_products", { query: "shade" });
+  ctx.executor.dispose();
+  assert.deepEqual(plain(ctx.executor.getCachedProducts([product.id])), []);
+});
+
 test("display hydration fetches only missing IDs and preserves requested order without duplicate or unrelated cards", async () => {
   const other = {
     ...product,

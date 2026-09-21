@@ -1003,3 +1003,46 @@ test("expanded product releases its native modal on hiding, shell closure, repla
     });
   }
 });
+
+test("selection offers Add to Cart only with a current verified price on desktop and expanded mobile", async (t) => {
+  for (const mobile of [false, true]) {
+    await t.test(mobile ? "expanded mobile" : "desktop", async (t) => {
+      const ctx = await setup(t, { mobile });
+      const surface = mobile ? await expandSelectedProduct(ctx) : ctx.container;
+      const actions = () =>
+        [...surface.querySelectorAll(".roman-product-actions button")].map(
+          (button) => button.textContent,
+        );
+      const form = ctx.window.document.querySelector("form");
+      const price = form.querySelector("[data-dynamic-price]");
+      assert.deepEqual(actions(), ["Add to Cart", "Order Sample"]);
+      form.classList.add("loading");
+      await until(
+        () => actions().length === 1,
+        "Unsettled quote removes Add to Cart",
+      );
+      assert.deepEqual(actions(), ["Order Sample"]);
+      assert.match(surface.querySelector("dl").textContent, /FittingRecess/);
+      price.textContent = "";
+      form.classList.remove("loading");
+      await delay(35);
+      assert.deepEqual(
+        actions(),
+        ["Order Sample"],
+        "Absent price is not replaced with a catalog price",
+      );
+      price.textContent = "GBP 70.00";
+      await until(
+        () => actions().length === 2,
+        "Fresh native price restores Add to Cart",
+      );
+      assert.deepEqual(actions(), ["Add to Cart", "Order Sample"]);
+      ctx.window.document.querySelector("dynamic-pricing").remove();
+      await until(
+        () => actions().length === 1,
+        "Unsupported form removes Add to Cart",
+      );
+      assert.deepEqual(actions(), ["Order Sample"]);
+    });
+  }
+});

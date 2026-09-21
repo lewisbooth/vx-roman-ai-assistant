@@ -127,6 +127,7 @@ async function setup(t, options = {}) {
       await options.onEnd?.(window);
       update({ conversation: null, error: null });
     },
+    getCachedProducts: (ids) => options.getCachedProducts?.(ids) ?? [],
     loadProducts: async (ids, signal) => {
       productCalls.push([...ids]);
       return (
@@ -1554,6 +1555,13 @@ test("pending recommendations reserve one noninteractive card per selected produ
       assert.ok(
         [...placeholders].every(
           (card) =>
+            card.querySelectorAll(".roman-product-title > span").length === 2,
+        ),
+        "Unknown titles reserve two lines until the actual title is known",
+      );
+      assert.ok(
+        [...placeholders].every(
+          (card) =>
             card.closest('[aria-hidden="true"]') &&
             !card.querySelector("button,a,[tabindex]"),
         ),
@@ -1581,6 +1589,49 @@ test("pending recommendations reserve one noninteractive card per selected produ
       assert.equal(ctx.productCalls.length, 1);
     });
   }
+});
+
+test("known requested titles render during partial hydration without making the placeholders interactive", async (t) => {
+  const known = {
+    ...catalog.products[0],
+    title:
+      "A complete long product title <with literal text> that must never be truncated",
+  };
+  const unknown = {
+    ...known,
+    id: "gid://shopify/Product/456",
+    title: "New blind",
+  };
+  const row = productsMessage();
+  row.parts[1].productIds = [unknown.id, known.id];
+  let resolve;
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([row]) },
+    getCachedProducts: () => [known],
+    onLoadProducts: () => new Promise((done) => (resolve = done)),
+  });
+  await until(() => resolve, "Product hydration did not start");
+  const titles = ctx.container.querySelectorAll(".roman-product-title");
+  assert.equal(
+    titles[0].children.length,
+    2,
+    "Only the unknown title has placeholder lines",
+  );
+  assert.equal(titles[1].textContent, known.title);
+  assert.equal(titles[1].children.length, 0, "The cached title is plain text");
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), null);
+  assert.deepEqual(ctx.productCalls, [row.parts[1].productIds]);
+  resolve({ products: [known, unknown], messages: [] });
+  await until(
+    () => ctx.container.querySelectorAll(".roman-choose-blind").length === 2,
+    "Hydrated products did not replace placeholders",
+  );
+  assert.deepEqual(
+    [...ctx.container.querySelectorAll(".roman-product-title")].map(
+      (title) => title.textContent,
+    ),
+    [unknown.title, known.title],
+  );
 });
 
 test("replacing recommendation IDs cancels the old lookup and ignores its late completion", async (t) => {

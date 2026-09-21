@@ -1883,6 +1883,16 @@ export function createConversationClient(
         if (!disposed && epoch === startedEpoch) update({ pending: false });
       }
     },
+    getCachedProducts(ids) {
+      if (
+        !executor ||
+        disposed ||
+        ending ||
+        state.conversation?.status !== "active"
+      )
+        return [];
+      return executor.getCachedProducts(ids);
+    },
     loadProducts(ids, signal) {
       if (
         !executor ||

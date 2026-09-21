@@ -615,6 +615,7 @@ function Assistant({
           }
           logoUrl={logoUrl}
           onViewCart={() => showView("cart")}
+          onKeepShopping={sendMessage}
         />
         {confirmEnd && (
           <EndChatDialog
