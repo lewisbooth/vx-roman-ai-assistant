@@ -7,14 +7,12 @@ export function CartAddedDialog({
   conversation,
   restoring,
   blocked,
-  logoUrl,
   onViewCart,
   onKeepShopping,
 }: {
   conversation: ConversationSnapshot | null;
   restoring: boolean;
   blocked: boolean;
-  logoUrl: string;
   onViewCart: () => void;
   onKeepShopping: (message: string) => Promise<void>;
 }) {
@@ -60,7 +58,7 @@ export function CartAddedDialog({
                 {
                   id: part.invocationId,
                   title: `${part.sample.title} sample added to cart`,
-                  continuation: `I'd like to keep shopping after adding a sample of the ${part.sample.title} to my cart.`,
+                  continuation: `I'd like to continue where we left off with the ${part.sample.title} after adding its sample to my cart.`,
                 },
               ]
             : [],
@@ -103,7 +101,6 @@ export function CartAddedDialog({
   return (
     <CartAddedNotice
       key={notice.id}
-      logoUrl={logoUrl}
       title={notice.title}
       onClose={() =>
         setNotice((current) => (current?.id === notice.id ? null : current))
@@ -115,13 +112,11 @@ export function CartAddedDialog({
 }
 
 function CartAddedNotice({
-  logoUrl,
   title,
   onClose,
   onViewCart,
   onKeepShopping,
 }: {
-  logoUrl: string;
   title: string;
   onClose: () => void;
   onViewCart: () => void;
@@ -151,7 +146,6 @@ function CartAddedNotice({
   }
   return (
     <BrandedDialog
-      logoUrl={logoUrl}
       title={title}
       pending={pending}
       error={error}

@@ -937,7 +937,6 @@
     width: min(460px, calc(100% - 40px));
     max-height: calc(100dvh - 40px);
     margin: auto;
-    padding: 30px;
     text-align: center;
     color: #4e0e0e;
   }
@@ -945,20 +944,25 @@
     background: #27171966;
     backdrop-filter: blur(4px);
   }
-  .roman-dialog img {
-    margin: 0 auto 24px;
+  .roman-dialog[open] {
+    padding: clamp(24px, 5vw, 32px);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
   }
   .roman-dialog h2 {
-    margin-bottom: 12px;
+    margin: 0;
+    line-height: 1.2;
     font-size: 30px;
     font-weight: 400;
   }
   .roman-dialog p {
+    margin: 0;
     line-height: 1.5;
   }
   .roman-dialog .roman-action-buttons {
     justify-content: center;
-    margin-top: 24px;
+    margin: 0;
   }
   .roman-dialog .roman-dialog-primary {
     background: #4e0e0e;

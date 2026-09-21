@@ -137,6 +137,11 @@
 }
 
 @media (max-width: 1023px) {
+  /* Keep the limited keyboard viewport available for the conversation. */
+  .roman-workspace:has(textarea[data-roman-composer]:focus)
+    > .roman-product-stage {
+    display: none;
+  }
   .roman-product-stage {
     flex: 0 0 auto;
     width: 100%;

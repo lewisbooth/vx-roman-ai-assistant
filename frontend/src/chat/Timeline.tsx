@@ -18,6 +18,7 @@ export function Timeline({
   onContentChange,
   activeQuestionId,
   questionDisabled = false,
+  productsDisabled = false,
   voice = false,
   onAnswer,
   onChooseProduct,
@@ -28,6 +29,7 @@ export function Timeline({
   onContentChange: () => void;
   activeQuestionId?: string;
   questionDisabled?: boolean;
+  productsDisabled?: boolean;
   voice?: boolean;
   onAnswer?: (part: QuestionPart, answer: string) => Promise<void>;
   onChooseProduct?: (
@@ -171,7 +173,7 @@ export function Timeline({
                     carouselId={part.invocationId}
                     session={session}
                     onChoose={onChooseProduct}
-                    disabled={questionDisabled || message.status !== "complete"}
+                    disabled={productsDisabled || message.status === "failed"}
                     onContentChange={onContentChange}
                   />
                 );

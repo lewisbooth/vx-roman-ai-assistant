@@ -2,7 +2,6 @@ import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 
 /** Shared native modal: the browser owns focus trapping and focus restoration. */
 export function BrandedDialog({
-  logoUrl,
   title,
   description,
   pending = false,
@@ -11,7 +10,6 @@ export function BrandedDialog({
   returnFocus,
   children,
 }: {
-  logoUrl: string;
   title: string;
   description?: ReactNode;
   pending?: boolean;
@@ -55,7 +53,6 @@ export function BrandedDialog({
         if (!pending) onClose();
       }}
     >
-      <img src={logoUrl} alt="Roman by SelectBlinds" width={121} height={50} />
       <h2 id={`${id}-title`}>{title}</h2>
       {description && <p id={`${id}-description`}>{description}</p>}
       <div className="roman-action-buttons">{children}</div>

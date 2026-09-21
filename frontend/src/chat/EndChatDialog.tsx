@@ -1,13 +1,11 @@
 import { BrandedDialog } from "./BrandedDialog";
 
 export function EndChatDialog({
-  logoUrl,
   pending,
   error,
   onCancel,
   onConfirm,
 }: {
-  logoUrl: string;
   pending: boolean;
   error: string | null;
   onCancel: () => void;
@@ -15,7 +13,6 @@ export function EndChatDialog({
 }) {
   return (
     <BrandedDialog
-      logoUrl={logoUrl}
       title="End this chat?"
       description="Your chat will be cleared. Items in your Cart and Gallery will remain."
       pending={pending}

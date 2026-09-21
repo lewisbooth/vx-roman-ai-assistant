@@ -316,35 +316,28 @@ function Assistant({
   async function chooseProduct(carouselId: string, product: CatalogProduct) {
     const current = session.getSnapshot();
     if (
-      answeringRef.current ||
-      messageQueue.hasMessages() ||
       endingRef.current ||
-      current.pending ||
       current.restoring ||
-      current.conversation?.busy
+      confirmEnd ||
+      current.approval ||
+      microphoneDenied ||
+      toolsOpen ||
+      current.conversation?.status !== "active"
     )
-      throw new Error("Wait for Roman's current reply.");
+      throw new Error("Wait until your conversation is ready.");
+    const url = new URL(product.url, window.location.origin);
+    if (url.origin !== window.location.origin || url.username || url.password)
+      throw new Error("Choose a product from this storefront.");
     const choice = parseProductChoice({
       carouselId,
       productId: product.id,
       title: product.title,
-      productPath: new URL(product.url, window.location.origin).pathname,
+      productPath: url.pathname,
     });
-    answeringRef.current = true;
-    setAnswering(true);
+    setStartError(null);
+    showView("chat");
     following.current = true;
-    try {
-      if (current.voice.status === "active")
-        await session.sendVoiceProductChoice(carouselId, product);
-      else if (localVoice || waitingForVoice)
-        throw new Error(
-          "Wait until voice is connected before choosing a blind.",
-        );
-      else await session.sendMessage(productChoiceText(choice), choice);
-    } finally {
-      answeringRef.current = false;
-      setAnswering(false);
-    }
+    messageQueue.enqueue(productChoiceText(choice), choice);
   }
 
   useEffect(() => onReady(), [onReady]);
@@ -497,6 +490,14 @@ function Assistant({
                       navigation={navigation}
                       onContentChange={followConversation}
                       activeQuestionId={activeQuestion?.invocationId}
+                      productsDisabled={
+                        ending ||
+                        confirmEnd ||
+                        !!state.approval ||
+                        microphoneDenied ||
+                        toolsOpen ||
+                        state.conversation?.status !== "active"
+                      }
                       questionDisabled={
                         ending ||
                         answering ||
@@ -613,13 +614,11 @@ function Assistant({
             !!state.approval ||
             toolsOpen
           }
-          logoUrl={logoUrl}
           onViewCart={() => showView("cart")}
           onKeepShopping={sendMessage}
         />
         {confirmEnd && (
           <EndChatDialog
-            logoUrl={logoUrl}
             pending={ending}
             error={endError}
             onCancel={() => setConfirmEnd(false)}
@@ -628,7 +627,6 @@ function Assistant({
         )}
         {microphoneDenied && (
           <BrandedDialog
-            logoUrl={logoUrl}
             title="Microphone access is off"
             description="Allow microphone access in your browser’s site settings, then choose Start voice again. You can keep chatting by text."
             onClose={() => setMicrophoneDenied(false)}

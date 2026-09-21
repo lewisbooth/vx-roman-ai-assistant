@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { MAX_MESSAGE_LENGTH } from "../../../shared/conversation";
+import type { ProductChoice } from "../../../shared/product-choice";
 import type {
   ConversationClient,
   ConversationClientState,
@@ -14,19 +15,24 @@ import type {
 export type QueuedMessage = {
   id: number;
   text: string;
+  productChoice?: ProductChoice;
   status: "queued" | "sending" | "failed";
   error?: string;
 };
 
 const MAX_QUEUED_MESSAGES = 5;
 
-function transportBusy(state: ConversationClientState) {
+function transportBusy(
+  state: ConversationClientState,
+  message?: Pick<QueuedMessage, "productChoice">,
+) {
   const voice = state.voice;
   const remoteVoice = state.conversation?.voice?.status;
   return (
     state.pending ||
     state.restoring ||
     !!state.conversation?.busy ||
+    (!!message?.productChoice && voice.status === "starting") ||
     voice.status === "stopping" ||
     (voice.status === "error" && voice.muted) ||
     ((remoteVoice === "starting" || remoteVoice === "active") &&
@@ -35,9 +41,10 @@ function transportBusy(state: ConversationClientState) {
   );
 }
 
-/** Unsent free text belongs to this mounted conversation, never a server turn.
+/** Unsent input belongs to this mounted conversation, never a server turn.
  * The existing client still owns acceptance, request identity and reconciliation.
- * Choices/approvals retain their immediate, provenance-checked submission paths.
+ * Carousel choices retain their provenance for client/server validation at dispatch.
+ * Quick answers and approvals retain their immediate submission paths.
  */
 export function useMessageQueue(session: ConversationClient, paused: boolean) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
@@ -90,7 +97,7 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
       );
       void (async () => {
         try {
-          await session.sendMessage(head.text);
+          await session.sendMessage(head.text, head.productChoice);
           if (mounted.current && startedEpoch === epoch.current) {
             active.current = false;
             publish(current.current.filter((item) => item.id !== head.id));
@@ -127,13 +134,13 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
       !active.current &&
       !paused &&
       !snapshot.error &&
-      !transportBusy(snapshot)
+      !transportBusy(snapshot, head)
     )
       send(head);
   }, [messages, paused, send, session, state]);
 
   const enqueue = useCallback(
-    (value: string) => {
+    (value: string, productChoice?: ProductChoice) => {
       const text = value.trim();
       if (!text || text.length > MAX_MESSAGE_LENGTH)
         throw new Error(
@@ -149,10 +156,11 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
         !active.current &&
         !paused &&
         !snapshot.error &&
-        !transportBusy(snapshot);
+        !transportBusy(snapshot, { productChoice });
       const message: QueuedMessage = {
         id: ++nextId.current,
         text,
+        ...(productChoice ? { productChoice } : {}),
         status: immediate ? "sending" : "queued",
       };
       current.current = [...current.current, message];
@@ -190,7 +198,7 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
         !active.current &&
         !paused &&
         !snapshot.error &&
-        !transportBusy(snapshot)
+        !transportBusy(snapshot, head)
       ) {
         current.current = [head, ...current.current.slice(1)];
         send(head);

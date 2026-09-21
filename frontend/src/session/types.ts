@@ -29,11 +29,6 @@ export interface ConversationClient {
   sendMessage(text: string, productChoice?: ProductChoice): Promise<void>;
   /** Sends a saved suggested answer to this tab's live connection. */
   sendVoiceAnswer(questionId: string, answer: string): Promise<void>;
-  /** A carousel click enters the live conversation without disconnecting audio. */
-  sendVoiceProductChoice(
-    carouselId: string,
-    product: Pick<CatalogProduct, "id" | "title" | "url">,
-  ): Promise<void>;
   recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;
   executeMeasurements(
     name: "set_measurements" | "get_measurements",

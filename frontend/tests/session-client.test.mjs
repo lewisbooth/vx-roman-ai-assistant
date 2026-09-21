@@ -2577,40 +2577,33 @@ test("choosing a saved carousel product is immediate customer input without clos
   });
   const voice = await activeVoice(ctx, carousel);
   ctx.client.setVoiceMuted(true);
-  const product = {
-    id: choice.productId,
-    title: choice.title,
-    url: `https://hd-dev-single.myshopify.com${choice.productPath}`,
-  };
+  const text = "I'd like the Green roller blind.";
   await assert.rejects(
-    ctx.client.sendVoiceProductChoice(choice.carouselId, {
-      ...product,
-      id: "gid://shopify/Product/999",
+    ctx.client.sendMessage(text, {
+      ...choice,
+      productId: "gid://shopify/Product/999",
     }),
     /shown in this conversation/,
   );
   await assert.rejects(
-    ctx.client.sendVoiceProductChoice(choice.carouselId, {
-      ...product,
-      url: "https://foreign.test/products/green-roller",
+    ctx.client.sendMessage(text, {
+      ...choice,
+      productPath: "https://foreign.test/products/green-roller",
     }),
-    /this storefront/,
+    /product.*path/i,
   );
   assert.equal(ctx.calls.length, 3);
-  const sending = ctx.client.sendVoiceProductChoice(choice.carouselId, product);
+  const sending = ctx.client.sendMessage(text, choice);
   const call = ctx.calls[3];
   assert.deepEqual(
     { ...call.body },
     { clientId: voice.clientId, requestId: call.body.requestId, ...choice },
   );
   const optimistic = ctx.client.getSnapshot().optimisticMessage;
-  assert.equal(
-    optimistic.parts[0].text,
-    "I'd like the Green roller blind.",
-  );
+  assert.equal(optimistic.parts[0].text, "I'd like the Green roller blind.");
   assert.equal(optimistic.parts[0].productChoice.voiceId, voice.id);
   await assert.rejects(
-    ctx.client.sendVoiceProductChoice(choice.carouselId, product),
+    ctx.client.sendMessage(text, choice),
     /finished replying/,
   );
   ctx.respond(3, {
@@ -2662,7 +2655,10 @@ test("measurement widget answers retain live audio, unmodified free text and ret
   await until(() => ctx.calls.length === 5, "Lost answer did not reconcile");
   ctx.respond(4, { ...conversation, revision: 1, voice });
   await rejected;
-  const retry = ctx.client.sendVoiceAnswer(voiceQuestionId, "Width: 1 1/2 in or 38 mm");
+  const retry = ctx.client.sendVoiceAnswer(
+    voiceQuestionId,
+    "Width: 1 1/2 in or 38 mm",
+  );
   assert.deepEqual(ctx.calls[5].body, ctx.calls[3].body);
   const accepted = acceptedVoiceAnswer(ctx.calls[5].body, voice);
   accepted.messages[0] = conversation.messages[0];
@@ -3517,11 +3513,17 @@ test("active gallery loading uses the display executor and cannot outlive its co
   await resume(ctx);
   const controller = new ctx.window.AbortController();
   const url = `${ctx.window.location.origin}/products/shade`;
-  assert.equal(await ctx.client.loadProductGallery(url, controller.signal), gallery);
+  assert.equal(
+    await ctx.client.loadProductGallery(url, controller.signal),
+    gallery,
+  );
   assert.equal(calls[0][0], url);
   assert.equal(calls[0][1], controller.signal);
   ctx.client.dispose();
-  await assert.rejects(ctx.client.loadProductGallery(url, controller.signal), /Start a chat/);
+  await assert.rejects(
+    ctx.client.loadProductGallery(url, controller.signal),
+    /Start a chat/,
+  );
   assert.equal(calls.length, 1);
 });
 
@@ -3927,7 +3929,6 @@ for (const [name, role, voiceInput, extra] of [
   });
 }
 
-
 const textProductChoice = {
   carouselId: "44444444-4444-4444-8444-444444444444",
   productId: "gid://shopify/Product/123",
@@ -3966,6 +3967,45 @@ function acceptedTextProduct(optimistic) {
     ],
   };
 }
+
+test("stale, incomplete and removed carousel provenance fails before any text or voice request", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    for (const source of ["pending", "failed", "removed"]) {
+      await t.test(`${mode}: ${source}`, async (t) => {
+        const ctx = setup(
+          t,
+          mode === "voice" ? { mediaOptions: {} } : { saved: access },
+        );
+        const carousel = {
+          ...textProductCarousel,
+          messages:
+            source === "removed"
+              ? []
+              : textProductCarousel.messages.map((message) => ({
+                  ...message,
+                  status: source,
+                })),
+        };
+        if (mode === "voice") await activeVoice(ctx, carousel);
+        else await resume(ctx, carousel);
+        const count = ctx.calls.length;
+        await assert.rejects(
+          ctx.client.sendMessage(
+            "I'd like the Green roller blind.",
+            textProductChoice,
+          ),
+          /completed carousel.*Remove an unavailable queued choice/,
+        );
+        assert.equal(ctx.calls.length, count);
+        assert.equal(ctx.client.getSnapshot().optimisticMessage ?? null, null);
+        if (mode === "voice") {
+          assert.equal(ctx.client.getSnapshot().voice.status, "active");
+          assert.equal(ctx.media.tracks[0].stopped, false);
+        }
+      });
+    }
+  }
+});
 
 test("text card choices publish friendly optimistic text with exact product metadata and preserve it on uncertain retry", async (t) => {
   const ctx = setup(t, { saved: access });

@@ -57,7 +57,6 @@ import {
   type ProductChoiceReference,
   type ProductChoice,
 } from "../../../shared/product-choice";
-import type { CatalogProduct } from "../../../shared/catalog";
 import type {
   createStorefrontExecutor,
   BrowserToolResult,
@@ -1187,23 +1186,6 @@ export function createConversationClient(
     return sendVoiceSelection({ questionId, answer });
   }
 
-  async function sendVoiceProductChoice(
-    carouselId: string,
-    product: Pick<CatalogProduct, "id" | "title" | "url">,
-  ) {
-    const url = new URL(product.url, window.location.origin);
-    if (url.origin !== window.location.origin || url.username || url.password)
-      throw new Error("Choose a product from this storefront.");
-    return sendVoiceSelection(
-      parseProductChoice({
-        carouselId,
-        productId: product.id,
-        title: product.title,
-        productPath: url.pathname,
-      }),
-    );
-  }
-
   async function sendVoiceSelection(
     selection:
       | { questionId: string; answer: string }
@@ -1237,23 +1219,6 @@ export function createConversationClient(
         !isQuestionAnswer(question, selection.answer))
     )
       throw new Error("This question is no longer waiting for that answer.");
-    if (
-      "carouselId" in selection &&
-      !state.conversation?.messages.some(
-        (message) =>
-          message.status === "complete" &&
-          ["assistant", "context"].includes(message.role) &&
-          message.parts.some(
-            (part) =>
-              part.type === "products" &&
-              part.invocationId === selection.carouselId &&
-              part.productIds.includes(selection.productId),
-          ),
-      )
-    )
-      throw new Error(
-        "Choose a product shown in this conversation's carousel.",
-      );
     const answer =
       "text" in selection
         ? selection.text
@@ -1660,7 +1625,6 @@ export function createConversationClient(
 
   return {
     sendVoiceAnswer,
-    sendVoiceProductChoice,
     getSnapshot: () => state,
     subscribe(listener) {
       listeners.add(listener);
@@ -1676,6 +1640,23 @@ export function createConversationClient(
       if (choice && text !== productChoiceText(choice))
         throw new Error(
           "The selected product message does not match this choice.",
+        );
+      if (
+        choice &&
+        !state.conversation?.messages.some(
+          (message) =>
+            message.status === "complete" &&
+            (message.role === "assistant" || message.role === "context") &&
+            message.parts.some(
+              (part) =>
+                part.type === "products" &&
+                part.invocationId === choice.carouselId &&
+                part.productIds.includes(choice.productId),
+            ),
+        )
+      )
+        throw new Error(
+          "Choose a product shown in this conversation's completed carousel. Remove an unavailable queued choice and choose a blind from Roman's latest results.",
         );
       if (disposed) throw new Error("Roman has been removed.");
       if (!text || text.length > MAX_MESSAGE_LENGTH)

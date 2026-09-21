@@ -110,17 +110,18 @@ async function setup(t, options = {}) {
     clearError: () => {
       if (state.error) update({ error: null });
     },
-    sendMessage: async (text) => {
+    sendMessage: async (text, choice) => {
+      if (choice && state.voice.status === "active") {
+        voiceChoices.push(choice);
+        await options.onVoiceChoice?.(choice);
+        return;
+      }
       calls.push(text);
-      await options.onSend?.(text, window);
+      await options.onSend?.(text, window, choice);
     },
     sendVoiceAnswer: async (questionId, answer) => {
       voiceAnswers.push({ questionId, answer });
       await options.onVoiceAnswer?.(questionId, answer, window);
-    },
-    sendVoiceProductChoice: async (carouselId, product) => {
-      voiceChoices.push({ carouselId, product });
-      await options.onVoiceChoice?.(carouselId, product);
     },
     end: async () => {
       endCalls.push("end");
@@ -1814,7 +1815,7 @@ test("choosing a blind in voice sends one selection without stopping voice or na
   button.click();
   await until(() => ctx.voiceChoices.length, "Voice accepts choice");
   assert.equal(ctx.voiceChoices.length, 1);
-  assert.equal(ctx.voiceChoices[0].product.id, catalog.products[0].id);
+  assert.equal(ctx.voiceChoices[0].productId, catalog.products[0].id);
   assert.deepEqual(ctx.stopVoiceCalls, []);
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.calls, []);
@@ -1845,9 +1846,145 @@ test("a failed product selection stays retryable with an actionable error", asyn
     ctx.container.querySelector('[role="alert"]').textContent,
     /Please reconnect/,
   );
-  ctx.container.querySelector(".roman-choose-blind").click();
+  ctx.container.querySelector(".roman-queued-message button").click();
   await until(() => attempts === 2, "Selection is retryable");
   assert.deepEqual(ctx.navigationCalls, []);
+});
+
+test("historical and current-turn carousel choices stay enabled while Roman works and queue with provenance", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    for (const sourceStatus of ["complete", "pending"]) {
+      await t.test(`${mode}: ${sourceStatus} carousel`, async (t) => {
+        const source = { ...productsMessage(), status: sourceStatus };
+        const conversation = {
+          ...engagedConversation([source]),
+          busy: true,
+        };
+        const choices = [];
+        const ctx = await setup(t, {
+          state: {
+            conversation,
+            pending: true,
+            voice: {
+              status: mode === "voice" ? "active" : "idle",
+              muted: false,
+              error: null,
+            },
+          },
+          onLoadProducts: () => catalog,
+          onSend: (_text, _window, choice) => choices.push(choice),
+        });
+        await until(
+          () => ctx.container.querySelector(".roman-choose-blind"),
+          "Choice is loaded",
+        );
+        const card = ctx.container.querySelector(".roman-choose-blind");
+        assert.equal(card.disabled, false, "Busy work must not disable hover");
+        card.click();
+        card.click();
+        await until(
+          () => ctx.container.querySelector(".roman-queued-message"),
+          "Choice waits in the shared queue",
+        );
+        assert.equal(
+          ctx.container.querySelectorAll(".roman-queued-message").length,
+          1,
+        );
+        assert.deepEqual(ctx.calls, []);
+        assert.deepEqual(ctx.voiceChoices, []);
+        assert.deepEqual(ctx.navigationCalls, []);
+        assert.equal(
+          card.disabled,
+          false,
+          "Enqueued choice leaves cards available",
+        );
+        ctx.update({ pending: false });
+        await delay(20);
+        assert.deepEqual(ctx.calls, []);
+        assert.deepEqual(ctx.voiceChoices, []);
+        ctx.update({ conversation: engagedConversation([productsMessage()]) });
+        await until(
+          () => (mode === "voice" ? ctx.voiceChoices.length : choices.length),
+          "Completed work releases the queued selection",
+        );
+        const choice = mode === "voice" ? ctx.voiceChoices[0] : choices[0];
+        assert.deepEqual(JSON.parse(JSON.stringify(choice)), {
+          carouselId: source.parts[1].invocationId,
+          productId: catalog.products[0].id,
+          title: catalog.products[0].title,
+          productPath: new URL(catalog.products[0].url).pathname,
+        });
+        assert.deepEqual(ctx.stopVoiceCalls, []);
+        assert.deepEqual(ctx.navigationCalls, []);
+        if (mode === "voice")
+          assert.ok(ctx.container.querySelector(".roman-voice-bar"));
+      });
+    }
+  }
+});
+
+test("carousel selections respect failed results, restoration and end-chat review", async (t) => {
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([productsMessage()]) },
+    onLoadProducts: () => catalog,
+  });
+  const card = () => ctx.container.querySelector(".roman-choose-blind");
+  await until(card, "Choice is loaded");
+  ctx.update({
+    conversation: engagedConversation([
+      { ...productsMessage(), status: "failed" },
+    ]),
+  });
+  await until(
+    () => card()?.disabled,
+    "Failed results do not accept new choices",
+  );
+  ctx.update({ restoring: true });
+  await until(() => !card(), "Restoration does not expose selections");
+  ctx.update({
+    restoring: false,
+    conversation: engagedConversation([productsMessage()]),
+  });
+  await until(
+    () => card() && !card().disabled,
+    "Ready results become selectable",
+  );
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => card().disabled, "End-chat review locks carousel choices");
+  card().click();
+  assert.deepEqual(ctx.calls, []);
+  ctx.container.querySelector(".roman-dialog button").click();
+  await until(() => !card().disabled, "Cancelling End restores selections");
+});
+
+test("a foreign-store carousel URL is rejected before it can enter the queue", async (t) => {
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([productsMessage()]) },
+    onLoadProducts: () => ({
+      ...catalog,
+      products: [
+        {
+          ...catalog.products[0],
+          url: "https://foreign.test/products/green-roller",
+        },
+      ],
+    }),
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-choose-blind"),
+    "Choice is loaded",
+  );
+  ctx.container.querySelector(".roman-choose-blind").click();
+  await until(
+    () => ctx.container.querySelector('[role="alert"]'),
+    "Foreign choice error appears",
+  );
+  assert.match(
+    ctx.container.querySelector('[role="alert"]').textContent,
+    /this storefront/,
+  );
+  assert.deepEqual(ctx.calls, []);
+  assert.equal(ctx.container.querySelector(".roman-queued-message"), null);
 });
 
 test("unrelated lookup matches cannot replace an unavailable selected product", async (t) => {
@@ -2782,7 +2919,7 @@ test("an explicit denied-microphone attempt opens the branded dialog and only a 
     dialog.querySelector("h2").textContent,
     "Microphone access is off",
   );
-  assert.equal(dialog.querySelector("img").alt, "Roman by SelectBlinds");
+  assert.equal(dialog.querySelector("img"), null);
   assert.match(dialog.textContent, /browser.*site settings/);
   assert.match(dialog.textContent, /keep chatting by text/);
   assert.equal(

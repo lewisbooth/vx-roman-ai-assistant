@@ -74,11 +74,12 @@ async function setup(t, overrides = {}) {
     clearError() {
       update({ error: null });
     },
-    sendMessage(text) {
+    sendMessage(text, productChoice) {
       update({ pending: true });
       return new Promise((resolve, reject) =>
         calls.push({
           text,
+          productChoice,
           accept() {
             update({
               pending: false,
@@ -346,4 +347,73 @@ test("restoration, remote voice and stopping voice defer dispatch while keeping 
       await until(() => ctx.calls.length === 1);
     });
   }
+});
+
+const productChoice = {
+  carouselId: "44444444-4444-4444-8444-444444444444",
+  productId: "gid://shopify/Product/123",
+  title: "Green roller blind",
+  productPath: "/products/green-roller",
+};
+
+test("carousel choices share queue ordering, capacity and retry without losing provenance", async (t) => {
+  const ctx = await setup(t, { pending: true });
+  ctx.queue().enqueue("I'd like the Green roller blind.", productChoice);
+  for (let i = 0; i < 4; i++) ctx.queue().enqueue(`follow-up ${i}`);
+  assert.throws(
+    () => ctx.queue().enqueue("another choice", productChoice),
+    /five messages/,
+  );
+  ctx.update({ pending: false });
+  await until(() => ctx.calls.length === 1);
+  assert.deepEqual(ctx.calls[0].productChoice, productChoice);
+  ctx.calls[0].fail();
+  await until(() => ctx.queue().messages[0]?.status === "failed");
+  assert.equal(ctx.calls.length, 1);
+  ctx.queue().retry(ctx.queue().messages[0].id);
+  await until(() => ctx.calls.length === 2);
+  assert.deepEqual(ctx.calls[1].productChoice, productChoice);
+  ctx.calls[1].accept();
+  await until(() => ctx.queue().messages.length === 4);
+  ctx.finish();
+  await until(() => ctx.calls.length === 3);
+  assert.equal(ctx.calls[2].text, "follow-up 0");
+  assert.equal(ctx.calls[2].productChoice, undefined);
+});
+
+test("a carousel choice waits for voice startup and keeps its provenance when connected", async (t) => {
+  const ctx = await setup(t, {
+    voice: { status: "starting", muted: false, error: null },
+  });
+  ctx.queue().enqueue("I'd like the Green roller blind.", productChoice);
+  await until(() => ctx.queue().messages.length === 1);
+  await delay(20);
+  assert.equal(ctx.calls.length, 0);
+  ctx.update({ voice: { status: "active", muted: false, error: null } });
+  await until(() => ctx.calls.length === 1);
+  assert.deepEqual(ctx.calls[0].productChoice, productChoice);
+});
+
+test("a stale carousel choice fails visibly without releasing later queued messages", async (t) => {
+  const ctx = await setup(t, { pending: true });
+  let attempts = 0;
+  ctx.session.sendMessage = async (_text, choice) => {
+    attempts++;
+    assert.deepEqual(choice, productChoice);
+    throw new ctx.window.Error(
+      "This carousel is no longer available. Choose from Roman's latest results.",
+    );
+  };
+  ctx.queue().enqueue("I'd like the Green roller blind.", productChoice);
+  ctx.queue().enqueue("Find more options");
+  ctx.update({ pending: false });
+  await until(() => ctx.queue().messages[0]?.status === "failed");
+  assert.match(
+    ctx.window.document.querySelector('[role="alert"]').textContent,
+    /no longer available/,
+  );
+  assert.equal(ctx.queue().messages.length, 2);
+  await delay(20);
+  assert.equal(attempts, 1);
+  assert.deepEqual(ctx.calls, []);
 });

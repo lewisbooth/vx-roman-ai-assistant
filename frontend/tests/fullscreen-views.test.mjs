@@ -1117,7 +1117,7 @@ test("cart confirmation persists until a customer action and Keep Shopping sends
   );
   assert.deepEqual(ctx.calls[1], [
     "text",
-    "I'd like to keep shopping after adding a sample of the Linen blind to my cart.",
+    "I'd like to continue where we left off with the Linen blind after adding its sample to my cart.",
   ]);
   assert.equal(
     ctx.container.querySelector('[aria-current="page"]').textContent,
@@ -1232,7 +1232,7 @@ test("Keep Shopping uses the busy voice queue and retains a failed continuation 
   await until(() => ctx.calls.length === 6, "Continuation sent exactly once");
   assert.match(
     ctx.calls[5][1],
-    /keep shopping after adding a sample of the Linen blind/,
+    /continue where we left off with the Linen blind after adding its sample/,
   );
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
   assert.deepEqual(ctx.toolCalls, []);
