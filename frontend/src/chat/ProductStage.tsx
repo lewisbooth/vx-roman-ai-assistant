@@ -8,7 +8,7 @@ import {
   readProductGallery,
   type ProductGallerySnapshot,
 } from "../tools/product-image";
-import { ProductGallery } from "./ProductGallery";
+import { ProductStageView } from "./ProductStageView";
 
 function productPath(url: string): string | undefined {
   try {
@@ -194,80 +194,16 @@ export function ProductStage({
   // can supply a current configuration or price. Never replay settings here.
   const configuration =
     !page.pending && path === selectedPath ? display?.configuration : null;
-  const measurements = configuration?.measurements;
-  const selected =
-    configuration?.controls.flatMap((control) =>
-      control.options
-        .filter((option) => option.selected && option.available)
-        .map((option) => ({
-          key: control.id,
-          label: control.label,
-          value: option.label,
-          separatePrice:
-            control.purpose === "measurement_guarantee"
-              ? option.priceLabel
-              : undefined,
-        })),
-    ) ?? [];
   const gallery = imagery?.productPath === selectedPath ? imagery.items : [];
   const title = display?.title || selectedTitle;
-
   return (
-    <aside
-      className="roman-product-stage"
-      aria-label="Your selected product"
-      aria-busy={page.pending}
+    <ProductStageView
+      key={selectedPath}
+      title={title}
+      configuration={configuration ?? null}
+      gallery={gallery}
+      pending={page.pending}
       hidden={hidden}
-    >
-      <ProductGallery
-        key={selectedPath}
-        items={gallery}
-        title={title}
-        pending={page.pending}
-        hidden={hidden}
-      />
-      <div className="roman-product-stage-content">
-        <p className="roman-product-stage-eyebrow">
-          {page.pending ? "Previously selected" : "Your selection"}
-        </p>
-        <h2>{title}</h2>
-        {configuration?.configuredPrice && (
-          <p className="roman-product-stage-price">
-            <span>{configuration.configuredPrice}</span> Current product quote
-          </p>
-        )}
-        {measurements?.unit &&
-          measurements.width !== null &&
-          measurements.height !== null && (
-            <p className="roman-product-stage-measurements">
-              {measurements.width} × {measurements.height} {measurements.unit}
-              <span> Width × drop</span>
-            </p>
-          )}
-        {selected.length > 0 && (
-          <details className="roman-product-stage-configuration">
-            <summary>
-              Your configuration{" "}
-              <span>
-                {selected.length} {selected.length === 1 ? "option" : "options"}
-              </span>
-            </summary>
-            <dl>
-              {selected.map((option) => (
-                <div key={option.key}>
-                  <dt>{option.label}</dt>
-                  <dd>
-                    {option.value}
-                    {option.separatePrice && (
-                      <span> ({option.separatePrice}, charged separately)</span>
-                    )}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </details>
-        )}
-      </div>
-    </aside>
+    />
   );
 }

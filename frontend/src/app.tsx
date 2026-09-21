@@ -411,7 +411,7 @@ function Assistant({
                 navigation={navigation}
                 selectedPath={selectedProduct.path}
                 selectedTitle={selectedProduct.title}
-                hidden={view !== "chat"}
+                hidden={view !== "chat" || toolsOpen}
               />
             )}
             <div className="roman-dialogue">

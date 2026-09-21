@@ -94,42 +94,41 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
         </div>
       ) : (
         cart && (
-          <>
+          <div className={cart.items.length ? "roman-cart-layout" : undefined}>
             {cart.items.length ? (
               <ul className="roman-cart-items">
                 {cart.items.map((item) => (
-                  <li
-                    key={item.lineKey}
-                    className="roman-product-card roman-cart-card"
-                  >
+                  <li key={item.lineKey} className="roman-cart-item">
                     <CartImage
                       key={item.imageUrl ?? "missing"}
                       url={item.imageUrl}
                     />
-                    <h3 className="roman-product-title">{item.title}</h3>
-                    {item.configuration.length > 0 && (
-                      <dl className="roman-cart-configuration">
-                        {item.configuration.map(({ name, value }) => (
-                          <div key={JSON.stringify([name, value])}>
-                            <dt>{name}</dt>
-                            <dd>{value}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    )}
-                    <div className="roman-cart-item-details">
-                      <span>Quantity {item.quantity}</span>
-                      <CartPrice
-                        amount={item.linePriceMinorUnits}
-                        original={item.originalLinePriceMinorUnits}
+                    <div className="roman-cart-item-content">
+                      <h3>{item.title}</h3>
+                      {item.configuration.length > 0 && (
+                        <dl className="roman-cart-configuration">
+                          {item.configuration.map(({ name, value }) => (
+                            <div key={JSON.stringify([name, value])}>
+                              <dt>{name}</dt>
+                              <dd>{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                      <div className="roman-cart-item-details">
+                        <span>Quantity {item.quantity}</span>
+                        <CartPrice
+                          amount={item.linePriceMinorUnits}
+                          original={item.originalLinePriceMinorUnits}
+                          format={price}
+                        />
+                      </div>
+                      <CartDiscounts
+                        discounts={item.lineDiscounts}
+                        label="Applied item discounts"
                         format={price}
                       />
                     </div>
-                    <CartDiscounts
-                      discounts={item.lineDiscounts}
-                      label="Applied item discounts"
-                      format={price}
-                    />
                   </li>
                 ))}
               </ul>
@@ -137,7 +136,7 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
               <p>Your cart is empty. Let’s find something you love.</p>
             )}
             {cart.items.length > 0 && (
-              <div className="roman-cart-summary">
+              <section className="roman-cart-summary" aria-label="Cart summary">
                 <div className="roman-cart-total">
                   <span>Subtotal</span>
                   <CartPrice
@@ -166,9 +165,9 @@ export function CartStage({ cart, error, loading, retry }: CartDisplayState) {
                 >
                   Continue to checkout <span aria-hidden="true">↗</span>
                 </a>
-              </div>
+              </section>
             )}
-          </>
+          </div>
         )
       )}
     </aside>

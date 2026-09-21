@@ -104,11 +104,13 @@ export function ProductGallery({
   title,
   pending = false,
   hidden = false,
+  allowZoom = true,
 }: {
   items: readonly ProductGalleryImage[];
   title: string;
   pending?: boolean;
   hidden?: boolean;
+  allowZoom?: boolean;
 }) {
   const [selectedId, setSelectedId] = useState<string>();
   const [zoom, setZoom] = useState(false);
@@ -144,8 +146,8 @@ export function ProductGallery({
       strip.scrollLeft = left + selected.offsetWidth - strip.clientWidth;
   }, [index, items]);
   useLayoutEffect(() => {
-    if (hidden || !image) setZoom(false);
-  }, [hidden, image]);
+    if (hidden || !image || !allowZoom) setZoom(false);
+  }, [hidden, image, allowZoom]);
   const keys = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (!items.length) return;
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
@@ -171,22 +173,26 @@ export function ProductGallery({
               title={title}
               move={move}
             />
-            <button
-              type="button"
-              className="roman-gallery-enlarge"
-              aria-label={`Enlarge image ${index + 1} of ${items.length}: ${image.alt || title}`}
-              onKeyDown={keys}
-              onClick={() => setZoom(true)}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
-              </svg>
-            </button>
+            {allowZoom && (
+              <button
+                type="button"
+                className="roman-gallery-enlarge"
+                aria-label={`Enlarge image ${index + 1} of ${items.length}: ${image.alt || title}`}
+                onKeyDown={keys}
+                onClick={() => setZoom(true)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+                </svg>
+              </button>
+            )}
           </>
         ) : (
-          <span className="roman-product-stage-placeholder">
-            Your selection
-          </span>
+          <span
+            className="roman-product-stage-placeholder"
+            role="img"
+            aria-label="Product image unavailable"
+          />
         )}
         {pending && (
           <p className="roman-product-stage-loading" role="status">
@@ -241,7 +247,7 @@ export function ProductGallery({
           </div>
         </>
       )}
-      {zoom && !hidden && image && (
+      {zoom && allowZoom && !hidden && image && (
         <GalleryZoom
           items={items}
           title={title}

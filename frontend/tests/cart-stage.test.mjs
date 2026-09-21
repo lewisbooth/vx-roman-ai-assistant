@@ -212,7 +212,7 @@ test("streaming prose does not repeatedly reload an unchanged cart", async (t) =
   );
 });
 
-test("cart cards show their own image, title, quantity and line price from one cart read", async (t) => {
+test("cart rows show their own image, title, quantity and line price from one cart read", async (t) => {
   const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial cart read");
   const cart = {
@@ -240,32 +240,32 @@ test("cart cards show their own image, title, quantity and line price from one c
   ctx.calls[0].complete(cart);
   await until(
     () => ctx.container.querySelectorAll(".roman-cart-items li").length === 2,
-    "Image cards rendered",
+    "Cart rows rendered",
   );
-  const cards = ctx.container.querySelectorAll(".roman-cart-items li");
+  const rows = ctx.container.querySelectorAll(".roman-cart-items li");
   assert.equal(
-    cards[0].querySelector("img").src,
+    rows[0].querySelector("img").src,
     "https://cdn.shopify.com/s/files/1/2/linen.jpg?v=2",
   );
   assert.equal(
-    cards[1].querySelector("img").src,
+    rows[1].querySelector("img").src,
     "https://shop.example/cdn/shop/files/sample.jpg?v=1",
   );
-  assert.equal(cards[0].querySelector("h3").textContent, "Linen blind");
+  assert.equal(rows[0].querySelector("h3").textContent, "Linen blind");
   assert.match(
-    cards[0].querySelector(".roman-cart-item-details").textContent,
+    rows[0].querySelector(".roman-cart-item-details").textContent,
     /Quantity 2.*90\.00/,
   );
   assert.match(
-    cards[1].querySelector(".roman-cart-item-details").textContent,
+    rows[1].querySelector(".roman-cart-item-details").textContent,
     /Quantity 1.*7\.00/,
   );
   assert.match(
     ctx.container.querySelector(".roman-cart-total").textContent,
     /97\.00/,
   );
-  assert.equal(cards[0].querySelector("img").getAttribute("loading"), "lazy");
-  assert.equal(cards[0].querySelector("img").alt, "");
+  assert.equal(rows[0].querySelector("img").getAttribute("loading"), "lazy");
+  assert.equal(rows[0].querySelector("img").alt, "");
   assert.equal(
     ctx.calls.length,
     1,
@@ -318,7 +318,7 @@ test("unsafe and missing images fall back without hiding cart contents", async (
   assert.equal(ctx.container.querySelector('[role="alert"]'), null);
 });
 
-test("each cart card shows its own public dimensions and configuration without using the current product or private metadata", async (t) => {
+test("each cart row shows its own public dimensions and configuration without using the current product or private metadata", async (t) => {
   const ctx = setup(t, "cart");
   await until(() => ctx.calls.length === 1, "Initial cart read");
   const cart = {
@@ -573,11 +573,11 @@ test("malformed HD details do not hide valid cart lines or invent dimensions or 
     () => ctx.container.querySelectorAll(".roman-cart-items li").length === 3,
     "All valid cart lines render",
   );
-  const cards = ctx.container.querySelectorAll(".roman-cart-items li");
-  assert.match(cards[0].textContent, /Width600 mmDrop900 mm/);
-  assert.equal(cards[1].querySelector(".roman-cart-configuration"), null);
+  const rows = ctx.container.querySelectorAll(".roman-cart-items li");
+  assert.match(rows[0].textContent, /Width600 mmDrop900 mm/);
+  assert.equal(rows[1].querySelector(".roman-cart-configuration"), null);
   assert.equal(
-    cards[2].querySelector(".roman-cart-configuration").textContent,
+    rows[2].querySelector(".roman-cart-configuration").textContent,
     "SizeSmall",
   );
   assert.doesNotMatch(
@@ -791,27 +791,27 @@ test("applied line and cart discounts keep final prices distinct without subtrac
     () => ctx.container.querySelector('[aria-label="Applied cart discounts"]'),
     "Applied discount metadata rendered",
   );
-  const cards = ctx.container.querySelectorAll(".roman-cart-items > li");
-  assert.equal(cards.length, 2);
+  const rows = ctx.container.querySelectorAll(".roman-cart-items > li");
+  assert.equal(rows.length, 2);
   assert.match(
-    cards[0].querySelector(".roman-cart-price del").textContent,
+    rows[0].querySelector(".roman-cart-price del").textContent,
     /24\.99/,
   );
   assert.match(
-    cards[0].querySelector(".roman-cart-price strong").textContent,
+    rows[0].querySelector(".roman-cart-price strong").textContent,
     /22\.49/,
   );
   assert.match(
-    cards[0].querySelector(".roman-cart-discounts").textContent,
+    rows[0].querySelector(".roman-cart-discounts").textContent,
     /Spring sale.*2\.50/,
   );
   assert.equal(
-    cards[1].querySelector("del"),
+    rows[1].querySelector("del"),
     null,
     "An unchanged line price is not struck through",
   );
   assert.equal(
-    cards[1].querySelector(".roman-cart-discounts"),
+    rows[1].querySelector(".roman-cart-discounts"),
     null,
     "No line allocations remain unstated",
   );

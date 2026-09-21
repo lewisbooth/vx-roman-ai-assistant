@@ -59,7 +59,7 @@ const cartMutations = new Set([
   "clear_cart",
 ]);
 
-/** One display read owner for Roman's cart cards and navigation count. */
+/** One display read owner for Roman's cart display and navigation count. */
 export function useCart(
   navigation: StorefrontNavigation,
   session: ConversationClient,

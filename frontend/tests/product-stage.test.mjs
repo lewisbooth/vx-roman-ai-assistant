@@ -73,7 +73,12 @@ function gallery(src, productPath = "/products/linen") {
 
 async function setup(
   t,
-  { initialPath = "/products/linen", loadGallery, hidden = false } = {},
+  {
+    initialPath = "/products/linen",
+    loadGallery,
+    hidden = false,
+    mobile = false,
+  } = {},
 ) {
   const dom = new JSDOM(
     `<!doctype html><body class="template-product"><app-provider><main id="main">${markup()}</main></app-provider><roman-ai-assistant></roman-ai-assistant>`,
@@ -86,7 +91,39 @@ async function setup(
   const { window } = dom;
   const errors = [];
   window.console.error = (...error) => errors.push(error);
-  window.fetch = () => assert.fail("The selected product stage must not fetch");
+  window.fetch = () =>
+    assert.fail("The selected product stage must not fetch");
+  const mediaQueries = new Map();
+  window.matchMedia = (query) => {
+    if (!mediaQueries.has(query)) {
+      const listeners = new Set();
+      mediaQueries.set(query, {
+        media: query,
+        matches: /max-width:\s*1023px/.test(query) && mobile,
+        listeners,
+        addEventListener: (_event, fn) => listeners.add(fn),
+        removeEventListener: (_event, fn) => listeners.delete(fn),
+      });
+    }
+    return mediaQueries.get(query);
+  };
+  const dialogs = [],
+    closedDialogs = [];
+  const dialogFocus = new WeakMap();
+  window.HTMLDialogElement.prototype.showModal = function () {
+    // Model the native dialog's previously-focused element across Shadow DOM.
+    dialogFocus.set(this, this.getRootNode().activeElement);
+    this.open = true;
+    dialogs.push(this);
+  };
+  window.HTMLDialogElement.prototype.close = function () {
+    if (!this.open) return;
+    this.open = false;
+    closedDialogs.push(this);
+    const previous = dialogFocus.get(this);
+    if (previous?.isConnected) previous.focus();
+    this.dispatchEvent(new window.Event("close"));
+  };
   for (const name of ["dynamic-pricing", "dynamic-pricing-measurements"])
     window.customElements.define(
       name,
@@ -123,7 +160,15 @@ async function setup(
   const container = window.document
     .querySelector("roman-ai-assistant")
     .attachShadow({ mode: "open" });
-  const unmount = window.StageTest.mount(container, navigation, session);
+  // Roman's native shell is outside React; modal key events must not escape to it.
+  const shell = window.document.createElement("div");
+  shell.dataset.romanPanel = "";
+  const content = window.document.createElement("div");
+  const shellKeys = [];
+  shell.addEventListener("keydown", (event) => shellKeys.push(event.key));
+  shell.append(content);
+  container.append(shell);
+  const unmount = window.StageTest.mount(content, navigation, session);
   let disposed = false;
   const dispose = () => {
     if (!disposed) {
@@ -146,7 +191,21 @@ async function setup(
     container,
     listeners,
     galleryReads,
+    dialogs,
+    closedDialogs,
+    shellKeys,
+    shell,
+    mediaQueries,
     dispose,
+    setMobile(value) {
+      for (const media of mediaQueries.values()) {
+        if (!/max-width:\s*1023px/.test(media.media)) continue;
+        media.matches = value;
+        media.listeners.forEach((fn) =>
+          fn({ matches: value, media: media.media }),
+        );
+      }
+    },
     update(changes) {
       snapshot = { ...snapshot, ...changes };
       listeners.forEach((fn) => fn());
@@ -181,7 +240,10 @@ test("stage uses the canonical PDP gallery, live quote and supported current sel
     /500 × 600 mm/,
   );
   assert.match(container.querySelector("dl").textContent, /FittingRecess/);
-  assert.doesNotMatch(container.textContent, /Hidden choice/);
+  assert.doesNotMatch(
+    container.textContent,
+    /Hidden choice|Your selection|Current product quote/,
+  );
 });
 
 test("native changes update the stage and stale prices disappear during asynchronous pricing", async (t) => {
@@ -214,10 +276,13 @@ test("navigation keeps a marked prior selection with no quote, restores cancella
   const ctx = await setup(t);
   ctx.update({ pending: true });
   await until(
-    () => ctx.container.textContent.includes("Previously selected"),
-    "Previous selection is labelled",
+    () => ctx.container.textContent.includes("Opening your next page"),
+    "Pending navigation has a status without a selection eyebrow",
   );
-  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price"),
+    null,
+  );
   assert.match(ctx.container.textContent, /Calm linen blind/);
   ctx.update({ pending: false });
   await until(
@@ -268,7 +333,8 @@ test("stage cleans up navigation subscriptions and queued theme observations on 
   ctx.dispose();
   assert.equal(ctx.listeners.size, 0);
   ctx.update({ pending: true });
-  ctx.window.document.querySelector("main").innerHTML = markup("Removed stage");
+  ctx.window.document.querySelector("main").innerHTML =
+    markup("Removed stage");
   await delay(35);
   assert.equal(ctx.container.textContent, "");
 });
@@ -279,7 +345,10 @@ test("selected imagery survives the empty DOM between a PDP and another backgrou
   ctx.window.document.querySelector("main").replaceChildren();
   await delay(40);
   assert.equal(ctx.container.querySelector("img").src, image);
-  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price"),
+    null,
+  );
   ctx.window.history.pushState({}, "", "/products/unselected");
   ctx.window.document.querySelector("main").innerHTML = markup(
     "Not the selected blind",
@@ -288,7 +357,10 @@ test("selected imagery survives the empty DOM between a PDP and another backgrou
   await delay(40);
   assert.equal(ctx.container.querySelector("img").src, image);
   assert.doesNotMatch(ctx.container.textContent, /Not the selected blind/);
-  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price"),
+    null,
+  );
 });
 
 test("a restored selection loads its own large image once from another page and retains it through navigation", async (t) => {
@@ -304,7 +376,10 @@ test("a restored selection loads its own large image once from another page and 
   assert.equal(ctx.galleryReads.length, 1);
   assert.equal(ctx.galleryReads[0].url, "/products/linen");
   assert.ok(ctx.galleryReads[0].signal);
-  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price"),
+    null,
+  );
   ctx.update({ pending: true });
   await delay(10);
   ctx.window.history.pushState({}, "", "/");
@@ -347,7 +422,10 @@ test("replacement and ending release image work and cannot display an obsolete r
   );
   assert.equal(ctx.galleryReads[2].signal.aborted, true);
   pending[2](
-    gallery("https://shop.example/cdn/shop/files/late.jpg", "/products/third"),
+    gallery(
+      "https://shop.example/cdn/shop/files/late.jpg",
+      "/products/third",
+    ),
   );
   await delay(10);
   assert.equal(ctx.container.textContent, "");
@@ -431,7 +509,10 @@ test("live supporting and feature images update the gallery without losing it on
       .src,
     /remote.jpg/,
   );
-  assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price"),
+    null,
+  );
 });
 
 test("hidden selected-product panels defer and cancel gallery recovery until visible", async (t) => {
@@ -454,7 +535,10 @@ test("hidden selected-product panels defer and cancel gallery recovery until vis
   await delay(10);
   assert.equal(ctx.container.querySelector("img"), null);
   ctx.update({ hidden: false });
-  await until(() => pending.length === 2, "Reopening restores current imagery");
+  await until(
+    () => pending.length === 2,
+    "Reopening restores current imagery",
+  );
   pending[1](gallery("https://shop.example/cdn/shop/files/current.jpg"));
   await until(
     () => ctx.container.querySelector("img")?.src.includes("current.jpg"),
@@ -486,4 +570,217 @@ test("restoring mismatched gallery data cannot display another product", async (
   await delay(10);
   assert.equal(ctx.container.querySelector("img"), null);
   assert.equal(ctx.galleryReads.length, 1);
+});
+
+async function expandSelectedProduct(ctx) {
+  const trigger = ctx.container.querySelector(
+    '[aria-label="Expand selected product"]',
+  );
+  assert.ok(trigger, "Mobile selected product exposes expansion");
+  trigger.click();
+  await until(
+    () => ctx.container.querySelector(".roman-product-expanded[open]"),
+    "Expanded product is a native modal",
+  );
+  return ctx.container.querySelector(".roman-product-expanded");
+}
+
+test("mobile selection stays compact and expands the existing gallery without fetching or changing the theme", async (t) => {
+  const ctx = await setup(t, { mobile: true });
+  const thumbnail = ctx.container.querySelector("img");
+  assert.ok(thumbnail);
+  assert.match(ctx.container.textContent, /Calm linen blind/);
+  assert.match(ctx.container.textContent, /45\.00/);
+  assert.match(ctx.container.textContent, /500 × 600 mm/);
+  assert.doesNotMatch(
+    ctx.container.textContent,
+    /Your selection|Current product quote/,
+  );
+  assert.equal(ctx.container.querySelector(".roman-product-gallery"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-configuration"),
+    null,
+  );
+  assert.equal(ctx.container.querySelector(".roman-gallery-controls"), null);
+  assert.equal(ctx.container.querySelector(".roman-gallery-enlarge"), null);
+
+  const nativeGallery = ctx.window.document.querySelector("swiper-container");
+  nativeGallery.insertAdjacentHTML(
+    "beforeend",
+    '<img data-testid="pdp-product-image-main" src="/cdn/shop/files/detail.jpg?width=1200">',
+  );
+  await delay(35);
+  const readsBefore = ctx.galleryReads.length;
+  const themeBefore = ctx.window.document.querySelector("main").innerHTML;
+  const dialog = await expandSelectedProduct(ctx);
+  assert.equal(ctx.dialogs.length, 1);
+  assert.equal(
+    ctx.container.activeElement.getAttribute("aria-label"),
+    "Collapse selected product",
+  );
+  assert.ok(dialog.querySelector(".roman-product-gallery"));
+  assert.equal(
+    dialog.querySelector(".roman-product-stage-configuration").open,
+    true,
+  );
+  assert.match(dialog.querySelector("dl").textContent, /FittingRecess/);
+  assert.equal(
+    dialog.querySelector(".roman-gallery-enlarge"),
+    null,
+    "Expansion owns the mobile full-screen view without nested image zoom",
+  );
+  assert.ok(dialog.querySelector('[aria-label="Next product image"]'));
+  dialog.querySelector('[aria-label="Next product image"]').click();
+  await until(
+    () =>
+      dialog
+        .querySelector(".roman-gallery-viewport [data-current] img")
+        ?.src.includes("detail.jpg"),
+    "Expanded product uses the shared gallery controls",
+  );
+  assert.equal(ctx.galleryReads.length, readsBefore);
+  assert.equal(
+    ctx.window.document.querySelector("main").innerHTML,
+    themeBefore,
+  );
+  dialog.querySelector('[aria-label="Collapse selected product"]').click();
+  await until(
+    () => !ctx.container.querySelector(".roman-product-expanded"),
+    "Collapse removes the modal",
+  );
+  assert.equal(dialog.open, false);
+  assert.equal(ctx.closedDialogs.length, 1);
+  assert.equal(
+    ctx.container.activeElement.getAttribute("aria-label"),
+    "Expand selected product",
+  );
+  assert.equal(ctx.container.querySelector(".roman-product-gallery"), null);
+  assert.equal(ctx.galleryReads.length, readsBefore);
+});
+
+test("expanded mobile selection reflects current native measurements, quote and choices", async (t) => {
+  const ctx = await setup(t, { mobile: true });
+  const dialog = await expandSelectedProduct(ctx);
+  const form = ctx.window.document.querySelector("form");
+  form.classList.add("loading");
+  await until(
+    () => !dialog.querySelector(".roman-product-stage-price"),
+    "Expanded view hides stale pricing",
+  );
+  form.classList.remove("loading");
+  form.querySelector("[data-width-input]").value = "750";
+  form.querySelector('[value="Exact##7"]').checked = true;
+  form.querySelector("[data-dynamic-price]").textContent = "£70.00";
+  form.dispatchEvent(new ctx.window.Event("change", { bubbles: true }));
+  await until(
+    () => dialog.textContent.includes("£70.00"),
+    "Expanded view receives live pricing",
+  );
+  assert.match(dialog.textContent, /750 × 600 mm/);
+  assert.match(dialog.querySelector("dl").textContent, /FittingExact/);
+  assert.equal(
+    ctx.dialogs.length,
+    1,
+    "A native update does not reopen or replace the modal",
+  );
+});
+
+test("native cancellation closes the expanded product and modal keys never escape to the assistant shell", async (t) => {
+  const ctx = await setup(t, { mobile: true });
+  const dialog = await expandSelectedProduct(ctx);
+  for (const key of ["Escape", "Tab"]) {
+    dialog.querySelector("button").dispatchEvent(
+      new ctx.window.KeyboardEvent("keydown", {
+        key,
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      }),
+    );
+  }
+  assert.deepEqual(ctx.shellKeys, []);
+  const cancel = new ctx.window.Event("cancel", { cancelable: true });
+  dialog.dispatchEvent(cancel);
+  assert.equal(cancel.defaultPrevented, true);
+  await until(
+    () => !ctx.container.querySelector(".roman-product-expanded"),
+    "Native cancel collapses only the product view",
+  );
+  assert.equal(dialog.open, false);
+  assert.ok(
+    ctx.container.querySelector("aside"),
+    "Roman's active selection remains mounted",
+  );
+  assert.equal(
+    ctx.container.activeElement.getAttribute("aria-label"),
+    "Expand selected product",
+  );
+});
+
+test("expanded product releases its native modal on hiding, shell closure, replacement, desktop resize and unmount", async (t) => {
+  for (const transition of [
+    "hide",
+    "shell",
+    "replace",
+    "desktop",
+    "unmount",
+  ]) {
+    await t.test(transition, async (t) => {
+      const ctx = await setup(t, { mobile: true });
+      const dialog = await expandSelectedProduct(ctx);
+      if (transition === "hide") ctx.update({ hidden: true });
+      else if (transition === "shell") ctx.shell.hidden = true;
+      else if (transition === "replace")
+        ctx.replace("/products/replacement", "Another blind");
+      else if (transition === "desktop") ctx.setMobile(false);
+      else ctx.dispose();
+      await until(
+        () => !dialog.open,
+        "Leaving the mobile expanded view releases native modality",
+      );
+      assert.equal(
+        ctx.container.querySelector(".roman-product-expanded"),
+        null,
+      );
+      assert.equal(
+        ctx.closedDialogs.filter((item) => item === dialog).length,
+        1,
+      );
+      if (transition === "hide") {
+        ctx.update({ hidden: false });
+        await until(
+          () =>
+            ctx.container.querySelector(
+              '[aria-label="Expand selected product"]',
+            ),
+          "Reopening uses compact view",
+        );
+        assert.equal(
+          ctx.container.querySelector(".roman-product-expanded"),
+          null,
+        );
+      } else if (transition === "replace") {
+        await until(
+          () => ctx.container.textContent.includes("Another blind"),
+          "Replacement stays collapsed",
+        );
+      } else if (transition === "desktop") {
+        assert.equal(
+          ctx.container.querySelector(
+            '[aria-label="Expand selected product"]',
+          ),
+          null,
+        );
+        assert.ok(ctx.container.querySelector(".roman-product-gallery"));
+        assert.ok(
+          ctx.container.querySelector(".roman-gallery-enlarge"),
+          "Desktop keeps the existing image zoom",
+        );
+      }
+      ctx.dispose();
+      assert.equal(ctx.listeners.size, 0);
+      for (const media of ctx.mediaQueries.values())
+        assert.equal(media.listeners.size, 0);
+    });
+  }
 });

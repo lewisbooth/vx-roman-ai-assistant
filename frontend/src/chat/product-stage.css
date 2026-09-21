@@ -38,15 +38,6 @@
 .roman-product-stage-content {
   padding: 1.4rem 0.25rem 0;
 }
-.roman-product-stage-eyebrow {
-  margin: 0 0 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font:
-    500 0.68rem/1.4 system-ui,
-    sans-serif;
-  color: #866c5f;
-}
 .roman-product-stage h2 {
   margin: 0;
   font-size: clamp(1.35rem, 1.8vw, 2.15rem);
@@ -125,14 +116,20 @@
 
 @media (max-width: 1023px) {
   .roman-product-stage {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     width: 100%;
     max-width: none;
-    max-height: calc(var(--roman-visible-height, 100dvh) * 0.24);
+    max-height: none;
+    overflow: hidden;
+    position: relative;
+    z-index: 2;
+    background: #f7f5ef;
+    border-bottom: 1px solid #4e0e0e16;
+    box-shadow: 0 10px 18px -14px #402b2b66;
     display: grid;
-    grid-template-columns: 88px minmax(0, 1fr);
-    gap: 1rem;
-    padding: 12px 24px;
+    grid-template-columns: 88px minmax(0, 1fr) 44px;
+    gap: 12px;
+    padding: 12px 16px;
   }
   .roman-product-stage-image {
     width: 88px;
@@ -142,12 +139,8 @@
   .roman-product-stage-content {
     padding: 0;
   }
-  .roman-product-stage-eyebrow {
-    font-size: 0.6rem;
-    margin-bottom: 0.35rem;
-  }
   .roman-product-stage h2 {
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     text-wrap: initial;
   }
   .roman-product-stage-price {
@@ -173,12 +166,6 @@
     border-radius: 0;
     padding: 0.4rem;
     font-size: 0.7rem;
-  }
-}
-
-@media (max-width: 767px) {
-  .roman-product-stage {
-    border-bottom: 1px solid #4e0e0e22;
   }
 }
 
@@ -377,5 +364,120 @@
     .roman-gallery-zoom {
       padding: 12px;
     }
+  }
+}
+
+.roman-product-expand {
+  display: grid;
+  place-content: center;
+  align-self: start;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #4e0e0e;
+  background: transparent;
+  cursor: pointer;
+}
+.roman-product-expand:hover {
+  background: #ebe6dc;
+}
+.roman-product-expand:focus-visible {
+  outline: 2px solid #4e0e0e;
+  outline-offset: -3px;
+}
+.roman-product-expand svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.roman-product-thumbnail img {
+  display: block;
+  object-fit: cover;
+}
+.roman-product-expanded {
+  position: fixed;
+  inset: var(--roman-visible-top, 0px) 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: var(--roman-visible-height, 100dvh);
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #f7f5ef;
+  color: #4e0e0e;
+  font: inherit;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.roman-product-expanded::backdrop {
+  background: #f7f5ef;
+}
+.roman-product-expanded > header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  padding: max(8px, env(safe-area-inset-top)) 12px 8px;
+  background: #f7f5ef;
+}
+.roman-product-expanded .roman-product-stage-image {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 0;
+}
+.roman-product-expanded .roman-gallery-controls {
+  justify-content: center;
+  gap: 16px;
+  font-size: 13px;
+}
+.roman-product-expanded .roman-gallery-controls button {
+  width: 44px;
+}
+.roman-product-expanded .roman-gallery-thumbnails {
+  display: flex;
+  padding: 2px 16px;
+}
+.roman-product-expanded .roman-product-stage-content {
+  padding: 24px 24px calc(24px + env(safe-area-inset-bottom));
+}
+.roman-product-expanded h2 {
+  font-size: 1.6rem;
+  text-wrap: balance;
+}
+.roman-product-expanded .roman-product-stage-price {
+  margin-top: 12px;
+}
+.roman-product-expanded .roman-product-stage-price > span {
+  font-size: 1.5rem;
+}
+.roman-product-expanded .roman-product-stage-measurements {
+  margin-top: 12px;
+  font-size: 1.05rem;
+}
+.roman-product-expanded .roman-product-stage-configuration {
+  margin-top: 20px;
+  font-size: 0.9rem;
+}
+.roman-product-expanded .roman-product-stage-configuration dl {
+  max-height: none;
+  overflow: visible;
+}
+@media (max-width: 1023px) {
+  .roman-product-stage > .roman-product-stage-content h2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 }
