@@ -7,6 +7,7 @@ import OpenAI from "openai";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   Response,
+  ResponseError,
   ResponseInput,
   ResponseInputFile,
 } from "openai/resources/responses/responses";
@@ -100,6 +101,74 @@ import {
 
 export const TEXT_MODEL = "gpt-5.6-luna";
 export const TEXT_SERVICE_TIER = "fast";
+
+const incompleteReasons = [
+  "max_output_tokens",
+  "max_messages",
+  "content_filter",
+  "steered",
+] as const satisfies readonly NonNullable<
+  Response["incomplete_details"]
+>["reason"][];
+const responseErrorCodes = [
+  "server_error",
+  "rate_limit_exceeded",
+  "invalid_prompt",
+  "data_residency_mismatch",
+  "bio_policy",
+  "misalignment_policy_violation",
+  "vector_store_timeout",
+  "invalid_image",
+  "invalid_image_format",
+  "invalid_base64_image",
+  "invalid_image_url",
+  "image_too_large",
+  "image_too_small",
+  "image_parse_error",
+  "image_content_policy_violation",
+  "invalid_image_mode",
+  "image_file_too_large",
+  "unsupported_image_media_type",
+  "empty_image_file",
+  "failed_to_download_image",
+  "image_file_not_found",
+] as const satisfies readonly ResponseError["code"][];
+
+/** Provider bodies may contain customer data; retain only known categories. */
+export class ModelResponseError extends Error {
+  readonly diagnostics: {
+    providerStatus: "incomplete" | "failed" | "error" | "stream_ended";
+    incompleteReason?: (typeof incompleteReasons)[number] | "unknown";
+    providerCode?: (typeof responseErrorCodes)[number] | "unknown";
+  };
+
+  constructor(
+    status: ModelResponseError["diagnostics"]["providerStatus"],
+    response?: Response,
+    eventCode?: string | null,
+  ) {
+    super("The model did not complete its reply.");
+    this.name = "ModelResponseError";
+    const reason = response?.incomplete_details?.reason;
+    const code = response?.error?.code ?? eventCode;
+    this.diagnostics = {
+      providerStatus: status,
+      ...(status === "incomplete"
+        ? {
+            incompleteReason:
+              incompleteReasons.find((known) => known === reason) ?? "unknown",
+          }
+        : {}),
+      ...(code != null || status === "failed" || status === "error"
+        ? {
+            providerCode:
+              responseErrorCodes.find((known) => known === code) ?? "unknown",
+          }
+        : {}),
+    };
+  }
+}
+
 type ModelToolOutcome =
   BrowserToolOutcome | MeasurementToolResult | ProductConfigurationResult;
 
@@ -418,6 +487,7 @@ export async function generateReply(
     let terminalReceived = false;
     let text = "";
     let completed: Response | undefined;
+    let repairIncompleteAnswer = false;
     try {
       signal.throwIfAborted();
       const stream = await client.responses.create(
@@ -545,21 +615,48 @@ export async function generateReply(
             .join("");
           completed = event.response;
           break;
+        } else if (event.type === "error") {
+          throw new ModelResponseError("error", undefined, event.code);
+        } else if (
+          event.type === "response.incomplete" &&
+          event.response?.incomplete_details?.reason === "max_messages" &&
+          !answerRepair &&
+          !checkoutHandoff &&
+          input.some((item) => item.type === "function_call_output")
+        ) {
+          // A finished tool round may still need its terminal customer reply.
+          // Never retain or execute an incomplete response's output.
+          repairIncompleteAnswer = true;
+          break;
         } else if (
           event.type === "response.failed" ||
-          event.type === "response.incomplete" ||
-          event.type === "error"
+          event.type === "response.incomplete"
         ) {
-          throw new Error("The model did not complete its reply.");
+          throw new ModelResponseError(
+            event.type === "response.failed" ? "failed" : "incomplete",
+            event.response,
+          );
         }
       }
     } finally {
       if (!terminalReceived)
         await onUsage?.({ ...attempt, status: "unavailable" });
     }
-    if (!completed)
-      throw new Error("The model connection ended before its reply completed.");
     signal.throwIfAborted();
+    if (repairIncompleteAnswer) {
+      answerRepair = true;
+      console.warn("[Roman] Repairing incomplete reply.", {
+        providerStatus: "incomplete",
+        incompleteReason: "max_messages",
+      });
+      input.push({
+        role: "developer",
+        content:
+          "The previous response ended before producing a complete answer request; none of its output was displayed or executed. Use the completed tool results already in this turn to finish once with ask_question or ask_measurement. Preserve the confirmed outcome in message and ask the next useful question. Do not repeat completed work or claim that unfinished work happened; only an answer request is available.",
+      });
+      continue;
+    }
+    if (!completed) throw new ModelResponseError("stream_ended");
     const toolCalls = completed.output.filter(
       (item) => item.type === "function_call",
     );

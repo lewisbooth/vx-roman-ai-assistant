@@ -52,7 +52,7 @@ const runnerBundle = await build({
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
-            ? `export const TEXT_MODEL="gpt-5.6-luna"; export const generateReply=(...args)=>mock.generate(...args);`
+            ? `export const TEXT_MODEL="gpt-5.6-luna"; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}`
             : path.endsWith("browser-tools.server")
               ? `export const requestBrowserTool=()=>{throw new Error("Unexpected browser call")};`
               : path.endsWith("service.server")

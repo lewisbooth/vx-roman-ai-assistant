@@ -908,6 +908,369 @@ test("provider failure, incomplete output, empty output and premature stream end
   }
 });
 
+test("a failed follow-up after showing Cart logs only provider categories without replaying work", async (t) => {
+  const cases = [
+    ...["max_output_tokens", "content_filter", "steered"].map(
+      (reason) => ({
+        name: reason,
+        event: "response.incomplete",
+        details: { incomplete_details: { reason } },
+        diagnostic: { providerStatus: "incomplete", incompleteReason: reason },
+      }),
+    ),
+    {
+      name: "unknown provider fields",
+      event: "response.incomplete",
+      details: {
+        incomplete_details: { reason: "PRIVATE_REASON" },
+        error: { code: "PRIVATE_CODE", message: "PRIVATE_PROVIDER_BODY" },
+      },
+      diagnostic: {
+        providerStatus: "incomplete",
+        incompleteReason: "unknown",
+        providerCode: "unknown",
+      },
+    },
+    {
+      name: "missing incomplete details",
+      event: "response.incomplete",
+      details: {},
+      diagnostic: { providerStatus: "incomplete", incompleteReason: "unknown" },
+    },
+    {
+      name: "known response error",
+      event: "response.failed",
+      details: {
+        error: { code: "server_error", message: "PRIVATE_PROVIDER_BODY" },
+      },
+      diagnostic: { providerStatus: "failed", providerCode: "server_error" },
+    },
+    {
+      name: "stream error",
+      event: "error",
+      code: "rate_limit_exceeded",
+      diagnostic: {
+        providerStatus: "error",
+        providerCode: "rate_limit_exceeded",
+      },
+    },
+    {
+      name: "unknown stream error",
+      event: "error",
+      code: "PRIVATE_CODE",
+      diagnostic: { providerStatus: "error", providerCode: "unknown" },
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const env = setup();
+      env.mock.executeTool = async (_id, _assistant, _call, name) => {
+        assert.equal(name, "show_view");
+        return { status: "shown", view: "cart" };
+      };
+      const failed = {
+        type: item.event,
+        message: "PRIVATE_PROVIDER_BODY",
+        code: item.code,
+        response: {
+          model: "gpt-5.6-luna",
+          ...item.details,
+          output: [catalogCall("unconfirmed", "clear_cart", {})],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            output_tokens_details: { reasoning_tokens: 30 },
+          },
+        },
+      };
+      env.streams.push(
+        events(
+          completed("", {
+            output: [catalogCall("show-cart", "show_view", { view: "cart" })],
+          }),
+        ),
+        events(failed),
+      );
+      await env.api.startTurn("cart-follow-up", {
+        ...firstInput,
+        text: "View cart",
+      });
+      await flush();
+      const snapshot = await env.api.readConversation("cart-follow-up");
+      assert.equal(snapshot.busy, false);
+      assert.equal(snapshot.messages[1].status, "failed");
+      assert.match(snapshot.messages[1].error, /could not finish this reply/);
+      assert.equal(
+        env.calls.requests.length,
+        2,
+        "No automatic retry after a confirmed view change",
+      );
+      assert.equal(
+        env.calls.browserTools.length,
+        1,
+        "Incomplete output must never execute another action",
+      );
+      assert.deepEqual(plain(env.logs), [
+        [
+          "[Roman] Text reply failed.",
+          {
+            conversationId: "cart-follow-up",
+            category: "ModelResponseError",
+            ...item.diagnostic,
+          },
+        ],
+      ]);
+      assert.doesNotMatch(JSON.stringify([snapshot, env.logs]), /PRIVATE_/);
+      assert.equal(env.calls.usage.length, 4);
+      assert.equal(
+        env.calls.usage.at(-1)[2].status,
+        item.event === "error"
+          ? "unavailable"
+          : item.event.slice("response.".length),
+      );
+      if (item.event !== "error") {
+        assert.equal(env.calls.usage.at(-1)[2].outputTokens, 50);
+        assert.equal(env.calls.usage.at(-1)[2].reasoningTokens, 30);
+      }
+    });
+  }
+});
+
+function incompleteAnswer() {
+  return {
+    type: "response.incomplete",
+    response: {
+      model: "gpt-5.6-luna",
+      incomplete_details: { reason: "max_messages" },
+      output: [
+        catalogCall("unconfirmed-mutation", "clear_cart", {
+          private: "PRIVATE_INCOMPLETE_OUTPUT",
+        }),
+      ],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        output_tokens_details: { reasoning_tokens: 30 },
+      },
+    },
+  };
+}
+
+for (const mode of ["text", "voice"]) {
+  test(`max_messages after a confirmed Cart view gets one terminal-only repair: ${mode}`, async () => {
+    const env = setup(),
+      executions = [],
+      visible = [],
+      usage = [];
+    env.streams.push(
+      events(
+        completed("", {
+          output: [catalogCall("show-cart", "show_view", { view: "cart" })],
+        }),
+      ),
+      events(incompleteAnswer()),
+      events(completed("Your cart is open.")),
+    );
+    const reply = await env.api.generateReply(
+      [{ role: "user", text: "View cart" }],
+      (value) => visible.push(value),
+      new AbortController().signal,
+      async (_id, name) => {
+        executions.push(name);
+        return { status: "shown", view: "cart" };
+      },
+      mode,
+      async (value) => usage.push(plain(value)),
+    );
+    assert.deepEqual(executions, ["show_view"]);
+    assert.equal(env.calls.requests.length, 3);
+    assert.deepEqual(allowedToolNames(env.calls.requests[2].input), [
+      "ask_question",
+      "ask_measurement",
+    ]);
+    assert.equal(env.calls.requests[2].input.tool_choice.mode, "required");
+    const inputs = env.calls.requests[2].input.input;
+    const result = inputs.find(
+      (item) => item.type === "function_call_output",
+    );
+    assert.deepEqual(JSON.parse(result.output), {
+      status: "shown",
+      view: "cart",
+    });
+    assert.doesNotMatch(
+      JSON.stringify(inputs),
+      /unconfirmed-mutation|PRIVATE_INCOMPLETE_OUTPUT/,
+    );
+    assert.deepEqual(visible, [reply.text]);
+    assert.match(reply.text, /^Your cart is open\./);
+    assertNextActions(reply);
+    assert.deepEqual(
+      usage.map(({ status }) => status),
+      [
+        "pending",
+        "completed",
+        "pending",
+        "incomplete",
+        "pending",
+        "completed",
+      ],
+    );
+    assert.equal(usage[3].outputTokens, 50);
+    assert.equal(usage[3].reasoningTokens, 30);
+    assert.deepEqual(plain(env.logs), [
+      [
+        "[Roman] Repairing incomplete reply.",
+        { providerStatus: "incomplete", incompleteReason: "max_messages" },
+      ],
+    ]);
+  });
+}
+
+test("terminal recovery shares one repair budget and rejects any further action without dispatch", async (t) => {
+  for (const failure of [
+    "incomplete_again",
+    "action_during_repair",
+    "invalid_answer",
+    "already_repaired",
+  ]) {
+    await t.test(failure, async () => {
+      const env = setup(),
+        executions = [];
+      const plainReply = completed("", {
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "Your cart is open." }],
+          },
+        ],
+      });
+      const final =
+        failure === "action_during_repair"
+          ? completed("", {
+              output: [catalogCall("another-action", "clear_cart", {})],
+            })
+          : failure === "invalid_answer"
+            ? completed("", {
+                output: [
+                  questionCall({
+                    message: "",
+                    question: "Next?",
+                    answers: [],
+                  }),
+                ],
+              })
+            : incompleteAnswer();
+      env.streams.push(
+        events(
+          completed("", {
+            output: [catalogCall("show-cart", "show_view", { view: "cart" })],
+          }),
+        ),
+        events(
+          failure === "already_repaired" ? plainReply : incompleteAnswer(),
+        ),
+        events(final),
+      );
+      await assert.rejects(
+        env.api.generateReply(
+          [],
+          () => assert.fail("No incomplete answer may be displayed"),
+          new AbortController().signal,
+          async (_id, name) => {
+            executions.push(name);
+            return { status: "shown", view: "cart" };
+          },
+        ),
+      );
+      assert.deepEqual(executions, ["show_view"]);
+      assert.equal(env.calls.requests.length, 3);
+      assert.deepEqual(allowedToolNames(env.calls.requests[2].input), [
+        "ask_question",
+        "ask_measurement",
+      ]);
+      assert.doesNotMatch(
+        JSON.stringify(env.calls.requests[2].input.input),
+        /unconfirmed-mutation|PRIVATE_INCOMPLETE_OUTPUT/,
+      );
+    });
+  }
+});
+
+test("max_messages cannot skip an initial tool decision or restart checkout with an answer widget", async (t) => {
+  for (const checkout of [false, true]) {
+    await t.test(
+      checkout ? "checkout sign-off" : "no completed work",
+      async () => {
+        const env = setup(),
+          executions = [];
+        if (checkout)
+          env.streams.push(
+            events(
+              completed("", {
+                output: [catalogCall("checkout", "open_checkout", {})],
+              }),
+            ),
+          );
+        env.streams.push(events(incompleteAnswer()));
+        await assert.rejects(
+          env.api.generateReply(
+            [],
+            () => assert.fail("Incomplete output cannot be displayed"),
+            new AbortController().signal,
+            async (_id, name) => {
+              executions.push(name);
+              return { status: "opened" };
+            },
+          ),
+          (error) => {
+            assert.deepEqual(plain(error.diagnostics), {
+              providerStatus: "incomplete",
+              incompleteReason: "max_messages",
+            });
+            return true;
+          },
+        );
+        assert.equal(env.calls.requests.length, checkout ? 2 : 1);
+        assert.deepEqual(executions, checkout ? ["open_checkout"] : []);
+        assert.deepEqual(env.logs, []);
+      },
+    );
+  }
+});
+
+test("cancellation after incomplete usage is recorded cannot start terminal recovery", async () => {
+  const env = setup(),
+    controller = new AbortController(),
+    usage = [];
+  env.streams.push(
+    events(
+      completed("", {
+        output: [catalogCall("show-cart", "show_view", { view: "cart" })],
+      }),
+    ),
+    events(incompleteAnswer()),
+  );
+  await assert.rejects(
+    env.api.generateReply(
+      [],
+      () => assert.fail("Cancelled output cannot be displayed"),
+      controller.signal,
+      async () => ({ status: "shown", view: "cart" }),
+      "text",
+      async (value) => {
+        usage.push(plain(value));
+        if (value.status === "incomplete") controller.abort();
+      },
+    ),
+    { name: "AbortError" },
+  );
+  assert.equal(env.calls.requests.length, 2);
+  assert.equal(usage.at(-1).status, "incomplete");
+  assert.deepEqual(env.logs, []);
+});
+
 function events(...values) {
   return (async function* () {
     yield* values;

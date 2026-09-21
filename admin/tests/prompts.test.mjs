@@ -414,20 +414,23 @@ test("recommendation discovery asks only missing room and requirements and prese
     assert.match(prompt, /Before recommending products, establish which room the customer is shopping for and their main requirements/);
     assert.match(prompt, /Reuse details already supplied; ask only for what is missing, one useful quick-answer question at a time/);
     assert.match(prompt, /A room alone does not imply blackout, moisture resistance or another requirement/);
-    assert.match(prompt, /Do not run a fixed checklist or delay recommendations when the room and relevant needs are already clear/);
+    assert.match(prompt, /Do not run a fixed checklist or repeat intake when the room and relevant needs are already clear/);
     assert.match(prompt, /A direct request to choose or configure a specific blind, revisit known cards, or answer a factual question is not a new recommendation intake/);
     assert.match(prompt, /A request to see more preserves the established room, requirements and filters rather than restarting intake/);
-    assert.match(prompt, /When the blind type is undecided, help compare meaningfully different suitable product families/);
-    assert.match(prompt, /Either show a varied, evidence-backed selection[\s\S]*or use ask_question to narrow the category/);
-    assert.match(prompt, /Prefer that category decision over a colour-only question while the type remains open/);
+    assert.match(prompt, /When the blind type is undecided, first use ask_question to offer two or three relevant product categories plus "Show me everything", with at most four answers in total, before showing a broad recommendation carousel/);
+    assert.match(prompt, /An explicit request to browse across categories, including "Show me everything", resolves this choice for the current flow, even when supplied upfront; do not ask it again/);
+    assert.match(prompt, /It means a varied selection relevant to the established room, requirements and fitting constraints, not removal of those filters/);
+    assert.match(prompt, /For that broad discovery, aim for up to ten distinct, relevant verified products across suitable families/);
+    assert.match(prompt, /Prefer this category choice over a colour-only question/);
     assert.match(prompt, /broaden the search across relevant families while retaining the confirmed requirements and fitting constraints/);
     assert.match(prompt, /Never add unsuitable products merely for variety/);
-    assert.match(prompt, /Reuse an explicit blind type, chosen product or established preference; do not reopen it, force another intake turn/);
+    assert.match(prompt, /Reuse an explicit blind type, chosen product or established preference; do not reopen it or force another intake turn/);
+    assert.match(prompt, /Never add unsuitable products merely for variety or to reach ten; show fewer when fewer are verified/);
     assert.match(prompt, /Once the category is established, use ask_question for the next useful colour or style preference when it helps narrow the choice/);
-    assert.doesNotMatch(prompt, /Search with what you already know instead of putting another question/);
+    assert.doesNotMatch(prompt, /Search with what you already know instead of putting another question|Either show a varied, evidence-backed selection/);
   }
   assert.match(romanVoicePrompt("marin"), /Before new recommendations, establish the room and main requirements/);
-  assert.match(romanVoicePrompt("marin"), /When blind type is undecided, delegate a varied suitable-family comparison or a useful category question before defaulting to colour choices/);
+  assert.match(romanVoicePrompt("marin"), /When blind type is undecided, delegate the category-choice question with relevant families and Show me everything before broad results, unless the customer already requested cross-category browsing/);
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
     assert.doesNotMatch(prompt, /\bTerra\b/);
   }

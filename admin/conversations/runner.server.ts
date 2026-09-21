@@ -9,6 +9,7 @@ import { ConversationError } from "./errors.server";
 import { requestBrowserTool } from "./browser-tools.server";
 import {
   generateReply,
+  ModelResponseError,
   TEXT_MODEL,
   type ModelReply,
   type GuideReuse,
@@ -313,6 +314,7 @@ async function completeTurn(
     console.error("[Roman] Text reply failed.", {
       conversationId: id,
       category: error instanceof Error ? error.name : "UnknownError",
+      ...(error instanceof ModelResponseError ? error.diagnostics : {}),
     });
     try {
       await finishTurn(id, assistantId, {
