@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -17,6 +18,7 @@ function ProductCardsView({
   session,
   onChoose,
   disabled,
+  deferred = false,
   onContentChange,
 }: {
   productIds: readonly string[];
@@ -24,6 +26,8 @@ function ProductCardsView({
   session: ConversationClient;
   onChoose?: (carouselId: string, product: CatalogProduct) => Promise<void>;
   disabled?: boolean;
+  /** Prepare a fresh widget while preceding reply text is still revealing. */
+  deferred?: boolean;
   onContentChange: () => void;
 }) {
   const ids = productIds.join(",");
@@ -36,13 +40,37 @@ function ProductCardsView({
   const currentResult = loaded?.ids === ids && loaded.session === session;
   const result = currentResult ? loaded.result : undefined;
   const error = currentResult ? loaded.error : undefined;
+  const [resolvedImages, setResolvedImages] = useState<{
+    ids: string;
+    session: ConversationClient;
+    urls: Set<string>;
+  }>();
+  const imageLimit =
+    2 +
+    (resolvedImages?.ids === ids && resolvedImages.session === session
+      ? resolvedImages.urls.size
+      : 0);
+  const imageResolved = useCallback(
+    (url: string) => {
+      setResolvedImages((previous) => {
+        const current = previous?.ids === ids && previous.session === session;
+        if (current && previous.urls.has(url)) return previous;
+        return {
+          ids,
+          session,
+          urls: new Set([...(current ? previous.urls : []), url]),
+        };
+      });
+    },
+    [ids, session],
+  );
   const [attempt, setAttempt] = useState(0);
   const [choosing, setChoosing] = useState(false);
   const [choiceError, setChoiceError] = useState<string>();
   const choosingRef = useRef(false);
 
   async function choose(product: CatalogProduct) {
-    if (!onChoose || disabled || choosingRef.current) return;
+    if (!onChoose || disabled || deferred || choosingRef.current) return;
     choosingRef.current = true;
     setChoosing(true);
     setChoiceError(undefined);
@@ -60,25 +88,69 @@ function ProductCardsView({
     }
   }
   const target = useRef<HTMLDivElement>(null);
-  const [nearby, setNearby] = useState(() => !window.IntersectionObserver);
+  const [nearby, setNearby] = useState(
+    () => deferred || !window.IntersectionObserver,
+  );
+  useLayoutEffect(() => {
+    if (deferred) setNearby(true);
+  }, [deferred]);
+  const [visible, setVisible] = useState(true);
+
+  useLayoutEffect(() => {
+    const ancestors: Element[] = [];
+    let parent =
+      target.current?.closest(".roman-chat-history") ??
+      target.current?.parentElement;
+    while (parent) {
+      ancestors.push(parent);
+      parent = parent.parentElement;
+    }
+    // The widget's own hidden flag deliberately does not prevent preloading.
+    // Hidden Chat, Settings or the assistant shell still cancel optional work.
+    const update = () =>
+      setVisible(
+        !document.hidden &&
+          !ancestors.some((element) => element.hasAttribute("hidden")),
+      );
+    update();
+    const observer = new MutationObserver(update);
+    ancestors.forEach((element) =>
+      observer.observe(element, {
+        attributes: true,
+        attributeFilter: ["hidden"],
+      }),
+    );
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, []);
+  const active = visible && (nearby || deferred);
 
   useEffect(() => {
-    if (!window.IntersectionObserver || !target.current) return;
+    if (deferred || !window.IntersectionObserver || !target.current) return;
+    let current = true;
     const observer = new IntersectionObserver(
-      ([entry]) => setNearby(entry.isIntersecting),
+      ([entry]) => {
+        if (current) setNearby(entry.isIntersecting);
+      },
       {
         root: target.current.closest(".roman-chat-scroll"),
         rootMargin: "200px 0px",
       },
     );
     observer.observe(target.current);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      current = false;
+      observer.disconnect();
+    };
+  }, [deferred]);
 
   useLayoutEffect(onContentChange, [ids, result, error, onContentChange]);
 
   useEffect(() => {
-    if (!nearby || result) return;
+    if (!active || result) return;
     let current = true;
     const controller = new AbortController();
     setLoaded({ ids, session });
@@ -119,9 +191,13 @@ function ProductCardsView({
       current = false;
       controller.abort();
     };
-  }, [ids, session, attempt, nearby, result]);
+  }, [ids, session, attempt, active, result]);
 
-  const frame = (content: ReactNode) => <div ref={target}>{content}</div>;
+  const frame = (content: ReactNode) => (
+    <div ref={target} hidden={deferred}>
+      {content}
+    </div>
+  );
 
   if (error)
     return frame(
@@ -171,12 +247,12 @@ function ProductCardsView({
       {result.products.length > 0 ? (
         <ProductCarousel>
           <ul className="roman-product-list">
-            {result.products.map((product) => (
+            {result.products.map((product, index) => (
               <li key={product.id}>
                 <button
                   type="button"
                   className="roman-product-card roman-choose-blind"
-                  disabled={!onChoose || disabled || choosing}
+                  disabled={!onChoose || disabled || deferred || choosing}
                   aria-label={`Choose ${product.title}`}
                   onClick={() => void choose(product)}
                 >
@@ -185,7 +261,9 @@ function ProductCardsView({
                       productUrl={product.url}
                       fallback={product.imageUrl}
                       session={session}
-                      active={nearby}
+                      active={active}
+                      admitted={index < imageLimit}
+                      onResolved={imageResolved}
                     />
                     <span
                       className="roman-choose-blind-label"

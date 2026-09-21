@@ -132,47 +132,33 @@ function setup(t, { intersectionObserver = true, active = true } = {}) {
   };
 }
 
-test("neutral image space remains while viewport gates defer the main-image lookup", async (t) => {
+test("carousel eligibility warms images without waiting for horizontal intersection", async (t) => {
   const ctx = setup(t, { active: false });
   assert.equal(ctx.img().getAttribute("src"), null);
   assert.equal(ctx.img().style.visibility, "hidden");
   assert.equal(ctx.img().getAttribute("loading"), "lazy");
-  assert.equal(ctx.observers.length, 1);
-  assert.equal(ctx.observers[0].options.root, ctx.carousel);
-  assert.equal(ctx.observers[0].options.rootMargin, "0px 80px");
-  assert.equal(ctx.observers[0].target, ctx.img());
+  assert.equal(
+    ctx.observers.length,
+    0,
+    "Only the carousel owns viewport gating",
+  );
   await delay(0);
   assert.equal(ctx.calls.length, 0);
-  ctx.observers[0].intersect(true);
-  await delay(10);
-  assert.equal(
-    ctx.calls.length,
-    0,
-    "horizontal visibility alone must not load a distant carousel",
-  );
-  ctx.observers[0].intersect(false);
-  await delay(10);
   ctx.render({ active: true });
-  await delay(0);
-  assert.equal(
-    ctx.calls.length,
-    0,
-    "an active carousel must not load its distant horizontal cards",
-  );
-  ctx.observers[0].intersect(true);
-  await until(() => ctx.calls.length === 1, "Visible image was not requested");
+  await until(() => ctx.calls.length === 1, "Eligible image was not requested");
+  assert.equal(ctx.img().getAttribute("loading"), "eager");
+  assert.equal(ctx.img().getAttribute("decoding"), "async");
   assert.equal(ctx.calls[0].url, firstProduct);
   assert.equal(ctx.calls[0].signal.aborted, false);
   assert.equal(
     ctx.img().getAttribute("src"),
     null,
-    "pending lookup must not briefly display a different catalog image",
+    "A pending lookup must not preview the catalog swatch",
   );
 });
 
 test("only the resolved main photo paints, after it loads, without a catalog preview", async (t) => {
   const ctx = setup(t);
-  ctx.observers[0].intersect(true);
   await until(() => ctx.calls.length === 1, "Image lookup did not start");
   assert.equal(ctx.img().getAttribute("src"), null);
   ctx.calls[0].resolve(firstResolved);
@@ -193,7 +179,6 @@ test("only the resolved main photo paints, after it loads, without a catalog pre
 
 test("a failed main photo uses the catalog fallback once without an automatic request loop", async (t) => {
   const ctx = setup(t);
-  ctx.observers[0].intersect(true);
   await until(() => ctx.calls.length === 1, "Image lookup did not start");
   ctx.calls[0].resolve(firstResolved);
   await until(
@@ -209,9 +194,9 @@ test("a failed main photo uses the catalog fallback once without an automatic re
   ctx.img().dispatchEvent(new ctx.window.Event("load"));
   await until(() => ctx.img().style.visibility === "", "Fallback not revealed");
   ctx.render();
-  ctx.observers[0].intersect(false);
+  ctx.render({ active: false });
   await delay(10);
-  ctx.observers[0].intersect(true);
+  ctx.render({ active: true });
   await delay(10);
   assert.equal(
     ctx.calls.length,
@@ -225,56 +210,47 @@ test("missing or rejected optional image results leave the catalog image usable"
   for (const outcome of ["missing", "rejected"])
     await t.test(outcome, async (t) => {
       const ctx = setup(t);
-      ctx.observers[0].intersect(true);
       await until(() => ctx.calls.length === 1, "Image lookup did not start");
       if (outcome === "missing") ctx.calls[0].resolve(undefined);
       else ctx.calls[0].reject(new ctx.window.Error("Page image unavailable"));
       await delay(10);
       assert.equal(ctx.img().src, firstFallback);
       ctx.render();
-      ctx.observers[0].intersect(false);
+      ctx.render({ active: false });
       await delay(10);
-      ctx.observers[0].intersect(true);
+      ctx.render({ active: true });
       await delay(10);
       assert.equal(ctx.calls.length, 1);
     });
 });
 
-test("leaving either viewport aborts pending lookup and ignores its late result", async (t) => {
-  for (const gate of ["horizontal", "carousel"])
-    await t.test(gate, async (t) => {
-      const ctx = setup(t);
-      ctx.observers[0].intersect(true);
-      await until(() => ctx.calls.length === 1, "Image lookup did not start");
-      if (gate === "horizontal") ctx.observers[0].intersect(false);
-      else ctx.render({ active: false });
-      await until(
-        () => ctx.calls[0].signal.aborted,
-        "Offscreen lookup was not cancelled",
-      );
-      ctx.calls[0].resolve(firstResolved);
-      await delay(10);
-      assert.equal(ctx.img().getAttribute("src"), null);
-      if (gate === "horizontal") ctx.observers[0].intersect(true);
-      else ctx.render({ active: true });
-      await until(
-        () => ctx.calls.length === 2,
-        "Returning image did not receive a fresh owned request",
-      );
-      ctx.calls[1].resolve(firstResolved);
-      await until(
-        () => ctx.img().src === firstResolved,
-        "Returning image did not resolve",
-      );
-    });
+test("leaving the eligible carousel aborts lookup and ignores its late result", async (t) => {
+  const ctx = setup(t);
+  await until(() => ctx.calls.length === 1, "Image lookup did not start");
+  ctx.render({ active: false });
+  await until(
+    () => ctx.calls[0].signal.aborted,
+    "Offscreen lookup was not cancelled",
+  );
+  ctx.calls[0].resolve(firstResolved);
+  await delay(10);
+  assert.equal(ctx.img().getAttribute("src"), null);
+  ctx.render({ active: true });
+  await until(
+    () => ctx.calls.length === 2,
+    "Returning image did not request again",
+  );
+  ctx.calls[1].resolve(firstResolved);
+  await until(
+    () => ctx.img().src === firstResolved,
+    "Returning image did not resolve",
+  );
 });
 
-test("unmount disconnects horizontal observation and aborts pending image work", async (t) => {
+test("unmount aborts pending image work", async (t) => {
   const ctx = setup(t);
-  ctx.observers[0].intersect(true);
   await until(() => ctx.calls.length === 1, "Image lookup did not start");
   ctx.dispose();
-  assert.equal(ctx.observers[0].disconnected, true);
   assert.equal(ctx.calls[0].signal.aborted, true);
   ctx.calls[0].resolve(firstResolved);
   await delay(10);
@@ -283,7 +259,6 @@ test("unmount disconnects horizontal observation and aborts pending image work",
 
 test("a late old-product lookup cannot overwrite a newly rendered product image", async (t) => {
   const ctx = setup(t);
-  ctx.observers[0].intersect(true);
   await until(() => ctx.calls.length === 1, "First image lookup did not start");
   ctx.render({ productUrl: secondProduct, fallback: secondFallback });
   assert.equal(ctx.img().getAttribute("src"), null);

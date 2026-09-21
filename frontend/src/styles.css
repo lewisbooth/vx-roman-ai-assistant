@@ -667,11 +667,15 @@
     min-height: calc(1.4em + 8px);
   }
 
-  .roman-product-skeleton > .roman-product-image,
   .roman-product-skeleton
     :is(.roman-product-title, .roman-product-price)
     > span {
     background: linear-gradient(100deg, #ebe6dc 35%, #f7f5ef 50%, #ebe6dc 65%);
+    background-size: 250% 100%;
+    animation: roman-activity-shimmer 2s linear infinite;
+  }
+  .roman-product-skeleton > .roman-product-image {
+    background: linear-gradient(100deg, #bdbbb7 35%, #d1cfca 50%, #bdbbb7 65%);
     background-size: 250% 100%;
     animation: roman-activity-shimmer 2s linear infinite;
   }
@@ -703,6 +707,7 @@
     position: relative;
     display: block;
     width: 100%;
+    background-color: #bdbbb7;
   }
   .roman-choose-blind-label {
     position: absolute;

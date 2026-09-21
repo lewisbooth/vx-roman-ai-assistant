@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ConversationClient } from "../session/types";
 
 export function ProductImage({
@@ -6,14 +6,16 @@ export function ProductImage({
   fallback,
   session,
   active,
+  admitted = true,
+  onResolved,
 }: {
   productUrl: string;
   fallback?: string;
   session: ConversationClient;
   active: boolean;
+  admitted?: boolean;
+  onResolved?: (productUrl: string) => void;
 }) {
-  const target = useRef<HTMLImageElement>(null);
-  const [nearby, setNearby] = useState(() => !window.IntersectionObserver);
   const [resolved, setResolved] = useState<{
     productUrl: string;
     image?: string;
@@ -24,27 +26,19 @@ export function ProductImage({
   const image = settled ? resolved.image : undefined;
   // The catalog image may be a swatch. Do not paint it as a temporary preview
   // and then visibly replace it with the main product photo.
-  const src = settled
+  const candidate = settled
     ? image && image !== failedImage
       ? image
       : fallback
     : undefined;
+  const src = active || loadedImage === candidate ? candidate : undefined;
 
   useEffect(() => {
-    if (!window.IntersectionObserver || !target.current) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => setNearby(entry.isIntersecting),
-      {
-        root: target.current.closest(".roman-product-scroll"),
-        rootMargin: "0px 80px",
-      },
-    );
-    observer.observe(target.current);
-    return () => observer.disconnect();
-  }, []);
+    if (settled) onResolved?.(productUrl);
+  }, [settled, productUrl, onResolved]);
 
   useEffect(() => {
-    if (!active || !nearby || resolved?.productUrl === productUrl) return;
+    if (!active || !admitted || resolved?.productUrl === productUrl) return;
     let current = true;
     const controller = new AbortController();
     void Promise.resolve().then(async () => {
@@ -65,16 +59,16 @@ export function ProductImage({
       current = false;
       controller.abort();
     };
-  }, [active, nearby, productUrl, resolved?.productUrl, session]);
+  }, [active, admitted, productUrl, resolved?.productUrl, session]);
 
   return (
     <img
-      ref={target}
       src={src}
       alt=""
       width={176}
       height={140}
-      loading="lazy"
+      loading={active ? "eager" : "lazy"}
+      decoding="async"
       style={{ visibility: src && loadedImage === src ? undefined : "hidden" }}
       onLoad={() => setLoadedImage(src)}
       onError={() => {

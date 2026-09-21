@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { cwd } from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
@@ -13,10 +14,19 @@ const bundle = await build({
       export { reconcileReplyReveal, advanceReplyReveal } from './frontend/src/chat/useReplyReveal';
       export function mount(container) {
         const root = createRoot(container);
-        const navigation = {}, session = {}, onContentChange = () => {}, onAnswer = async () => {};
+        const navigation = {}, onContentChange = () => {}, onAnswer = async () => {};
+        const session = {
+          getCachedProducts: () => [],
+          loadProducts: async (ids) => {
+            window.catalogLoads.push(ids);
+            return { products: ids.map(id => ({ id, title: 'Blind ' + id,
+              url: '/products/' + id, priceLabel: 'From GBP 20.00' })), messages: [] };
+          },
+          loadProductImage: async (url) => { window.imageLoads.push(url); return undefined; },
+        };
         return {
-          render(props) { flushSync(() => root.render(<Timeline navigation={navigation} session={session}
-            onContentChange={onContentChange} onAnswer={onAnswer} {...props}/>)); },
+          render(props) { flushSync(() => root.render(<div className="roman-chat-history"><Timeline navigation={navigation} session={session}
+            onContentChange={onContentChange} onAnswer={onAnswer} {...props}/></div>)); },
           tick(ms) { flushSync(() => window.tick(ms)); },
           dispose() { flushSync(() => root.unmount()); },
         };
@@ -37,7 +47,10 @@ const bundle = await build({
 function setup(t) {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", {
     runScripts: "outside-only",
+    pretendToBeVisual: true,
   });
+  dom.window.catalogLoads = [];
+  dom.window.imageLoads = [];
   const errors = [];
   const timers = new Map();
   const nativeSetTimeout = dom.window.setTimeout.bind(dom.window);
@@ -70,7 +83,13 @@ function setup(t) {
     dom.window.close();
     assert.deepEqual(errors, []);
   });
-  return { ...view, container, timers, api: dom.window.api };
+  return {
+    ...view,
+    container,
+    timers,
+    window: dom.window,
+    api: dom.window.api,
+  };
 }
 
 const message = (id, role, parts, status = "complete") => ({
@@ -95,6 +114,125 @@ const displayed = (ctx) =>
     .map((node) => node.textContent)
     .join("");
 const choices = (ctx) => ctx.container.querySelector(".roman-question");
+const products = (overrides = {}) => ({
+  type: "products",
+  version: 1,
+  invocationId: "carousel",
+  productIds: ["plain", "patterned"],
+  ...overrides,
+});
+
+test("carousels preload invisibly and inline receipts wait for the same text reveal as quick answers", async (t) => {
+  const ctx = setup(t);
+  ctx.render({ messages: [user()] });
+  ctx.render({
+    messages: [
+      user(),
+      message("reply", "assistant", [
+        text("Here are two light-filtering blinds to compare."),
+        products(),
+        question(),
+      ]),
+      message("receipt", "context", [
+        {
+          type: "cart_sample_added",
+          version: 1,
+          invocationId: "sample",
+          sample: { title: "Plain blind" },
+        },
+      ]),
+    ],
+    activeQuestionId: "q",
+  });
+  await delay(0);
+  const cards = ctx.container.querySelector(".roman-products");
+  assert.ok(
+    cards?.closest("[hidden]"),
+    "Loaded carousel stays out of layout and accessibility tree",
+  );
+  assert.equal(
+    ctx.window.catalogLoads.length,
+    1,
+    "Catalog preloads while prose reveals",
+  );
+  assert.equal(
+    ctx.window.imageLoads.length,
+    2,
+    "Both carousel images warm before reveal ends",
+  );
+  assert.equal(ctx.container.querySelector(".roman-cart-added"), null);
+  assert.equal(choices(ctx), null);
+  ctx.tick(1000);
+  assert.equal(cards.closest("[hidden]"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-products"),
+    cards,
+    "Releasing the carousel keeps its loaded content",
+  );
+  assert.ok(ctx.container.querySelector(".roman-cart-added"));
+  assert.ok(choices(ctx));
+});
+
+test("an early widget-only snapshot stays hidden until the final text arrives and finishes", async (t) => {
+  const ctx = setup(t);
+  ctx.render({ messages: [user()] });
+  ctx.render({
+    messages: [user(), message("reply", "assistant", [products()], "pending")],
+  });
+  await delay(0);
+  const cards = ctx.container.querySelector(".roman-products");
+  assert.ok(cards.closest("[hidden]"));
+  assert.equal(ctx.window.catalogLoads.length, 1);
+  ctx.tick(1000);
+  assert.ok(
+    cards.closest("[hidden]"),
+    "No timer guesses completion before prose arrives",
+  );
+  ctx.render({
+    messages: [
+      user(),
+      message("reply", "assistant", [
+        text("Here is the finished comparison."),
+        products(),
+      ]),
+    ],
+  });
+  assert.ok(cards.closest("[hidden]"));
+  ctx.tick(1000);
+  assert.equal(cards.closest("[hidden]"), null);
+});
+
+test("older and voice carousels are not hidden by a new text reply", async (t) => {
+  const ctx = setup(t);
+  const history = [
+    user("old-user"),
+    message("old-reply", "assistant", [text("Previous results."), products()]),
+  ];
+  ctx.render({ messages: history });
+  await delay(0);
+  const previous = ctx.container.querySelector(".roman-products");
+  assert.equal(previous.closest("[hidden]"), null);
+  ctx.render({
+    messages: [
+      ...history,
+      user("new-user"),
+      message("new-reply", "assistant", [
+        text("A new reply is being revealed."),
+        products({
+          invocationId: "voice-carousel",
+          voiceReply: { voiceId: "voice", afterSequence: 1 },
+        }),
+      ]),
+    ],
+  });
+  await delay(0);
+  assert.equal(previous.closest("[hidden]"), null);
+  assert.ok(
+    [...ctx.container.querySelectorAll(".roman-products")].every(
+      (node) => !node.closest("[hidden]"),
+    ),
+  );
+});
 
 test("new complete blocks reveal before answers, preserve formatting and do not restart on polling", (t) => {
   const ctx = setup(t);

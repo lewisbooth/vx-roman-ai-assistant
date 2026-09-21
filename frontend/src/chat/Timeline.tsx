@@ -1,4 +1,7 @@
-import type { ConversationMessage } from "../../../shared/conversation";
+import type {
+  ConversationMessage,
+  ConversationPart,
+} from "../../../shared/conversation";
 import type { StorefrontNavigation } from "../navigation/shared";
 import type { ConversationClient } from "../session/types";
 import { ProductCards } from "./ProductCards";
@@ -87,7 +90,7 @@ export function Timeline({
           if (
             row.part.invocationId === activeQuestionId &&
             !row.part.voiceReply &&
-            reveal.holdQuestion
+            reveal.holdWidgets
           )
             return null;
           return (
@@ -103,6 +106,15 @@ export function Timeline({
           );
         }
         const { message, parts } = row;
+        // Keep the current reply's widgets behind its text without hiding old
+        // results when a later turn starts. Voice captions keep their own timing.
+        const deferWidget = (part: ConversationPart) =>
+          rowIndex >= lastCustomer &&
+          reveal.holdWidgets &&
+          part.type !== "text" &&
+          part.type !== "voice" &&
+          part.type !== "voice_event" &&
+          !("voiceReply" in part && part.voiceReply);
         const revealing = parts.some((part) => {
           if (part.type !== "text") return false;
           const text = reveal.parts.get(part);
@@ -111,6 +123,7 @@ export function Timeline({
         return (
           <li
             key={row.id}
+            hidden={parts.length > 0 && parts.every(deferWidget)}
             className={`roman-message roman-message-${message.role}`}
             data-current-turn={rowIndex >= lastCustomer ? "true" : undefined}
             aria-busy={
@@ -143,6 +156,9 @@ export function Timeline({
                         : part.text}
                     </p>
                   );
+                // ProductCards stays mounted to warm its images during reveal.
+                // Receipts have no work to preload and can simply wait.
+                if (part.type !== "products" && deferWidget(part)) return null;
                 if (part.type === "cart_added")
                   return (
                     <p
@@ -195,6 +211,7 @@ export function Timeline({
                     session={session}
                     onChoose={onChooseProduct}
                     disabled={productsDisabled || message.status === "failed"}
+                    deferred={deferWidget(part)}
                     onContentChange={onContentChange}
                   />
                 );

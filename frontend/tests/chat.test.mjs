@@ -1844,7 +1844,7 @@ test("product references hydrate once and the whole card submits intent without 
   assert.doesNotMatch(ctx.container.textContent, /Loading products/);
   assert.equal(card.querySelector("a"), null);
   assert.equal(card.querySelector("img").src, catalog.products[0].imageUrl);
-  assert.equal(card.querySelector("img").getAttribute("loading"), "lazy");
+  assert.equal(card.querySelector("img").getAttribute("loading"), "eager");
   const choice = card.querySelector("img").closest("button");
   assert.equal(choice.getAttribute("aria-label"), "Choose Lottie Roman blind");
   assert.equal(choice.type, "button");
@@ -1973,7 +1973,7 @@ test("a failed product selection stays retryable with an actionable error", asyn
   assert.deepEqual(ctx.navigationCalls, []);
 });
 
-test("historical and current-turn carousel choices stay enabled while Roman works and queue with provenance", async (t) => {
+test("revealed carousel choices stay enabled while Roman works and queue with provenance", async (t) => {
   for (const mode of ["text", "voice"]) {
     for (const sourceStatus of ["complete", "pending"]) {
       await t.test(`${mode}: ${sourceStatus} carousel`, async (t) => {
@@ -2001,6 +2001,23 @@ test("historical and current-turn carousel choices stay enabled while Roman work
           "Choice is loaded",
         );
         const card = ctx.container.querySelector(".roman-choose-blind");
+        if (sourceStatus === "pending") {
+          assert.ok(
+            card.closest("[hidden]"),
+            "An unfinished reply preloads its carousel without showing it",
+          );
+          assert.equal(card.disabled, true);
+          ctx.update({
+            conversation: {
+              ...engagedConversation([productsMessage()]),
+              busy: true,
+            },
+          });
+          await until(
+            () => !card.closest("[hidden]") && !card.disabled,
+            "Completed reply releases its carousel after the text reveal",
+          );
+        }
         assert.equal(card.disabled, false, "Busy work must not disable hover");
         card.click();
         card.click();

@@ -118,7 +118,7 @@ export function useReplyReveal(
   }, [current, revealing]);
 
   const lastCustomer = lastCustomerIndex(messages);
-  const holdQuestion =
+  const holdWidgets =
     revealing ||
     messages.some(
       (message, index) =>
@@ -134,11 +134,11 @@ export function useReplyReveal(
   useLayoutEffect(onContentChange, [
     onContentChange,
     visibleCharacters,
-    holdQuestion,
+    holdWidgets,
   ]);
 
   return {
     parts: new Map(current.parts.map((part) => [part.part, part])),
-    holdQuestion,
+    holdWidgets,
   };
 }
