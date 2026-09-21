@@ -391,7 +391,7 @@ test("live supporting and feature images update the gallery without losing it on
   await until(
     () =>
       ctx.container
-        .querySelector(".roman-gallery-open img")
+        .querySelector(".roman-gallery-viewport img")
         ?.src.includes("motor.jpg"),
     "New feature imagery is selected",
   );
@@ -399,7 +399,7 @@ test("live supporting and feature images update the gallery without losing it on
   await until(
     () =>
       ctx.container
-        .querySelector(".roman-gallery-open img")
+        .querySelector(".roman-gallery-viewport img")
         ?.src.includes("remote.jpg"),
     "Changed feature imagery is selected",
   );
@@ -414,7 +414,7 @@ test("live supporting and feature images update the gallery without losing it on
   await until(
     () =>
       ctx.container
-        .querySelector(".roman-gallery-open img")
+        .querySelector(".roman-gallery-viewport img")
         ?.src.includes("remote.jpg"),
     "Native inline reveal restores its feature slide",
   );
@@ -427,7 +427,7 @@ test("live supporting and feature images update the gallery without losing it on
     3,
   );
   assert.match(
-    ctx.container.querySelector(".roman-gallery-open img").src,
+    ctx.container.querySelector(".roman-gallery-viewport img").src,
     /remote.jpg/,
   );
   assert.equal(ctx.container.querySelector(".roman-product-stage-price"), null);

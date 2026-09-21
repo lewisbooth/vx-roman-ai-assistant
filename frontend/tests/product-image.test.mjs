@@ -132,9 +132,10 @@ function setup(t, { intersectionObserver = true, active = true } = {}) {
   };
 }
 
-test("catalog fallback paints immediately while both viewport gates defer the optional page-image lookup", async (t) => {
+test("neutral image space remains while viewport gates defer the main-image lookup", async (t) => {
   const ctx = setup(t, { active: false });
-  assert.equal(ctx.img().src, firstFallback);
+  assert.equal(ctx.img().getAttribute("src"), null);
+  assert.equal(ctx.img().style.visibility, "hidden");
   assert.equal(ctx.img().getAttribute("loading"), "lazy");
   assert.equal(ctx.observers.length, 1);
   assert.equal(ctx.observers[0].options.root, ctx.carousel);
@@ -163,26 +164,50 @@ test("catalog fallback paints immediately while both viewport gates defer the op
   assert.equal(ctx.calls[0].url, firstProduct);
   assert.equal(ctx.calls[0].signal.aborted, false);
   assert.equal(
-    ctx.img().src,
-    firstFallback,
-    "pending lookup must not hide the catalog fallback",
+    ctx.img().getAttribute("src"),
+    null,
+    "pending lookup must not briefly display a different catalog image",
   );
 });
 
-test("a resolved page image replaces the fallback and a native image failure restores it", async (t) => {
+test("only the resolved main photo paints, after it loads, without a catalog preview", async (t) => {
+  const ctx = setup(t);
+  ctx.observers[0].intersect(true);
+  await until(() => ctx.calls.length === 1, "Image lookup did not start");
+  assert.equal(ctx.img().getAttribute("src"), null);
+  ctx.calls[0].resolve(firstResolved);
+  await until(
+    () => ctx.img().src === firstResolved,
+    "Main photo not requested",
+  );
+  assert.equal(ctx.img().style.visibility, "hidden");
+  ctx.img().dispatchEvent(new ctx.window.Event("load"));
+  await until(
+    () => ctx.img().style.visibility === "",
+    "Loaded image not revealed",
+  );
+  ctx.render();
+  assert.equal(ctx.img().src, firstResolved);
+  assert.equal(ctx.calls.length, 1);
+});
+
+test("a failed main photo uses the catalog fallback once without an automatic request loop", async (t) => {
   const ctx = setup(t);
   ctx.observers[0].intersect(true);
   await until(() => ctx.calls.length === 1, "Image lookup did not start");
   ctx.calls[0].resolve(firstResolved);
   await until(
     () => ctx.img().src === firstResolved,
-    "Verified image did not replace fallback",
+    "Verified image did not load",
   );
   ctx.img().dispatchEvent(new ctx.window.Event("error"));
   await until(
     () => ctx.img().src === firstFallback,
     "Failed image did not restore fallback",
   );
+  assert.equal(ctx.img().style.visibility, "hidden");
+  ctx.img().dispatchEvent(new ctx.window.Event("load"));
+  await until(() => ctx.img().style.visibility === "", "Fallback not revealed");
   ctx.render();
   ctx.observers[0].intersect(false);
   await delay(10);
@@ -206,6 +231,11 @@ test("missing or rejected optional image results leave the catalog image usable"
       else ctx.calls[0].reject(new ctx.window.Error("Page image unavailable"));
       await delay(10);
       assert.equal(ctx.img().src, firstFallback);
+      ctx.render();
+      ctx.observers[0].intersect(false);
+      await delay(10);
+      ctx.observers[0].intersect(true);
+      await delay(10);
       assert.equal(ctx.calls.length, 1);
     });
 });
@@ -224,7 +254,7 @@ test("leaving either viewport aborts pending lookup and ignores its late result"
       );
       ctx.calls[0].resolve(firstResolved);
       await delay(10);
-      assert.equal(ctx.img().src, firstFallback);
+      assert.equal(ctx.img().getAttribute("src"), null);
       if (gate === "horizontal") ctx.observers[0].intersect(true);
       else ctx.render({ active: true });
       await until(
@@ -256,7 +286,7 @@ test("a late old-product lookup cannot overwrite a newly rendered product image"
   ctx.observers[0].intersect(true);
   await until(() => ctx.calls.length === 1, "First image lookup did not start");
   ctx.render({ productUrl: secondProduct, fallback: secondFallback });
-  assert.equal(ctx.img().src, secondFallback);
+  assert.equal(ctx.img().getAttribute("src"), null);
   assert.equal(ctx.calls[0].signal.aborted, true);
   await until(
     () => ctx.calls.length === 2,
@@ -273,11 +303,49 @@ test("a late old-product lookup cannot overwrite a newly rendered product image"
   assert.equal(ctx.img().src, secondResolved);
 });
 
+test("changing products hides the previous photo until the new main image loads", async (t) => {
+  const ctx = setup(t, { intersectionObserver: false });
+  await until(() => ctx.calls.length === 1, "First lookup did not start");
+  ctx.calls[0].resolve(firstResolved);
+  await until(
+    () => ctx.img().src === firstResolved,
+    "First image not requested",
+  );
+  ctx.img().dispatchEvent(new ctx.window.Event("load"));
+  await until(() => ctx.img().style.visibility === "", "First photo not shown");
+  ctx.render({ productUrl: secondProduct, fallback: secondFallback });
+  assert.equal(ctx.img().getAttribute("src"), null);
+  assert.equal(ctx.img().style.visibility, "hidden");
+  await until(() => ctx.calls.length === 2, "Second lookup did not start");
+  ctx.calls[1].resolve(secondResolved);
+  await until(
+    () => ctx.img().src === secondResolved,
+    "Second image not requested",
+  );
+  assert.equal(ctx.img().style.visibility, "hidden");
+  ctx.img().dispatchEvent(new ctx.window.Event("load"));
+  await until(
+    () => ctx.img().style.visibility === "",
+    "Second photo not shown",
+  );
+});
+
+test("unavailable main and catalog images leave neutral space rather than a broken image", async (t) => {
+  const ctx = setup(t, { intersectionObserver: false });
+  await until(() => ctx.calls.length === 1, "Image lookup did not start");
+  ctx.calls[0].resolve(undefined);
+  await until(() => ctx.img().src === firstFallback, "Fallback not requested");
+  ctx.img().dispatchEvent(new ctx.window.Event("error"));
+  await delay(10);
+  assert.equal(ctx.img().style.visibility, "hidden");
+  assert.equal(ctx.calls.length, 1);
+});
+
 test("browsers without IntersectionObserver load only when the carousel becomes active", async (t) => {
   const ctx = setup(t, { intersectionObserver: false, active: false });
   await delay(0);
   assert.equal(ctx.calls.length, 0);
-  assert.equal(ctx.img().src, firstFallback);
+  assert.equal(ctx.img().getAttribute("src"), null);
   ctx.render({ active: true });
   await until(
     () => ctx.calls.length === 1,

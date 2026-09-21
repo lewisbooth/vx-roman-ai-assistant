@@ -19,9 +19,16 @@ export function ProductImage({
     image?: string;
   }>();
   const [failedImage, setFailedImage] = useState<string>();
-  const image =
-    resolved?.productUrl === productUrl ? resolved.image : undefined;
-  const src = image && image !== failedImage ? image : fallback;
+  const [loadedImage, setLoadedImage] = useState<string>();
+  const settled = resolved?.productUrl === productUrl;
+  const image = settled ? resolved.image : undefined;
+  // The catalog image may be a swatch. Do not paint it as a temporary preview
+  // and then visibly replace it with the main product photo.
+  const src = settled
+    ? image && image !== failedImage
+      ? image
+      : fallback
+    : undefined;
 
   useEffect(() => {
     if (!window.IntersectionObserver || !target.current) return;
@@ -50,7 +57,8 @@ export function ProductImage({
         if (current && !controller.signal.aborted)
           setResolved({ productUrl, image });
       } catch {
-        // Keep the safe catalog fallback; this request never owns card loading.
+        // Settle on the safe catalog fallback without retrying on every render.
+        if (current && !controller.signal.aborted) setResolved({ productUrl });
       }
     });
     return () => {
@@ -67,7 +75,12 @@ export function ProductImage({
       width={176}
       height={140}
       loading="lazy"
-      onError={() => image && setFailedImage(image)}
+      style={{ visibility: src && loadedImage === src ? undefined : "hidden" }}
+      onLoad={() => setLoadedImage(src)}
+      onError={() => {
+        setLoadedImage(undefined);
+        if (image) setFailedImage(image);
+      }}
     />
   );
 }

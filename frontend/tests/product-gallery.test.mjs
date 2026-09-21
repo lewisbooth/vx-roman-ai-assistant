@@ -124,7 +124,7 @@ function setup(t, { reduced = false } = {}) {
     x,
     y = 20,
     pointerType = "mouse",
-    selector = ".roman-gallery-open",
+    selector = ".roman-gallery-viewport",
   ) =>
     view.flush(() => {
       const event = new window.MouseEvent(type, {
@@ -152,7 +152,7 @@ function setup(t, { reduced = false } = {}) {
     key,
     pointer,
     dispose,
-    current: () => shadow.querySelector(".roman-gallery-open img")?.src,
+    current: () => shadow.querySelector(".roman-gallery-viewport img")?.src,
   };
 }
 
@@ -169,10 +169,10 @@ test("gallery mounts only one full-size image and never high-resolution images b
   assert.equal(ctx.current(), items[2].src);
   ctx.click('[aria-label="Next product image"]');
   assert.equal(ctx.current(), items[0].src);
-  ctx.key(".roman-gallery-open", "End");
+  ctx.key(".roman-gallery-enlarge", "End");
   assert.equal(ctx.current(), items[2].src);
-  ctx.key(".roman-gallery-open", "Home");
-  ctx.key(".roman-gallery-open", "ArrowLeft");
+  ctx.key(".roman-gallery-enlarge", "Home");
+  ctx.key(".roman-gallery-enlarge", "ArrowLeft");
   assert.equal(ctx.current(), items[2].src);
 });
 
@@ -182,14 +182,14 @@ test("horizontal mouse drag and touch swipe change slides without opening zoom; 
   ctx.pointer("pointerdown", 140);
   ctx.pointer("pointermove", 60);
   ctx.pointer("pointerup", 60);
-  ctx.click(".roman-gallery-open", 1);
+  ctx.click(".roman-gallery-viewport", 1);
   assert.equal(ctx.current(), items[1].src);
   assert.equal(ctx.shadow.querySelector("dialog"), null);
   assert.equal(ctx.captured.size, 0);
   ctx.pointer("pointerdown", 60, 20, "touch");
   ctx.pointer("pointermove", 140, 22, "touch");
   ctx.pointer("pointerup", 140, 22, "touch");
-  ctx.click(".roman-gallery-open", 1);
+  ctx.click(".roman-gallery-viewport", 1);
   assert.equal(ctx.current(), items[0].src);
   assert.equal(ctx.shadow.querySelector("dialog"), null);
   ctx.pointer("pointerdown", 100);
@@ -201,14 +201,39 @@ test("horizontal mouse drag and touch swipe change slides without opening zoom; 
   ctx.pointer("pointercancel", 40);
   assert.equal(ctx.captured.size, 0);
   assert.equal(ctx.current(), items[0].src);
-  ctx.click(".roman-gallery-open");
+  ctx.click(".roman-gallery-enlarge");
+  assert.ok(ctx.shadow.querySelector("dialog[open]"));
+});
+
+test("only the zoom button opens the dialog, even after surface clicks and incomplete gestures", (t) => {
+  const ctx = setup(t);
+  ctx.view.render(items);
+  for (const selector of [".roman-gallery-viewport", ".roman-gallery-viewport img"]) {
+    ctx.click(selector, 1);
+    ctx.click(selector, 2);
+    ctx.key(selector, "Enter");
+    ctx.key(selector, " ");
+    assert.equal(ctx.shadow.querySelector("dialog"), null);
+  }
+  ctx.pointer("pointerdown", 100);
+  ctx.pointer("pointermove", 96);
+  ctx.pointer("pointerup", 96);
+  ctx.click(".roman-gallery-viewport img", 1);
+  assert.equal(ctx.current(), items[0].src);
+  assert.equal(ctx.shadow.querySelector("dialog"), null);
+  ctx.pointer("pointerdown", 100);
+  ctx.pointer("pointermove", 40);
+  ctx.pointer("pointercancel", 40);
+  ctx.click(".roman-gallery-viewport", 1);
+  assert.equal(ctx.shadow.querySelector("dialog"), null);
+  ctx.click(".roman-gallery-enlarge");
   assert.ok(ctx.shadow.querySelector("dialog[open]"));
 });
 
 test("zoom lazily mounts high-resolution images, supports navigation, and closes before removal", (t) => {
   const ctx = setup(t);
   ctx.view.render(items);
-  ctx.click(".roman-gallery-open");
+  ctx.click(".roman-gallery-enlarge");
   const dialog = ctx.dialogs[0];
   assert.equal(dialog.open, true);
   assert.equal(
@@ -232,7 +257,7 @@ test("zoom lazily mounts high-resolution images, supports navigation, and closes
   );
   assert.equal(dialog.open, false);
   assert.equal(ctx.shadow.querySelector("dialog"), null);
-  ctx.click(".roman-gallery-open");
+  ctx.click(".roman-gallery-enlarge");
   ctx.dispose();
   assert.equal(ctx.dialogs[1].open, false);
 });
@@ -275,7 +300,7 @@ test("empty, hidden and changed selections never retain stale image resources or
   assert.match(ctx.shadow.textContent, /Image unavailable/);
   ctx.view.render(items);
   ctx.click('[aria-label="Next product image"]');
-  ctx.click(".roman-gallery-open");
+  ctx.click(".roman-gallery-enlarge");
   ctx.view.render(items, { hidden: true });
   assert.equal(ctx.shadow.querySelector("img"), null);
   assert.equal(ctx.dialogs[0].open, false);
@@ -290,7 +315,7 @@ test("empty, hidden and changed selections never retain stale image resources or
 test("swipe follows the pointer, uses the compact viewport threshold and resets on cancellation", (t) => {
   const ctx = setup(t);
   ctx.view.render(items);
-  const surface = ctx.shadow.querySelector(".roman-gallery-open");
+  const surface = ctx.shadow.querySelector(".roman-gallery-viewport");
   Object.defineProperty(surface, "clientWidth", { value: 88 });
   ctx.pointer("pointerdown", 70);
   ctx.pointer("pointermove", 45);
@@ -302,7 +327,7 @@ test("swipe follows the pointer, uses the compact viewport threshold and resets 
   assert.equal(surface.style.getPropertyValue("--roman-gallery-drag"), "-25px");
   assert.equal(surface.dataset.dragging, "true");
   ctx.pointer("pointerup", 45);
-  ctx.click(".roman-gallery-open", 1);
+  ctx.click(".roman-gallery-viewport", 1);
   assert.equal(
     ctx.current(),
     items[1].src,
@@ -326,7 +351,7 @@ test("swipe follows the pointer, uses the compact viewport threshold and resets 
 test("the enlarged image supports touch swipes and respects reduced motion", (t) => {
   const ctx = setup(t, { reduced: true });
   ctx.view.render(items);
-  ctx.click(".roman-gallery-open");
+  ctx.click(".roman-gallery-enlarge");
   const surface = ctx.shadow.querySelector(".roman-gallery-zoom-image");
   Object.defineProperty(surface, "clientWidth", { value: 300 });
   ctx.pointer("pointerdown", 230, 30, "touch", ".roman-gallery-zoom-image");

@@ -180,7 +180,7 @@
   .roman-product-gallery {
     min-width: 0;
   }
-  .roman-gallery-open {
+  .roman-gallery-viewport {
     position: relative;
     display: block;
     width: 100%;
@@ -190,7 +190,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    cursor: zoom-in;
+    cursor: grab;
     touch-action: pan-y pinch-zoom;
     user-select: none;
   }
@@ -202,9 +202,13 @@
     place-content: center;
     width: 36px;
     height: 36px;
+    border: 0;
+    padding: 0;
     border-radius: 50%;
+    color: inherit;
     background: #fffdf8ed;
     box-shadow: 0 2px 14px #402b2b12;
+    cursor: zoom-in;
   }
   .roman-gallery-slide {
     display: block;
@@ -216,7 +220,7 @@
   [data-dragging="true"] > .roman-gallery-slide {
     transition: none;
   }
-  .roman-gallery-open[data-dragging="true"],
+  .roman-gallery-viewport[data-dragging="true"],
   .roman-gallery-zoom-image[data-dragging="true"] {
     cursor: grabbing;
   }
@@ -263,7 +267,7 @@
   .roman-gallery-zoom header button:hover {
     background: #ebe6dc;
   }
-  .roman-gallery-open:focus-visible,
+  .roman-gallery-enlarge:focus-visible,
   .roman-gallery-controls button:focus-visible,
   .roman-gallery-thumbnails button:focus-visible,
   .roman-gallery-zoom button:focus-visible {

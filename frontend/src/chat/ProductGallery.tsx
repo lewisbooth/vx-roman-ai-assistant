@@ -9,24 +9,19 @@ function useGallerySwipe<T extends HTMLElement>(
   const ref = useRef<T>(null);
   const advance = useRef(move);
   advance.current = move;
-  const suppressClick = useRef(false);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element || !enabled) return;
     let gesture:
       { id: number; x: number; y: number; moved: boolean } | undefined;
     let animation: Animation | undefined;
-    const release = () => {
+    const cancel = () => {
       const id = gesture?.id;
       gesture = undefined;
       delete element.dataset.dragging;
       element.style.removeProperty("--roman-gallery-drag");
       if (id !== undefined && element.hasPointerCapture?.(id))
         element.releasePointerCapture(id);
-    };
-    const cancel = () => {
-      release();
-      suppressClick.current = false;
     };
     const down = (event: PointerEvent) => {
       cancel();
@@ -78,8 +73,7 @@ function useGallerySwipe<T extends HTMLElement>(
       const dy = event.clientY - gesture.y;
       const moved = gesture.moved;
       const threshold = Math.min(64, Math.max(18, element.clientWidth * 0.18));
-      release();
-      suppressClick.current = moved;
+      cancel();
       if (!moved || Math.abs(dx) < threshold || Math.abs(dx) <= Math.abs(dy))
         return;
       advance.current(dx < 0 ? 1 : -1);
@@ -130,14 +124,7 @@ function useGallerySwipe<T extends HTMLElement>(
       document.removeEventListener("visibilitychange", visibility);
     };
   }, [enabled]);
-  return {
-    ref,
-    consumeClick: (detail: number) => {
-      const suppress = suppressClick.current && detail !== 0;
-      suppressClick.current = false;
-      return suppress;
-    },
-  };
+  return { ref };
 }
 
 function GalleryImage({
@@ -299,7 +286,7 @@ export function ProductGallery({
         items[(index + direction + items.length) % items.length].id,
       );
   };
-  const swipe = useGallerySwipe<HTMLButtonElement>(
+  const swipe = useGallerySwipe<HTMLDivElement>(
     !hidden && items.length > 1,
     move,
   );
@@ -342,26 +329,27 @@ export function ProductGallery({
     >
       <div className="roman-product-stage-image">
         {image ? (
-          <button
-            ref={swipe.ref}
-            type="button"
-            className="roman-gallery-open"
-            aria-label={`Enlarge image ${index + 1} of ${items.length}: ${image.alt || title}`}
-            onKeyDown={keys}
-            onClick={(event) => {
-              if (swipe.consumeClick(event.detail)) return;
-              setZoom(true);
-            }}
-          >
-            <span className="roman-gallery-slide">
-              <GalleryImage key={image.src} image={image} title={title} />
-            </span>
-            <span className="roman-gallery-enlarge" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
+          <>
+            <div
+              ref={swipe.ref}
+              className="roman-gallery-viewport"
+            >
+              <span className="roman-gallery-slide">
+                <GalleryImage key={image.src} image={image} title={title} />
+              </span>
+            </div>
+            <button
+              type="button"
+              className="roman-gallery-enlarge"
+              aria-label={`Enlarge image ${index + 1} of ${items.length}: ${image.alt || title}`}
+              onKeyDown={keys}
+              onClick={() => setZoom(true)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
               </svg>
-            </span>
-          </button>
+            </button>
+          </>
         ) : (
           <span className="roman-product-stage-placeholder">
             Your selection
