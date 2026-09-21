@@ -14,7 +14,14 @@ import {
 const origin = storeFixtures.devMulti.origin;
 const stores = Object.values(storeFixtures);
 const bundle = await build({
-  entryPoints: ["frontend/src/navigation/shared/index.ts"],
+  stdin: {
+    contents: `
+      export * from "./frontend/src/navigation/shared/index";
+      export { createStorefrontScroll } from "./frontend/src/storefront-scroll";
+    `,
+    resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
+    loader: "ts",
+  },
   bundle: true,
   write: false,
   format: "iife",
@@ -137,9 +144,17 @@ function setup(
     ...pageApi,
     preparePage: (html, url) => pageApi.preparePage(html, url, profile?.theme),
   };
-  const navigation = window.RomanNavigation.createStorefrontNavigation(host);
+  const storefrontScroll = options.lockedScroll
+    ? window.RomanNavigation.createStorefrontScroll()
+    : undefined;
+  storefrontScroll?.setLocked(true);
+  const navigation = window.RomanNavigation.createStorefrontNavigation(
+    host,
+    storefrontScroll,
+  );
   t.after(() => {
     navigation.dispose();
+    storefrontScroll?.dispose();
     dom.window.close();
   });
   return {
@@ -152,6 +167,7 @@ function setup(
     warnings,
     errors,
     native,
+    storefrontScroll,
   };
 }
 
@@ -738,6 +754,141 @@ test("Back restores the outgoing page scroll without discarding other history ow
   );
   assert.equal(window.history.state.themeSelection, "original");
   assert.equal(restored.at(-1).top, 640);
+});
+
+function fixedBodyScroll(window, initialTop = 640) {
+  let top = initialTop;
+  const calls = [];
+  const physicalTop = () =>
+    window.document.body.style.position === "fixed" ? 0 : top;
+  Object.defineProperties(window, {
+    scrollX: { configurable: true, get: () => 0 },
+    scrollY: { configurable: true, get: physicalTop },
+    pageYOffset: { configurable: true, get: physicalTop },
+  });
+  Object.defineProperty(window.document.documentElement, "scrollTop", {
+    configurable: true,
+    get: physicalTop,
+  });
+  window.scrollTo = (options) => {
+    calls.push({ ...options });
+    top = options.top;
+  };
+  return calls;
+}
+
+test("locked background navigation records logical history and restores it only when Roman closes", async (t) => {
+  let nativeScrolls;
+  const ctx = setup(t, undefined, {
+    lockedScroll: true,
+    beforeImport(window) {
+      nativeScrolls = fixedBodyScroll(window);
+    },
+  });
+  const { document, window, navigation, storefrontScroll } = ctx;
+  const header = document.createElement("main-header");
+  const resets = [];
+  header.reset = () => resets.push(storefrontScroll.getPosition()[1]);
+  document.querySelector("header").replaceWith(header);
+  window.history.replaceState({ themeSelection: "original" }, "", "/");
+  assert.equal(window.scrollY, 0, "fixed body has no physical document scroll");
+  assert.equal(storefrontScroll.getPosition()[1], 640);
+
+  assert.equal(
+    await navigation.navigate(productOne, undefined, { source: "model" }),
+    "navigated",
+  );
+  assert.equal(storefrontScroll.getPosition()[1], 0);
+  storefrontScroll.scrollTo([0, 320]);
+  await navigation.navigate(productTwo);
+  assert.equal(storefrontScroll.getPosition()[1], 0);
+  assert.deepEqual(resets, [0, 0]);
+
+  window.history.back();
+  await until(
+    () => document.querySelector("main h1").textContent === productOne,
+    "Back did not restore the first hidden product",
+  );
+  assert.equal(storefrontScroll.getPosition()[1], 320);
+  assert.equal(window.history.state.__romanNavigation.scroll[1], 320);
+  assert.deepEqual(resets, [0, 0], "deep history does not reset the theme header");
+  window.history.back();
+  await until(
+    () => document.querySelector("main h1").textContent === "/",
+    "Back did not restore the initial hidden page",
+  );
+  assert.equal(storefrontScroll.getPosition()[1], 640);
+  assert.equal(window.history.state.themeSelection, "original");
+  assert.equal(document.body.style.position, "fixed");
+  assert.deepEqual(nativeScrolls, [], "locked navigation never pans the document");
+
+  storefrontScroll.setLocked(false);
+  assert.equal(document.body.style.position, "");
+  assert.equal(window.scrollY, 640);
+  assert.deepEqual(nativeScrolls, [{ left: 0, top: 640, behavior: "instant" }]);
+});
+
+test("locked anchor navigation uses the target geometry and scroll margin without native scrolling", async (t) => {
+  let nativeScrolls;
+  const ctx = setup(
+    t,
+    async (url) => {
+      const path = new URL(url).pathname;
+      return response(path, {
+        url: String(url),
+        text: async () =>
+          page(
+            path,
+            '<div id="measurements" style="scroll-margin-top:24px">Measuring guide</div>',
+          ),
+      });
+    },
+    {
+      lockedScroll: true,
+      beforeImport(window) {
+        nativeScrolls = fixedBodyScroll(window);
+        const rect = window.HTMLElement.prototype.getBoundingClientRect;
+        window.HTMLElement.prototype.getBoundingClientRect = function () {
+          if (this.id !== "measurements") return rect.call(this);
+          return {
+            top: 900 + Number.parseFloat(window.document.body.style.top || "0"),
+          };
+        };
+      },
+    },
+  );
+  const { document, window, navigation, storefrontScroll } = ctx;
+  const header = document.createElement("main-header");
+  header.reset = () => assert.fail("A deep anchor must not reset the header");
+  document.querySelector("header").replaceWith(header);
+  assert.equal(
+    await navigation.navigate(`${productOne}#measurements`),
+    "navigated",
+  );
+  assert.equal(window.scrollY, 0);
+  assert.equal(storefrontScroll.getPosition()[1], 876);
+  assert.equal(document.body.style.top, "-876px");
+  assert.deepEqual(nativeScrolls, []);
+  storefrontScroll.setLocked(false);
+  assert.equal(window.scrollY, 876);
+  assert.deepEqual(nativeScrolls, [{ left: 0, top: 876, behavior: "instant" }]);
+});
+
+test("header reset trusts logical scroll even if the physical viewport reports keyboard drift", async (t) => {
+  const { window, document } = setup(t);
+  const { content, resets, hide } = installThemeHeader(t, window, {
+    scrollTop: 140,
+  });
+  window.RomanPage.resetHeaderAtTop(0);
+  assert.equal(resets.length, 1);
+  assert.equal(window.scrollY, 140);
+  assert.equal(content.classList.contains("invisible"), false);
+
+  hide();
+  document.documentElement.scrollTop = 0;
+  window.RomanPage.resetHeaderAtTop(640);
+  assert.equal(resets.length, 1);
+  assert.equal(content.classList.contains("invisible"), true);
 });
 
 test("top navigation restores the existing theme header after new page dimensions bypass its scroll reset", async (t) => {

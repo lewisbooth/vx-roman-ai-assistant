@@ -66,7 +66,7 @@ export function attachHeaderLauncher(
       update();
     },
     focus() {
-      (fallback.hidden ? button : fallback).focus();
+      (fallback.hidden ? button : fallback).focus({ preventScroll: true });
     },
     dispose() {
       observer.disconnect();

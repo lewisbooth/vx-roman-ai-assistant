@@ -248,14 +248,17 @@ test("Cart and Gallery use memory navigation while retaining the transcript and 
     () => ctx.container.textContent.includes("Your cart is empty"),
     "Cart did not load",
   );
-  assert.equal(ctx.container.querySelector(".roman-chat-scroll").hidden, true);
+  assert.equal(ctx.container.querySelector(".roman-chat-history").hidden, true);
   assert.equal(ctx.container.querySelector("textarea"), textarea);
   assert.equal(textarea.value, "Keep my draft");
   await ctx.select("Gallery");
   assert.ok(ctx.container.querySelector('[aria-label="Your gallery"]'));
   assert.equal(ctx.container.querySelector(".roman-cart-stage"), null);
   await ctx.select("Chat");
-  assert.equal(ctx.container.querySelector(".roman-chat-scroll").hidden, false);
+  assert.equal(
+    ctx.container.querySelector(".roman-chat-history").hidden,
+    false,
+  );
   assert.equal(ctx.container.querySelector(".roman-timeline"), history);
   assert.equal(ctx.container.querySelector("textarea"), textarea);
   assert.equal(textarea.value, "Keep my draft");
@@ -279,6 +282,41 @@ test("active voice remains connected and retains its controls through every Roma
   }
   assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.navigationCalls, []);
+});
+
+test("the shared flow retains each tab's scroll position and background replies do not move Cart or Gallery", async (t) => {
+  const ctx = await setup(t);
+  const flow = ctx.container.querySelector(".roman-chat-scroll");
+  Object.defineProperties(flow, {
+    scrollHeight: { get: () => 1000 },
+    clientHeight: { get: () => 200 },
+  });
+  function scrollTo(top) {
+    flow.scrollTop = top;
+    flow.dispatchEvent(
+      new ctx.window.WheelEvent("wheel", { deltaY: -100, bubbles: true }),
+    );
+    flow.dispatchEvent(new ctx.window.Event("scroll"));
+  }
+  scrollTo(120);
+  await ctx.select("Cart");
+  assert.equal(flow.scrollTop, 0);
+  scrollTo(45);
+  await ctx.select("Gallery");
+  assert.equal(flow.scrollTop, 0);
+  scrollTo(20);
+  ctx.update({
+    conversation: engagedConversation([
+      message([{ type: "text", text: "Your next options are ready." }]),
+    ]),
+  });
+  await delay(0);
+  assert.equal(flow.scrollTop, 20);
+  await ctx.select("Cart");
+  assert.equal(flow.scrollTop, 45);
+  await ctx.select("Chat");
+  assert.equal(flow.scrollTop, 120);
+  assert.ok(ctx.container.querySelector(".roman-return-current"));
 });
 
 test("a background PDP cannot activate itself and ending a chat unloads its selected blind", async (t) => {
@@ -321,7 +359,7 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
     "Conversation did not end",
   );
   await until(
-    () => !ctx.container.querySelector(".roman-chat-scroll").hidden,
+    () => !ctx.container.querySelector(".roman-chat-history").hidden,
     "End chat did not return to Chat",
   );
   assert.equal(ctx.container.querySelector(".roman-product-stage"), null);
@@ -350,7 +388,10 @@ test("cart additions stay in Chat until View Cart is explicitly chosen", async (
     ]),
     voice: { status: "active", muted: false, error: null },
   });
-  assert.equal(ctx.container.querySelector(".roman-chat-scroll").hidden, false);
+  assert.equal(
+    ctx.container.querySelector(".roman-chat-history").hidden,
+    false,
+  );
   assert.equal(
     ctx.fetches.length,
     1,
@@ -388,7 +429,7 @@ test("submitting text from Cart immediately returns to the visible conversation"
       new ctx.window.Event("submit", { bubbles: true, cancelable: true }),
     );
   await until(
-    () => !ctx.container.querySelector(".roman-chat-scroll").hidden,
+    () => !ctx.container.querySelector(".roman-chat-history").hidden,
     "Text submission did not reveal Chat",
   );
   assert.deepEqual(ctx.calls, [["text", "Show me more blinds"]]);
@@ -418,7 +459,9 @@ test("quick answers and pending activity remain visible alongside Cart and Galle
     ctx.update({ pending: true });
     await until(
       () =>
-        ctx.container.querySelector(".roman-dialogue > .roman-reply-activity"),
+        ctx.container.querySelector(
+          ".roman-chat-scroll > .roman-reply-activity",
+        ),
       "Pending activity was hidden by the selected tab",
     );
     ctx.update({ pending: false });
@@ -488,7 +531,7 @@ test("new voice carousel results reveal Chat while historical widgets and repeat
   ctx.update({ conversation: JSON.parse(JSON.stringify(original)) });
   await delay(0);
   assert.equal(
-    ctx.container.querySelector(".roman-chat-scroll").hidden,
+    ctx.container.querySelector(".roman-chat-history").hidden,
     true,
     "Historical cards cannot pull the customer out of Cart",
   );
@@ -507,7 +550,7 @@ test("new voice carousel results reveal Chat while historical widgets and repeat
   ]);
   ctx.update({ conversation: next });
   await until(
-    () => !ctx.container.querySelector(".roman-chat-scroll").hidden,
+    () => !ctx.container.querySelector(".roman-chat-history").hidden,
     "New voice carousel stayed hidden on Cart",
   );
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), controls);
@@ -519,7 +562,7 @@ test("new voice carousel results reveal Chat while historical widgets and repeat
     });
   await delay(0);
   assert.equal(
-    ctx.container.querySelector(".roman-chat-scroll").hidden,
+    ctx.container.querySelector(".roman-chat-history").hidden,
     true,
     "Repeated snapshots cannot steal Gallery focus",
   );
@@ -556,7 +599,7 @@ test("a new numeric measurement reveals Chat without interrupting voice or reope
     conversation: conversation([...ctx.state().conversation.messages, numeric]),
   });
   await until(
-    () => !ctx.container.querySelector(".roman-chat-scroll").hidden,
+    () => !ctx.container.querySelector(".roman-chat-history").hidden,
     "Numeric voice question stayed hidden on Gallery",
   );
   assert.ok(
@@ -571,7 +614,7 @@ test("a new numeric measurement reveals Chat without interrupting voice or reope
   });
   await delay(0);
   assert.equal(
-    ctx.container.querySelector(".roman-chat-scroll").hidden,
+    ctx.container.querySelector(".roman-chat-history").hidden,
     true,
     "Restoring a different history cannot override the selected view",
   );

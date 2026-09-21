@@ -1052,9 +1052,16 @@ test("header replacement preserves the open runtime and moves close focus to the
   assert.equal(replacementButton.getAttribute("aria-expanded"), "true");
   assert.equal(mounts.length, 1);
   assert.equal(mounts[0].disposed, 0);
+  let restoredFocusOptions;
+  const focusReplacement = replacementButton.focus.bind(replacementButton);
+  replacementButton.focus = (options) => {
+    restoredFocusOptions = options;
+    focusReplacement(options);
+  };
   ctx.close().click();
   assert.equal(ctx.document.activeElement, replacementHost);
   assert.equal(replacementHost.shadowRoot.activeElement, replacementButton);
+  assert.equal(restoredFocusOptions?.preventScroll, true);
 });
 
 test("an active conversation falls back when its header hook disappears and cleans up with the embed", async (t) => {

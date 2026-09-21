@@ -36,7 +36,7 @@ function savedState(value?: string, key = visibilityKey): string | null {
   } catch {
     storageUnavailable = true;
     console.warn(
-      "[Roman] Storage unavailable; navigation will reset the sidebar.",
+      "[Roman] No storage; open state won't persist.",
     );
     return null;
   }

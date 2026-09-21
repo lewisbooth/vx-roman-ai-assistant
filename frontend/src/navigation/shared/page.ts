@@ -556,8 +556,8 @@ export async function loadPageAssets(
     throw new DOMException("Navigation cancelled", "AbortError");
 }
 
-export function resetHeaderAtTop(): void {
-  if ((window.pageYOffset || document.documentElement.scrollTop) > 0) return;
+export function resetHeaderAtTop(scrollTop: number): void {
+  if (scrollTop > 0) return;
   const header = document.querySelector("main-header") as
     | (HTMLElement & {
         reset?: () => void;

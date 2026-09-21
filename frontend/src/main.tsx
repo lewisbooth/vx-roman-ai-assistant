@@ -12,6 +12,7 @@ import { createVoiceAutostart } from "./session/voice-autostart";
 import { isConversationStorefront } from "../../shared/storefronts";
 import { createComposerFocus } from "./chat/composer-focus";
 import { createAssistantViewport } from "./assistant-viewport";
+import { createStorefrontScroll } from "./storefront-scroll";
 import styles from "./styles.css?inline";
 import viewportStyles from "./assistant-viewport.css?inline";
 
@@ -35,7 +36,8 @@ export function mountAssistant(
     rejectReady = reject;
   });
   let router: ReturnType<typeof createAssistantRouter> | undefined;
-  const navigation = createStorefrontNavigation(host);
+  const storefrontScroll = createStorefrontScroll();
+  const navigation = createStorefrontNavigation(host, storefrontScroll);
   const tools = createAssistantTools(
     host,
     navigation,
@@ -111,6 +113,7 @@ export function mountAssistant(
     root?.unmount();
     composerFocus.dispose();
     viewport.dispose();
+    storefrontScroll.dispose();
     router?.dispose();
     tools.dispose();
     executor.dispose();
@@ -132,6 +135,7 @@ export function mountAssistant(
     setOpen(open) {
       if (!disposed) {
         sidebarOpen = open;
+        storefrontScroll.setLocked(open);
         viewport.setOpen(open);
         if (!open) composerFocus.cancel();
         syncVoiceDock();
@@ -147,6 +151,7 @@ export function mountAssistant(
       root?.unmount();
       composerFocus.dispose();
       viewport.dispose();
+      storefrontScroll.dispose();
       router?.dispose();
       tools.dispose();
       executor.dispose();

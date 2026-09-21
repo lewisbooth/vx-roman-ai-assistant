@@ -6,6 +6,10 @@ import {
 } from "./page";
 import { selectStore } from "../themes";
 import { parseNavigationCall } from "../../../../shared/navigation-tool";
+import {
+  nativeStorefrontScroll,
+  type StorefrontScroll,
+} from "../../storefront-scroll";
 
 export type NavigationSnapshot = {
   url: string;
@@ -71,6 +75,7 @@ function historyEntry(): HistoryEntry | undefined {
 
 export function createStorefrontNavigation(
   host: HTMLElement,
+  storefrontScroll: StorefrontScroll = nativeStorefrontScroll,
 ): StorefrontNavigation {
   const store = selectStore(host.dataset.shop);
   const listeners = new Set<() => void>();
@@ -123,7 +128,7 @@ export function createStorefrontNavigation(
       segment: owned && previous ? previous.segment : crypto.randomUUID(),
       index: owned && previous ? previous.index : 0,
       url: currentUrl,
-      scroll: [window.scrollX, window.scrollY],
+      scroll: storefrontScroll.getPosition(),
     };
     window.history.replaceState(
       {
@@ -291,17 +296,16 @@ export function createStorefrontNavigation(
         main.focus({ preventScroll: true });
       }
       if (scroll)
-        window.scrollTo({
-          left: scroll[0],
-          top: scroll[1],
-          behavior: "instant",
-        });
+        storefrontScroll.scrollTo(scroll);
       else if (finalUrl.hash) {
-        document
-          .getElementById(decodeURIComponent(finalUrl.hash.slice(1)))
-          ?.scrollIntoView();
-      } else window.scrollTo({ left: 0, top: 0, behavior: "instant" });
-      resetHeaderAtTop();
+        const anchor = document.getElementById(
+          decodeURIComponent(finalUrl.hash.slice(1)),
+        );
+        if (anchor) storefrontScroll.scrollIntoView(anchor);
+      } else storefrontScroll.scrollTo([0, 0]);
+      // A locked document stays physically at zero even when history restores
+      // a deeper position. Only a logical top-of-page visit resets the header.
+      resetHeaderAtTop(storefrontScroll.getPosition()[1]);
       document.dispatchEvent(
         new CustomEvent("roman:navigation", { detail: { url: currentUrl } }),
       );

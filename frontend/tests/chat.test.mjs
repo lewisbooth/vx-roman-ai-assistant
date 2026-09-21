@@ -210,17 +210,14 @@ async function setup(t, options = {}) {
       "value",
     ).set.call(input(), text);
     input().dispatchEvent(new window.Event("input", { bubbles: true }));
-    await until(
-      () => {
-        const send = container.querySelector(
-          '.roman-composer button[type="submit"]',
-        );
-        return text.trim()
-          ? send && !send.disabled
-          : !send && input().value === text;
-      },
-      "Composer did not accept typed text",
-    );
+    await until(() => {
+      const send = container.querySelector(
+        '.roman-composer button[type="submit"]',
+      );
+      return text.trim()
+        ? send && !send.disabled
+        : !send && input().value === text;
+    }, "Composer did not accept typed text");
   }
   return {
     window,
@@ -2319,7 +2316,10 @@ test("restored remote voice can be ended explicitly without activating the micro
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
   );
   assert.equal(ctx.input(), null);
-  assert.equal(ctx.container.querySelector(".roman-composer form").hidden, false);
+  assert.equal(
+    ctx.container.querySelector(".roman-composer form").hidden,
+    false,
+  );
   assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.startVoiceCalls, []);
   end.click();
@@ -2487,7 +2487,8 @@ test("an unavailable microphone leaves text usable and retries only after anothe
           voice: {
             status: "error",
             muted: false,
-            error: "No microphone was found. Connect a microphone and try voice again.",
+            error:
+              "No microphone was found. Connect a microphone and try voice again.",
           },
         });
         throw new window.Error("Microphone unavailable");
@@ -2532,7 +2533,9 @@ test("an explicit denied-microphone attempt opens the branded dialog and only a 
   const ctx = await setup(t, {
     onStartVoice: async (window) => {
       if (++attempts === 1) {
-        ctx.update({ voice: { status: "starting", muted: false, error: null } });
+        ctx.update({
+          voice: { status: "starting", muted: false, error: null },
+        });
         await until(() => !ctx.input(), "Connection did not replace the input");
         ctx.update({
           voice: {
@@ -2546,7 +2549,9 @@ test("an explicit denied-microphone attempt opens the branded dialog and only a 
       }
     },
   });
-  const originalTrigger = ctx.container.querySelector('[aria-label="Start voice"]');
+  const originalTrigger = ctx.container.querySelector(
+    '[aria-label="Start voice"]',
+  );
   originalTrigger.focus();
   originalTrigger.click();
   await until(
@@ -2562,14 +2567,19 @@ test("an explicit denied-microphone attempt opens the branded dialog and only a 
   assert.equal(dialog.querySelector("img").alt, "Roman by SelectBlinds");
   assert.match(dialog.textContent, /browser.*site settings/);
   assert.match(dialog.textContent, /keep chatting by text/);
-  assert.equal(ctx.container.querySelector(".roman-composer [role=alert]"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-composer [role=alert]"),
+    null,
+  );
   assert.equal(ctx.input().disabled, false);
   dialog.querySelector("button").click();
   await until(
     () => !ctx.container.querySelector("dialog"),
     "Permission dialog did not close",
   );
-  const currentTrigger = ctx.container.querySelector('[aria-label="Start voice"]');
+  const currentTrigger = ctx.container.querySelector(
+    '[aria-label="Start voice"]',
+  );
   assert.notEqual(currentTrigger, originalTrigger);
   assert.equal(ctx.container.getRootNode().activeElement, currentTrigger);
   await ctx.type("I can still use text");
@@ -2603,7 +2613,10 @@ test("a denied microphone snapshot from autostart quietly restores text without 
   });
   await until(() => ctx.input(), "Autostart denial did not restore text");
   assert.equal(ctx.container.querySelector("dialog"), null);
-  assert.equal(ctx.container.querySelector(".roman-composer [role=alert]"), null);
+  assert.equal(
+    ctx.container.querySelector(".roman-composer [role=alert]"),
+    null,
+  );
   assert.equal(ctx.container.querySelector(".roman-voice-notice"), null);
   assert.ok(ctx.container.querySelector('[aria-label="Start voice"]'));
   assert.ok(ctx.container.querySelector(".roman-welcome"));
@@ -2642,10 +2655,7 @@ test("a failed voice shutdown retains an explicit retry and preserves the hidden
   );
   assert.equal(ctx.input(), null);
   assert.equal(composer.hidden, false);
-  assert.match(
-    composer.textContent,
-    /Connection needs attention/,
-  );
+  assert.match(composer.textContent, /Connection needs attention/);
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
   assert.ok(
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
@@ -2690,6 +2700,75 @@ function questionMessage(id = "question-one", question = "What matters most?") {
     ],
   };
 }
+
+test("the question overlay reserves its natural height and tall cards use the same conversation flow", async (t) => {
+  let availableHeight = 600;
+  let questionHeight = 180;
+  const observers = [];
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([questionMessage()]) },
+    beforeImport(window) {
+      window.ResizeObserver = class {
+        constructor(callback) {
+          this.callback = callback;
+          this.targets = new Set();
+          this.disconnected = false;
+          observers.push(this);
+        }
+        observe(target) {
+          this.targets.add(target);
+        }
+        disconnect() {
+          this.disconnected = true;
+        }
+      };
+      const rect = window.HTMLElement.prototype.getBoundingClientRect;
+      window.HTMLElement.prototype.getBoundingClientRect = function () {
+        if (this.classList.contains("roman-response-dock"))
+          return { height: questionHeight };
+        return rect.call(this);
+      };
+      Object.defineProperty(window.HTMLElement.prototype, "clientHeight", {
+        configurable: true,
+        get() {
+          return this.classList.contains("roman-dialogue-flow")
+            ? availableHeight
+            : 0;
+        },
+      });
+    },
+  });
+  const frame = ctx.container.querySelector(".roman-dialogue-flow");
+  const scroll = ctx.container.querySelector(".roman-chat-scroll");
+  const dock = ctx.container.querySelector(".roman-response-dock");
+  const question = dock.querySelector(".roman-question");
+  const observer = observers.findLast(
+    (item) => !item.disconnected && item.targets.has(dock),
+  );
+  assert.ok(observer.targets.has(frame));
+  assert.equal(scroll.contains(dock), true);
+  assert.equal(scroll.contains(ctx.input()), false);
+  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "180px");
+  assert.equal(frame.hasAttribute("data-question-flow"), false);
+
+  availableHeight = 150;
+  observer.callback();
+  assert.equal(frame.hasAttribute("data-question-flow"), true);
+  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "0px");
+  assert.equal(dock.querySelector(".roman-question"), question);
+
+  // A mobile-focused composer makes the dock display:none; its measured
+  // height becomes zero without removing the live question or its draft.
+  questionHeight = 0;
+  observer.callback();
+  assert.equal(frame.hasAttribute("data-question-flow"), false);
+  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "0px");
+  availableHeight = 600;
+  questionHeight = 240;
+  observer.callback();
+  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "240px");
+  assert.equal(dock.querySelector(".roman-question"), question);
+});
 
 test("easy answers have one labelled panel below cards and the canonical question stays visible in the transcript", async (t) => {
   const row = questionMessage("question-one", "What matters most? <img src=x>");
@@ -3164,7 +3243,10 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     "Accepted answer retained choices",
   );
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), bar);
-  assert.equal(bar.querySelector(".roman-voice-waveform").dataset.muted, "true");
+  assert.equal(
+    bar.querySelector(".roman-voice-waveform").dataset.muted,
+    "true",
+  );
   assert.ok(ctx.voiceDock.querySelector('[aria-label="Unmute microphone"]'));
   assert.deepEqual(ctx.muteCalls, []);
   assert.deepEqual(ctx.stopVoiceCalls, []);

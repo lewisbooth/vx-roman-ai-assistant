@@ -89,6 +89,8 @@ function Assistant({
   const cart = useCart(navigation, session);
   const cartCount = !cart.error ? cart.cart?.itemCount : undefined;
   const viewport = useRef<HTMLDivElement>(null);
+  const dialogueFlow = useRef<HTMLDivElement>(null);
+  const scrollPositions = useRef({ chat: 0, cart: 0, gallery: 0 });
   const following = useRef(true);
   const manualScroll = useRef(false);
   const [questionDock, setQuestionDock] = useState<HTMLDivElement | null>(null);
@@ -274,6 +276,7 @@ function Assistant({
       await session.end();
       messageQueue.clear();
       setConfirmEnd(false);
+      scrollPositions.current.chat = 0;
       showView("chat");
       setStartError(null);
       following.current = true;
@@ -329,18 +332,43 @@ function Assistant({
 
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
-    if (hasCustomerReply && following.current && scroll) {
+    if (view === "chat" && hasCustomerReply && following.current && scroll) {
       manualScroll.current = false;
       scroll.scrollTop = scroll.scrollHeight;
     }
-  }, [hasCustomerReply]);
+  }, [hasCustomerReply, view]);
 
   useLayoutEffect(() => {
-    if (!viewport.current || !window.ResizeObserver) return;
-    const observer = new ResizeObserver(followConversation);
-    observer.observe(viewport.current);
-    return () => observer.disconnect();
-  }, [followConversation]);
+    const scroll = viewport.current;
+    if (scroll) scroll.scrollTop = scrollPositions.current[view];
+  }, [view]);
+
+  useLayoutEffect(() => {
+    const frame = dialogueFlow.current;
+    if (!frame || !window.ResizeObserver) return;
+    const layoutQuestion = () => {
+      const height = questionDock?.getBoundingClientRect().height ?? 0;
+      // Normal questions float above the transcript. If the complete card
+      // cannot fit, use the same conversation scroll instead of clipping its
+      // controls or creating a second scrollbar inside the question.
+      const inline = height > frame.clientHeight;
+      frame.toggleAttribute("data-question-flow", inline);
+      frame.style.setProperty(
+        "--roman-question-space",
+        `${inline ? 0 : height}px`,
+      );
+      followConversation();
+    };
+    const observer = new ResizeObserver(layoutQuestion);
+    observer.observe(frame);
+    if (questionDock) observer.observe(questionDock);
+    layoutQuestion();
+    return () => {
+      observer.disconnect();
+      frame.removeAttribute("data-question-flow");
+      frame.style.removeProperty("--roman-question-space");
+    };
+  }, [followConversation, questionDock]);
 
   useLayoutEffect(followConversation, [
     messages,
@@ -407,124 +435,133 @@ function Assistant({
               />
             )}
             <div className="roman-dialogue">
-              {view !== "chat" && (
-                <div className="roman-secondary-view">
-                  {view === "cart" && <CartStage {...cart} />}
-                  {view === "gallery" && (
-                    <section
-                      className="roman-gallery"
-                      aria-label="Your gallery"
-                    >
-                      <span className="roman-stage-eyebrow">
-                        Your home, imagined
-                      </span>
-                      <h1>Your gallery</h1>
-                      <p>
-                        Your room photos and Roman’s visualizations will live
-                        here.
-                      </p>
-                      <p className="roman-gallery-note">
-                        Photo uploads and visualizations are coming soon.
-                      </p>
-                    </section>
+              <div className="roman-dialogue-flow" ref={dialogueFlow}>
+                <div
+                  ref={viewport}
+                  className="roman-chat-scroll"
+                  tabIndex={0}
+                  role="region"
+                  aria-label={
+                    view === "chat" ? "Conversation history" : `Roman ${view}`
+                  }
+                  onWheel={(event) => {
+                    if (view === "chat" && event.deltaY)
+                      manualScroll.current = true;
+                  }}
+                  onTouchMove={() => {
+                    if (view === "chat") manualScroll.current = true;
+                  }}
+                  onPointerDown={(event) => {
+                    if (view === "chat" && event.target === event.currentTarget)
+                      manualScroll.current = true;
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      view === "chat" &&
+                      event.target === event.currentTarget &&
+                      [
+                        "ArrowUp",
+                        "ArrowDown",
+                        "PageUp",
+                        "PageDown",
+                        "Home",
+                        "End",
+                        " ",
+                      ].includes(event.key)
+                    )
+                      manualScroll.current = true;
+                  }}
+                  onScroll={(event) => {
+                    const scroll = event.currentTarget;
+                    scrollPositions.current[view] = scroll.scrollTop;
+                    if (view !== "chat") return;
+                    const atBottom =
+                      scroll.scrollHeight -
+                        scroll.scrollTop -
+                        scroll.clientHeight <
+                      48;
+                    if (atBottom) following.current = true;
+                    else if (manualScroll.current) following.current = false;
+                    manualScroll.current = false;
+                    setReadingHistory(!following.current);
+                  }}
+                >
+                  {view !== "chat" && (
+                    <div className="roman-secondary-view">
+                      {view === "cart" && <CartStage {...cart} />}
+                      {view === "gallery" && (
+                        <section
+                          className="roman-gallery"
+                          aria-label="Your gallery"
+                        >
+                          <span className="roman-stage-eyebrow">
+                            Your home, imagined
+                          </span>
+                          <h1>Your gallery</h1>
+                          <p>
+                            Your room photos and Roman’s visualizations will
+                            live here.
+                          </p>
+                          <p className="roman-gallery-note">
+                            Photo uploads and visualizations are coming soon.
+                          </p>
+                        </section>
+                      )}
+                    </div>
                   )}
+                  <div className="roman-chat-history" hidden={view !== "chat"}>
+                    {state.restoring ? (
+                      <p className="roman-chat-restoring" role="status">
+                        Restoring your conversation…
+                      </p>
+                    ) : hasCustomerReply || messageQueue.messages.length > 0 ? (
+                      <Timeline
+                        messages={messages ?? []}
+                        session={session}
+                        navigation={navigation}
+                        onContentChange={followConversation}
+                        activeQuestionId={activeQuestion?.invocationId}
+                        questionDisabled={
+                          ending ||
+                          answering ||
+                          messageQueue.messages.length > 0 ||
+                          (!!activeQuestion?.measurement &&
+                            storefront.pending) ||
+                          state.pending ||
+                          !!state.conversation?.busy ||
+                          waitingForVoice ||
+                          (voice.status === "error" && voice.muted) ||
+                          voice.status === "starting" ||
+                          voice.status === "stopping"
+                        }
+                        voice={localVoice || waitingForVoice}
+                        onAnswer={answerQuestion}
+                        questionDock={questionDock}
+                        onChooseProduct={chooseProduct}
+                      />
+                    ) : (
+                      <Welcome
+                        logoUrl={logoUrl}
+                        busy={ending || state.restoring || confirmEnd}
+                        onStart={(text) => void startTopic(text)}
+                      />
+                    )}
+                  </div>
+                  {(hasCustomerReply || view !== "chat") && (
+                    <ReplyActivity
+                      state={state}
+                      ending={ending}
+                      onContentChange={followConversation}
+                    />
+                  )}
+                  <div
+                    className="roman-response-dock"
+                    ref={setQuestionDock}
+                    aria-live={voiceMode ? "off" : "polite"}
+                    aria-relevant="additions text"
+                  />
                 </div>
-              )}
-              <div
-                ref={viewport}
-                className="roman-chat-scroll"
-                hidden={view !== "chat"}
-                tabIndex={0}
-                role="region"
-                aria-label="Conversation history"
-                onWheel={(event) => {
-                  if (event.deltaY) manualScroll.current = true;
-                }}
-                onTouchMove={() => {
-                  manualScroll.current = true;
-                }}
-                onPointerDown={(event) => {
-                  if (event.target === event.currentTarget)
-                    manualScroll.current = true;
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    event.target === event.currentTarget &&
-                    [
-                      "ArrowUp",
-                      "ArrowDown",
-                      "PageUp",
-                      "PageDown",
-                      "Home",
-                      "End",
-                      " ",
-                    ].includes(event.key)
-                  )
-                    manualScroll.current = true;
-                }}
-                onScroll={(event) => {
-                  const scroll = event.currentTarget;
-                  const atBottom =
-                    scroll.scrollHeight -
-                      scroll.scrollTop -
-                      scroll.clientHeight <
-                    48;
-                  if (atBottom) following.current = true;
-                  else if (manualScroll.current) following.current = false;
-                  manualScroll.current = false;
-                  setReadingHistory(!following.current);
-                }}
-              >
-                {state.restoring ? (
-                  <p className="roman-chat-restoring" role="status">
-                    Restoring your conversation…
-                  </p>
-                ) : hasCustomerReply || messageQueue.messages.length > 0 ? (
-                  <Timeline
-                    messages={messages ?? []}
-                    session={session}
-                    navigation={navigation}
-                    onContentChange={followConversation}
-                    activeQuestionId={activeQuestion?.invocationId}
-                    questionDisabled={
-                      ending ||
-                      answering ||
-                      messageQueue.messages.length > 0 ||
-                      (!!activeQuestion?.measurement && storefront.pending) ||
-                      state.pending ||
-                      !!state.conversation?.busy ||
-                      waitingForVoice ||
-                      (voice.status === "error" && voice.muted) ||
-                      voice.status === "starting" ||
-                      voice.status === "stopping"
-                    }
-                    voice={localVoice || waitingForVoice}
-                    onAnswer={answerQuestion}
-                    questionDock={questionDock}
-                    onChooseProduct={chooseProduct}
-                  />
-                ) : (
-                  <Welcome
-                    logoUrl={logoUrl}
-                    busy={ending || state.restoring || confirmEnd}
-                    onStart={(text) => void startTopic(text)}
-                  />
-                )}
-                {hasCustomerReply && (
-                  <ReplyActivity
-                    state={state}
-                    ending={ending}
-                    onContentChange={followConversation}
-                  />
-                )}
               </div>
-              {view !== "chat" && (
-                <ReplyActivity
-                  state={state}
-                  ending={ending}
-                  onContentChange={followConversation}
-                />
-              )}
               {view === "chat" && readingHistory && hasCustomerReply && (
                 <button
                   className="roman-return-current"
@@ -538,12 +575,6 @@ function Assistant({
                   Back to the conversation <span aria-hidden="true">↓</span>
                 </button>
               )}
-              <div
-                className="roman-response-dock"
-                ref={setQuestionDock}
-                aria-live={voiceMode ? "off" : "polite"}
-                aria-relevant="additions text"
-              />
               {state.approval && (
                 <ToolApproval approval={state.approval} session={session} />
               )}

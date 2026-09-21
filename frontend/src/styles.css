@@ -99,10 +99,7 @@
     outline-offset: 3px;
   }
   .roman-secondary-view {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    overscroll-behavior: contain;
+    flex: 1 0 auto;
     padding: 24px;
   }
   .roman-gallery {
@@ -140,6 +137,13 @@
     min-width: 0;
     min-height: 0;
     flex-direction: column;
+  }
+  .roman-dialogue-flow {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
   }
   .roman-cart-stage {
     width: 100%;
@@ -310,14 +314,17 @@
     outline-offset: 4px;
   }
   .roman-response-dock {
-    flex-shrink: 1;
-    min-height: 0;
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flow-root;
+    z-index: 4;
+    flex-shrink: 0;
     width: min(100%, 840px);
     margin: 0 auto;
     padding: 0 28px;
-    max-height: 38%;
-    overflow: auto;
-    overscroll-behavior: contain;
+    pointer-events: none;
   }
   .roman-response-dock:empty {
     display: none;
@@ -325,6 +332,11 @@
   .roman-response-dock .roman-question {
     margin: 10px 0;
     text-align: center;
+    pointer-events: auto;
+  }
+  .roman-dialogue-flow[data-question-flow] .roman-response-dock {
+    position: static;
+    transform: none;
   }
   .roman-response-dock .roman-action-buttons {
     justify-content: center;
@@ -353,10 +365,17 @@
   }
 
   .roman-chat-scroll {
-    @apply relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain;
+    @apply min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain;
     display: flex;
     flex-direction: column;
     scroll-padding: 28px;
+    padding-bottom: var(--roman-question-space, 0px);
+  }
+
+  .roman-chat-history {
+    display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
   }
 
   .roman-chat-restoring {
@@ -1299,7 +1318,10 @@
     }
     .roman-response-dock {
       padding: 0 16px;
-      max-height: 34%;
+    }
+    .roman-dialogue:has(textarea[data-roman-composer]:focus)
+      .roman-response-dock {
+      display: none;
     }
     .roman-action-panel {
       padding: 14px;
@@ -1369,11 +1391,7 @@
       padding-bottom: max(12px, env(safe-area-inset-bottom));
     }
 
-    /* Pending choices and unsent text share the remaining dialogue height,
-       after the header and selected product, without pushing out the input. */
-    .roman-dialogue:has(.roman-message-queue) .roman-response-dock {
-      max-height: max(0px, min(30%, calc(80% - 150px)));
-    }
+    /* Queued messages remain separate from the shared conversation flow. */
     .roman-composer:has(.roman-message-queue) {
       display: flex;
       flex-direction: column;
