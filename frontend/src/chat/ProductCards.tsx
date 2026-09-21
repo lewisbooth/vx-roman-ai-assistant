@@ -26,8 +26,15 @@ export function ProductCards({
   onContentChange: () => void;
 }) {
   const ids = productIds.join(",");
-  const [result, setResult] = useState<CatalogResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<{
+    ids: string;
+    session: ConversationClient;
+    result?: CatalogResult;
+    error?: string;
+  }>();
+  const currentResult = loaded?.ids === ids && loaded.session === session;
+  const result = currentResult ? loaded.result : undefined;
+  const error = currentResult ? loaded.error : undefined;
   const [attempt, setAttempt] = useState(0);
   const [choosing, setChoosing] = useState(false);
   const [choiceError, setChoiceError] = useState<string>();
@@ -67,17 +74,13 @@ export function ProductCards({
     return () => observer.disconnect();
   }, []);
 
-  useLayoutEffect(onContentChange, [result, error, onContentChange]);
-  useEffect(() => {
-    setResult(null);
-    setError(null);
-  }, [ids, session]);
+  useLayoutEffect(onContentChange, [ids, result, error, onContentChange]);
 
   useEffect(() => {
     if (!nearby || result) return;
     let current = true;
     const controller = new AbortController();
-    setError(null);
+    setLoaded({ ids, session });
     // A discarded StrictMode setup must not enqueue a duplicate catalog call.
     void Promise.resolve().then(async () => {
       if (!current) return;
@@ -91,17 +94,24 @@ export function ProductCards({
           value.products.map((product) => [product.id, product]),
         );
         if (current && !controller.signal.aborted)
-          setResult({
-            ...value,
-            products: selectedIds.flatMap((id) => productsById.get(id) ?? []),
+          setLoaded({
+            ids,
+            session,
+            result: {
+              ...value,
+              products: selectedIds.flatMap((id) => productsById.get(id) ?? []),
+            },
           });
       } catch (cause) {
         if (current)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "Products could not be loaded. Please retry.",
-          );
+          setLoaded({
+            ids,
+            session,
+            error:
+              cause instanceof Error
+                ? cause.message
+                : "Products could not be loaded. Please retry.",
+          });
       }
     });
     return () => {
@@ -123,9 +133,30 @@ export function ProductCards({
     );
   if (!result)
     return frame(
-      <p className="roman-products-status" role="status">
-        Loading products…
-      </p>,
+      <div className="roman-products">
+        <p className="sr-only" role="status">
+          Loading products…
+        </p>
+        <ProductCarousel>
+          <ul className="roman-product-list" aria-hidden="true">
+            {productIds.map((id) => (
+              <li key={id}>
+                <div className="roman-product-card roman-product-skeleton">
+                  <span className="roman-product-image" />
+                  <span className="roman-product-title">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                  <span className="roman-product-price">
+                    <span />
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </ProductCarousel>
+      </div>,
     );
   return frame(
     <div className="roman-products">
@@ -156,11 +187,9 @@ export function ProductCards({
                     </span>
                   </span>
                   <span className="roman-product-title">{product.title}</span>
-                  {product.priceLabel && (
-                    <span className="roman-product-price">
-                      {product.priceLabel}
-                    </span>
-                  )}
+                  <span className="roman-product-price">
+                    {product.priceLabel}
+                  </span>
                 </button>
               </li>
             ))}

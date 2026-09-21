@@ -618,7 +618,8 @@
     border-color: #4e0e0e;
   }
 
-  .roman-product-card img {
+  .roman-product-card img,
+  .roman-product-skeleton > .roman-product-image {
     @apply block h-[260px] w-full shrink-0 object-cover;
   }
 
@@ -629,7 +630,8 @@
     .roman-product-list > li {
       width: clamp(360px, 28vw, 400px);
     }
-    .roman-product-card img {
+    .roman-product-card img,
+    .roman-product-skeleton > .roman-product-image {
       height: var(--roman-product-image-height);
     }
     .roman-carousel-previous,
@@ -642,8 +644,42 @@
     @apply px-[18px] pt-[18px] text-[19px] leading-[1.3];
   }
 
+  .roman-product-list .roman-product-title {
+    min-height: calc(3.9em + 18px);
+  }
+
   .roman-product-price {
     @apply px-[18px] pt-[8px] text-[15px] leading-[1.4] text-[#545046];
+  }
+  .roman-product-list .roman-product-price {
+    min-height: calc(1.4em + 8px);
+  }
+
+  .roman-product-skeleton > .roman-product-image,
+  .roman-product-skeleton
+    :is(.roman-product-title, .roman-product-price)
+    > span {
+    background: linear-gradient(100deg, #ebe6dc 35%, #f7f5ef 50%, #ebe6dc 65%);
+    background-size: 250% 100%;
+    animation: roman-activity-shimmer 2s linear infinite;
+  }
+  .roman-product-skeleton
+    :is(.roman-product-title, .roman-product-price)
+    > span {
+    display: block;
+    height: 1.3em;
+    border-top: 0.3em solid #fffdf8;
+    border-bottom: 0.3em solid #fffdf8;
+  }
+  .roman-product-skeleton .roman-product-title > span:nth-child(2) {
+    width: 84%;
+  }
+  .roman-product-skeleton .roman-product-title > span:last-child {
+    width: 62%;
+  }
+  .roman-product-skeleton .roman-product-price > span {
+    width: 55%;
+    height: 1.4em;
   }
   .roman-choose-blind {
     width: 100%;
@@ -1288,15 +1324,16 @@
       height: 40px;
     }
     .roman-view-nav {
+      width: min(280px, calc(100% - 120px));
       gap: 2px;
       padding: 3px;
     }
     .roman-view-nav a {
-      display: inline-flex;
-      align-items: center;
+      flex: 1 1 0;
+      min-width: 0;
+      justify-content: center;
       min-height: 44px;
-      padding: 0 10px;
-      font-size: 14px;
+      padding: 0 8px;
     }
     .roman-workspace {
       flex-direction: column;
@@ -1329,7 +1366,8 @@
     .roman-product-list > li {
       width: 230px;
     }
-    .roman-product-card img {
+    .roman-product-card img,
+    .roman-product-skeleton > .roman-product-image {
       height: 210px;
     }
     .roman-product-title {

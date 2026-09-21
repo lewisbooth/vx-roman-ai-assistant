@@ -705,15 +705,13 @@ test("the mobile menu dismisses within Shadow DOM and Settings restores the curr
   await openMenu();
   let escapedShell = 0;
   ctx.container.addEventListener("keydown", () => escapedShell++);
-  dropdown
-    .querySelector("button")
-    .dispatchEvent(
-      new ctx.window.KeyboardEvent("keydown", {
-        key: "Escape",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+  dropdown.querySelector("button").dispatchEvent(
+    new ctx.window.KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
   await until(() => dropdown.hidden, "Escape did not dismiss the menu");
   assert.equal(escapedShell, 0);
   assert.equal(ctx.container.getRootNode().activeElement, menu());
@@ -729,15 +727,13 @@ test("the mobile menu dismisses within Shadow DOM and Settings restores the curr
   media.matches = false;
   changes.forEach((listener) => listener());
   await until(() => !menu(), "Desktop header did not replace mobile actions");
-  panel
-    .querySelector("h2")
-    .dispatchEvent(
-      new ctx.window.KeyboardEvent("keydown", {
-        key: "Escape",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+  panel.querySelector("h2").dispatchEvent(
+    new ctx.window.KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
   await until(() => panel.hidden, "Settings did not close");
   assert.equal(
     ctx.container.getRootNode().activeElement,
@@ -1509,11 +1505,11 @@ test("restored carousels hydrate only near the viewport and cancel obsolete disp
   await until(() => signals[0].aborted, "Offscreen lookup was not cancelled");
   observers[19].callback([{ isIntersecting: true }]);
   await until(
-    () => ctx.container.querySelector(".roman-product-card"),
+    () => ctx.container.querySelector(".roman-choose-blind"),
     "Visible products did not resume loading",
   );
   assert.equal(ctx.productCalls.length, 2);
-  assert.equal(ctx.container.querySelectorAll(".roman-product-card").length, 1);
+  assert.equal(ctx.container.querySelectorAll(".roman-choose-blind").length, 1);
   ctx.update({ conversation: null });
   await until(
     () => observers.every((observer) => observer.disconnected),
@@ -1534,6 +1530,99 @@ const catalog = {
   ],
   messages: [],
 };
+
+test("pending recommendations reserve one noninteractive card per selected product", async (t) => {
+  for (const count of [1, 4, 10]) {
+    await t.test(`${count} products`, async (t) => {
+      const row = productsMessage();
+      const products = Array.from({ length: count }, (_, index) => ({
+        ...catalog.products[0],
+        id: `gid://shopify/Product/${index + 1}`,
+        title: `Selected blind ${index + 1}`,
+      }));
+      row.parts[1].productIds = products.map((product) => product.id);
+      let resolve;
+      const ctx = await setup(t, {
+        state: { conversation: engagedConversation([row]) },
+        onLoadProducts: () => new Promise((done) => (resolve = done)),
+      });
+      await until(() => resolve, "Product loading did not start");
+      const placeholders = ctx.container.querySelectorAll(
+        ".roman-product-skeleton",
+      );
+      assert.equal(placeholders.length, count);
+      assert.ok(
+        [...placeholders].every(
+          (card) =>
+            card.closest('[aria-hidden="true"]') &&
+            !card.querySelector("button,a,[tabindex]"),
+        ),
+      );
+      const status = ctx.container.querySelector(
+        '.roman-products [role="status"]',
+      );
+      assert.match(status.textContent, /Loading products/);
+      assert.ok(status.classList.contains("sr-only"));
+      resolve({ products, messages: [] });
+      await until(
+        () =>
+          ctx.container.querySelectorAll(".roman-choose-blind").length ===
+          count,
+        "The recommendations did not replace their placeholders",
+      );
+      assert.equal(
+        ctx.container.querySelector(".roman-product-skeleton"),
+        null,
+      );
+      assert.equal(
+        ctx.container.querySelector('.roman-products [role="status"]'),
+        null,
+      );
+      assert.equal(ctx.productCalls.length, 1);
+    });
+  }
+});
+
+test("replacing recommendation IDs cancels the old lookup and ignores its late completion", async (t) => {
+  const requests = [];
+  const first = productsMessage();
+  const second = productsMessage();
+  second.parts[1].productIds = ["gid://shopify/Product/456"];
+  const replacement = {
+    ...catalog.products[0],
+    id: second.parts[1].productIds[0],
+    title: "Replacement blind",
+  };
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([first]) },
+    onLoadProducts: (ids, _window, signal) =>
+      new Promise((resolve) => requests.push({ ids, signal, resolve })),
+  });
+  await until(() => requests.length === 1, "The first lookup did not start");
+  ctx.update({ conversation: engagedConversation([second]) });
+  await until(
+    () => requests.length === 2,
+    "The replacement lookup did not start",
+  );
+  assert.ok(requests[0].signal.aborted);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-product-skeleton").length,
+    1,
+  );
+  requests[0].resolve(catalog);
+  await delay(0);
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), null);
+  requests[1].resolve({ products: [replacement], messages: [] });
+  await until(
+    () => ctx.container.querySelector(".roman-choose-blind"),
+    "The replacement did not render",
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-choose-blind").textContent,
+    /Replacement blind/,
+  );
+  assert.doesNotMatch(ctx.container.textContent, /Lottie Roman blind/);
+});
 
 test("product references hydrate once and the whole card submits intent without navigating directly", async (t) => {
   let resolve;
@@ -1558,10 +1647,10 @@ test("product references hydrate once and the whole card submits intent without 
   );
   resolve(catalog);
   await until(
-    () => ctx.container.querySelector(".roman-product-card"),
+    () => ctx.container.querySelector(".roman-choose-blind"),
     "Product card did not render",
   );
-  const card = ctx.container.querySelector(".roman-product-card");
+  const card = ctx.container.querySelector(".roman-choose-blind");
   ctx.update({
     conversation: engagedConversation([
       productsMessage(),
@@ -1572,7 +1661,7 @@ test("product references hydrate once and the whole card submits intent without 
     () => ctx.container.textContent.includes("A later streamed response"),
     "The next snapshot did not render",
   );
-  assert.equal(ctx.container.querySelector(".roman-product-card"), card);
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), card);
   assert.equal(
     ctx.productCalls.length,
     1,
@@ -1638,12 +1727,12 @@ test("product cards show only the selected IDs in their recommendation order", a
     }),
   });
   await until(
-    () => ctx.container.querySelector(".roman-product-card"),
+    () => ctx.container.querySelector(".roman-choose-blind"),
     "Selected product cards did not render",
   );
   assert.deepEqual(ctx.productCalls, [selected.parts[1].productIds]);
   assert.deepEqual(
-    [...ctx.container.querySelectorAll(".roman-product-card")].map(
+    [...ctx.container.querySelectorAll(".roman-choose-blind")].map(
       (card) => card.querySelector(".roman-product-title").textContent,
     ),
     [second.title, catalog.products[0].title],
@@ -1725,7 +1814,7 @@ test("unrelated lookup matches cannot replace an unavailable selected product", 
       ),
     "The unavailable selected product was replaced with an unrelated match",
   );
-  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), null);
   assert.doesNotMatch(ctx.container.textContent, /Final price depends/);
 });
 
@@ -1747,7 +1836,7 @@ test("product errors have an explicit retry, and missing products remain honest"
     "Product retry was not offered",
   );
   assert.match(ctx.container.textContent, /Shopify is unavailable/);
-  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), null);
   ctx.container.querySelector(".roman-products-status button").click();
   await until(
     () =>
@@ -1758,7 +1847,7 @@ test("product errors have an explicit retry, and missing products remain honest"
   );
   assert.match(ctx.container.textContent, /This item is no longer sold/);
   assert.equal(attempts, 2);
-  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), null);
 });
 
 test("background page visits and Roman navigation remain out of the customer transcript", async (t) => {
@@ -2168,7 +2257,7 @@ test("late product loading follows the transcript only while the reader stays at
         }
         resolve(catalog);
         await until(
-          () => ctx.container.querySelector(".roman-product-card"),
+          () => ctx.container.querySelector(".roman-choose-blind"),
           "Products did not arrive",
         );
         assert.equal(viewport.scrollTop, following ? 1300 : 100);
@@ -2194,7 +2283,7 @@ test("a late card lookup cannot repopulate a cleared conversation", async (t) =>
   );
   resolve(catalog);
   await delay(0);
-  assert.equal(ctx.container.querySelector(".roman-product-card"), null);
+  assert.equal(ctx.container.querySelector(".roman-choose-blind"), null);
   assert.deepEqual(ctx.errors, []);
 });
 

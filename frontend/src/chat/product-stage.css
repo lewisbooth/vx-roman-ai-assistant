@@ -176,6 +176,12 @@
   }
 }
 
+@media (max-width: 767px) {
+  .roman-product-stage {
+    border-bottom: 1px solid #4e0e0e22;
+  }
+}
+
 @layer components {
   .roman-product-gallery {
     min-width: 0;
