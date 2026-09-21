@@ -1,5 +1,4 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   formatMeasurementAnswer,
   MAX_QUESTION_ANSWER_LENGTH,
@@ -12,7 +11,6 @@ export function Question({
   disabled,
   voice,
   onAnswer,
-  dock,
   currentTurn = false,
 }: {
   part: QuestionPart;
@@ -20,7 +18,6 @@ export function Question({
   disabled: boolean;
   voice: boolean;
   onAnswer: (part: QuestionPart, answer: string) => Promise<void>;
-  dock?: HTMLElement | null;
   currentTurn?: boolean;
 }) {
   const id = useId();
@@ -66,10 +63,9 @@ export function Question({
   // Failed submissions can restore the numeric draft and error without a
   // manufactured transcript row or a separate question-state cache.
   if (!active && part.voiceReply) return null;
-  // The same structured question owns the transcript and its current controls.
-  // Keep text history in place while the answer panel comes and goes. Voice
-  // captions alone own spoken history, so their widgets never add prose here.
-  const transcript = !part.voiceReply && (
+  // The active card owns its question. Once answered, leave one plain-text
+  // history entry. Voice captions alone own spoken history.
+  const transcript = !part.voiceReply && !active && (
     <p ref={text} id={id} tabIndex={-1} className="roman-message-text">
       {part.question}
     </p>
@@ -79,6 +75,7 @@ export function Question({
       className="roman-action-panel roman-question"
       aria-labelledby={`${id}-prompt`}
       aria-busy={pending}
+      aria-live={voice ? "off" : "polite"}
     >
       <p id={`${id}-prompt`} className="roman-message-text">
         {part.question}
@@ -181,12 +178,12 @@ export function Question({
     <li
       className="roman-message roman-message-assistant"
       data-current-turn={currentTurn ? "true" : undefined}
-      hidden={!!part.voiceReply && active && !!dock}
+      data-active-question={active || undefined}
     >
       <span className="sr-only">Roman:</span>
       <div className="roman-message-parts">
         {transcript}
-        {controls && dock ? createPortal(controls, dock) : controls}
+        {controls}
       </div>
     </li>
   );

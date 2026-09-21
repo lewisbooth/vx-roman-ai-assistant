@@ -249,7 +249,7 @@ test("a resumed pending question remains visible in new voice captions and its w
   assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
 });
 
-test("one structured text question stays in history while its active answer panel comes and goes", (t) => {
+test("one structured text question moves from its active card into plain history", (t) => {
   const ctx = setup(t);
   const offered = question({ voiceReply: undefined });
   const messages = [
@@ -268,7 +268,7 @@ test("one structured text question stays in history while its active answer pane
   const questionText = history.querySelector(".roman-message-text");
   assert.equal(questionText.textContent, offered.question);
   assert.equal(history.hidden, false);
-  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 2);
+  assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
   assert.equal(
     ctx.container.querySelectorAll(".roman-question button").length,
     2,
@@ -282,7 +282,7 @@ test("one structured text question stays in history while its active answer pane
     ctx.container.querySelectorAll(".roman-message-assistant")[1],
     history,
   );
-  assert.equal(history.querySelector(".roman-message-text"), questionText);
+  assert.equal(history.querySelector(".roman-message-text").textContent, offered.question);
   assert.equal(ctx.container.querySelector(".roman-question"), null);
   assert.equal(ctx.container.textContent.split(offered.question).length - 1, 1);
   assert.equal(
@@ -330,7 +330,7 @@ test("numeric history keeps the short question and answer while instructions and
       });
     assert.equal(
       ctx.container.textContent.split(offered.question).length - 1,
-      active ? 2 : 1,
+      1,
     );
     assert.equal(
       ctx.container.textContent.split(offered.measurement.instructions).length -

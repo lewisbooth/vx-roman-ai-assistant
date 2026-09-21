@@ -107,3 +107,57 @@ test("closed mode delegates native scrolling and lock cleanup preserves newer th
   owner.setLocked(false);
   assert.equal(body.style.width, "90%", "Reopening snapshots current theme styles");
 });
+
+test("the locked document canvas is ivory and restores the theme background on close or disposal", (t) => {
+  const { window, owner, body } = setup(t);
+  const root = window.document.documentElement;
+  root.style.backgroundImage = 'url("/theme-texture.png")';
+  root.style.backgroundRepeat = "repeat-x";
+  root.style.backgroundPosition = "center";
+  root.style.backgroundSize = "cover";
+  root.style.setProperty("background-color", "navy", "important");
+  assert.match(root.style.backgroundImage, /theme-texture\.png/);
+  assert.equal(root.style.backgroundColor, "navy");
+  const properties = [
+    "background-color",
+    "background-image",
+    "background-repeat",
+    "background-position",
+    "background-size",
+  ];
+  const snapshot = () => properties.map((name) => [
+    name,
+    root.style.getPropertyValue(name),
+    root.style.getPropertyPriority(name),
+  ]);
+  const original = snapshot();
+  for (const close of [() => owner.setLocked(false), () => owner.dispose()]) {
+    owner.setLocked(true);
+    assert.equal(window.getComputedStyle(root).backgroundColor, "rgb(247, 245, 239)");
+    assert.equal(root.style.backgroundImage, "none");
+    assert.equal(root.style.getPropertyPriority("background-color"), "important");
+    assert.equal(root.style.getPropertyPriority("background-image"), "important");
+    assert.equal(body.querySelector("input").value, "500");
+    assert.equal(root.hasAttribute("inert"), false);
+    assert.notEqual(window.getComputedStyle(body).visibility, "hidden");
+    close();
+    assert.deepEqual(snapshot(), original);
+  }
+});
+
+test("canvas cleanup preserves newer theme edits and removes only owned inline overrides", (t) => {
+  const { window, owner } = setup(t);
+  const root = window.document.documentElement;
+  owner.setLocked(true);
+  root.style.setProperty("background-image", 'url("/new-theme.png")');
+  const newerImage = root.style.backgroundImage;
+  owner.setLocked(false);
+  assert.equal(root.style.backgroundColor, "");
+  assert.equal(root.style.backgroundImage, newerImage);
+  assert.equal(root.style.getPropertyPriority("background-image"), "");
+  owner.setLocked(true);
+  assert.equal(root.style.backgroundImage, "none");
+  owner.dispose();
+  assert.equal(root.style.backgroundColor, "");
+  assert.equal(root.style.backgroundImage, newerImage);
+});

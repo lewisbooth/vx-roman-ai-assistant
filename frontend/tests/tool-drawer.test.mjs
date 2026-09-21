@@ -86,7 +86,7 @@ function controlByLabel(container, text) {
 
 async function selectTool(window, container, name = "get_cart", args = {}) {
   const drawer = container.querySelector(".roman-tools");
-  if (drawer.hidden) container.querySelector(".roman-tools-toggle").click();
+  if (drawer.hidden) container.querySelector(".roman-settings-trigger").click();
   await until(() => !drawer.hidden, "the developer tools did not open");
   const select = controlByLabel(drawer, "Tool");
   select.value = name;
@@ -139,12 +139,12 @@ test("the real runtime exposes manual tools only on development shops and makes 
         null,
       );
       const drawer = container.querySelector(".roman-tools");
-      const toggle = container.querySelector(".roman-tools-toggle");
+      const toggle = container.querySelector(".roman-settings-trigger");
       assert.equal(Boolean(drawer), visible);
       assert.equal(Boolean(toggle), visible);
       if (drawer) {
         assert.equal(drawer.hidden, true);
-        assert.equal(toggle.getAttribute("aria-label"), "Developer tools");
+        assert.equal(toggle.getAttribute("aria-label"), "Settings");
         assert.equal(toggle.getAttribute("aria-expanded"), "false");
         assert.equal(toggle.getAttribute("aria-controls"), drawer.id);
         assert.equal(drawer.querySelector("details"), null);
@@ -175,7 +175,7 @@ test("toggling developer tools preserves pending work and chat drafts, and Escap
   );
 
   const drawer = await selectTool(window, container);
-  const toggle = container.querySelector(".roman-tools-toggle");
+  const toggle = container.querySelector(".roman-settings-trigger");
   const args = controlByLabel(drawer, "Arguments (JSON)");
   const customDraft = "{\n\n}";
   setTextarea.call(args, customDraft);

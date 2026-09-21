@@ -576,10 +576,10 @@ test("welcome uses original asset paths, actionable tiles and one hidden develop
     );
   const drawer = container.querySelector(".roman-tools");
   assert.equal(drawer.hidden, true);
-  assert.equal(container.querySelectorAll(".roman-tools-toggle").length, 1);
+  assert.equal(container.querySelectorAll(".roman-settings-trigger").length, 1);
   assert.equal(
     container
-      .querySelector(".roman-tools-toggle")
+      .querySelector(".roman-settings-trigger")
       .getAttribute("aria-controls"),
     drawer.id,
   );
@@ -669,6 +669,81 @@ test("typed and tile sends show their local row before a session exists without 
         source === "tile" ? "Keep my room description" : "",
       );
     });
+});
+
+test("the mobile menu dismisses within Shadow DOM and Settings restores the current responsive trigger", async (t) => {
+  const changes = new Set();
+  const media = {
+    matches: true,
+    addEventListener: (_name, listener) => changes.add(listener),
+    removeEventListener: (_name, listener) => changes.delete(listener),
+  };
+  const ctx = await setup(t, {
+    showTools: true,
+    state: { conversation: engagedConversation([]) },
+    beforeImport: (window) => {
+      window.matchMedia = () => media;
+    },
+  });
+  const menu = () => ctx.container.querySelector(".roman-menu-toggle");
+  const dropdown = ctx.container.querySelector(".roman-header-menu");
+  async function openMenu() {
+    menu().click();
+    await until(() => !dropdown.hidden, "Mobile menu did not open");
+  }
+  await openMenu();
+  const gallery = ctx.container.querySelector(
+    '.roman-view-nav a[href="/gallery"]',
+  );
+  gallery.focus();
+  await until(
+    () => dropdown.hidden,
+    "Focus inside the same Shadow DOM did not dismiss the menu",
+  );
+  assert.equal(ctx.container.getRootNode().activeElement, gallery);
+
+  await openMenu();
+  let escapedShell = 0;
+  ctx.container.addEventListener("keydown", () => escapedShell++);
+  dropdown
+    .querySelector("button")
+    .dispatchEvent(
+      new ctx.window.KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  await until(() => dropdown.hidden, "Escape did not dismiss the menu");
+  assert.equal(escapedShell, 0);
+  assert.equal(ctx.container.getRootNode().activeElement, menu());
+
+  await openMenu();
+  dropdown.querySelector(".roman-settings-trigger").click();
+  const panel = ctx.container.querySelector(".roman-tools");
+  await until(() => !panel.hidden, "Mobile Settings did not open");
+  assert.equal(
+    ctx.container.getRootNode().activeElement,
+    panel.querySelector("h2"),
+  );
+  media.matches = false;
+  changes.forEach((listener) => listener());
+  await until(() => !menu(), "Desktop header did not replace mobile actions");
+  panel
+    .querySelector("h2")
+    .dispatchEvent(
+      new ctx.window.KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  await until(() => panel.hidden, "Settings did not close");
+  assert.equal(
+    ctx.container.getRootNode().activeElement,
+    ctx.container.querySelector(".roman-settings-trigger"),
+  );
+  assert.equal(escapedShell, 0);
 });
 
 test("an unconfirmed first message remains visibly retryable in the queue without blocking new typing", async (t) => {
@@ -2339,7 +2414,10 @@ test("voice selector offers all Live voices, defaults to Marin and changes only 
   const ctx = await setup(t, { showTools: true });
   const selector = ctx.container.querySelector(".roman-voice-choice select");
   assert.ok(selector.closest(".roman-tools"));
-  assert.equal(ctx.container.querySelectorAll(".roman-tools-toggle").length, 1);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-settings-trigger").length,
+    1,
+  );
   assert.equal(ctx.container.querySelectorAll("details").length, 0);
   assert.equal(
     ctx.container.querySelector(".roman-voice-controls select"),
@@ -2701,75 +2779,6 @@ function questionMessage(id = "question-one", question = "What matters most?") {
   };
 }
 
-test("the question overlay reserves its natural height and tall cards use the same conversation flow", async (t) => {
-  let availableHeight = 600;
-  let questionHeight = 180;
-  const observers = [];
-  const ctx = await setup(t, {
-    state: { conversation: engagedConversation([questionMessage()]) },
-    beforeImport(window) {
-      window.ResizeObserver = class {
-        constructor(callback) {
-          this.callback = callback;
-          this.targets = new Set();
-          this.disconnected = false;
-          observers.push(this);
-        }
-        observe(target) {
-          this.targets.add(target);
-        }
-        disconnect() {
-          this.disconnected = true;
-        }
-      };
-      const rect = window.HTMLElement.prototype.getBoundingClientRect;
-      window.HTMLElement.prototype.getBoundingClientRect = function () {
-        if (this.classList.contains("roman-response-dock"))
-          return { height: questionHeight };
-        return rect.call(this);
-      };
-      Object.defineProperty(window.HTMLElement.prototype, "clientHeight", {
-        configurable: true,
-        get() {
-          return this.classList.contains("roman-dialogue-flow")
-            ? availableHeight
-            : 0;
-        },
-      });
-    },
-  });
-  const frame = ctx.container.querySelector(".roman-dialogue-flow");
-  const scroll = ctx.container.querySelector(".roman-chat-scroll");
-  const dock = ctx.container.querySelector(".roman-response-dock");
-  const question = dock.querySelector(".roman-question");
-  const observer = observers.findLast(
-    (item) => !item.disconnected && item.targets.has(dock),
-  );
-  assert.ok(observer.targets.has(frame));
-  assert.equal(scroll.contains(dock), true);
-  assert.equal(scroll.contains(ctx.input()), false);
-  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "180px");
-  assert.equal(frame.hasAttribute("data-question-flow"), false);
-
-  availableHeight = 150;
-  observer.callback();
-  assert.equal(frame.hasAttribute("data-question-flow"), true);
-  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "0px");
-  assert.equal(dock.querySelector(".roman-question"), question);
-
-  // A mobile-focused composer makes the dock display:none; its measured
-  // height becomes zero without removing the live question or its draft.
-  questionHeight = 0;
-  observer.callback();
-  assert.equal(frame.hasAttribute("data-question-flow"), false);
-  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "0px");
-  availableHeight = 600;
-  questionHeight = 240;
-  observer.callback();
-  assert.equal(frame.style.getPropertyValue("--roman-question-space"), "240px");
-  assert.equal(dock.querySelector(".roman-question"), question);
-});
-
 test("easy answers have one labelled panel below cards and the canonical question stays visible in the transcript", async (t) => {
   const row = questionMessage("question-one", "What matters most? <img src=x>");
   row.parts.push(
@@ -2795,18 +2804,15 @@ test("easy answers have one labelled panel below cards and the canonical questio
   const widget = ctx.container.querySelector(".roman-question");
   assert.ok(widget, "Question widget must be visible");
   assert.ok(widget.classList.contains("roman-action-panel"));
-  assert.equal(
-    ctx.container
-      .querySelector(".roman-response-dock")
-      .getAttribute("aria-live"),
-    "polite",
-  );
+  assert.equal(widget.getAttribute("aria-live"), "polite");
   assert.equal(
     widget.querySelectorAll(".roman-action-buttons button").length,
     row.parts[0].answers.length,
   );
   assert.ok(
-    ctx.container.querySelector(".roman-response-dock").contains(widget),
+    ctx.container
+      .querySelector(".roman-timeline > li:last-child")
+      .contains(widget),
     "Question must follow all cards",
   );
   assert.equal(parts.querySelector('a[href*=".pdf"]'), null);
@@ -2826,14 +2832,14 @@ test("easy answers have one labelled panel below cards and the canonical questio
   ].filter((node) => node.textContent === row.parts[0].question);
   assert.equal(history.length, 1, "The transcript owns exactly one copy");
   assert.equal(history[0].closest("li").hidden, false);
-  assert.notEqual(history[0].id, widget.querySelector("p").id);
+  assert.equal(history[0], widget.querySelector("p"));
   const ids = [...ctx.container.querySelectorAll("[id]")].map(
     (node) => node.id,
   );
   assert.equal(
     new Set(ids).size,
     ids.length,
-    "Portal labels must have unique IDs",
+    "Question labels must have unique IDs",
   );
 });
 
@@ -2904,7 +2910,7 @@ test("journey activity leaves choices available but text and voice customer repl
     assert.ok(ctx.container.querySelector(".roman-question button"));
     assert.ok(
       ctx.container
-        .querySelector(".roman-response-dock")
+        .querySelector(".roman-timeline > li:last-child")
         .querySelector(".roman-question"),
       "The active question must remain beneath journey activity",
     );

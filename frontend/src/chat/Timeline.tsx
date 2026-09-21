@@ -20,7 +20,6 @@ export function Timeline({
   questionDisabled = false,
   voice = false,
   onAnswer,
-  questionDock,
   onChooseProduct,
 }: {
   messages: readonly ConversationMessage[];
@@ -31,7 +30,6 @@ export function Timeline({
   questionDisabled?: boolean;
   voice?: boolean;
   onAnswer?: (part: QuestionPart, answer: string) => Promise<void>;
-  questionDock?: HTMLElement | null;
   onChooseProduct?: (
     carouselId: string,
     product: CatalogProduct,
@@ -91,11 +89,6 @@ export function Timeline({
               voice={voice}
               onAnswer={onAnswer!}
               currentTurn={rowIndex >= lastCustomer}
-              dock={
-                row.part.invocationId === activeQuestionId
-                  ? questionDock
-                  : undefined
-              }
             />
           );
         const { message, parts } = row;

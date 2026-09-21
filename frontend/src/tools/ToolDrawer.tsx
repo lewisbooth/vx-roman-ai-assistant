@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -9,21 +8,20 @@ import {
 import { toolDefinitions, type AssistantTools, type ToolName } from ".";
 
 export function ToolDrawer({
+  id,
   tools,
   children,
   open,
-  onOpenChange,
+  onClose,
 }: {
+  id: string;
   tools: AssistantTools;
   children?: ReactNode;
   open: boolean;
-  onOpenChange: (open: boolean) => void;
+  onClose: () => void;
 }) {
-  const id = useId();
-  const toggle = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const wasOpen = useRef(false);
   const [name, setName] = useState<ToolName>("search_products");
   const [input, setInput] = useState(
     JSON.stringify(toolDefinitions[0].example, null, 2),
@@ -36,8 +34,6 @@ export function ToolDrawer({
   const definition = toolDefinitions.find((tool) => tool.name === name)!;
   useLayoutEffect(() => {
     if (open) heading.current?.focus();
-    else if (wasOpen.current) toggle.current?.focus();
-    wasOpen.current = open;
   }, [open]);
   useEffect(() => {
     if (!open) return;
@@ -46,12 +42,12 @@ export function ToolDrawer({
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       event.stopPropagation();
-      onOpenChange(false);
+      onClose();
     }
     // Handle Escape before it reaches the vanilla shell's close listener.
     element.addEventListener("keydown", dismiss);
     return () => element.removeEventListener("keydown", dismiss);
-  }, [open, onOpenChange]);
+  }, [open, onClose]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -84,135 +80,108 @@ export function ToolDrawer({
   }
 
   return (
-    <>
-      <button
-        ref={toggle}
-        type="button"
-        className="roman-tools-toggle"
-        aria-label="Developer tools"
-        title="Developer tools"
-        aria-expanded={open}
-        aria-controls={`${id}-panel`}
-        onClick={() => onOpenChange(!open)}
+    <section
+      ref={panel}
+      role="dialog"
+      id={id}
+      hidden={!open}
+      className="roman-tools font-sans text-[13px] leading-[1.5]"
+      aria-labelledby={`${id}-heading`}
+    >
+      <h2
+        ref={heading}
+        id={`${id}-heading`}
+        tabIndex={-1}
+        className="roman-tools-heading"
       >
-        <svg
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M10 2h4l.5 2.2 1.6.7L18 3.7 20.3 6l-1.2 1.9.7 1.6L22 10v4l-2.2.5-.7 1.6 1.2 1.9-2.3 2.3-1.9-1.2-1.6.7L14 22h-4l-.5-2.2-1.6-.7L6 20.3 3.7 18l1.2-1.9-.7-1.6L2 14v-4l2.2-.5.7-1.6L3.7 6 6 3.7l1.9 1.2 1.6-.7L10 2Z" />
-          <circle cx="12" cy="12" r="3.25" />
-        </svg>
-      </button>
-      <section
-        ref={panel}
-        role="dialog"
-        id={`${id}-panel`}
-        hidden={!open}
-        className="roman-tools font-sans text-[13px] leading-[1.5]"
-        aria-labelledby={`${id}-heading`}
+        Developer tools
+      </h2>
+      {children}
+      <p className="my-[12px]">
+        Run Roman&apos;s tools directly. These actions use this store and your
+        current cart.
+      </p>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void run();
+        }}
+        aria-busy={pending}
       >
-        <h2
-          ref={heading}
-          id={`${id}-heading`}
-          tabIndex={-1}
-          className="roman-tools-heading"
-        >
-          Developer tools
-        </h2>
-        {children}
-        <p className="my-[12px]">
-          Run Roman&apos;s tools directly. These actions use this store and your
-          current cart.
-        </p>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void run();
+        <label htmlFor={`${id}-tool`} className="block font-semibold">
+          Tool
+        </label>
+        <select
+          id={`${id}-tool`}
+          value={name}
+          disabled={pending}
+          className="mt-[4px] w-full rounded-sm border border-solid border-[#E3E0D8] bg-transparent p-[8px] text-inherit"
+          onChange={(event) => {
+            const selected = toolDefinitions.find(
+              (tool) => tool.name === event.target.value,
+            )!;
+            setName(selected.name);
+            setInput(JSON.stringify(selected.example, null, 2));
+            setResult(undefined);
+            setError(undefined);
           }}
-          aria-busy={pending}
         >
-          <label htmlFor={`${id}-tool`} className="block font-semibold">
-            Tool
-          </label>
-          <select
-            id={`${id}-tool`}
-            value={name}
-            disabled={pending}
-            className="mt-[4px] w-full rounded-sm border border-solid border-[#E3E0D8] bg-transparent p-[8px] text-inherit"
-            onChange={(event) => {
-              const selected = toolDefinitions.find(
-                (tool) => tool.name === event.target.value,
-              )!;
-              setName(selected.name);
-              setInput(JSON.stringify(selected.example, null, 2));
-              setResult(undefined);
-              setError(undefined);
-            }}
-          >
-            {toolDefinitions.map((tool) => (
-              <option key={tool.name} value={tool.name}>
-                {tool.name}
-              </option>
-            ))}
-          </select>
-          <p id={`${id}-description`} className="my-[12px]">
-            {definition.description}
-          </p>
-          <label htmlFor={`${id}-input`} className="block font-semibold">
-            Arguments (JSON)
-          </label>
-          <textarea
-            id={`${id}-input`}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            aria-describedby={`${id}-description`}
-            rows={5}
-            spellCheck={false}
-            disabled={pending}
-            className="mt-[4px] block w-full resize-y rounded-sm border border-solid border-[#E3E0D8] bg-transparent p-[8px] font-mono text-[12px] text-inherit"
-          />
-          <button
-            type="submit"
-            disabled={pending}
-            className="mt-[12px] min-h-[44px] cursor-pointer rounded-sm border border-solid border-[#4E0E0E] bg-[#4E0E0E] px-[16px] py-[8px] text-[#F7F5EF] disabled:cursor-wait disabled:opacity-50"
-          >
-            {pending
-              ? "Running…"
-              : "actionLabel" in definition
-                ? definition.actionLabel
-                : "Run tool"}
-          </button>
-        </form>
-        <p role="status" className="my-[8px]">
-          {pending
-            ? "Waiting for tool result…"
-            : result
-              ? "Tool returned a result."
-              : ""}
+          {toolDefinitions.map((tool) => (
+            <option key={tool.name} value={tool.name}>
+              {tool.name}
+            </option>
+          ))}
+        </select>
+        <p id={`${id}-description`} className="my-[12px]">
+          {definition.description}
         </p>
-        {error && (
-          <p role="alert" className="my-[8px]">
-            {error}
-          </p>
-        )}
-        {result && (
-          <textarea
-            aria-label="Tool result"
-            readOnly
-            value={result}
-            rows={12}
-            spellCheck={false}
-            className="m-0 block max-h-[320px] w-full resize-y overflow-auto rounded-sm border border-solid border-[#E3E0D8] bg-transparent p-[8px] font-mono text-[11px] text-inherit"
-          />
-        )}
-      </section>
-    </>
+        <label htmlFor={`${id}-input`} className="block font-semibold">
+          Arguments (JSON)
+        </label>
+        <textarea
+          id={`${id}-input`}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          aria-describedby={`${id}-description`}
+          rows={5}
+          spellCheck={false}
+          disabled={pending}
+          className="mt-[4px] block w-full resize-y rounded-sm border border-solid border-[#E3E0D8] bg-transparent p-[8px] font-mono text-[12px] text-inherit"
+        />
+        <button
+          type="submit"
+          disabled={pending}
+          className="mt-[12px] min-h-[44px] cursor-pointer rounded-sm border border-solid border-[#4E0E0E] bg-[#4E0E0E] px-[16px] py-[8px] text-[#F7F5EF] disabled:cursor-wait disabled:opacity-50"
+        >
+          {pending
+            ? "Running…"
+            : "actionLabel" in definition
+              ? definition.actionLabel
+              : "Run tool"}
+        </button>
+      </form>
+      <p role="status" className="my-[8px]">
+        {pending
+          ? "Waiting for tool result…"
+          : result
+            ? "Tool returned a result."
+            : ""}
+      </p>
+      {error && (
+        <p role="alert" className="my-[8px]">
+          {error}
+        </p>
+      )}
+      {result && (
+        <textarea
+          aria-label="Tool result"
+          readOnly
+          value={result}
+          rows={12}
+          spellCheck={false}
+          className="m-0 block max-h-[320px] w-full resize-y overflow-auto rounded-sm border border-solid border-[#E3E0D8] bg-transparent p-[8px] font-mono text-[11px] text-inherit"
+        />
+      )}
+    </section>
   );
 }

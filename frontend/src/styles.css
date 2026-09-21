@@ -34,6 +34,52 @@
 
   .roman-chat-header {
     @apply relative flex h-[88px] shrink-0 items-center px-[32px];
+    z-index: 10;
+  }
+  .roman-header-actions {
+    position: absolute;
+    right: 60px;
+    top: 12px;
+    display: flex;
+    gap: 8px;
+  }
+  .roman-end-chat,
+  .roman-settings-trigger,
+  .roman-menu-toggle {
+    @apply inline-flex h-[44px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent px-[10px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
+    font-family: inherit;
+    line-height: 1;
+  }
+  .roman-menu-toggle {
+    width: 44px;
+    padding: 0;
+  }
+  .roman-header-menu {
+    position: absolute;
+    z-index: 20;
+    top: 60px;
+    left: 8px;
+    min-width: 192px;
+    padding: 20px;
+    border: 1px solid #4e0e0e33;
+    border-radius: 20px;
+    background: #f7f5ef;
+    box-shadow: 0 8px 24px #4e0e0e1c;
+  }
+  .roman-header-menu img {
+    display: block;
+    margin: 0 auto 16px;
+  }
+  .roman-header-menu button {
+    display: flex;
+    width: 100%;
+    justify-content: flex-start;
+    font-size: 15px;
+  }
+  .roman-header-menu button:hover,
+  .roman-settings-trigger[aria-expanded="true"],
+  .roman-menu-toggle[aria-expanded="true"] {
+    background: #4e0e0e0d;
   }
 
   .roman-header-brand {
@@ -137,13 +183,6 @@
     min-width: 0;
     min-height: 0;
     flex-direction: column;
-  }
-  .roman-dialogue-flow {
-    position: relative;
-    display: flex;
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
   }
   .roman-cart-stage {
     width: 100%;
@@ -313,34 +352,6 @@
     outline: 2px solid #4e0e0e;
     outline-offset: 4px;
   }
-  .roman-response-dock {
-    position: absolute;
-    bottom: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flow-root;
-    z-index: 4;
-    flex-shrink: 0;
-    width: min(100%, 840px);
-    margin: 0 auto;
-    padding: 0 28px;
-    pointer-events: none;
-  }
-  .roman-response-dock:empty {
-    display: none;
-  }
-  .roman-response-dock .roman-question {
-    margin: 10px 0;
-    text-align: center;
-    pointer-events: auto;
-  }
-  .roman-dialogue-flow[data-question-flow] .roman-response-dock {
-    position: static;
-    transform: none;
-  }
-  .roman-response-dock .roman-action-buttons {
-    justify-content: center;
-  }
   .roman-return-current {
     position: absolute;
     top: 8px;
@@ -358,18 +369,11 @@
     box-shadow: 0 4px 20px #4e0e0e12;
   }
 
-  .roman-end-chat {
-    @apply absolute top-[12px] right-[112px] inline-flex h-[44px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent px-[10px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
-    font-family: inherit;
-    line-height: 1;
-  }
-
   .roman-chat-scroll {
     @apply min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain;
     display: flex;
     flex-direction: column;
     scroll-padding: 28px;
-    padding-bottom: var(--roman-question-space, 0px);
   }
 
   .roman-chat-history {
@@ -807,7 +811,12 @@
   }
 
   .roman-question {
-    @apply mt-[16px];
+    width: min(100%, 780px);
+    margin: 0 auto;
+    text-align: center;
+  }
+  .roman-question .roman-action-buttons {
+    justify-content: center;
   }
 
   .roman-action-buttons {
@@ -939,14 +948,6 @@
     width: min(100%, 960px);
     margin: 0 auto;
     padding-bottom: max(24px, env(safe-area-inset-bottom));
-  }
-
-  .roman-tools-toggle {
-    @apply absolute top-[12px] right-[52px] z-10 inline-flex size-[44px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-[#4e0e0e];
-  }
-
-  .roman-tools-toggle[aria-expanded="true"] {
-    background-color: #4e0e0e0d;
   }
 
   .roman-tools-heading {
@@ -1279,26 +1280,23 @@
   }
   @media (max-width: 767px) {
     .roman-chat-header {
-      height: 116px;
-      padding: 0 16px 48px;
+      height: 68px;
+      padding: 0 8px;
     }
     .roman-header-brand img {
       width: 95px;
       height: 40px;
     }
     .roman-view-nav {
-      bottom: 8px;
-      gap: 4px;
+      gap: 2px;
       padding: 3px;
     }
     .roman-view-nav a {
-      padding: 7px 20px;
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      padding: 0 10px;
       font-size: 14px;
-    }
-    .roman-end-chat {
-      right: 98px;
-      top: 12px;
-      font-size: 11px;
     }
     .roman-workspace {
       flex-direction: column;
@@ -1316,11 +1314,8 @@
     .roman-message:not([data-current-turn]) {
       font-size: 15px;
     }
-    .roman-response-dock {
-      padding: 0 16px;
-    }
     .roman-dialogue:has(textarea[data-roman-composer]:focus)
-      .roman-response-dock {
+      [data-active-question] {
       display: none;
     }
     .roman-action-panel {

@@ -436,7 +436,7 @@ test("submitting text from Cart immediately returns to the visible conversation"
   assert.deepEqual(ctx.navigationCalls, []);
 });
 
-test("quick answers and pending activity remain visible alongside Cart and Gallery", async (t) => {
+test("quick answers stay in Chat while pending activity remains visible in Cart and Gallery", async (t) => {
   const question = {
     type: "question",
     version: 1,
@@ -447,15 +447,11 @@ test("quick answers and pending activity remain visible alongside Cart and Galle
   const ctx = await setup(t, {
     conversation: engagedConversation([message([question])]),
   });
+  const card = ctx.container.querySelector(".roman-question");
   for (const name of ["Cart", "Gallery"]) {
     await ctx.select(name);
-    const dock = ctx.container.querySelector(".roman-response-dock");
-    assert.equal(dock.hidden, false);
-    assert.ok(dock.querySelector(".roman-question"));
-    assert.equal(
-      dock.querySelector(".roman-question").closest("[hidden]"),
-      null,
-    );
+    assert.equal(ctx.container.querySelector(".roman-question"), card);
+    assert.ok(card.closest("[hidden]"));
     ctx.update({ pending: true });
     await until(
       () =>
@@ -467,6 +463,9 @@ test("quick answers and pending activity remain visible alongside Cart and Galle
     ctx.update({ pending: false });
     await delay(0);
   }
+  await ctx.select("Chat");
+  assert.equal(ctx.container.querySelector(".roman-question"), card);
+  assert.equal(card.closest("[hidden]"), null);
 });
 
 test("native cart work preserves selected imagery across tabs without displaying stale price or dimensions", async (t) => {
@@ -602,9 +601,7 @@ test("a new numeric measurement reveals Chat without interrupting voice or reope
     () => !ctx.container.querySelector(".roman-chat-history").hidden,
     "Numeric voice question stayed hidden on Gallery",
   );
-  assert.ok(
-    ctx.container.querySelector('.roman-response-dock input[type="text"]'),
-  );
+  assert.ok(ctx.container.querySelector('.roman-question input[type="text"]'));
   await ctx.select("Cart");
   ctx.update({
     conversation: {
