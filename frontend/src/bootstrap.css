@@ -31,15 +31,10 @@
   }
 }
 @layer components {
-  .roman-launcher,
   .roman-header-button,
   .roman-close,
   .roman-retry {
     @apply inline-flex cursor-pointer items-center justify-center rounded-[999px];
-  }
-  .roman-launcher {
-    @apply fixed bottom-[calc(20px+env(safe-area-inset-bottom))] left-[calc(20px+env(safe-area-inset-left))] z-[2147483647] size-[48px] bg-roman-burgundy text-[26px] text-roman-ivory;
-    line-height: 1;
   }
   :host([data-roman-header-launcher]) {
     display: inline-flex;
@@ -118,7 +113,6 @@
     @apply mt-[16px] min-h-[44px] bg-transparent px-[24px] text-[16px] text-roman-burgundy;
   }
   /* Explicit borders and outlines avoid @property dependencies in Shadow DOM. */
-  .roman-launcher,
   .roman-retry {
     border: 1px solid #4e0e0e;
   }

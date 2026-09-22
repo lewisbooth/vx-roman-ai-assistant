@@ -80,8 +80,7 @@ export default function Home() {
       <s-section heading="Storefront assistant">
         <s-paragraph>
           Enable the Assistant icon app embed in your theme and save your
-          changes to show the R icon beside Profile in the storefront header.
-          On other themes, it appears at the bottom left.
+          changes to show Ask Roman beside the header search on supported themes.
         </s-paragraph>
         <s-button href={themeEditorUrl} target="_blank">
           Open theme editor

@@ -40,7 +40,6 @@ function setup(t) {
   const container = dom.window.document.querySelector("#root");
   const calls = [];
   const view = dom.window.api.mount(container, {
-    setVoiceMuted: (muted) => calls.push(["mute", muted]),
     stopVoice: async () => calls.push(["stop"]),
   });
   t.after(() => {
@@ -94,31 +93,6 @@ test("connecting, stopping, restored and uncertain voice expose only safe cancel
     );
   }
   assert.ok(calls.every(([name]) => name === "stop"));
-});
-
-test("collapsed dock retains microphone control independently of the single-action composer", (t) => {
-  const { render, container, calls } = setup(t);
-  render({
-    dock: true,
-    voice: { status: "active", muted: false, error: null },
-  });
-  assert.ok(container.querySelector(".roman-voice-dock"));
-  assert.equal(container.querySelector(".roman-voice-waveform"), null);
-  const mute = container.querySelector('[aria-label="Mute microphone"]');
-  assert.equal(mute.getAttribute("aria-pressed"), "false");
-  mute.click();
-  render({ dock: true, voice: { status: "active", muted: true, error: null } });
-  const unmute = container.querySelector('[aria-label="Unmute microphone"]');
-  assert.equal(unmute.getAttribute("aria-pressed"), "true");
-  unmute.click();
-  assert.deepEqual(calls, [
-    ["mute", true],
-    ["mute", false],
-  ]);
-  assert.deepEqual(
-    [...container.querySelectorAll("button")].map((b) => b.textContent),
-    ["Unmute microphone", "Stop voice"],
-  );
 });
 
 test("stopped or denied voice does not create an empty second bar or inline permission prompt", (t) => {

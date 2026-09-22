@@ -41,12 +41,10 @@ export function VoiceControls({
   session,
   voice,
   waiting = false,
-  dock = false,
 }: {
   session: ConversationClient;
   voice: VoiceClientState;
   waiting?: boolean;
-  dock?: boolean;
 }) {
   const running =
     voice.status === "starting" ||
@@ -55,7 +53,6 @@ export function VoiceControls({
   const needsStop =
     running || (voice.status === "error" && voice.muted) || waiting;
   const active = voice.status === "active" && !waiting;
-  const muteLabel = voice.muted ? "Unmute microphone" : "Mute microphone";
   const status = waiting
     ? "Voice is active in another page."
     : voice.status === "starting"
@@ -65,38 +62,6 @@ export function VoiceControls({
         : voice.muted
           ? "Microphone muted"
           : "Voice is on";
-  if (dock)
-    return (
-      <div className="roman-voice-controls roman-voice-dock">
-        <span className="roman-voice-status" role="status">
-          {status}
-        </span>
-        {active && (
-          <button
-            type="button"
-            aria-label={muteLabel}
-            aria-pressed={voice.muted}
-            onClick={() => session.setVoiceMuted(!voice.muted)}
-          >
-            {muteLabel}
-          </button>
-        )}
-        {needsStop && (
-          <button
-            type="button"
-            disabled={voice.status === "stopping"}
-            onClick={() => void session.stopVoice().catch(() => undefined)}
-          >
-            Stop voice
-          </button>
-        )}
-        {voice.error && (
-          <p className="roman-chat-error" role="alert">
-            {voice.error}
-          </p>
-        )}
-      </div>
-    );
   if (!needsStop) return null;
   return (
     <div className="roman-voice-bar">

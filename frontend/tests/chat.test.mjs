@@ -76,8 +76,6 @@ async function setup(t, options = {}) {
   const host = window.document.querySelector("roman-ai-assistant");
   const container = window.document.createElement("div");
   host.attachShadow({ mode: "open" }).append(container);
-  const voiceDock = window.document.createElement("div");
-  host.shadowRoot.append(voiceDock);
   const listeners = new Set();
   const calls = [];
   const endCalls = [];
@@ -85,7 +83,6 @@ async function setup(t, options = {}) {
   const stopVoiceCalls = [];
   const voiceAnswers = [];
   const voiceChoices = [];
-  const muteCalls = [];
   const productCalls = [];
   const navigationCalls = [];
   let state = {
@@ -160,10 +157,6 @@ async function setup(t, options = {}) {
           : {}),
       });
     },
-    setVoiceMuted: (muted) => {
-      muteCalls.push(muted);
-      update({ voice: { ...state.voice, muted } });
-    },
     resolveToolApproval: (id, confirmed) => options.onApproval?.(id, confirmed),
   };
   let navigationState = {
@@ -192,7 +185,6 @@ async function setup(t, options = {}) {
     },
     tools: { execute: async () => ({}) },
     session,
-    voiceDock,
     showTools: options.showTools ?? false,
     onReady: () => {
       ready = true;
@@ -224,7 +216,6 @@ async function setup(t, options = {}) {
   return {
     window,
     container,
-    voiceDock,
     calls,
     update,
     updateNavigation,
@@ -236,7 +227,6 @@ async function setup(t, options = {}) {
     stopVoiceCalls,
     voiceAnswers,
     voiceChoices,
-    muteCalls,
     productCalls,
     navigationCalls,
   };
@@ -415,7 +405,7 @@ test("saved guide records stay hidden without fetching products, navigating or s
   assert.deepEqual(ctx.productCalls, []);
   assert.deepEqual(fetches, []);
   assert.equal(ctx.container.querySelector(".roman-composer textarea"), null);
-  assert.match(ctx.voiceDock.textContent, /Voice is on.*Stop voice/);
+  assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
 });
 
 test("malformed or foreign historical guide records create no customer warning or empty row", async (t) => {
@@ -457,7 +447,7 @@ test("malformed or foreign historical guide records create no customer warning o
   assert.doesNotMatch(ctx.container.textContent, /guides are unavailable/);
 });
 
-test("cart approvals share the question panel in both locations without changing shopper decisions", async (t) => {
+test("cart approvals use one in-app question panel without changing shopper decisions", async (t) => {
   for (const title of [
     "Empty your cart?",
     "Remove this item?",
@@ -485,39 +475,35 @@ test("cart approvals share the question panel in both locations without changing
         onApproval: (...args) => choices.push(args),
       });
       const panel = ctx.container.querySelector(".roman-tool-approval");
-      const dock = ctx.voiceDock.querySelector(".roman-tool-approval");
-      for (const review of [panel, dock]) {
-        assert.ok(review.classList.contains("roman-action-panel"));
-        assert.equal(review.querySelector("h2").textContent, title);
-        assert.equal(
-          review.getAttribute("aria-labelledby"),
-          review.querySelector("h2").id,
-        );
-        assert.match(review.textContent, /Kitchen blind.*quantity 2/);
-        assert.equal(
-          review
-            .querySelector(".roman-approval-details")
-            .getAttribute("aria-live"),
-          "polite",
-        );
-        assert.deepEqual(
-          [...review.querySelectorAll(".roman-action-buttons button")].map(
-            (button) => [button.textContent, button.type, button.disabled],
-          ),
-          [
-            ["Cancel", "button", false],
-            ["Approve", "button", false],
-          ],
-        );
-        assert.equal(review.getAttribute("role"), null);
-      }
-      assert.notEqual(
-        panel.querySelector("h2").id,
-        dock.querySelector("h2").id,
+      assert.equal(
+        ctx.container.getRootNode().querySelectorAll(".roman-tool-approval")
+          .length,
+        1,
       );
-      const approve = dock.querySelector("button:last-child");
+      assert.ok(panel.classList.contains("roman-action-panel"));
+      assert.equal(panel.querySelector("h2").textContent, title);
+      assert.equal(
+        panel.getAttribute("aria-labelledby"),
+        panel.querySelector("h2").id,
+      );
+      assert.match(panel.textContent, /Kitchen blind.*quantity 2/);
+      assert.equal(
+        panel.querySelector(".roman-approval-details").getAttribute("aria-live"),
+        "polite",
+      );
+      assert.deepEqual(
+        [...panel.querySelectorAll(".roman-action-buttons button")].map(
+          (button) => [button.textContent, button.type, button.disabled],
+        ),
+        [
+          ["Cancel", "button", false],
+          ["Approve", "button", false],
+        ],
+      );
+      assert.equal(panel.getAttribute("role"), null);
+      const approve = panel.querySelector("button:last-child");
       approve.focus();
-      assert.equal(dock.getRootNode().activeElement, approve);
+      assert.equal(panel.getRootNode().activeElement, approve);
       approve.click();
       assert.deepEqual(choices, [["cart-one", true]]);
       ctx.update({
@@ -527,19 +513,14 @@ test("cart approvals share the question panel in both locations without changing
         },
       });
       await until(
-        () =>
-          [panel, dock].every(
-            (review) => review.querySelector("button:last-child").disabled,
-          ),
+        () => panel.querySelector("button:last-child").disabled,
         "Unavailable action was still approvable",
       );
-      for (const review of [panel, dock]) {
-        assert.match(
-          review.querySelector('[role="status"]').textContent,
-          /cart changed/,
-        );
-        review.querySelector("button:last-child").click();
-      }
+      assert.match(
+        panel.querySelector('[role="status"]').textContent,
+        /cart changed/,
+      );
+      panel.querySelector("button:last-child").click();
       assert.equal(
         choices.length,
         1,
@@ -549,9 +530,7 @@ test("cart approvals share the question panel in both locations without changing
       assert.deepEqual(choices.at(-1), ["cart-one", false]);
       ctx.update({ approval: null });
       await until(
-        () =>
-          !ctx.container.querySelector(".roman-tool-approval") &&
-          !ctx.voiceDock.querySelector(".roman-tool-approval"),
+        () => !ctx.container.querySelector(".roman-tool-approval"),
         "Completed approval remained mounted",
       );
     });
@@ -2711,7 +2690,7 @@ test("voice captions hide speech cues and orphaned punctuation for both speakers
   assert.deepEqual(ctx.errors, []);
 });
 
-test("the voice bar reflects dock mute state and restores the saved text draft after stopping", async (t) => {
+test("End voice restores the saved text draft without remounting the composer", async (t) => {
   const ctx = await setup(t, {
     state: {
       conversation: engagedConversation([
@@ -2743,29 +2722,8 @@ test("the voice bar reflects dock mute state and restores the saved text draft a
   assert.equal(button("Mute microphone"), undefined);
   assert.equal(bar.querySelectorAll("button").length, 1);
   assert.equal(button("End voice").type, "button");
-  assert.ok(button("Stop voice", ctx.voiceDock));
-  assert.equal(ctx.container.contains(ctx.voiceDock), false);
-  button("Mute microphone", ctx.voiceDock).click();
-  await until(
-    () => waveform.dataset.muted === "true",
-    "Mute did not synchronize with sidebar",
-  );
-  assert.equal(
-    button("Unmute microphone", ctx.voiceDock).getAttribute("aria-pressed"),
-    "true",
-  );
-  assert.equal(bar.querySelector(".roman-voice-waveform"), waveform);
-  assert.equal(bar.querySelector(".roman-voice-notice"), null);
-  assert.deepEqual(ctx.muteCalls, [true]);
-  button("Unmute microphone", ctx.voiceDock).click();
-  await until(
-    () => !waveform.dataset.muted,
-    "Unmute did not restore the decorative waveform",
-  );
   assert.equal(!!bar.querySelector(".roman-voice-notice"), false);
-  assert.deepEqual(ctx.muteCalls, [true, false]);
-  assert.ok(button("Mute microphone", ctx.voiceDock));
-  button("Stop voice", ctx.voiceDock).click();
+  button("End voice").click();
   await until(() => ctx.input(), "Stop did not return to text");
   assert.equal(ctx.input().disabled, false);
   assert.notEqual(ctx.input(), input);
@@ -2774,7 +2732,6 @@ test("the voice bar reflects dock mute state and restores the saved text draft a
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), null);
-  assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.stopVoiceCalls, ["stop"]);
   assert.deepEqual(ctx.startVoiceCalls, []);
   assert.deepEqual(ctx.calls, []);
@@ -2801,7 +2758,6 @@ test("restored remote voice can be ended explicitly without activating the micro
   assert.ok(end);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
   assert.equal(mute, null);
-  assert.deepEqual(ctx.muteCalls, []);
   assert.equal(!!ctx.container.querySelector(".roman-voice-waveform"), false);
   assert.ok(
     ctx.container.querySelector(".roman-voice-bar > .roman-voice-notice"),
@@ -2811,7 +2767,6 @@ test("restored remote voice can be ended explicitly without activating the micro
     ctx.container.querySelector(".roman-composer form").hidden,
     false,
   );
-  assert.equal(ctx.voiceDock.childElementCount, 0);
   assert.deepEqual(ctx.startVoiceCalls, []);
   end.click();
   await until(
@@ -2836,7 +2791,7 @@ test("voice selector offers all Live voices, defaults to Marin and changes only 
   );
   assert.equal(ctx.container.querySelectorAll("details").length, 0);
   assert.equal(
-    ctx.container.querySelector(".roman-voice-controls select"),
+    ctx.container.querySelector(".roman-composer select"),
     null,
   );
   assert.equal(selector.value, "marin");
@@ -2863,7 +2818,10 @@ test("voice selector offers all Live voices, defaults to Marin and changes only 
     ctx.container.querySelector(".roman-voice-choice-hint").textContent,
     /End voice/,
   );
-  assert.equal(ctx.voiceDock.querySelectorAll("select").length, 0);
+  assert.equal(
+    ctx.container.querySelectorAll(".roman-voice-choice select").length,
+    1,
+  );
   button("End voice").click();
   await until(
     () => !selector.disabled,
@@ -2939,7 +2897,6 @@ test("connecting and stopping voice retain the hidden draft and prevent repeated
   assert.equal(ctx.input(), null);
   const mute = ctx.container.querySelector('[aria-label="Mute microphone"]');
   assert.equal(mute, null);
-  assert.deepEqual(ctx.muteCalls, []);
   assert.deepEqual(
     ctx.startVoiceCalls,
     [],
@@ -3156,7 +3113,6 @@ test("a failed voice shutdown retains an explicit retry and preserves the hidden
   );
   const mute = ctx.container.querySelector('[aria-label="Unmute microphone"]');
   assert.equal(mute, null);
-  assert.deepEqual(ctx.muteCalls, []);
   ctx.container.querySelector('[aria-label="End voice"]').click();
   await until(
     () => ctx.stopVoiceCalls.length === 1,
@@ -3669,8 +3625,7 @@ test("a voice answer keeps the live bar and mic state, submits once, and retires
     bar.querySelector(".roman-voice-waveform").dataset.muted,
     "true",
   );
-  assert.ok(ctx.voiceDock.querySelector('[aria-label="Unmute microphone"]'));
-  assert.deepEqual(ctx.muteCalls, []);
+  assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
   assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 

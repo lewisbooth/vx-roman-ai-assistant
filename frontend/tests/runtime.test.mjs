@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { voiceMedia } from "./helpers/voice-media.mjs";
 
 const bundle = await build({
   entryPoints: ["frontend/src/main.tsx"],
@@ -36,7 +37,14 @@ function setup(t, initialTime = 0) {
     },
   );
   const { window } = dom;
-  Object.assign(window, { Request, Response, Headers });
+  window.scrollTo = () => {};
+  Object.assign(window, {
+    Request,
+    Response,
+    Headers,
+    AbortController,
+    AbortSignal,
+  });
   window.HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute("open", "");
   };
@@ -78,12 +86,11 @@ function setup(t, initialTime = 0) {
     window,
     container,
     timers,
-    mount(loadingStartedAt, onSessionChange) {
+    mount(loadingStartedAt) {
       const runtime = window.RomanAssistant.mountAssistant(
         host,
         container,
         loadingStartedAt,
-        onSessionChange,
       );
       const result = { runtime, state: "pending", error: undefined };
       runtime.ready.then(
@@ -110,7 +117,7 @@ function setup(t, initialTime = 0) {
   };
 }
 
-test("runtime reports confirmed conversation activity, not an open panel or saved credential hint", async (t) => {
+test("closing text-only Roman preserves its saved conversation and pending storefront work", async (t) => {
   const ctx = setup(t, 1000);
   const access = {
     conversationId: "11111111-1111-4111-8111-111111111111",
@@ -120,80 +127,92 @@ test("runtime reports confirmed conversation activity, not an open panel or save
   };
   const conversation = {
     id: access.conversationId,
-    messages: [],
+    messages: [
+      {
+        id: "saved-request",
+        role: "user",
+        status: "complete",
+        parts: [{ type: "text", text: "Help me choose a blind." }],
+        createdAt: "2026-09-22T09:59:00Z",
+      },
+      {
+        id: "saved-reply",
+        role: "assistant",
+        status: "complete",
+        parts: [{ type: "text", text: "Your saved conversation." }],
+        createdAt: "2026-09-22T10:00:00Z",
+      },
+    ],
     status: "active",
-    busy: false,
+    busy: true,
     revision: 0,
-    tools: [],
+    tools: [
+      {
+        id: "44444444-4444-4444-8444-444444444444",
+        name: "get_cart",
+        arguments: {},
+        status: "pending",
+      },
+    ],
   };
   ctx.window.sessionStorage.setItem(
     "roman:conversation",
     JSON.stringify(access),
   );
-  let resolveBootstrap;
-  let resolveEnd;
+  let resolveCart;
+  let cartSignal;
+  let resultReceived = false;
+  const calls = [];
   const response = (body) => ({
     ok: true,
     status: 200,
     headers: { get: () => "application/json" },
     json: async () => body,
   });
-  ctx.window.fetch = async (url) => {
+  ctx.window.fetch = async (url, init) => {
+    calls.push(String(url));
     if (String(url).includes("/apps/roman/bootstrap"))
+      return response({ ...access, conversation });
+    if (String(url).endsWith("/claim")) return response({ claimed: true });
+    if (String(url).endsWith("/cart.js")) {
+      cartSignal = init.signal;
       return new Promise((resolve) => {
-        resolveBootstrap = resolve;
+        resolveCart = resolve;
       });
-    if (String(url).endsWith("/end"))
-      return new Promise((resolve) => {
-        resolveEnd = resolve;
-      });
-    return response(conversation);
+    }
+    if (String(url).endsWith("/result")) {
+      resultReceived = true;
+      return response({ ...conversation, revision: 1, tools: [], busy: false });
+    }
+    return response({ ...conversation, streamRevision: 0 });
   };
-  const activity = [];
-  const mounted = ctx.mount(0, (active) => activity.push(active));
+  const mounted = ctx.mount(0);
   mounted.runtime.setOpen(true);
-  assert.ok(activity.length > 0);
-  assert.ok(activity.every((active) => active === false));
-  resolveBootstrap(response({ ...access, conversation }));
+  await until(() => !!resolveCart, "restored tool did not start");
   await until(
-    () => activity.at(-1) === true,
-    "restored conversation did not activate launcher state",
-  );
-  await until(
-    () =>
-      [...ctx.container.querySelectorAll("button")].some(
-        (button) => button.textContent === "End chat" && !button.disabled,
-      ),
-    "restoration did not finish",
+    () => ctx.container.textContent.includes("Your saved conversation."),
+    "history was not restored",
   );
   mounted.runtime.setOpen(false);
-  assert.equal(
-    activity.at(-1),
-    true,
-    "closing the sidebar must not end its conversation",
+  assert.equal(cartSignal.aborted, false, "text tool was cancelled by closing");
+  resolveCart(
+    response({ items: [], item_count: 0, total_price: 0, currency: "GBP" }),
   );
-  [...ctx.container.querySelectorAll("button")]
-    .find((button) => button.textContent === "End chat")
-    .click();
   await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "Confirmation missing",
+    () => resultReceived,
+    "the hidden text tool did not return its result",
   );
-  assert.equal(resolveEnd, undefined, "Opening confirmation must not send End");
-  ctx.container.querySelector(".roman-dialog-primary").click();
-  await until(() => !!resolveEnd, "End request was not sent");
   assert.equal(
-    activity.at(-1),
-    true,
-    "the pending End request must retain confirmed session state",
+    calls.some((url) => /\/(?:end|stop)$/.test(url)),
+    false,
   );
-  resolveEnd(response({ ...conversation, status: "ended", revision: 1 }));
-  await until(
-    () => activity.at(-1) === false,
-    "confirmed End did not deactivate launcher state",
+  assert.equal(
+    JSON.parse(ctx.window.sessionStorage.getItem("roman:conversation"))
+      .conversationId,
+    access.conversationId,
   );
-  mounted.runtime.dispose();
-  assert.equal(activity.at(-1), false);
+  mounted.runtime.setOpen(true);
+  assert.match(ctx.container.textContent, /Your saved conversation/);
 });
 
 test("opening requests microphone once and permission denial leaves text usable without creating a session", async (t) => {
@@ -245,6 +264,173 @@ test("opening requests microphone once and permission denial leaves text usable 
   await delay(0);
   assert.equal(permissionRequests, 1);
   assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+});
+
+function voiceBackend(ctx) {
+  const access = {
+    conversationId: "11111111-1111-4111-8111-111111111111",
+    token: "a".repeat(43),
+    expiresAt: "2099-09-15T10:00:00Z",
+    apiBaseUrl: "https://roman.example/api/conversations",
+  };
+  const conversation = {
+    id: access.conversationId,
+    messages: [
+      {
+        id: "saved-request",
+        role: "user",
+        status: "complete",
+        parts: [{ type: "text", text: "Help me choose a blind." }],
+        createdAt: "2026-09-22T09:59:00Z",
+      },
+      {
+        id: "saved-reply",
+        role: "assistant",
+        status: "complete",
+        parts: [{ type: "text", text: "Your saved conversation." }],
+        createdAt: "2026-09-22T10:00:00Z",
+      },
+    ],
+    status: "active",
+    busy: false,
+    revision: 0,
+    tools: [],
+  };
+  let voice;
+  const stops = [];
+  const calls = [];
+  const response = (body, status = 200) => ({
+    ok: status === 200,
+    status,
+    headers: { get: () => "application/json" },
+    json: async () => body,
+  });
+  ctx.window.fetch = async (url, init) => {
+    url = String(url);
+    calls.push(url);
+    if (url.includes("/apps/roman/bootstrap"))
+      return response({ ...access, conversation });
+    if (url.endsWith("/voice")) {
+      const input = JSON.parse(init.body);
+      voice = {
+        id: input.requestId,
+        clientId: input.clientId,
+        status: "starting",
+      };
+      return response({ voiceId: voice.id, sdp: "v=0\r\no=roman-answer" });
+    }
+    if (url.endsWith("/ready")) {
+      voice.status = "active";
+      return response({ ok: true });
+    }
+    if (url.endsWith("/stop"))
+      return new Promise((resolve) => {
+        stops.push((failed = false) => {
+          if (!failed) voice.status = "closed";
+          resolve(
+            response(
+              { ...conversation, voice, revision: ++conversation.revision },
+              failed ? 500 : 200,
+            ),
+          );
+        });
+      });
+    return response({ ...conversation, voice, streamRevision: 0 });
+  };
+  return { access, stops, calls };
+}
+
+for (const stopFails of [false, true]) {
+  test(`closing active voice stops media immediately and preserves chat${stopFails ? " even when finalization fails" : ""}`, async (t) => {
+    const ctx = setup(t, 1000);
+    const media = voiceMedia(ctx.window);
+    const backend = voiceBackend(ctx);
+    const mounted = ctx.mount(0);
+    mounted.runtime.setOpen(false);
+    assert.equal(
+      ctx.window.sessionStorage.getItem("roman:voice-autostart"),
+      null,
+    );
+    mounted.runtime.setOpen(true);
+    await until(
+      () => !!media.peers[0]?.remoteDescription,
+      "voice offer was not accepted",
+    );
+    media.connect();
+    await until(
+      () => !!ctx.container.querySelector(".roman-voice-waveform"),
+      "voice did not connect",
+    );
+    const savedAccess = ctx.window.sessionStorage.getItem("roman:conversation");
+    mounted.runtime.setOpen(false);
+    assert.equal(media.tracks[0].stopped, true);
+    assert.equal(media.peers[0].closed, true);
+    assert.equal(media.peers[0].channel.closed, true);
+    assert.ok(media.calls.pause > 0);
+    assert.equal(backend.stops.length, 1);
+    assert.equal(
+      ctx.container.getRootNode().children.length,
+      1,
+      "closed UI created a separate dock",
+    );
+    mounted.runtime.setOpen(false);
+    mounted.runtime.setOpen(true);
+    assert.equal(backend.stops.length, 1);
+    assert.equal(media.calls.microphone, 1, "reopening restarted voice");
+    backend.stops[0](stopFails);
+    if (stopFails) {
+      await until(
+        () =>
+          ctx.container.textContent.includes("could not confirm voice ended"),
+        "stop error was not retained",
+      );
+      const end = ctx.container.querySelector('[aria-label="End voice"]');
+      assert.ok(end && !end.disabled);
+      end.click();
+      await until(() => backend.stops.length === 2, "stop retry missing");
+      backend.stops[1]();
+    }
+    await until(
+      () => !!ctx.container.querySelector('[aria-label="Start voice"]'),
+      "stopped voice did not restore text mode",
+    );
+    assert.equal(media.calls.microphone, 1);
+    assert.equal(
+      ctx.window.sessionStorage.getItem("roman:conversation"),
+      savedAccess,
+    );
+    assert.match(ctx.container.textContent, /Your saved conversation/);
+    assert.equal(
+      backend.calls.some((url) => url.endsWith("/end")),
+      false,
+    );
+  });
+}
+
+test("closing during microphone permission prevents a late grant from starting voice", async (t) => {
+  const ctx = setup(t, 1000);
+  let grant;
+  const media = voiceMedia(ctx.window, {
+    getUserMedia: (stream) =>
+      new Promise((resolve) => {
+        grant = () => resolve(stream);
+      }),
+  });
+  const backend = voiceBackend(ctx);
+  const mounted = ctx.mount(0);
+  mounted.runtime.setOpen(true);
+  assert.equal(media.calls.microphone, 1);
+  mounted.runtime.setOpen(false);
+  grant();
+  await until(
+    () => media.tracks[0].stopped,
+    "late microphone track was not stopped",
+  );
+  mounted.runtime.setOpen(true);
+  await delay(0);
+  assert.equal(media.calls.microphone, 1);
+  assert.equal(media.peers.length, 0);
+  assert.deepEqual(backend.calls, []);
 });
 
 test("a fast cached runtime waits until one second from loading start and React commit", async (t) => {

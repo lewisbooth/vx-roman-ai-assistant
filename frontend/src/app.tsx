@@ -9,7 +9,6 @@ import {
   useSyncExternalStore,
 } from "react";
 /* eslint-disable jsx-a11y/no-noninteractive-tabindex, jsx-a11y/no-noninteractive-element-interactions -- The named history region is focusable for native keyboard scrolling; its handlers only track scroll intent. */
-import { createPortal } from "react-dom";
 import {
   createMemoryRouter,
   useLocation,
@@ -55,7 +54,6 @@ type AssistantProps = {
   tools: AssistantTools;
   session: ConversationClient;
   showTools: boolean;
-  voiceDock?: HTMLElement;
   onReady: () => void;
   onError: (error: unknown) => void;
 };
@@ -67,7 +65,6 @@ function Assistant({
   session,
   showTools,
   onReady,
-  voiceDock,
 }: AssistantProps) {
   const location = useLocation();
   const navigateView = useNavigate();
@@ -590,23 +587,6 @@ function Assistant({
               {state.approval && (
                 <ToolApproval approval={state.approval} session={session} />
               )}
-              {voiceDock &&
-                (localVoice || state.approval) &&
-                createPortal(
-                  <>
-                    {state.approval && (
-                      <ToolApproval
-                        approval={state.approval}
-                        session={session}
-                        dock
-                      />
-                    )}
-                    {localVoice && (
-                      <VoiceControls session={session} voice={voice} dock />
-                    )}
-                  </>,
-                  voiceDock,
-                )}
               <Composer
                 key={chatVersion}
                 busy={textBusy}

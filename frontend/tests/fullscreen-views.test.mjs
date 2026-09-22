@@ -161,7 +161,6 @@ async function setup(t, initial = {}, options = {}) {
     sendMessage: async (text) => calls.push(["text", text]),
     startVoice: async () => calls.push(["startVoice"]),
     stopVoice: async () => calls.push(["stopVoice"]),
-    setVoiceMuted: (muted) => update({ voice: { ...state.voice, muted } }),
     end: async () => {
       calls.push(["end"]);
       await options.onEnd?.();

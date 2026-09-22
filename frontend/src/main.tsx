@@ -24,7 +24,6 @@ export function mountAssistant(
   host: HTMLElement,
   container: HTMLElement,
   loadingStartedAt: number,
-  onSessionChange: (active: boolean) => void = () => {},
 ): AssistantRuntime {
   const deadline = (firstLoadingDeadline ??= loadingStartedAt + 1000);
   const logoUrl = host.dataset.logoUrl;
@@ -61,20 +60,6 @@ export function mountAssistant(
   let sidebarOpen = false;
   const composerFocus = createComposerFocus(container);
   const viewport = createAssistantViewport(host);
-  const voiceDock = document.createElement("div");
-  voiceDock.hidden = true;
-  host.shadowRoot?.append(voiceDock);
-  function syncVoiceDock() {
-    const state = session.getSnapshot();
-    onSessionChange(state.conversation?.status === "active");
-    const status = state.voice.status;
-    const active =
-      status === "starting" || status === "active" || status === "stopping";
-    voiceDock.hidden = sidebarOpen || (!active && !state.approval);
-    navigation.setSidebarOpen(sidebarOpen || active || !!state.approval);
-  }
-  const stopVoiceDock = session.subscribe(syncVoiceDock);
-  syncVoiceDock();
 
   function onReady() {
     if (disposed || readyTimer !== undefined) return;
@@ -94,7 +79,6 @@ export function mountAssistant(
       navigation,
       tools,
       session,
-      voiceDock,
       showTools:
         host.dataset.shop === "hd-dev-multi.myshopify.com" ||
         host.dataset.shop === "hd-dev-single.myshopify.com",
@@ -123,9 +107,6 @@ export function mountAssistant(
     stopJourney();
     voiceAutostart?.dispose();
     session.dispose();
-    stopVoiceDock();
-    onSessionChange(false);
-    voiceDock.remove();
     navigation.dispose();
     throw error;
   }
@@ -137,13 +118,28 @@ export function mountAssistant(
     },
     setOpen(open) {
       if (!disposed) {
+        const closing = sidebarOpen && !open;
         sidebarOpen = open;
         storefrontScroll.setLocked(open);
         cartNotification.setOpen(open);
         viewport.setOpen(open);
         if (!open) composerFocus.cancel();
-        syncVoiceDock();
+        navigation.setSidebarOpen(open);
         voiceAutostart?.setOpen(open);
+        const { voice, conversation } = session.getSnapshot();
+        if (
+          closing &&
+          (voice.status === "starting" ||
+            voice.status === "active" ||
+            voice.status === "stopping" ||
+            (voice.status === "error" && voice.muted) ||
+            conversation?.voice?.status === "starting" ||
+            conversation?.voice?.status === "active")
+        ) {
+          // stopVoice closes local media synchronously and retains any server
+          // finalization error for the next open. Idle text tools keep running.
+          void session.stopVoice().catch(() => undefined);
+        }
       }
     },
     dispose() {
@@ -163,9 +159,6 @@ export function mountAssistant(
       stopJourney();
       voiceAutostart?.dispose();
       session.dispose();
-      stopVoiceDock();
-      onSessionChange(false);
-      voiceDock.remove();
       navigation.dispose();
     },
   };

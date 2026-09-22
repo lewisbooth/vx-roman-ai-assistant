@@ -51,7 +51,6 @@ export interface ConversationClient {
   startVoice(): Promise<void>;
   setVoice(voice: LiveVoice): void;
   stopVoice(): Promise<void>;
-  setVoiceMuted(muted: boolean): void;
   end(): Promise<void>;
   clearError(): void;
   dispose(): void;

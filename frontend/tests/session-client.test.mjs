@@ -2509,10 +2509,9 @@ function acceptedVoiceAnswer(request, voice) {
   };
 }
 
-test("suggested voice answers preserve media and mute, persist once and reject duplicate/stale choices", async (t) => {
+test("suggested voice answers preserve active media, persist once and reject duplicate/stale choices", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx, voiceQuestion);
-  ctx.client.setVoiceMuted(true);
   const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
   assert.equal(ctx.calls.length, 4);
   const call = ctx.calls[3];
@@ -2544,9 +2543,9 @@ test("suggested voice answers preserve media and mute, persist once and reject d
   assert.equal(ctx.client.getSnapshot().pending, false);
   assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
-  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
   assert.equal(ctx.media.tracks[0].stopped, false);
-  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.media.tracks[0].enabled, true);
   assert.equal(ctx.media.peers[0].closed, undefined);
   assert.equal(ctx.media.calls.microphone, 1);
   assert.equal(
@@ -2576,7 +2575,6 @@ test("choosing a saved carousel product is immediate customer input without clos
     productIds: [choice.productId],
   });
   const voice = await activeVoice(ctx, carousel);
-  ctx.client.setVoiceMuted(true);
   const text = "I'd like the Green roller blind.";
   await assert.rejects(
     ctx.client.sendMessage(text, {
@@ -2614,7 +2612,7 @@ test("choosing a saved carousel product is immediate customer input without clos
   });
   await sending;
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
-  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
   assert.equal(ctx.media.tracks[0].stopped, false);
   assert.equal(ctx.media.peers[0].closed, undefined);
   assert.equal(ctx.media.calls.microphone, 1);
@@ -2822,9 +2820,8 @@ test("voice starts explicitly, polls while idle, heartbeats, and drains before t
   ctx.respond(3, { ok: true });
   await delay(0);
   assert.ok([...ctx.timers.values()].some((timer) => timer.ms === 20_000));
-  ctx.client.setVoiceMuted(true);
-  assert.equal(ctx.media.tracks[0].enabled, false);
-  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.media.tracks[0].enabled, true);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
   const stopping = ctx.client.stopVoice();
   assert.deepEqual(ctx.calls[4].body, { clientId: voice.clientId });
   assert.equal(ctx.media.tracks[0].stopped, true);
@@ -2957,7 +2954,6 @@ test("page exit immediately stops media and sends a keepalive stop without rejoi
 test("transient voice disconnect keeps the active session and performs no stop or restart request", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   await activeVoice(ctx);
-  ctx.client.setVoiceMuted(true);
   const peer = ctx.media.peers[0];
   peer.connectionState = "disconnected";
   peer.onconnectionstatechange();
@@ -2968,7 +2964,7 @@ test("transient voice disconnect keeps the active session and performs no stop o
   peer.onconnectionstatechange();
   assert.ok(![...ctx.timers.values()].some((timer) => timer.ms === 10_000));
   assert.equal(ctx.media.tracks[0].stopped, false);
-  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.media.tracks[0].enabled, true);
   assert.equal(ctx.media.calls.microphone, 1);
   assert.equal(ctx.calls.length, 3);
 });
@@ -3644,7 +3640,6 @@ function acceptedVoiceText(input, voice) {
 test("a typed welcome reply enters the connected voice without stopping audio", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx);
-  ctx.client.setVoiceMuted(true);
   const sending = ctx.client.sendMessage(" Help me measure my windows. ");
   const call = ctx.calls[3];
   assert.match(call.url, /\/answers$/);
@@ -3656,7 +3651,7 @@ test("a typed welcome reply enters the connected voice without stopping audio", 
   ctx.respond(3, acceptedVoiceText(call.body, voice));
   await sending;
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
-  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
   assert.equal(ctx.media.tracks[0].stopped, false);
   assert.equal(ctx.media.calls.microphone, 1);
   assert.ok(!ctx.calls.some((call) => /\/(?:stop|messages)$/.test(call.url)));

@@ -45,7 +45,7 @@ async function until(condition, message) {
   assert.fail(message);
 }
 
-function setup(t, beforeImport, { url = `${origin}/`, storage = {} } = {}) {
+function setup(t, beforeImport, { url = `${origin}/`, storage = {}, header = true } = {}) {
   const dom = new JSDOM(
     `<!doctype html><html data-roman-preview="true"><head><title>Store</title></head>
     <body><app-provider><main id="main"><h1>Store content</h1></main></app-provider>
@@ -59,19 +59,9 @@ function setup(t, beforeImport, { url = `${origin}/`, storage = {} } = {}) {
   const logs = [];
   const errors = [];
   const warnings = [];
-  const intersections = [];
   window.IntersectionObserver = class {
-    targets = new Set();
-    constructor(callback) {
-      this.callback = callback;
-      intersections.push(this);
-    }
-    observe(target) {
-      this.targets.add(target);
-      this.callback([{ target, isIntersecting: true }]);
-    }
-    disconnect() {
-      this.targets.clear();
+    constructor() {
+      assert.fail("The header launcher must not observe floating-icon visibility");
     }
   };
   window.console.log = (...args) => logs.push(args.map(String).join(" "));
@@ -97,6 +87,7 @@ function setup(t, beforeImport, { url = `${origin}/`, storage = {} } = {}) {
   });
   for (const [key, value] of Object.entries(storage))
     window.sessionStorage.setItem(key, value);
+  if (header) addVisibleHeader(document);
   beforeImport?.(window);
   window.eval(`${focusBundle.outputFiles[0].text}\nwindow.ComposerFocus = ComposerFocus;`);
   window.eval(bundle.outputFiles[0].text);
@@ -115,13 +106,7 @@ function setup(t, beforeImport, { url = `${origin}/`, storage = {} } = {}) {
     logs,
     errors,
     warnings,
-    intersections,
-    setInView(target, isIntersecting) {
-      for (const observer of intersections)
-        if (observer.targets.has(target))
-          observer.callback([{ target, isIntersecting }]);
-    },
-    launcher: () => host.shadowRoot.querySelector("[data-roman-launcher]"),
+    launcher: () => headerButton(document),
     panel: () => host.shadowRoot.querySelector("[data-roman-panel]"),
     close: () =>
       host.shadowRoot.querySelector('button[aria-label="Close assistant"]'),
@@ -137,7 +122,6 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
       host,
       container,
       loadingStartedAt,
-      setSessionActive = () => {},
     ) {
       const content = window.document.createElement("p");
       content.textContent = "Runtime content";
@@ -148,7 +132,6 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
         container,
         content,
         loadingStartedAt,
-        setSessionActive,
         open: [],
         disposed: 0,
       };
@@ -162,7 +145,6 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
         },
         dispose: () => {
           mount.disposed++;
-          setSessionActive(false);
           content.remove();
           composerFocus.dispose();
         },
@@ -338,7 +320,7 @@ function headerLauncher(document) {
 
 function headerButton(document) {
   return headerLauncher(document)?.shadowRoot?.querySelector(
-    "[data-roman-launcher]",
+    ".roman-header-button",
   );
 }
 
@@ -354,7 +336,7 @@ test("the production bootstrap excludes React, the app and storefront navigation
   );
 });
 
-test("the shell waits for a click before requesting runtime or loading images", async (t) => {
+test("the header-only shell waits for a click before requesting runtime or loading assistant images", async (t) => {
   const {
     document,
     window,
@@ -372,6 +354,7 @@ test("the shell waits for a click before requesting runtime or loading images", 
   assert.equal(button.getAttribute("aria-label"), "Roman AI Assistant");
   assert.equal(button.getAttribute("aria-expanded"), "false");
   assert.equal(host.shadowRoot.querySelector("img"), null);
+  assert.equal(host.shadowRoot.querySelector("button"), null);
   assert.equal(requests.length, 0);
   assert.equal(document.querySelector("script[data-roman-runtime]"), null);
   assert.equal(
@@ -385,6 +368,7 @@ test("the shell waits for a click before requesting runtime or loading images", 
   assert.equal(panel().getAttribute("role"), "dialog");
   assert.equal(panel().getAttribute("aria-modal"), "true");
   assert.equal(panel().getAttribute("aria-label"), "Roman AI Assistant");
+  assert.equal(host.shadowRoot.querySelector(".roman-launcher,[data-roman-launcher]"), null);
   assert.equal(button.getAttribute("aria-expanded"), "true");
   assert.equal(hidden(progress()), false);
   assert.equal(progress().getAttribute("aria-label"), "Loading Roman");
@@ -681,7 +665,6 @@ test("a cached page restore updates modal focus and visibility without remountin
     () => mounts.length === 1 && hidden(ctx.progress()),
     "runtime did not become ready",
   );
-  mounts[0].setSessionActive(true);
   const search = ctx.document.createElement("input");
   ctx.document.querySelector("main").append(search);
   search.focus();
@@ -699,7 +682,7 @@ test("a cached page restore updates modal focus and visibility without remountin
     new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
   );
   assert.equal(hidden(ctx.panel()), true);
-  assert.equal(ctx.host.shadowRoot.activeElement, ctx.launcher());
+  assert.equal(headerLauncher(ctx.document).shadowRoot.activeElement, ctx.launcher());
   assert.equal(mounts[0].open.at(-1), false);
   assert.equal(
     ctx.document.documentElement.hasAttribute("data-roman-open"),
@@ -722,7 +705,7 @@ test("a cached page restore updates modal focus and visibility without remountin
     new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
   );
   assert.equal(hidden(ctx.panel()), true);
-  assert.equal(ctx.host.shadowRoot.activeElement, ctx.launcher());
+  assert.equal(headerLauncher(ctx.document).shadowRoot.activeElement, ctx.launcher());
 });
 
 test("the cached-page visibility listener is removed with its embed and restored on reinsertion", async (t) => {
@@ -749,13 +732,12 @@ test("the cached-page visibility listener is removed with its embed and restored
 
 test("closing during runtime readiness stays closed and reopening keeps the mounted content", async (t) => {
   const ready = deferred();
-  const { document, window, host, launcher, panel, progress, close, requests } =
+  const { document, window, launcher, panel, progress, close, requests } =
     setup(t);
   launcher().click();
   const mounts = installRuntime(window, () => ready.promise);
   loadingScript(document).dispatchEvent(new window.Event("load"));
   await until(() => mounts.length === 1, "runtime did not mount");
-  mounts[0].setSessionActive(true);
   assert.equal(
     hidden(progress()),
     false,
@@ -763,7 +745,7 @@ test("closing during runtime readiness stays closed and reopening keeps the moun
   );
   close().click();
   assert.equal(hidden(panel()), true);
-  assert.equal(host.shadowRoot.activeElement, launcher());
+  assert.equal(headerLauncher(document).shadowRoot.activeElement, launcher());
   assert.equal(
     document.documentElement.hasAttribute("data-roman-open"),
     false,
@@ -772,7 +754,7 @@ test("closing during runtime readiness stays closed and reopening keeps the moun
   ready.resolve();
   await delay(0);
   assert.equal(hidden(panel()), true);
-  assert.equal(host.shadowRoot.activeElement, launcher());
+  assert.equal(headerLauncher(document).shadowRoot.activeElement, launcher());
   assert.equal(mounts[0].open.at(-1), false);
   assert.equal(mounts[0].disposed, 0);
   launcher().click();
@@ -790,7 +772,7 @@ test("closing during runtime readiness stays closed and reopening keeps the moun
   close().dispatchEvent(escape);
   assert.equal(escape.defaultPrevented, true);
   assert.equal(hidden(panel()), true);
-  assert.equal(host.shadowRoot.activeElement, launcher());
+  assert.equal(headerLauncher(document).shadowRoot.activeElement, launcher());
 });
 
 test("download errors, timeouts and missing exports expose an explicit working retry", async (t) => {
@@ -1012,7 +994,7 @@ test("the header launcher sits after the search field and controls Roman without
   const logo = button.querySelector('img[alt="Roman"]');
   assert.equal(logo.alt, "Roman");
   assert.match(logo.src, /roman-wordmark\.svg$/);
-  assert.equal(ctx.launcher().hidden, true);
+  assert.equal(ctx.host.shadowRoot.querySelector(".roman-launcher,[data-roman-launcher]"), null);
   button.click();
   assert.equal(submitted, 0);
   assert.equal(hidden(ctx.panel()), false);
@@ -1064,146 +1046,80 @@ test("header replacement preserves the open runtime and moves close focus to the
   assert.equal(restoredFocusOptions?.preventScroll, true);
 });
 
-test("an active conversation falls back when its header hook disappears and cleans up with the embed", async (t) => {
-  const ctx = setup(t);
-  const visible = addVisibleHeader(ctx.document);
-  await until(
-    () => !!headerLauncher(ctx.document),
-    "header launcher was not attached",
-  );
-  headerButton(ctx.document).click();
+test("scrolling never creates a floating launcher, including with a restored conversation", async (t) => {
+  const ctx = setup(t, undefined, {
+    storage: { "roman:conversation": "stored credential wake hint" },
+  });
   const mounts = installRuntime(ctx.window);
   loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
-  await until(() => mounts.length === 1, "runtime did not mount");
-  mounts[0].setSessionActive(true);
-  visible.search.getClientRects = () => [];
-  ctx.window.dispatchEvent(new ctx.window.Event("resize"));
-  await until(
-    () => !headerLauncher(ctx.document),
-    "hidden header hook did not remove its launcher",
-  );
-  assert.equal(ctx.launcher().hidden, false);
-  ctx.host.remove();
-  await delay(0);
-  assert.ok(ctx.intersections.every((observer) => observer.targets.size === 0));
-  const replacement = addVisibleHeader(ctx.document);
-  await delay(20);
-  assert.equal(
-    !!replacement.search.parentElement.nextElementSibling?.hasAttribute(
-      "data-roman-header-launcher",
-    ),
-    false,
-    "a removed app embed must not retain a header observer",
-  );
-});
-
-test("scrolling or opening the home view never shows the floating R without a conversation", async (t) => {
-  const ctx = setup(t);
-  assert.equal(
-    ctx.launcher().hidden,
-    true,
-    "a missing header is not a session",
-  );
-  const { search } = addVisibleHeader(ctx.document);
-  await until(
-    () => !!headerButton(ctx.document),
-    "header launcher did not attach",
-  );
-  const header = headerLauncher(ctx.document);
-  ctx.setInView(search, false);
-  ctx.window.dispatchEvent(new ctx.window.Event("scroll"));
-  assert.equal(
-    header.isConnected,
-    true,
-    "scrolling must not detach the inline trigger",
-  );
-  assert.equal(ctx.launcher().hidden, true);
-  assert.equal(ctx.requests.length, 0);
-  ctx.setInView(search, true);
-  headerButton(ctx.document).click();
-  const mounts = installRuntime(ctx.window);
-  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
-  await until(() => mounts.length === 1, "home runtime did not mount");
-  ctx.setInView(search, false);
-  assert.equal(hidden(ctx.panel()), false);
-  assert.equal(
-    ctx.launcher().hidden,
-    true,
-    "sidebar visibility is not conversation activity",
-  );
-  mounts[0].setSessionActive(false);
-  assert.equal(ctx.launcher().hidden, true);
-});
-
-test("active text or voice conversations float only offscreen and confirmed End hides the R immediately", async (t) => {
-  const ctx = setup(t);
-  const { search } = addVisibleHeader(ctx.document);
-  await until(
-    () => !!headerButton(ctx.document),
-    "header launcher did not attach",
-  );
-  headerButton(ctx.document).click();
-  const mounts = installRuntime(ctx.window);
-  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
-  await until(() => mounts.length === 1, "runtime did not mount");
+  await until(() => mounts.length === 1 && hidden(ctx.progress()), "runtime did not restore");
   const trigger = headerButton(ctx.document);
-  mounts[0].setSessionActive(true);
-  assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(search, false);
-  assert.equal(ctx.launcher().hidden, false);
+  const search = ctx.document.querySelector("[data-testid=menu-search-input]");
+  search.getBoundingClientRect = () => ({ top: -100, bottom: -52, height: 48 });
+  ctx.window.dispatchEvent(new ctx.window.Event("scroll"));
+  assert.equal(ctx.host.shadowRoot.querySelector(".roman-launcher,[data-roman-launcher]"), null);
   assert.equal(headerButton(ctx.document), trigger);
+  assert.equal(hidden(ctx.panel()), true);
+  trigger.click();
+  assert.equal(trigger.ariaExpanded, "true");
+  assert.equal(hidden(ctx.panel()), false);
   ctx.close().click();
-  assert.equal(ctx.host.shadowRoot.activeElement, ctx.launcher());
-  assert.equal(ctx.launcher().getAttribute("aria-expanded"), "false");
-  ctx.launcher().click();
-  assert.equal(trigger.getAttribute("aria-expanded"), "true");
-  ctx.setInView(search, true);
-  assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(search, false);
-  assert.equal(ctx.launcher().hidden, false);
-  mounts[0].setSessionActive(false);
-  assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(search, true);
-  ctx.setInView(search, false);
-  assert.equal(
-    ctx.launcher().hidden,
-    true,
-    "scrolling cannot restore an ended conversation",
-  );
+  assert.equal(trigger.ariaExpanded, "false");
+  assert.equal(headerLauncher(ctx.document).shadowRoot.activeElement, trigger);
   assert.equal(mounts.length, 1);
   assert.equal(mounts[0].disposed, 0);
+  assert.equal(ctx.requests.length, 1);
 });
 
-test("header replacement ignores old intersection notifications without restarting an active session", async (t) => {
-  const ctx = setup(t);
-  const first = addVisibleHeader(ctx.document);
-  await until(
-    () => !!headerButton(ctx.document),
-    "header launcher did not attach",
-  );
-  headerButton(ctx.document).click();
+test("a temporarily unavailable header has no fallback, and its replacement reuses the open runtime", async (t) => {
+  const ctx = setup(t, undefined, { header: false });
+  const visible = addVisibleHeader(ctx.document);
+  await until(() => !!ctx.launcher(), "header launcher did not attach");
+  ctx.launcher().click();
   const mounts = installRuntime(ctx.window);
   loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
-  await until(() => mounts.length === 1, "runtime did not mount");
-  mounts[0].setSessionActive(true);
-  ctx.setInView(first.search, false);
-  assert.equal(ctx.launcher().hidden, false);
+  await until(() => mounts.length === 1 && hidden(ctx.progress()), "runtime did not mount");
+  const original = ctx.launcher();
+  visible.search.getClientRects = () => [];
+  ctx.window.dispatchEvent(new ctx.window.Event("resize"));
+  assert.equal(headerLauncher(ctx.document), null);
+  assert.equal(ctx.host.shadowRoot.querySelector(".roman-launcher,[data-roman-launcher]"), null);
+  assert.equal(hidden(ctx.panel()), false);
+  visible.header.remove();
   const replacement = addVisibleHeader(ctx.document);
-  first.header.remove();
-  await until(
-    () =>
-      replacement.search.parentElement.nextElementSibling ===
-      headerLauncher(ctx.document),
-    "header launcher did not rebind",
-  );
-  assert.equal(ctx.launcher().hidden, true);
-  ctx.intersections[0].callback([
-    { target: first.search, isIntersecting: false },
-  ]);
-  assert.equal(ctx.launcher().hidden, true);
-  ctx.setInView(replacement.search, false);
-  assert.equal(ctx.launcher().hidden, false);
+  await until(() => !!ctx.launcher(), "replacement header did not attach");
+  assert.equal(ctx.launcher(), original);
+  assert.equal(ctx.launcher().ariaExpanded, "true");
+  assert.equal(replacement.search.parentElement.nextElementSibling, headerLauncher(ctx.document));
+  ctx.close().click();
+  assert.equal(ctx.launcher().ariaExpanded, "false");
+  assert.equal(headerLauncher(ctx.document).shadowRoot.activeElement, original);
   assert.equal(mounts.length, 1);
+  assert.equal(mounts[0].disposed, 0);
+  ctx.host.remove();
+  await delay(0);
+  assert.equal(headerLauncher(ctx.document), null);
+  addVisibleHeader(ctx.document);
+  ctx.window.dispatchEvent(new ctx.window.Event("resize"));
+  await delay(0);
+  assert.equal(headerLauncher(ctx.document), null, "embed removal must clean up header observers");
+});
+
+test("a missing header does not create another entry point or load React for a new visitor", async (t) => {
+  const ctx = setup(t, undefined, { header: false });
+  ctx.window.dispatchEvent(new ctx.window.Event("scroll"));
+  ctx.window.dispatchEvent(new ctx.window.Event("resize"));
+  await delay(0);
+  assert.equal(ctx.launcher(), undefined);
+  assert.equal(ctx.host.shadowRoot.querySelector("button"), null);
+  assert.equal(ctx.panel(), null);
+  assert.equal(ctx.requests.length, 0);
+  addVisibleHeader(ctx.document);
+  await until(() => !!ctx.launcher(), "late header did not attach");
+  assert.equal(ctx.requests.length, 0);
+  ctx.launcher().click();
+  assert.equal(hidden(ctx.panel()), false);
+  assert.ok(loadingScript(ctx.document));
 });
 
 test("the actual React runtime keeps its rendered content and storefront state across close and reopen", async (t) => {

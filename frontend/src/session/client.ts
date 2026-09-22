@@ -1923,11 +1923,6 @@ export function createConversationClient(
       setVoiceAutostartPreference(false);
       return stopVoice();
     },
-    setVoiceMuted(muted) {
-      if (state.voice.status !== "active") return;
-      voiceConnection?.setMuted(muted);
-      update({ voice: { ...state.voice, muted } });
-    },
     async end() {
       setVoiceAutostartPreference(false);
       if (!access || disposed || ending) return;

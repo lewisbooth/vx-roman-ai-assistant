@@ -309,11 +309,6 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
       checkReady();
       await waiting;
     },
-    setMuted(muted: boolean) {
-      stream?.getAudioTracks().forEach((track) => {
-        track.enabled = !muted;
-      });
-    },
     close,
   };
 }

@@ -5,16 +5,14 @@ import type { PendingToolApproval } from "../session/tool-approval";
 export function ToolApproval({
   approval,
   session,
-  dock = false,
 }: {
   approval: PendingToolApproval;
   session: ConversationClient;
-  dock?: boolean;
 }) {
   const titleId = useId();
   return (
     <section
-      className={`roman-action-panel roman-tool-approval${dock ? " roman-approval-dock" : ""}`}
+      className="roman-action-panel roman-tool-approval"
       aria-labelledby={titleId}
     >
       <h2 id={titleId}>{approval.title}</h2>

@@ -60,7 +60,6 @@ function setup(t, initial = {}) {
   const calls = [];
   const voiceCalls = [];
   const view = window.api.mount(container, {
-    setVoiceMuted: (muted) => voiceCalls.push(["mute", muted]),
     stopVoice: async () => voiceCalls.push(["stop"]),
   });
   let props = {

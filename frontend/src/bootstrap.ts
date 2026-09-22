@@ -1,4 +1,4 @@
-import { APP_NAME, ASSISTANT_INITIAL } from "../../shared/brand";
+import { APP_NAME } from "../../shared/brand";
 import { CONVERSATION_STORAGE_KEY } from "../../shared/conversation";
 import styles from "./bootstrap.css?inline";
 import layoutCss from "./storefront.css?inline";
@@ -10,7 +10,6 @@ type RuntimeModule = {
     host: HTMLElement,
     container: HTMLElement,
     loadingStartedAt: number,
-    onSessionChange: (active: boolean) => void,
   ) => AssistantRuntime;
 };
 declare global {
@@ -100,7 +99,6 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
 
 class RomanAssistant extends HTMLElement {
   // Native private names minify without exposing lifecycle state on the host.
-  #launcher?: HTMLButtonElement;
   #headerLauncher?: ReturnType<typeof attachHeaderLauncher>;
   #panel?: HTMLElement;
   #closeButton?: HTMLButtonElement;
@@ -133,29 +131,20 @@ class RomanAssistant extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this.#launcher) return;
+    if (this.#headerLauncher) return;
     const shadow = this.shadowRoot ?? this.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = styles;
-    const launcher = document.createElement("button");
-    launcher.type = "button";
-    launcher.dataset.romanLauncher = "";
-    launcher.ariaLabel = this.dataset.label || APP_NAME;
-    launcher.ariaExpanded = "false";
-    launcher.textContent = this.dataset.initial || ASSISTANT_INITIAL;
-    launcher.className = "roman-launcher";
     const toggle = () => {
       console.log("Hello from Roman");
       this.#setOpen(!this.#open);
     };
-    launcher.addEventListener("click", toggle);
-    this.#launcher = launcher;
-    shadow.replaceChildren(style, launcher);
+    shadow.replaceChildren(style);
     this.#headerLauncher = attachHeaderLauncher(
-      launcher,
       style,
       toggle,
       this.dataset.wordmarkUrl || "",
+      this.dataset.label || APP_NAME,
     );
     window.addEventListener("pageshow", this.#onPageShow);
     this.#restore();
@@ -164,9 +153,8 @@ class RomanAssistant extends HTMLElement {
   #createPanel() {
     const panel = document.createElement("section");
     panel.hidden = !this.#open;
-    panel.id = `roman-panel-${crypto.randomUUID()}`;
     panel.dataset.romanPanel = "";
-    panel.ariaLabel = this.#launcher!.ariaLabel;
+    panel.ariaLabel = this.dataset.label || APP_NAME;
     panel.role = "dialog";
     panel.ariaModal = "true";
     panel.className = "roman-panel";
@@ -211,7 +199,6 @@ class RomanAssistant extends HTMLElement {
       this.#setOpen(false);
     });
     this.shadowRoot!.append(panel);
-    this.#launcher!.setAttribute("aria-controls", panel.id);
     const layout = document.createElement("style");
     layout.dataset.romanLayout = "";
     layout.textContent = layoutCss;
@@ -225,8 +212,7 @@ class RomanAssistant extends HTMLElement {
     savedState(open ? "1" : "0");
     if (open && !this.#panel) this.#createPanel();
     this.#panel!.hidden = !open;
-    this.#launcher!.ariaExpanded = String(open);
-    this.#headerLauncher?.sync();
+    this.#headerLauncher?.setOpen(open);
     document.documentElement.toggleAttribute("data-roman-open", open);
     if (open) {
       document.head.append(this.#layout!);
@@ -268,7 +254,6 @@ class RomanAssistant extends HTMLElement {
         this,
         this.#content!,
         loadingStartedAt,
-        this.#headerLauncher!.setActive,
       );
       this.#runtime = runtime;
       runtime.setOpen(this.#open);
@@ -307,7 +292,6 @@ class RomanAssistant extends HTMLElement {
       this.#layout?.remove();
       document.documentElement.removeAttribute("data-roman-open");
       this.shadowRoot?.replaceChildren();
-      this.#launcher = undefined;
       this.#panel = undefined;
       this.#open = false;
       this.#state = "idle";

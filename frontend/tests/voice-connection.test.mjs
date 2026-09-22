@@ -64,9 +64,6 @@ test("voice requests audio only on prepare, and waits for started, peer and play
   media.event("session.started");
   await connecting;
   assert.equal(ready, true);
-  connection.setMuted(true);
-  assert.equal(media.tracks[0].enabled, false);
-  connection.setMuted(false);
   assert.equal(media.tracks[0].enabled, true);
   connection.close();
   assert.ok(media.tracks.every((track) => track.stopped));
@@ -327,9 +324,8 @@ test("provider command errors do not close media or decide readiness in the brow
   assert.equal(media.tracks[0].stopped, false);
   assert.equal(media.peers[0].closed, undefined);
   assert.equal(media.calls.pause, 0);
-  connection.setMuted(true);
   media.event("error", { error: { code: null } });
-  assert.equal(media.tracks[0].enabled, false, "Error handling preserves mute");
+  assert.equal(media.tracks[0].enabled, true);
   assert.equal(media.tracks[0].stopped, false);
   assert.deepEqual(errors, []);
   assert.deepEqual(warnings, []);
@@ -354,13 +350,12 @@ test("blocked audio playback closes microphone and reports an actionable error",
   assert.equal(errors.length, 1);
 });
 
-test("a transient disconnect preserves the same muted session and clears its bounded recovery timer", async (t) => {
+test("a transient disconnect preserves the same active session and clears its bounded recovery timer", async (t) => {
   const { connection, media, errors, warnings, timers } = setup(t);
   await connection.prepare();
   const connecting = connection.connect("answer", async () => {});
   media.connect();
   await connecting;
-  connection.setMuted(true);
   media.peers[0].connectionState = "disconnected";
   media.peers[0].onconnectionstatechange();
   assert.equal(timers.size, 1);
@@ -373,7 +368,7 @@ test("a transient disconnect preserves the same muted session and clears its bou
   media.peers[0].connectionState = "connected";
   media.peers[0].onconnectionstatechange();
   assert.equal(timers.size, 0);
-  assert.equal(media.tracks[0].enabled, false);
+  assert.equal(media.tracks[0].enabled, true);
   assert.equal(media.peers.length, 1);
   assert.equal(media.calls.microphone, 1);
   assert.equal(media.calls.play, 1);
