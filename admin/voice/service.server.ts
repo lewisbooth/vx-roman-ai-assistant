@@ -35,7 +35,7 @@ import {
   type VoiceProviderEvent,
 } from "./provider.server";
 import {
-  voiceDiscoveryAcknowledgement,
+  voiceDiscoveryProgress,
   voiceInputProgress,
   voiceToolProgress,
 } from "./progress.server";
@@ -243,7 +243,7 @@ type AdvisorRequest =
       kind: "input";
       requestId: string;
       caption: string;
-      progressCue: string;
+      progressCue?: string;
       earlyProgress?: EarlyProgress;
     }
   | { kind: "resume"; questionId: string };
@@ -401,8 +401,18 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     if (signal.aborted || owner.stopping || owner.progress !== progress) return;
     progress.toolActive = active;
     progress.toolCue = active ? voiceToolProgress(name) : undefined;
-    // UI input has one turn-wide timer. Short tools must not reset its clock.
-    if (request.kind === "input") return;
+    // General UI requests keep one turn-wide timer. Routine measuring choices
+    // have no generic cue; only a named tool that remains active earns one.
+    if (request.kind === "input") {
+      if (request.progressCue || request.earlyProgress) return;
+      if (!active) {
+        clearProgressTimer();
+        return;
+      }
+      if (progress.sentAt || progress.timer || !progress.toolCue) return;
+      scheduleProgress(Date.now(), () => progress.toolCue);
+      return;
+    }
     if (!active) {
       clearProgressTimer();
       return;
@@ -412,7 +422,12 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     scheduleProgress(Date.now(), () => progress.toolCue);
   };
   const startInputProgress = () => {
-    if (request.kind !== "input" || request.earlyProgress) return;
+    if (
+      request.kind !== "input" ||
+      request.earlyProgress ||
+      !request.progressCue
+    )
+      return;
     scheduleProgress(Date.now(), () => progress.toolCue ?? request.progressCue);
   };
   const waitForProgress = async () => {
@@ -1057,7 +1072,7 @@ async function submitVoiceInput(
       // discovery cue can begin while the input mirror awaits its ACK, so the
       // shopper does not wait for the model's first catalog tool to hear Roman.
       const mirrored = owner.provider!.appendCustomerInput(customerInput);
-      const discoveryCue = voiceDiscoveryAcknowledgement(receipt);
+      const discoveryCue = voiceDiscoveryProgress(receipt);
       const cueSentAt = Date.now();
       const earlyProgress = discoveryCue
         ? {

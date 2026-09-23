@@ -1139,7 +1139,7 @@ test("a slow catalog tool gets one spoken cue and queues its verified answer", a
   timer.callback();
   await flush();
   assert.deepEqual(plain(state.providers[0].progress), [
-    ["catalog-work", "I'm checking the current range against what you've told me."],
+    ["catalog-work", "The current store range is being searched for the customer's latest requirements; matches are not yet verified."],
   ]);
   tool.resolve();
   await flush();
@@ -1174,7 +1174,7 @@ test("a slow clicked answer receives one spoken cue even without a tool", async 
   timer.callback();
   await flush();
   assert.deepEqual(plain(state.providers[0].progress), [
-    [null, "I'm narrowing the options around that."],
+    [null, "Product options are being narrowed around the customer's latest preferences; no matches are verified yet."],
   ]);
   advisor.resolve({ text: "Here are suitable options." });
   await flush();
@@ -1183,6 +1183,59 @@ test("a slow clicked answer receives one spoken cue even without a tool", async 
   quiet.resolve();
   await flush();
   assert.deepEqual(state.providers[0].replies, ["Here are suitable options."]);
+  await state.stop();
+});
+
+test("a routine measurement choice does not receive a generic timed cue", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  state.mock.question = "What full width should the blind cover?";
+  const input = await answerableVoice(state);
+  input.answer = "Width: 1200mm";
+  const advisor = deferred();
+  state.mock.onDelegate = () => advisor.promise;
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.equal([...state.timers].some((entry) => entry.ms === 2_500), false);
+  assert.deepEqual(state.providers[0].progress, []);
+  advisor.resolve({ text: "What drop should the blind cover?" });
+  await flush();
+  assert.deepEqual(state.providers[0].replies, ["What drop should the blind cover?"]);
+  await state.stop();
+});
+
+test("a routine measurement choice gets progress only from a slow active guide read", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  state.mock.question = "What full width should the blind cover?";
+  const input = await answerableVoice(state);
+  input.answer = "Width: 1200mm";
+  const guide = deferred();
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+    options.onToolActivity("get_product_guides", true);
+    await guide.promise;
+    options.onToolActivity("get_product_guides", false);
+    return { text: "What drop should the blind cover?" };
+  };
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  const timer = [...state.timers].find((entry) => entry.ms === 2_500);
+  assert.ok(timer);
+  assert.deepEqual(state.providers[0].progress, []);
+  state.timers.delete(timer);
+  state.mock.now += 2_500;
+  timer.callback();
+  await flush();
+  assert.match(state.providers[0].progress[0][1], /relevant guide is being checked/);
+  guide.resolve();
   await state.stop();
 });
 
@@ -1210,9 +1263,12 @@ test("a discovery choice cues Live before its input mirror ACK and does not hold
     input,
   );
   await flush();
-  assert.deepEqual(plain(state.providers[0].progress), [
-    [null, "I'll look for blinds that give you privacy in your kitchen or bathroom."],
-  ]);
+  assert.equal(state.providers[0].progress.length, 1);
+  assert.equal(state.providers[0].progress[0][0], null);
+  assert.match(state.providers[0].progress[0][1], /"Privacy"/);
+  assert.match(state.providers[0].progress[0][1], /kitchen or bathroom blinds/);
+  assert.match(state.providers[0].progress[0][1], /no matching products have been verified/);
+  assert.doesNotMatch(state.providers[0].progress[0][1], /^I(?:'|’)/);
   assert.equal(state.calls.delegate.length, 0, "the cue does not await the mirror ACK");
 
   mirror.resolve();
@@ -1260,8 +1316,8 @@ test("one UI progress cue uses an active tool but survives earlier short tools",
       [
         null,
         toolActiveAtDeadline
-          ? "I'm checking the current range against what you've told me."
-          : "I'm narrowing the options around that.",
+          ? "The current store range is being searched for the customer's latest requirements; matches are not yet verified."
+          : "Product options are being narrowed around the customer's latest preferences; no matches are verified yet.",
       ],
     ]);
     await state.stop();

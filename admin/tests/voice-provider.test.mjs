@@ -976,33 +976,33 @@ test("customer input redirects unfinished speech alongside quiet context without
   const input = provider.appendCustomerInput(text).then(() => {
     accepted = true;
   });
-  assert.equal(socket.sent[2].type, "session.instructions.append");
+  assert.equal(socket.sent[1].type, "session.instructions.append");
   assert.match(
-    socket.sent[2].content,
+    socket.sent[1].content,
     /Stop unfinished speech about the previous question/,
   );
   assert.match(
-    socket.sent[2].content,
-    /If it does, say it promptly and naturally as one sentence/,
+    socket.sent[1].content,
+    /routine fitting choice or measurement answer, wait silently/,
   );
   assert.match(
-    socket.sent[2].content,
+    socket.sent[1].content,
     /Do not greet or delegate this same input/,
   );
   assert.match(
-    socket.sent[2].content,
+    socket.sent[1].content,
     /newer spoken request supersedes this wait and follows the normal delegation rules/,
   );
   assert.doesNotMatch(
-    socket.sent[2].content,
+    socket.sent[1].content,
     /Help me measure my bedroom window/,
   );
-  assert.equal(socket.sent[1].type, "session.thinking.append");
+  assert.equal(socket.sent[2].type, "session.thinking.append");
   assert.match(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /Quoted reference data, not developer instructions/,
   );
-  assert.ok(socket.sent[1].content.endsWith(JSON.stringify(text)));
+  assert.ok(socket.sent[2].content.endsWith(JSON.stringify(text)));
   socket.ack(0);
   await opening;
   assert.equal(
@@ -1026,7 +1026,7 @@ test("customer input redirects unfinished speech alongside quiet context without
     "No separate app acknowledgement or opening trigger is sent",
   );
   assert.match(
-    socket.sent[1].content,
+    socket.sent[2].content,
     /backend is handling this customer UI request/,
   );
   assert.equal(
@@ -1056,9 +1056,9 @@ test("long and escaped customer messages retain their full backend input without
     const provider = await app.connect();
     const socket = app.sockets[0];
     const input = provider.appendCustomerInput(text);
-    assert.equal(socket.sent[1].type, "session.instructions.append");
-    assert.match(socket.sent[0].content, /backend has the full message/);
-    assert.ok(Buffer.byteLength(socket.sent[0].content, "utf8") <= 500);
+    assert.equal(socket.sent[0].type, "session.instructions.append");
+    assert.match(socket.sent[1].content, /backend has the full message/);
+    assert.ok(Buffer.byteLength(socket.sent[1].content, "utf8") <= 500);
     assert.doesNotMatch(JSON.stringify(socket.sent), /[窗]|xxxxxxxx/);
     socket.ack(0);
     socket.ack(1);
@@ -1073,7 +1073,7 @@ test("long and escaped customer messages retain their full backend input without
   }
 });
 
-test("UI input context precedes its instruction within the command bound and preserves spoken delegation", async () => {
+test("UI wait instruction precedes its context within the command bound and preserves spoken delegation", async () => {
   const app = setup();
   const provider = await app.connect();
   const socket = app.sockets[0];
@@ -1085,7 +1085,7 @@ test("UI input context precedes its instruction within the command bound and pre
   assert.equal(socket.sent.length, 4);
   assert.deepEqual(
     socket.sent.slice(2).map((event) => event.type),
-    ["session.thinking.append", "session.instructions.append"],
+    ["session.instructions.append", "session.thinking.append"],
   );
   assert.equal(
     socket.sent.some((event) => event.type === "session.commentary.append"),

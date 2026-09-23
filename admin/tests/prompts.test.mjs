@@ -1024,7 +1024,10 @@ test("free-text measurements infer explicit units, accept fractions and confirm 
       /ordinary customer text such as "500mm", "50cm" or "20 1\/2 inches"/,
       /Set unit to mm\/cm\/in only when explicitly supplied or clearly established by this customer for the current measurement; otherwise use null/,
       /Never infer units from the number's magnitude, the guide's examples or its stated clearance units/,
-      /If a reading lacks units and context does not resolve them, ask one brief clarification then continue/,
+      /after "Width: 1200mm", interpret the next "Drop: 800" provisionally as 800mm/,
+      /confirm "1200mm wide by 800mm drop" before saving or applying/,
+      /Do not carry units across a new window or product/,
+      /ask one brief clarification when context truly does not resolve the unit/,
       /it may be empty when that method is already clear and nothing new is needed/,
       /Do not repeat the question or field label, add unit-entry boilerplate/,
       /Interpret a clear fraction such as "20 1\/2 inches" as 20.5 in without inventing precision/,
@@ -1047,6 +1050,8 @@ test("free-text measurements infer explicit units, accept fractions and confirm 
     /asks for the first reading directly, using ask_measurement without an upfront unit menu/,
   );
   assert.match(live, /including fractions such as "20 and a half inches"/);
+  assert.match(live, /after 1200mm width, an unqualified 800 drop is provisionally 800mm/);
+  assert.match(live, /Do not independently ask for units when the backend briefing has already resolved them/);
   assert.match(
     live,
     /A unit change keeps valid earlier readings with their original units/,
@@ -1809,7 +1814,7 @@ test("voice waits for verified guidance and gives one customer-facing guide intr
   assert.match(prompt, /wait for the verified briefing before giving its overview or next question/);
   assert.match(prompt, /Do not add a question, provisional guide introduction or claim that a guide has been read/);
   assert.match(prompt, /Do not say "PDP", backend, tool names or other implementation terms to the customer/);
-  assert.match(prompt, /at most one short, natural sentence when useful/);
+  assert.match(prompt, /After a routine answer within an established measuring flow/);
   assert.match(prompt, /Treat the briefing as the complete next reply, not a request for another introduction/);
   assert.match(prompt, /Do not prepend a second version or repeat an introduction already spoken during this flow/);
   assert.match(prompt, /Do not reject supported library guidance merely because the original product-page link was wrong/);
@@ -1876,18 +1881,17 @@ test("measuring direction survives brevity rules in text, briefings and live spe
   assert.match(live, /do not repeat an allowance or method you have just spoken/);
 });
 
-test("Live acknowledges substantive input and speaks bounded tool progress without weakening delegation", () => {
+test("Live waits on routine measuring answers and phrases progress from context without weakening delegation", () => {
   const live = romanVoicePrompt("marin");
   assert.match(live, /An early answer to the current question is new input even if you were still explaining it/);
   assert.match(live, /even with "yes", "no", "1200 millimetres" or "that's correct", including while you are speaking/);
   assert.match(live, /Never use a short answer as permission to invent the next measuring step/);
   assert.match(live, /listening backchannel that does not answer a pending question/);
-  assert.match(live, /You own any spoken acknowledgement: at most one short, natural sentence when useful/);
-  assert.match(live, /grounded in the latest known answer or preference/);
-  assert.match(live, /Silence is fine, especially for routine yes\/no fit checks or measurement answers/);
-  assert.match(live, /already acknowledged this input or the result is ready, skip the acknowledgement/);
-  assert.match(live, /If the application later sends one progress cue because the work is taking longer/);
-  assert.match(live, /without another generic acknowledgement/);
+  assert.match(live, /After a routine answer within an established measuring flow/);
+  assert.match(live, /delegate and listen quietly/);
+  assert.match(live, /refer naturally to the customer's actual room, product or priority/);
+  assert.match(live, /treat it as status context, not a script/);
+  assert.match(live, /without adding another acknowledgement/);
   assert.match(live, /a measurement is valid or saved, or an action has succeeded/);
   assert.match(live, /do not delegate that same input again or replace the result with a bare acknowledgement/);
   assert.match(live, /supersedes the previous follow-up and any unfinished speech about it immediately/);
