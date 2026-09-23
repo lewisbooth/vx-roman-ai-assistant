@@ -953,7 +953,14 @@ export async function generateReply(
             throw new Error(
               "Products must come from this reply's catalog results.",
             );
-          presentation = { callId: call.call_id, productIds };
+          presentation = {
+            callId: call.call_id,
+            productIds,
+            productRefs: productIds.map((id) => ({
+              id,
+              title: availableProducts.get(id)!,
+            })),
+          };
           outcome = {
             selectedProductIds: [...productIds],
             instruction:

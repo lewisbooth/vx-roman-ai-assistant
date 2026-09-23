@@ -761,7 +761,11 @@ test("a delegated presentation persists only its selected widget beside actual p
     status: "complete",
     text: "Not yet spoken.",
     voiceId: session.id,
-    presentation: { callId: "cards-delegated", productIds: [productId] },
+    presentation: {
+      callId: "cards-delegated",
+      productIds: [productId],
+      productRefs: [{ id: productId, title: "Shade 123" }],
+    },
   });
   const beforeSpeech = await conversation.getSnapshot(id);
   assert.equal(beforeSpeech.messages[1].id, delegated.assistantId);
@@ -1128,7 +1132,14 @@ test("combined voice products and question persist after captions without crossi
     status: "complete",
     text: "UNSPOKEN_BRIEFING",
     voiceId: session.id,
-    presentation: { callId: "show-products", productIds },
+    presentation: {
+      callId: "show-products",
+      productIds,
+      productRefs: productIds.map((id) => ({
+        id,
+        title: `Shade ${id.split("/").at(-1)}`,
+      })),
+    },
     questionPresentation: {
       callId: "ask-question",
       question: "Which room?",

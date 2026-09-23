@@ -2326,6 +2326,8 @@ test("invalid or failed catalog calls return a safe error to the model without f
 });
 
 const productGid = (id) => `gid://shopify/Product/${id}`;
+const productRefs = (ids, titleForId = (id) => `Shade ${id}`) =>
+  ids.map((id) => ({ id: productGid(id), title: titleForId(id) }));
 const catalogResult = (...ids) => ({
   products: ids.map((id) => ({
     id: productGid(id),
@@ -3459,6 +3461,7 @@ test("terminal numeric replies preserve selected cards, visible text and complet
   assert.deepEqual(plain(reply.presentation), {
     callId: "show-1",
     productIds: [productGid(123)],
+    productRefs: productRefs([123]),
   });
   assert.equal(
     reply.questionPresentation.measurement.instructions,
@@ -4728,6 +4731,7 @@ test("explicit product presentation selects only the requested ordered subset wi
   assert.deepEqual(plain(reply.presentation), {
     callId: "show-1",
     productIds: [productGid(456), productGid(123)],
+    productRefs: productRefs([456, 123]),
   });
   const acknowledged = env.calls.requests[2].input.input.find(
     (item) => item.type === "function_call_output" && item.call_id === "show-1",
@@ -4764,6 +4768,7 @@ test("a fullscreen carousel accepts ten current-turn products in their selected 
     async () => catalogResult(...ids),
   );
   assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
+  assert.deepEqual(plain(reply.presentation.productRefs), productRefs(ids));
   assert.equal(
     allowedTools(env.calls.requests[0].input).find(
       (tool) => tool.name === "show_products",
@@ -4832,6 +4837,7 @@ test("initial PDP choice preserves its single verified card and one alternative 
       assert.deepEqual(plain(result.presentation), {
         callId: "show-1",
         productIds: [productGid(123)],
+        productRefs: productRefs([123]),
       });
       assert.deepEqual(plain(result.questionPresentation), {
         callId: "question-1",
@@ -5004,6 +5010,10 @@ test("carousel title data never rewrites the model selected browsing question", 
       "Would you like to explore more options?",
     );
     assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
+    assert.deepEqual(
+      plain(reply.presentation.productRefs),
+      productRefs(ids, (id) => titles[id - 1]),
+    );
   }
 });
 
@@ -5147,6 +5157,10 @@ test("broad discovery can pool three family searches and needed details into ten
       assert.deepEqual(plain(reply.presentation), {
         callId: "show-1",
         productIds: selected.map(productGid),
+        productRefs: productRefs(selected, (id) => {
+          const family = searches.find(({ ids }) => ids.includes(id)).family;
+          return `${family} Shade ${id}`;
+        }),
       });
       const lastCatalogRequest = env.calls.requests[4].input;
       assert.equal(allowedToolNames(lastCatalogRequest).includes("search_products"), false);
@@ -5234,6 +5248,7 @@ test("an explicit follow-up can show refreshed recommendations after text or an 
                   version: 1,
                   invocationId: "04a2ab2c-b930-42f0-84c6-4f0f49a384ce",
                   productIds: prior.presentation.productIds,
+                  productRefs: prior.presentation.productRefs,
                 },
               ],
             )}`,
@@ -5265,6 +5280,7 @@ test("an explicit follow-up can show refreshed recommendations after text or an 
         assert.deepEqual(plain(reply.presentation), {
           callId: "show-followup",
           productIds: [productGid(456), productGid(123)],
+          productRefs: productRefs([456, 123]),
         });
         assert.equal(
           allowedTools(env.calls.requests[followupRound + 2].input).some(
@@ -6004,6 +6020,7 @@ test("voice delegation uses the existing browser executor and local carousel pre
   assert.deepEqual(plain(reply.presentation), {
     callId: "voice-show",
     productIds: [productGid(456), productGid(123)],
+    productRefs: productRefs([456, 123]),
   });
   assert.equal(env.calls.browserTools.length, 1);
   assert.deepEqual(plain(env.calls.browserTools[0].slice(0, 5)), [

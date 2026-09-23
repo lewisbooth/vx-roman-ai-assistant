@@ -1617,6 +1617,7 @@ test("navigation persists a claimed storefront action without product evidence o
       presentation: {
         callId: randomUUID(),
         productIds: ["gid://shopify/Product/123"],
+        productRefs: productRefs(["gid://shopify/Product/123"]),
       },
     }),
     { status: 400 },
@@ -1844,6 +1845,9 @@ async function completedCatalog(id, assistantId, productIds, overrides = {}) {
   return tool;
 }
 
+const productRefs = (productIds) =>
+  productIds.map((id) => ({ id, title: `Shade ${id.split("/").at(-1)}` }));
+
 test("a completed reply atomically presents one ordered subset of current-turn catalog matches", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
@@ -1866,6 +1870,7 @@ test("a completed reply atomically presents one ordered subset of current-turn c
   const presentation = {
     callId: randomUUID(),
     productIds: [productIds[2], productIds[0]],
+    productRefs: productRefs([productIds[2], productIds[0]]),
   };
   const reply = {
     text: "These two meet your preference.",
@@ -1895,6 +1900,7 @@ test("a completed reply atomically presents one ordered subset of current-turn c
       version: 1,
       invocationId: shown.id,
       productIds: presentation.productIds,
+      productRefs: presentation.productRefs,
     },
   ]);
   await repository.finishTurn(id, turn.assistantId, reply);
@@ -1934,14 +1940,97 @@ test("ten selected products persist and restore as one ordered carousel", async 
   await repository.finishTurn(id, turn.assistantId, {
     text: "Here are ten options.",
     status: "complete",
-    presentation: { callId: randomUUID(), productIds },
+    presentation: { callId: randomUUID(), productIds, productRefs: productRefs(productIds) },
   });
   const restored = await loadRepository().getSnapshot(id);
   const cards = restored.messages[1].parts.find(
     (part) => part.type === "products",
   );
   assert.deepEqual(cards.productIds, productIds);
+  assert.deepEqual(cards.productRefs, productRefs(productIds));
   assert.equal(restored.messages[1].status, "complete");
+});
+
+test("a displayed carousel keeps its ID-title mapping before a spoken partial-title choice, and legacy cards still load", async () => {
+  const { conversationId: id } = await repository.createConversation(
+    shop,
+    origin,
+  );
+  const turn = await repository.beginTurn(id, {
+    requestId: randomUUID(),
+    text: "Show me two roller blinds.",
+  });
+  const productIds = ["gid://shopify/Product/123", "gid://shopify/Product/456"];
+  const refs = [
+    { id: productIds[0], title: "Serene Green Roller Blind" },
+    { id: productIds[1], title: "Midnight Blue Roller Blind" },
+  ];
+  await completedCatalog(id, turn.assistantId, productIds);
+  await repository.finishTurn(id, turn.assistantId, {
+    status: "complete",
+    text: "Here are the two options.",
+    presentation: { callId: randomUUID(), productIds, productRefs: refs },
+  });
+
+  const restored = loadRepository();
+  const carousel = (await restored.getSnapshot(id)).messages[1].parts.find(
+    (part) => part.type === "products",
+  );
+  assert.deepEqual(carousel.productRefs, refs);
+  const voiceId = randomUUID();
+  await database.voiceSession.create({
+    data: {
+      id: voiceId,
+      conversationId: id,
+      clientId: randomUUID(),
+      status: "active",
+      leaseExpiresAt: new Date(Date.now() + 45_000),
+    },
+  });
+  await database.voiceTranscript.create({
+    data: {
+      id: randomUUID(),
+      voiceId,
+      conversationId: id,
+      providerEventId: randomUUID(),
+      sequence: 2,
+      role: "user",
+      text: "The green one",
+      startMs: 0,
+      endMs: 800,
+    },
+  });
+  const history = await restored.getModelHistory(id);
+  const observationIndex = history.findIndex((entry) =>
+    entry.text.startsWith("Untrusted storefront observations") &&
+    entry.text.includes(carousel.invocationId),
+  );
+  const spokenIndex = history.findIndex((entry) =>
+    entry.role === "user" && entry.text === "The green one",
+  );
+  assert.ok(observationIndex >= 0 && spokenIndex > observationIndex);
+  const observations = JSON.parse(
+    history[observationIndex].text.slice(history[observationIndex].text.indexOf(": ") + 2),
+  );
+  assert.deepEqual(observations[0].productRefs, refs);
+
+  const stored = await database.conversationMessage.findUniqueOrThrow({
+    where: { id: turn.assistantId },
+  });
+  const legacyParts = JSON.parse(stored.partsJson);
+  delete legacyParts.find((part) => part.type === "products").productRefs;
+  await database.conversationMessage.update({
+    where: { id: turn.assistantId },
+    data: { partsJson: JSON.stringify(legacyParts) },
+  });
+  const legacy = loadRepository();
+  const oldCarousel = (await legacy.getSnapshot(id)).messages[1].parts.find(
+    (part) => part.type === "products",
+  );
+  assert.equal(oldCarousel.productRefs, undefined);
+  assert.ok((await legacy.getModelHistory(id)).some((entry) =>
+    entry.text.includes(carousel.invocationId),
+  ));
 });
 
 test("questions persist after product widgets, survive reload and keep short answers meaningful", async () => {
@@ -1963,7 +2052,7 @@ test("questions persist after product widgets, survive reload and keep short ans
   const result = {
     status: "complete",
     text: "These offer different levels of light control.",
-    presentation: { callId: randomUUID(), productIds },
+    presentation: { callId: randomUUID(), productIds, productRefs: productRefs(productIds) },
     questionPresentation,
   };
   await repository.finishTurn(id, turn.assistantId, result);
@@ -2036,7 +2125,7 @@ test("question-only replies persist without fabricated text, and invalid questio
       repository.finishTurn(id, turn.assistantId, {
         text: "",
         status: "complete",
-        presentation: { callId: randomUUID(), productIds },
+        presentation: { callId: randomUUID(), productIds, productRefs: productRefs(productIds) },
         questionPresentation: invalid,
       }),
       { status: 400 },
@@ -2131,7 +2220,7 @@ test("invalid or ungrounded presentations cannot partially complete a reply", as
   );
   await completedCatalog(id, turn.assistantId, available);
   const before = await repository.getSnapshot(id);
-  for (const presentation of [
+  for (const selection of [
     { callId: randomUUID(), productIds: [] },
     { callId: randomUUID(), productIds: [...available, "gid://shopify/Product/11"] },
     { callId: randomUUID(), productIds: [available[0], available[0]] },
@@ -2139,7 +2228,22 @@ test("invalid or ungrounded presentations cannot partially complete a reply", as
     { callId: randomUUID(), productIds: ["gid://shopify/ProductVariant/1"] },
     { callId: "", productIds: [available[0]] },
     { callId: "x".repeat(201), productIds: [available[0]] },
+    { callId: randomUUID(), productIds: [available[0]], productRefs: [] },
+    {
+      callId: randomUUID(),
+      productIds: [available[0]],
+      productRefs: [{ id: available[1], title: "Wrong product" }],
+    },
+    {
+      callId: randomUUID(),
+      productIds: [available[0]],
+      productRefs: [{ id: available[0], title: "" }],
+    },
   ]) {
+    const presentation = {
+      ...selection,
+      productRefs: selection.productRefs ?? productRefs(selection.productIds),
+    };
     await assert.rejects(
       repository.finishTurn(id, turn.assistantId, {
         text: "This must not persist.",
@@ -2199,6 +2303,7 @@ test("presentation grounding excludes previous turns, other conversations and un
         presentation: {
           callId: randomUUID(),
           productIds: [`gid://shopify/Product/${productId}`],
+          productRefs: productRefs([`gid://shopify/Product/${productId}`]),
         },
       }),
       { status: 400 },
@@ -2228,7 +2333,7 @@ test("failed and ended replies do not publish a selected carousel", async () => 
       text: "An incomplete answer.",
       status: ended ? "complete" : "failed",
       error: ended ? undefined : "The reply failed.",
-      presentation: { callId: randomUUID(), productIds },
+      presentation: { callId: randomUUID(), productIds, productRefs: productRefs(productIds) },
     });
     const state = await repository.getSnapshot(id);
     assert.equal(state.busy, false);
@@ -3147,10 +3252,14 @@ async function savedProductChoice() {
   });
   const productIds = ["gid://shopify/Product/123", "gid://shopify/Product/456"];
   await completedCatalog(id, turn.assistantId, productIds);
+  const refs = [
+    { id: productIds[0], title: "Green roller blind" },
+    { id: productIds[1], title: "Blue roller blind" },
+  ];
   await repository.finishTurn(id, turn.assistantId, {
     text: "Two options.",
     status: "complete",
-    presentation: { callId: randomUUID(), productIds },
+    presentation: { callId: randomUUID(), productIds, productRefs: refs },
   });
   const snapshot = await repository.getSnapshot(id);
   const carousel = snapshot.messages

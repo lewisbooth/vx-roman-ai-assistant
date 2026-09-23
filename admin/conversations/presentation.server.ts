@@ -23,6 +23,7 @@ export interface CachedGuideSource {
 export interface ProductPresentation {
   callId: string;
   productIds: string[];
+  productRefs: { id: string; title: string }[];
 }
 
 const productId = /^gid:\/\/shopify\/Product\/\d+$/;

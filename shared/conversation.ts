@@ -37,6 +37,8 @@ export interface ProductListPart {
   version: 1;
   invocationId: string;
   productIds: string[];
+  /** Titles verified when these cards were shown; refresh before using current details. */
+  productRefs?: { id: string; title: string }[];
   /** Display association for a voice result; never evidence of heard speech. */
   voiceReply?: { voiceId: string; afterSequence: number };
 }

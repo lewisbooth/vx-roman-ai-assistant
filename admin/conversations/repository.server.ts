@@ -155,6 +155,27 @@ function validProductIds(value: unknown): value is string[] {
   );
 }
 
+function validProductRefs(
+  value: unknown,
+  productIds: string[],
+): value is { id: string; title: string }[] {
+  return (
+    Array.isArray(value) &&
+    value.length === productIds.length &&
+    value.every(
+      (ref, index) =>
+        ref &&
+        typeof ref === "object" &&
+        !Array.isArray(ref) &&
+        Object.keys(ref).length === 2 &&
+        ref.id === productIds[index] &&
+        typeof ref.title === "string" &&
+        ref.title.length > 0 &&
+        ref.title.length <= 200,
+    )
+  );
+}
+
 function parts(message: StoredMessage, origin: string): ConversationPart[] {
   const value: unknown = JSON.parse(message.partsJson);
   if (!Array.isArray(value) || value.length > 32)
@@ -231,9 +252,13 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
       typeof part.invocationId === "string" &&
       uuidPattern.test(part.invocationId) &&
       validProductIds(part.productIds) &&
-      (Object.keys(part).length === 4 ||
-        (Object.keys(part).length === 5 &&
-          part.voiceReply &&
+      Object.keys(part).every((key) =>
+        ["type", "version", "invocationId", "productIds", "productRefs", "voiceReply"].includes(key),
+      ) &&
+      (part.productRefs === undefined ||
+        validProductRefs(part.productRefs, part.productIds)) &&
+      (part.voiceReply === undefined ||
+        (part.voiceReply &&
           typeof part.voiceReply === "object" &&
           Object.keys(part.voiceReply).length === 2 &&
           typeof part.voiceReply.voiceId === "string" &&
@@ -1776,6 +1801,8 @@ export async function finishTurn(
           400,
           "Product cards must come from this reply's successful catalog lookups.",
         );
+      if (!validProductRefs(result.presentation.productRefs, productIds))
+        throw new ConversationError(400, "Invalid product card references.");
       const presentation = await transaction.toolInvocation.create({
         data: {
           id: randomUUID(),
@@ -1794,6 +1821,7 @@ export async function finishTurn(
         version: 1,
         invocationId: presentation.id,
         productIds,
+        productRefs: result.presentation.productRefs,
         ...(message.role === "context" && result.voiceId
           ? {
               voiceReply: {

@@ -929,15 +929,27 @@ test("all channels keep original PDF evidence in the background without source-l
   assert.match(ROMAN_VOICE_BRIEFING_PROMPT, /Never add instructions to open or read a guide/);
 });
 
-test("carousel questions refine browsing while card buttons select products", () => {
+test("carousel questions refine browsing while card controls and speech can select products", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(prompt, /The cards own product selection through Choose this blind/);
+    assert.match(prompt, /Choose this blind is a direct card control, but a typed or spoken choice of a displayed blind is equally valid/);
     assert.match(prompt, /Use ask_question for browsing or refinement, such as Show me more, Different colours or a useful unresolved requirement/);
-    assert.match(prompt, /never repeat displayed product names as answer choices/);
+    assert.match(prompt, /do not turn every displayed product name into a redundant answer menu/);
     assert.match(prompt, /If a blind replacement awaits confirmation, that replacement or transfer question takes priority over refinement/);
     assert.match(prompt, /Keep the current measuring, fitting or shopping goal; do not replace ongoing browsing with the generic capability menu/);
     assert.doesNotMatch(prompt, /For three products, offer those three choices|displayed products as answer choices/);
   }
+});
+
+test("a partial spoken carousel choice resolves the displayed products before any new search", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    assert.match(prompt, /A commitment to a blind just shown in a carousel may use only part of its name, colourway or another distinctive feature/);
+    assert.match(prompt, /First use lookup_catalog on the most recent relevant carousel's IDs/);
+    assert.match(prompt, /If exactly one displayed blind matches, follow the normal chosen-product path/);
+    assert.match(prompt, /If several match, show only those matching cards and ask one short question to distinguish them/);
+    assert.match(prompt, /do not silently pick one or show unrelated search results/);
+    assert.match(prompt, /Search a broader range only when the customer asks for different or more options/);
+  }
+  assert.match(romanVoicePrompt("marin"), /delegate it as a selection attempt rather than deciding aloud that it means a new search/);
 });
 
 test("guided measuring checks relevant guide conditions before requesting dimensions in both backend modes", () => {
