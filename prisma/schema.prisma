@@ -183,3 +183,14 @@ model VoiceTranscript {
   @@unique([voiceId, providerEventId])
   @@unique([conversationId, sequence])
 }
+
+model ApiIncident {
+  id            String    @id
+  kind          String
+  startedAt     DateTime
+  startedDayUtc String
+  endedAt       DateTime?
+
+  @@index([startedDayUtc, kind])
+  @@index([startedAt])
+}

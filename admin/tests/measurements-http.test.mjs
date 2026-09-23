@@ -18,11 +18,13 @@ const bundle = await build({
       name: "measurement-http-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /(?:shopify|repository|service)\.server$/ },
+          { filter: /(?:availability|shopify|repository|service)\.server$/ },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
-          contents: path.endsWith("shopify.server")
+          contents: path.endsWith("availability.server")
+            ? "export const assertServiceAvailable = async () => {};"
+            : path.endsWith("shopify.server")
             ? "export const authenticate = {};"
             : path.endsWith("repository.server")
               ? "export const authorizeCredential = (...args) => mock.authorize(...args);"

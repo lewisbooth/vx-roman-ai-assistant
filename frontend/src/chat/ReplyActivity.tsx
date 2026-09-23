@@ -27,6 +27,7 @@ function activityLabel(state: ConversationClientState, ending: boolean) {
   const conversation = state.conversation;
   if (
     ending ||
+    state.availability === "suspended" ||
     state.restoring ||
     state.error ||
     state.approval ||

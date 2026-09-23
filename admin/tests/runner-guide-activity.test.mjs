@@ -19,13 +19,15 @@ const bundle = await build({
         build.onResolve(
           {
             filter:
-              /repository\.server$|model\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/library\.server$/,
+              /availability\.server$|repository\.server$|model\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/library\.server$/,
           },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
             ? "export const TEXT_MODEL='synthetic'; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}; export const providerFailureDiagnostics=()=>({})"
+            : path.endsWith("availability.server")
+              ? "export const assertServiceAvailable=async()=>{}; export const isServiceSuspended=()=>false; export const UNAVAILABLE_MESSAGE='Roman is currently unavailable';"
             : path.endsWith("library.server")
               ? `export const readLibraryInventory=(...args)=>{mock.libraryReads.push(args);return []};
                  export const readBoundLibrarySource=()=>undefined;

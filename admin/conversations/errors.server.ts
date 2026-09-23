@@ -7,3 +7,10 @@ export class ConversationError extends Error {
     this.name = "ConversationError";
   }
 }
+
+export class ServiceUnavailableError extends ConversationError {
+  constructor() {
+    super(503, "Roman is currently unavailable");
+    this.name = "ServiceUnavailableError";
+  }
+}

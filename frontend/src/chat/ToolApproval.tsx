@@ -5,9 +5,11 @@ import type { PendingToolApproval } from "../session/tool-approval";
 export function ToolApproval({
   approval,
   session,
+  disabled = false,
 }: {
   approval: PendingToolApproval;
   session: ConversationClient;
+  disabled?: boolean;
 }) {
   const titleId = useId();
   return (
@@ -25,6 +27,7 @@ export function ToolApproval({
       <div className="roman-action-buttons roman-approval-actions">
         <button
           type="button"
+          disabled={disabled}
           onClick={() =>
             session.resolveToolApproval(approval.invocationId, false)
           }
@@ -33,7 +36,7 @@ export function ToolApproval({
         </button>
         <button
           type="button"
-          disabled={!!approval.unavailable}
+          disabled={disabled || !!approval.unavailable}
           onClick={() =>
             session.resolveToolApproval(approval.invocationId, true)
           }

@@ -6,10 +6,12 @@ import {
   readJsonObject,
 } from "../conversations/http.server";
 import { executeManualMeasurementTool } from "../measurements/service.server";
+import { assertServiceAvailable } from "../conversations/availability.server";
 
 function handle({ request, params }: LoaderFunctionArgs) {
   return handleJsonRequest(request, "POST", async () => {
     const conversation = await authenticateConversation(request, params.id);
+    await assertServiceAvailable();
     const body = await readJsonObject(request);
     if (
       Object.keys(body).length !== 3 ||

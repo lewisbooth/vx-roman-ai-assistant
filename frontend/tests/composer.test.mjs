@@ -236,6 +236,31 @@ test("lifecycle locks alone disable entry and Enter respects composition and mul
   assert.deepEqual(ctx.calls, ["A message"]);
 });
 
+test("an outage replaces the input with a grey status bar and preserves the draft on recovery", async (t) => {
+  const ctx = setup(t);
+  await ctx.type("Keep my unfinished measurement question");
+  const form = ctx.input().closest("form");
+  ctx.render({
+    unavailable: true,
+    disabled: true,
+    error: "A previous connection error",
+  });
+  assert.equal(ctx.input(), null);
+  assert.equal(ctx.send(), null);
+  assert.equal(form.dataset.unavailable, "true");
+  assert.equal(
+    form.querySelector('[role="status"]').textContent,
+    "Roman is currently unavailable",
+  );
+  assert.equal(ctx.container.querySelector('[role="alert"]'), null);
+  assert.deepEqual(ctx.calls, []);
+
+  ctx.render({ unavailable: false, disabled: false, error: null });
+  assert.equal(ctx.input().value, "Keep my unfinished measurement question");
+  assert.equal(ctx.input().disabled, false);
+  assert.equal(ctx.input().closest("form"), form);
+});
+
 test("voice takes over the whole bar and preserves an unsent text draft until it ends", async (t) => {
   const ctx = setup(t);
   await ctx.type("A voice follow-up I am typing");

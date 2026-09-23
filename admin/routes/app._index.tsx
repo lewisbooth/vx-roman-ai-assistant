@@ -74,6 +74,13 @@ export default function Home() {
       <s-section heading="Estimated costs — this store">
         <EstimatedCosts cost={overview.summary.cost} />
       </s-section>
+      <s-section heading="API Errors">
+        <s-paragraph>
+          View fallback-model periods, complete outages and recovery history for
+          the Roman service.
+        </s-paragraph>
+        <s-button href="/app/api-errors">Open API Errors</s-button>
+      </s-section>
       <s-section heading="Pricing history">
         <PricingHistory prices={overview.prices} />
       </s-section>

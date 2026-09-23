@@ -5,10 +5,8 @@ import {
 } from "../../shared/checkout";
 import OpenAI from "openai";
 import { createHash, randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import type {
   Response,
-  ResponseCreateParamsStreaming,
   ResponseError,
   ResponseInput,
   ResponseInputFile,
@@ -79,6 +77,15 @@ import {
   type CachedGuideSource,
 } from "./presentation.server";
 import { MAX_TURN_TOOL_CALLS } from "./limits.server";
+import {
+  FALLBACK_TEXT_MODEL,
+  PRIMARY_TEXT_MODEL,
+  assertServiceAvailable,
+  isServiceSuspended,
+  reportFallbackUnavailable,
+  reportPrimaryUnavailable,
+  textModelForRequest,
+} from "./availability.server";
 import type { ModelMessage } from "./history.server";
 import {
   guideLibraryToolDefinition,
@@ -101,7 +108,7 @@ import {
   MAX_GUIDE_DOCUMENTS,
 } from "../guides/library.server";
 
-export const TEXT_MODEL = "gpt-6-luna";
+export const TEXT_MODEL = PRIMARY_TEXT_MODEL;
 export const TEXT_SERVICE_TIER = "fast";
 
 const incompleteReasons = [
@@ -188,27 +195,30 @@ export function providerFailureDiagnostics(error: unknown) {
   };
 }
 
-async function createWithModelAccessRetry(
-  client: OpenAI,
-  params: ResponseCreateParamsStreaming,
-  signal: AbortSignal,
-) {
-  const request = () => client.responses.create(params, { signal });
-  try {
-    return await request();
-  } catch (error) {
-    if (
-      !(error instanceof OpenAI.APIError) ||
-      error.status !== 403 ||
-      error.code !== "model_not_found" ||
-      signal.aborted
-    )
-      throw error;
-    // Newly enabled model access can briefly differ across provider requests.
-    // Retry once before any response or storefront action has occurred.
-    await delay(1_000, undefined, { signal });
-    return request();
+function isProviderAvailabilityFailure(error: unknown): boolean {
+  if (error instanceof ModelResponseError) {
+    if (error.diagnostics.providerStatus === "stream_ended") return true;
+    return (
+      error.diagnostics.providerStatus !== "incomplete" &&
+      ["server_error", "rate_limit_exceeded", "vector_store_timeout"].includes(
+        error.diagnostics.providerCode ?? "",
+      )
+    );
   }
+  if (!(error instanceof OpenAI.APIError)) return false;
+  const policyCode = [
+    "invalid_prompt",
+    "content_policy_violation",
+    "bio_policy",
+    "misalignment_policy_violation",
+  ].includes(error.code ?? "");
+  return (
+    error instanceof OpenAI.APIConnectionError ||
+    error.status === 401 ||
+    (error.status === 403 && !policyCode) ||
+    (error.status === 404 && error.code === "model_not_found") ||
+    [408, 429, 500, 502, 503, 504].includes(error.status ?? -1)
+  );
 }
 
 type ModelToolOutcome =
@@ -267,6 +277,7 @@ function responseUsage(
   id: string,
   status: ModelUsageUpdate["status"],
   response?: Response,
+  requestedModel = TEXT_MODEL,
 ): ModelUsageUpdate {
   const usage = response?.usage;
   const inputTokens = reportedTokens(usage?.input_tokens);
@@ -286,7 +297,7 @@ function responseUsage(
     model:
       response?.model && /^[a-zA-Z0-9._:-]{1,100}$/.test(response.model)
         ? response.model
-        : TEXT_MODEL,
+        : requestedModel,
     serviceTier:
       response?.service_tier && /^[a-z0-9_-]{1,40}$/.test(response.service_tier)
         ? response.service_tier
@@ -332,6 +343,7 @@ export async function generateReply(
   guideReuse?: GuideReuse,
   libraryReuse?: LibraryReuse,
 ): Promise<ModelReply> {
+  let turnModel = await textModelForRequest();
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
   const input: ResponseInput = history.map(({ role, text }) => ({
     role,
@@ -487,6 +499,7 @@ export async function generateReply(
     round++
   ) {
     signal.throwIfAborted();
+    await assertServiceAvailable();
     const tools = stableTools.filter(({ name }) => {
       if (checkoutHandoff || (name === "open_checkout" && checkoutAttempted))
         return false;
@@ -495,11 +508,6 @@ export async function generateReply(
       if (name === "show_products") return !presentationAttempted;
       return withinToolBudget(name) && canMutate(name);
     });
-    const usageId = randomUUID();
-    const attempt = responseUsage(usageId, "pending");
-    // Persist the attempt before issuing a billed request. The callback remains
-    // independent of reply completion so cancellation cannot discard usage.
-    await onUsage?.(attempt);
     const libraryDocuments: ResponseInput = [];
     const libraryReferences: ResponseInput = [];
     // Selection order must not change an otherwise identical document prefix.
@@ -526,16 +534,23 @@ export async function generateReply(
         });
       } else libraryDocuments.push(item);
     }
-    let terminalReceived = false;
+    let model = turnModel;
+    let fallbackAttempted = false;
     let text = "";
     let completed: Response | undefined;
     let repairIncompleteAnswer = false;
-    try {
+    for (;;) {
+      const usageId = randomUUID();
+      const attempt = responseUsage(usageId, "pending", undefined, model);
+      // Persist each provider attempt before issuing a possibly billed request.
+      await onUsage?.(attempt);
+      let terminalReceived = false;
+      text = "";
+      try {
       signal.throwIfAborted();
-      const stream = await createWithModelAccessRetry(
-        client,
+      const stream = await client.responses.create(
         {
-          model: TEXT_MODEL,
+          model,
           service_tier: TEXT_SERVICE_TIER,
           reasoning: { effort: "medium" },
           instructions:
@@ -599,7 +614,7 @@ export async function generateReply(
                 storefrontOrigin ?? "no-store",
                 mode,
                 resumeQuestion ? resumePresentation : "regular",
-                TEXT_MODEL,
+                model,
               ]),
             )
             .digest("hex"),
@@ -625,7 +640,7 @@ export async function generateReply(
           store: false,
           stream: true,
         },
-        signal,
+        { signal },
       );
       for await (const event of stream) {
         if (
@@ -642,6 +657,7 @@ export async function generateReply(
                 "response.".length,
               ) as ModelUsageUpdate["status"],
               event.response,
+              model,
             ),
           );
         }
@@ -681,11 +697,35 @@ export async function generateReply(
           );
         }
       }
-    } finally {
-      if (!terminalReceived)
-        await onUsage?.({ ...attempt, status: "unavailable" });
+      if (!completed && !repairIncompleteAnswer)
+        throw new ModelResponseError("stream_ended");
+      } catch (error) {
+        if (!signal.aborted && isProviderAvailabilityFailure(error)) {
+          if (model === PRIMARY_TEXT_MODEL) {
+            await reportPrimaryUnavailable();
+            // The current provider round has not published text or dispatched
+            // its tool calls. Prior round outcomes are already in its input.
+            if (!fallbackAttempted && !isServiceSuspended()) {
+              fallbackAttempted = true;
+              model = FALLBACK_TEXT_MODEL;
+              turnModel = model;
+              // Encrypted reasoning is owned by the model that produced it.
+              // Function calls and confirmed results remain valid turn input.
+              for (let index = input.length - 1; index >= 0; index--)
+                if (input[index].type === "reasoning") input.splice(index, 1);
+              continue;
+            }
+          } else await reportFallbackUnavailable();
+        }
+        throw error;
+      } finally {
+        if (!terminalReceived)
+          await onUsage?.({ ...attempt, status: "unavailable" });
+      }
+      break;
     }
     signal.throwIfAborted();
+    await assertServiceAvailable();
     if (repairIncompleteAnswer) {
       answerRepair = true;
       console.warn("[Roman] Repairing incomplete reply.", {

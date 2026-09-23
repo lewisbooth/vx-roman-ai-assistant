@@ -2369,6 +2369,33 @@ test("voice lifecycle events remain chronological context and do not retire a pe
   assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 
+test("a suspended pending turn still allows End Chat while input stays unavailable", async (t) => {
+  const ctx = await setup(t, {
+    state: {
+      availability: "suspended",
+      availabilityChecked: true,
+      pending: true,
+      conversation: {
+        ...engagedConversation([message("reply", "assistant", "Roman was replying", "pending")]),
+        busy: true,
+      },
+    },
+  });
+  const status = ctx.container.querySelector(".roman-unavailable-bar");
+  assert.equal(status.textContent, "Roman is currently unavailable");
+  assert.equal(ctx.input(), null);
+  const end = ctx.container.querySelector(".roman-end-chat");
+  assert.equal(end.disabled, false);
+  end.click();
+  await until(
+    () => ctx.container.querySelector(".roman-dialog-primary"),
+    "End confirmation did not open",
+  );
+  ctx.container.querySelector(".roman-dialog-primary").click();
+  await until(() => ctx.endCalls.length === 1, "End Chat was blocked by suspension");
+  assert.equal(ctx.container.querySelector(".roman-unavailable-bar")?.textContent, "Roman is currently unavailable");
+});
+
 test("ending a chat retains its transcript and draft until acknowledged, then starts clean", async (t) => {
   let finish;
   const pending = new Promise((resolve) => {

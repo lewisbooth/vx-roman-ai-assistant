@@ -34,6 +34,8 @@ function setup(initial = {}, start, storage = new Map()) {
     readVoiceAutostartPreference,
   } = module.exports;
   let state = {
+    availability: "available",
+    availabilityChecked: true,
     conversation: null,
     pending: false,
     restoring: false,
@@ -71,6 +73,18 @@ function setup(initial = {}, start, storage = new Map()) {
     readVoiceAutostartPreference,
   };
 }
+
+test("voice waits for availability and an outage does not restart it automatically", () => {
+  const ctx = setup({ availabilityChecked: false });
+  ctx.controller.setOpen(true);
+  assert.equal(ctx.starts(), 0);
+  ctx.update({ availabilityChecked: true, availability: "suspended" });
+  assert.equal(ctx.starts(), 0);
+  ctx.update({ availability: "available" });
+  assert.equal(ctx.starts(), 0);
+  assert.equal(ctx.readVoiceAutostartPreference(), true);
+  ctx.controller.dispose();
+});
 
 test("an explicit text preference survives a native page reload until a manual voice start clears it", () => {
   const first = setup();

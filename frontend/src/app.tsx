@@ -178,9 +178,19 @@ function Assistant({
     (state.conversation?.voice?.status === "starting" ||
       state.conversation?.voice?.status === "active");
   const voiceMode = localVoice || waitingForVoice;
+  const suspended = state.availability === "suspended";
+  useEffect(() => {
+    if (suspended) {
+      setConfirmEnd(false);
+      setMicrophoneDenied(false);
+      setToolsOpen(false);
+      setStartError(null);
+      setEndError(null);
+    }
+  }, [suspended]);
   const messageQueue = useMessageQueue(
     session,
-    ending || confirmEnd || answering,
+    ending || confirmEnd || answering || suspended,
   );
   const textBusy = ending || answering || messageQueue.busy;
   const chatError = state.error || startError || endError;
@@ -190,6 +200,8 @@ function Assistant({
       : undefined;
 
   async function sendMessage(text: string) {
+    if (session.getSnapshot().availability === "suspended")
+      throw new Error("Roman is currently unavailable");
     if (endingRef.current || state.restoring || confirmEnd)
       throw new Error("Wait until your conversation is ready.");
     setStartError(null);
@@ -219,6 +231,7 @@ function Assistant({
 
   async function startTopic(text: string) {
     if (
+      suspended ||
       startingTopic.current ||
       endingRef.current ||
       state.restoring ||
@@ -241,6 +254,8 @@ function Assistant({
 
   async function answerQuestion(part: QuestionPart, answer: string) {
     const current = session.getSnapshot();
+    if (current.availability === "suspended")
+      throw new Error("Roman is currently unavailable");
     const page = navigation.getSnapshot();
     const question = latestQuestion(
       current.conversation?.messages ?? [],
@@ -314,6 +329,8 @@ function Assistant({
 
   async function chooseProduct(carouselId: string, product: CatalogProduct) {
     const current = session.getSnapshot();
+    if (current.availability === "suspended")
+      throw new Error("Roman is currently unavailable");
     if (
       endingRef.current ||
       current.restoring ||
@@ -382,7 +399,10 @@ function Assistant({
           logoUrl={logoUrl}
           cartCount={cartCount}
           hasConversation={state.conversation?.status === "active"}
-          endDisabled={ending || answering || state.pending || state.restoring}
+          endDisabled={
+            ending ||
+            (!suspended && (answering || state.pending || state.restoring))
+          }
           ending={ending}
           onEnd={() => {
             setEndError(null);
@@ -411,7 +431,7 @@ function Assistant({
                 selectedTitle={selectedProduct.title}
                 hidden={view !== "chat" || toolsOpen}
                 onMessage={sendMessage}
-                disabled={ending || state.restoring || confirmEnd}
+                disabled={suspended || ending || state.restoring || confirmEnd}
               />
             )}
             <div className="roman-dialogue">
@@ -532,6 +552,7 @@ function Assistant({
                       onContentChange={followConversation}
                       activeQuestionId={activeQuestion?.invocationId}
                       productsDisabled={
+                        suspended ||
                         ending ||
                         confirmEnd ||
                         !!state.approval ||
@@ -540,6 +561,7 @@ function Assistant({
                         state.conversation?.status !== "active"
                       }
                       questionDisabled={
+                        suspended ||
                         ending ||
                         answering ||
                         messageQueue.messages.length > 0 ||
@@ -558,7 +580,7 @@ function Assistant({
                   ) : (
                     <Welcome
                       logoUrl={logoUrl}
-                      busy={ending || state.restoring || confirmEnd}
+                      busy={suspended || ending || state.restoring || confirmEnd}
                       onStart={(text) => void startTopic(text)}
                     />
                   )}
@@ -585,17 +607,23 @@ function Assistant({
                 </button>
               )}
               {state.approval && (
-                <ToolApproval approval={state.approval} session={session} />
+                <ToolApproval
+                  approval={state.approval}
+                  session={session}
+                  disabled={suspended}
+                />
               )}
               <Composer
                 key={chatVersion}
                 busy={textBusy}
-                disabled={ending || state.restoring || confirmEnd}
+                disabled={suspended || ending || state.restoring || confirmEnd}
+                unavailable={suspended}
                 queuedMessages={
                   <MessageQueue
                     messages={messageQueue.messages}
                     onRemove={messageQueue.remove}
                     onRetry={messageQueue.retry}
+                    disabled={suspended}
                   />
                 }
                 voiceControls={
@@ -634,6 +662,7 @@ function Assistant({
           blocked={
             confirmEnd ||
             ending ||
+            suspended ||
             microphoneDenied ||
             !!state.approval ||
             toolsOpen
@@ -672,7 +701,7 @@ function Assistant({
             open={toolsOpen}
             onClose={() => setToolsOpen(false)}
           >
-            <VoiceChoice session={session} disabled={ending} />
+            <VoiceChoice session={session} disabled={ending || suspended} />
           </ToolDrawer>
         )}
       </div>

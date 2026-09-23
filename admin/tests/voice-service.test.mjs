@@ -26,7 +26,7 @@ const bundle = await build({
         build.onResolve(
           {
             filter:
-              /repository\.server$|provider\.server$|runner\.server$|^node:timers\/promises$/,
+              /availability\.server$|repository\.server$|provider\.server$|runner\.server$|^node:timers\/promises$/,
           },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
@@ -34,6 +34,11 @@ const bundle = await build({
           let contents;
           if (args.path === "node:timers/promises")
             contents = `export const setTimeout = (...args) => mock.delay(...args);`;
+          else if (args.path.endsWith("availability.server"))
+            contents = `export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";
+              export const onServiceSuspended=(listener)=>{mock.suspend=listener;return()=>{}};
+              export const isServiceSuspended=()=>mock.suspended;
+              export const assertServiceAvailable=()=>mock.assertAvailable();`;
           else if (args.path.endsWith("provider.server"))
             contents = `export const createVoiceProvider = (...args) => mock.createProvider(...args);`;
           else if (args.path.endsWith("runner.server"))
@@ -97,6 +102,11 @@ function setup() {
   };
   let api;
   const mock = {
+    suspended: false,
+    assertAvailable: async () => {
+      if (mock.suspended)
+        throw new api.ConversationError(503, "Roman is currently unavailable");
+    },
     beforeReserve: undefined,
     usage: async (...args) => {
       await mock.beforeUsage?.(...args);
@@ -371,6 +381,19 @@ function transcript(overrides = {}) {
     ...overrides,
   };
 }
+
+test("a complete Luna outage closes active voice and rejects new voice input", async () => {
+  const state = setup();
+  await state.start();
+  state.mock.suspended = true;
+  state.mock.suspend();
+  await flush();
+  await flush();
+  assert.equal(state.providers[0].closeCount, 1);
+  assert.equal(state.calls.close.length, 1);
+  assert.throws(state.ready, { status: 503 });
+  await assert.rejects(state.start(), { status: 503 });
+});
 
 test("voice starts once per exact owner, voice and SDP, resuming duplicate HTTP requests safely", async () => {
   const state = setup();

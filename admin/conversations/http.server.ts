@@ -10,7 +10,10 @@ import {
   type ToolClaimInput,
 } from "../../shared/conversation";
 import { allowedOrigin, UUID_PATTERN } from "./auth.server";
-import { ConversationError } from "./errors.server";
+import {
+  ConversationError,
+  ServiceUnavailableError,
+} from "./errors.server";
 
 const MAX_BODY_BYTES = 32768;
 const errorCodes: Record<number, string> = {
@@ -90,7 +93,12 @@ export async function handleJsonRequest(
     return Response.json(
       {
         error: {
-          code: known ? errorCodes[error.status] : "server_error",
+          code:
+            error instanceof ServiceUnavailableError
+              ? "SERVICE_UNAVAILABLE"
+              : known
+                ? errorCodes[error.status]
+                : "server_error",
           message: known
             ? error.message
             : "Roman is temporarily unavailable. Please try again later.",

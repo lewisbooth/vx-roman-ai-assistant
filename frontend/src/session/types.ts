@@ -11,6 +11,8 @@ import type { PendingToolApproval } from "./tool-approval";
 import type { ProductGallerySnapshot } from "../tools/product-image";
 
 export interface ConversationClientState {
+  availability: "available" | "degraded" | "suspended";
+  availabilityChecked: boolean;
   conversation: ConversationSnapshot | null;
   /** Unacknowledged local text only; never an authoritative or persisted session. */
   optimisticMessage?: ConversationMessage | null;
@@ -25,6 +27,8 @@ export interface ConversationClientState {
 export interface ConversationClient {
   getSnapshot(): ConversationClientState;
   subscribe(listener: () => void): () => void;
+  /** Polls public service availability while the assistant is visible. */
+  setOpen(open: boolean): void;
   /** Uses connected/starting voice when present, otherwise text; resolves on acceptance. */
   sendMessage(text: string, productChoice?: ProductChoice): Promise<void>;
   /** Sends a saved suggested answer to this tab's live connection. */

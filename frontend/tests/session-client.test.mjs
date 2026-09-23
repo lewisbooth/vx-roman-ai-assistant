@@ -98,6 +98,7 @@ function setup(
   if (savedVoice !== undefined)
     window.sessionStorage.setItem("roman:voice", savedVoice);
   const calls = [];
+  const availabilityCalls = [];
   const readyCalls = [];
   const timers = new Map();
   let nextTimer = 0;
@@ -116,7 +117,9 @@ function setup(
         resolve,
         reject,
       };
-      if (String(url).endsWith("/ready")) {
+      if (String(url).endsWith("/availability")) {
+        availabilityCalls.push(call);
+      } else if (String(url).endsWith("/ready")) {
         readyCalls.push(call);
         if (!holdReady) finish(call, { ok: true });
       } else calls.push(call);
@@ -156,15 +159,166 @@ function setup(
     media,
     window,
     calls,
+    availabilityCalls,
     readyCalls,
     timers,
     respond,
     respondReady: (index, body, status = 200) =>
       finish(readyCalls[index], body, status),
+    respondAvailability: (index, body, status = 200) =>
+      finish(availabilityCalls[index], body, status),
     tick,
     notifications: () => notifications,
   };
 }
+
+test("a suspended service pauses a restored chat and resumes it after availability recovers", async (t) => {
+  const ctx = setup(t, { saved: access });
+  ctx.respond(0, { ...access, conversation: complete });
+  await until(() => ctx.calls.length === 2, "Restored chat was not refreshed");
+  ctx.respond(1, complete);
+  await until(
+    () => ctx.client.getSnapshot().restoring === false,
+    "Restored chat did not settle",
+  );
+
+  ctx.client.setOpen(true);
+  assert.equal(
+    ctx.availabilityCalls[0].url,
+    "https://hd-dev-single.myshopify.com/apps/roman/availability",
+  );
+  assert.equal(ctx.availabilityCalls[0].init.method, "GET");
+  ctx.respondAvailability(0, { status: "suspended" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "suspended",
+    "Suspended status was not applied",
+  );
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 2);
+  await assert.rejects(
+    ctx.client.sendMessage("Please continue"),
+    /Roman is currently unavailable/,
+  );
+  await assert.rejects(
+    ctx.client.startVoice(),
+    /Roman is currently unavailable/,
+  );
+  assert.equal(ctx.calls.length, 2);
+  assert.equal([...ctx.timers.values()][0].ms, 3_000);
+
+  ctx.tick();
+  await until(
+    () => ctx.availabilityCalls.length === 2,
+    "Suspended service was not checked again",
+  );
+  ctx.respondAvailability(1, { status: "available" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "available",
+    "Recovered status was not applied",
+  );
+  await until(() => ctx.calls.length === 3, "Chat was not refreshed on recovery");
+  ctx.respond(2, complete);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 2);
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation") !== null, true);
+});
+
+test("SERVICE_UNAVAILABLE from a chat request suspends input before the next status poll", async (t) => {
+  const ctx = setup(t);
+  const sending = ctx.client.sendMessage("Hello");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Message was not sent");
+  ctx.respond(
+    1,
+    {
+      error: {
+        code: "SERVICE_UNAVAILABLE",
+        message: "Roman is currently unavailable",
+      },
+    },
+    503,
+  );
+  await until(() => ctx.calls.length === 3, "Rejected send was not reconciled");
+  assert.equal(ctx.calls[2].init.method, "GET");
+  ctx.respond(2, empty);
+  await assert.rejects(sending, /Roman is currently unavailable/);
+  assert.equal(ctx.client.getSnapshot().availability, "suspended");
+  assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
+  assert.equal(ctx.client.getSnapshot().error, null);
+  await assert.rejects(ctx.client.sendMessage("Again"), /currently unavailable/);
+
+  ctx.client.setOpen(true);
+  ctx.respondAvailability(0, { status: "available" });
+  await until(() => ctx.calls.length === 4, "Recovery did not refresh chat");
+  ctx.respond(3, empty);
+  await until(
+    () => ctx.client.getSnapshot().availability === "available",
+    "Recovery was not applied",
+  );
+});
+
+test("an unconfirmed availability check keeps automatic voice startup gated and retries", async (t) => {
+  const ctx = setup(t);
+  ctx.client.setOpen(true);
+  ctx.availabilityCalls[0].reject(new Error("Storefront connection lost"));
+  await until(() => ctx.timers.size === 1, "Availability retry was not scheduled");
+  assert.equal(ctx.client.getSnapshot().availabilityChecked, false);
+  assert.equal([...ctx.timers.values()][0].ms, 10_000);
+
+  ctx.tick();
+  await until(() => ctx.availabilityCalls.length === 2, "Availability was not retried");
+  ctx.respondAvailability(1, { status: "degraded" });
+  await until(
+    () => ctx.client.getSnapshot().availabilityChecked,
+    "Valid degraded status was not accepted",
+  );
+  assert.equal(ctx.client.getSnapshot().availability, "degraded");
+});
+
+test("End chat remains available during suspension and clears the local conversation", async (t) => {
+  const ctx = setup(t, { saved: access });
+  ctx.respond(0, { ...access, conversation: complete });
+  await until(() => ctx.calls.length === 2, "Restored chat was not refreshed");
+  ctx.respond(1, complete);
+  await until(() => !ctx.client.getSnapshot().restoring, "Restore did not settle");
+  ctx.client.setOpen(true);
+  ctx.respondAvailability(0, { status: "suspended" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "suspended",
+    "Suspension was not applied",
+  );
+  const ending = ctx.client.end();
+  assert.equal(ctx.calls[2].url, `${access.apiBaseUrl}/${conversationId}/end`);
+  ctx.respond(2, { ...empty, status: "ended" });
+  await ending;
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(ctx.client.getSnapshot().availability, "suspended");
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+});
+
+test("recovery refresh waits for an in-flight message before reading the conversation", async (t) => {
+  const ctx = setup(t);
+  const sending = ctx.client.sendMessage("Hello");
+  ctx.respond(0, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 2, "Message was not sent");
+  ctx.client.setOpen(true);
+  ctx.respondAvailability(0, { status: "suspended" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "suspended",
+    "Suspension was not applied",
+  );
+  ctx.tick();
+  ctx.respondAvailability(1, { status: "available" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "available",
+    "Recovery was not applied",
+  );
+  assert.equal(ctx.calls.length, 2, "Recovery read raced the pending send");
+
+  ctx.respond(1, pending);
+  await sending;
+  await until(() => ctx.calls.length === 3, "Accepted message was not refreshed");
+  assert.equal(ctx.calls[2].init.method, "GET");
+  ctx.respond(2, pending);
+});
 
 test("session creation is lazy and first send uses the signed proxy then the authorized backend", async (t) => {
   const ctx = setup(t);
@@ -1598,6 +1752,117 @@ test("cart additions execute once after their claim without opening an approval 
   assert.equal(executions, 1);
   assert.deepEqual(ctx.calls[3].body.result, addedResult);
   ctx.respond(3, complete);
+});
+
+test("a claimed cart action reports its result during suspension before End chat", async (t) => {
+  let finishAction;
+  let actionSignal;
+  let executions = 0;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: async (name, _args, signal) => {
+        assert.equal(name, "add_to_cart");
+        executions++;
+        actionSignal = signal;
+        return new Promise((resolve) => {
+          finishAction = () => resolve(addedResult);
+        });
+      },
+    },
+  });
+  await resume(ctx, needsCartAdd);
+  await until(() => ctx.calls.length === 3, "Cart action was not claimed");
+  ctx.respond(2, { claimed: true });
+  await until(() => !!finishAction, "Claimed action did not begin");
+
+  ctx.client.setOpen(true);
+  ctx.respondAvailability(0, { status: "suspended" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "suspended",
+    "Suspension was not applied",
+  );
+  assert.equal(actionSignal.aborted, false);
+  await ctx.client.stopVoice();
+  assert.equal(actionSignal.aborted, false);
+  const ending = ctx.client.end();
+  await delay(0);
+  assert.equal(ctx.calls.length, 3, "End raced the claimed cart action");
+
+  finishAction();
+  await until(() => ctx.calls.length === 4, "Cart result was not reported");
+  assert.match(ctx.calls[3].url, /\/result$/);
+  assert.deepEqual(ctx.calls[3].body.result, addedResult);
+  assert.equal(executions, 1);
+  ctx.respond(3, complete);
+  await until(() => ctx.calls.length === 5, "End did not follow the cart receipt");
+  assert.match(ctx.calls[4].url, /\/end$/);
+  ctx.respond(4, { ...empty, status: "ended" });
+  await ending;
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(executions, 1);
+});
+
+test("suspension before a claim response never starts a new storefront action", async (t) => {
+  let executions = 0;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: async () => {
+        executions++;
+        return addedResult;
+      },
+    },
+  });
+  await resume(ctx, needsCartAdd);
+  await until(() => ctx.calls.length === 3, "Claim request did not start");
+  ctx.client.setOpen(true);
+  ctx.respondAvailability(0, { status: "suspended" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "suspended",
+    "Suspension was not applied",
+  );
+  ctx.respond(2, { claimed: true });
+  await delay(0);
+  assert.equal(executions, 0);
+  assert.equal(ctx.calls.length, 3);
+});
+
+test("End retries a lost claimed cart receipt during suspension without replaying the action", async (t) => {
+  let executions = 0;
+  const ctx = setup(t, {
+    saved: access,
+    executor: {
+      execute: async () => {
+        executions++;
+        return addedResult;
+      },
+    },
+  });
+  await resume(ctx, needsCartAdd);
+  await until(() => ctx.calls.length === 3, "Cart action was not claimed");
+  ctx.respond(2, { claimed: true });
+  await until(() => ctx.calls.length === 4, "Cart receipt did not start");
+  const original = ctx.calls[3].body;
+  ctx.client.setOpen(true);
+  ctx.respondAvailability(0, { status: "suspended" });
+  await until(
+    () => ctx.client.getSnapshot().availability === "suspended",
+    "Suspension was not applied",
+  );
+  ctx.calls[3].reject(new TypeError("Lost receipt response"));
+  await delay(0);
+  const ending = ctx.client.end();
+  await until(() => ctx.calls.length === 5, "End did not retry the receipt");
+  assert.match(ctx.calls[4].url, /\/result$/);
+  assert.deepEqual(ctx.calls[4].body, original);
+  assert.equal(executions, 1);
+  ctx.respond(4, complete);
+  await until(() => ctx.calls.length === 6, "End did not follow the receipt");
+  assert.match(ctx.calls[5].url, /\/end$/);
+  ctx.respond(5, { ...empty, status: "ended" });
+  await ending;
+  assert.equal(executions, 1);
 });
 
 test("sample additions execute directly with the verified PDP path", async (t) => {

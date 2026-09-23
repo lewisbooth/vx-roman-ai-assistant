@@ -7,7 +7,16 @@ import {
   type LiveVoice,
   type VoiceStartResult,
 } from "../../shared/voice";
-import { ConversationError } from "../conversations/errors.server";
+import {
+  ConversationError,
+  ServiceUnavailableError,
+} from "../conversations/errors.server";
+import {
+  assertServiceAvailable,
+  isServiceSuspended,
+  onServiceSuspended,
+  UNAVAILABLE_MESSAGE,
+} from "../conversations/availability.server";
 import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
 import { recordVoiceUsage } from "../usage/repository.server";
 import {
@@ -89,6 +98,15 @@ const owners = new Map<string, VoiceOwner>();
 const maxConnections = 4;
 const DELEGATION_TRANSCRIPT_WAIT_MS = 2_000;
 const disconnected = "Voice disconnected. Start voice again to reconnect.";
+
+onServiceSuspended(() => {
+  for (const owner of owners.values()) {
+    owner.error ??= UNAVAILABLE_MESSAGE;
+    void closeOwner(owner).catch(() => {
+      console.error("[Roman] Could not save voice outage shutdown.");
+    });
+  }
+});
 
 function fail(owner: VoiceOwner, error: string, category: string) {
   owner.error ??= error;
@@ -503,6 +521,7 @@ export async function startVoice(
     voice?: LiveVoice;
   },
 ): Promise<VoiceStartResult> {
+  await assertServiceAvailable();
   const offerHash = createHash("sha256").update(input.sdp).digest("hex");
   const voice = input.voice ?? DEFAULT_LIVE_VOICE;
   const current = owners.get(conversationId);
@@ -627,6 +646,7 @@ export function readyVoice(
   clientId: string,
   input?: { requestId: string; text: string },
 ) {
+  if (isServiceSuspended()) throw new ServiceUnavailableError();
   const owner = owners.get(conversationId);
   if (
     !owner ||
@@ -746,6 +766,7 @@ async function submitVoiceInput(
   input: VoiceSelectionInput,
   startsConversation = false,
 ): Promise<void> {
+  await assertServiceAvailable();
   // Read-only receipts can reconcile a lost response even after voice stopped.
   // Persisting the user row is the one-use delivery boundary: never replay it.
   if (await findVoiceQuestionAnswer(conversationId, voiceId, input)) return;
@@ -868,6 +889,7 @@ async function submitVoiceInput(
 
 /** Called only after the authenticated journey input has been validated and saved. */
 export function noteVoicePageView(conversationId: string, input: JourneyInput) {
+  if (isServiceSuspended()) return;
   const owner = owners.get(conversationId);
   if (!owner?.provider || owner.stopping || owner.lastPage === input.path)
     return;

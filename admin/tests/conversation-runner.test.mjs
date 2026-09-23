@@ -29,7 +29,7 @@ const bundle = await build({
         build.onResolve(
           {
             filter:
-              /repository\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/(?:files|library)\.server$|^openai$/,
+              /availability\.server$|repository\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/(?:files|library)\.server$|^openai$/,
           },
           (args) => {
             if (
@@ -43,9 +43,20 @@ const bundle = await build({
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
           resolveDir: process.cwd(),
           contents:
-            args.path === "openai"
+            args.path.endsWith("availability.server")
+              ? `export const PRIMARY_TEXT_MODEL="gpt-6-luna";
+                export const FALLBACK_TEXT_MODEL="gpt-5.6-luna";
+                export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";
+                export const onServiceSuspended=()=>()=>{};
+                export const isServiceSuspended=()=>false;
+                export const assertServiceAvailable=async()=>{};
+                export const textModelForRequest=async()=>"gpt-6-luna";
+                export const reportPrimaryUnavailable=async()=>{};
+                export const reportFallbackUnavailable=async()=>{};`
+              : args.path === "openai"
               ? `export default class OpenAI {
               static APIError = class APIError extends Error {};
+              static APIConnectionError = class APIConnectionError extends OpenAI.APIError {};
               constructor(options) {
                 mock.clients.push(options);
                 this.responses={create:(...args)=>mock.createResponse(...args)};
@@ -469,6 +480,7 @@ test("the global concurrency bound counts initializing owners and releases finis
   assert.equal(env.calls.requests.length, 0);
   gate.resolve();
   await Promise.all(starts);
+  await flush();
   assert.equal(env.calls.requests.length, 4);
   generations[0].complete();
   await flush();
@@ -900,11 +912,13 @@ test("provider failure, incomplete output, empty output and premature stream end
             };
         })(),
       );
+      if (mode === "end")
+        env.streams.push((async function* () {})());
       await assert.rejects(
         env.api.generateReply([], () => {}, new AbortController().signal),
         (error) => !error.message.includes("private"),
       );
-      assert.equal(env.calls.requests.length, 1);
+      assert.equal(env.calls.requests.length, mode === "end" ? 2 : 1);
     });
   }
 });
@@ -993,6 +1007,9 @@ test("a failed follow-up after showing Cart logs only provider categories withou
         ),
         events(failed),
       );
+      const backupAttempt =
+        item.name === "known response error" || item.name === "stream error";
+      if (backupAttempt) env.streams.push(events(failed));
       await env.api.startTurn("cart-follow-up", {
         ...firstInput,
         text: "View cart",
@@ -1004,8 +1021,8 @@ test("a failed follow-up after showing Cart logs only provider categories withou
       assert.match(snapshot.messages[1].error, /could not finish this reply/);
       assert.equal(
         env.calls.requests.length,
-        2,
-        "No automatic retry after a confirmed view change",
+        backupAttempt ? 3 : 2,
+        "A fallback round must not replay the confirmed view change",
       );
       assert.equal(
         env.calls.browserTools.length,
@@ -1023,7 +1040,7 @@ test("a failed follow-up after showing Cart logs only provider categories withou
         ],
       ]);
       assert.doesNotMatch(JSON.stringify([snapshot, env.logs]), /PRIVATE_/);
-      assert.equal(env.calls.usage.length, 4);
+      assert.equal(env.calls.usage.length, backupAttempt ? 6 : 4);
       assert.equal(
         env.calls.usage.at(-1)[2].status,
         item.event === "error"

@@ -8,13 +8,14 @@ const bundle = await build({
   stdin: {
     contents: `
       export * as bootstrap from "./admin/routes/api.storefront.bootstrap.ts";
+      export * as availability from "./admin/routes/api.storefront.availability.ts";
       export * as conversation from "./admin/routes/api.conversations.$id.ts";
       export * as messages from "./admin/routes/api.conversations.$id.messages.ts";
       export * as journey from "./admin/routes/api.conversations.$id.journey.ts";
       export * as end from "./admin/routes/api.conversations.$id.end.ts";
       export * as claim from "./admin/routes/api.conversations.$id.tools.$invocationId.claim.ts";
       export * as result from "./admin/routes/api.conversations.$id.tools.$invocationId.result.ts";
-      export { ConversationError } from "./admin/conversations/errors.server.ts";
+      export { ConversationError, ServiceUnavailableError } from "./admin/conversations/errors.server.ts";
       export { parseCatalogResult } from "./shared/catalog.ts";
     `,
     resolveDir: process.cwd(),
@@ -30,12 +31,15 @@ const bundle = await build({
         build.onResolve(
           {
             filter:
-              /(?:shopify|repository|runner|browser-tools|service)\.server$/,
+              /(?:shopify|repository|runner|browser-tools|service|availability)\.server$/,
           },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
-          contents: args.path.endsWith("shopify.server")
+          contents: args.path.endsWith("availability.server")
+            ? `export const assertServiceAvailable=()=>mock.assertAvailable();
+               export const getAvailabilityStatus=()=>mock.status;`
+            : args.path.endsWith("shopify.server")
             ? "export const authenticate={public:{appProxy:(request)=>mock.proxy(request)}};"
             : args.path.endsWith("service.server")
               ? `export const stopConversationVoice=(...args)=>mock.stopVoice(...args);
@@ -95,6 +99,11 @@ function setup() {
   let api;
   const mock = {
     apiBaseUrl: "https://roman.example/api/conversations",
+    status: "available",
+    assertAvailable: () => {
+      if (mock.status === "suspended")
+        throw new api.ServiceUnavailableError();
+    },
     stopVoice: async (...args) => {
       calls.voiceStops.push(args);
     },
@@ -159,6 +168,7 @@ function setup() {
       return SNAPSHOT;
     },
     start: async (id, input) => {
+      mock.assertAvailable();
       calls.start.push({ id, input });
       return { ...SNAPSHOT, busy: true };
     },
@@ -331,6 +341,47 @@ test("signed bootstrap creates only for the authenticated offline development sh
   assert.equal(result.apiBaseUrl, env.mock.apiBaseUrl);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(response.headers.get("Set-Cookie"), null);
+});
+
+test("signed availability remains readable while suspended and customer writes return the outage code", async () => {
+  const env = setup();
+  env.mock.status = "suspended";
+  const status = await run(
+    env.api.availability,
+    request(`/api/storefront/availability?shop=${SHOP}&signature=fixture`, {
+      authorization: false,
+    }),
+  );
+  assert.equal(status.status, 200);
+  assert.deepEqual(await status.json(), { status: "suspended" });
+  assert.equal(status.headers.get("Cache-Control"), "no-store");
+  const blocked = await run(
+    env.api.messages,
+    request(`/api/conversations/${ID}/messages`, {
+      method: "POST",
+      body: json({ requestId: REQUEST_ID, text: "Continue" }),
+    }),
+  );
+  assert.equal(blocked.status, 503);
+  assert.deepEqual(await blocked.json(), {
+    error: { code: "SERVICE_UNAVAILABLE", message: "Roman is currently unavailable" },
+  });
+  const journey = await run(
+    env.api.journey,
+    request(`/api/conversations/${ID}/journey`, { method: "POST", body: "{}" }),
+  );
+  assert.equal(journey.status, 503);
+  assert.equal(env.calls.journey.length, 0);
+  const read = await run(env.api.conversation, request(`/api/conversations/${ID}`));
+  assert.equal(read.status, 200);
+  env.mock.proxy = async () => { throw new Response("invalid signature", { status: 400 }); };
+  const unsigned = await run(
+    env.api.availability,
+    request(`/api/storefront/availability?shop=${SHOP}&signature=invalid`, {
+      authorization: false,
+    }),
+  );
+  assert.equal(unsigned.status, 401);
 });
 
 test("invalid proxy signatures and absent, online, unscoped or foreign sessions cannot bootstrap", async (t) => {

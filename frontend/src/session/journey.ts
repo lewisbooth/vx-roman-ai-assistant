@@ -13,7 +13,7 @@ export function createJourneyObserver(
   let disposed = false;
 
   function recordPage() {
-    const { conversation, restoring } = session.getSnapshot();
+    const { conversation, restoring, availability } = session.getSnapshot();
     if (disposed || restoring) return;
     if (!conversation || conversation.status !== "active") {
       conversationId = undefined;
@@ -24,6 +24,7 @@ export function createJourneyObserver(
       conversationId = conversation.id;
       previousPath = undefined;
     }
+    if (availability === "suspended") return;
     if (navigation.getSnapshot().pending) return;
     // Query strings/fragments can hold personal data and are not journey input.
     const path = window.location.pathname;
@@ -40,7 +41,15 @@ export function createJourneyObserver(
         path,
         occurredAt: new Date().toISOString(),
       })
-      .catch(() => {});
+      .catch(() => {
+        // A suspended backend rejected this visit. The current page can be
+        // recorded once after service recovery without replaying older pages.
+        if (
+          session.getSnapshot().availability === "suspended" &&
+          previousPath === path
+        )
+          previousPath = undefined;
+      });
   }
 
   function onPageShow(event: PageTransitionEvent) {

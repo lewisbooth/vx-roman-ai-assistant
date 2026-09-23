@@ -24,7 +24,7 @@ function setup(t) {
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanJourneyTest = RomanJourneyTest;`,
   );
-  let state = { conversation: null, restoring: false };
+  let state = { conversation: null, restoring: false, availability: "available" };
   const listeners = new Set();
   const calls = [];
   const navigationState = { pending: false };
@@ -99,6 +99,22 @@ test("only committed page changes are recorded, including revisits, without dupl
     ctx.calls.map((call) => call.path),
     ["/products/roman", "/collections/all", "/products/roman"],
   );
+});
+
+test("visits pause during suspension and the current page records once on recovery", (t) => {
+  const ctx = setup(t);
+  ctx.update({ conversation: { id: "one", status: "active" } });
+  ctx.update({ availability: "suspended" });
+  ctx.navigate("/collections/all", "All blinds");
+  ctx.navigate("/products/other", "Other blinds");
+  assert.deepEqual(ctx.calls.map((call) => call.path), ["/products/roman"]);
+  ctx.update({ availability: "available" });
+  assert.deepEqual(
+    ctx.calls.map((call) => call.path),
+    ["/products/roman", "/products/other"],
+  );
+  ctx.update({ pending: false });
+  assert.equal(ctx.calls.length, 2);
 });
 
 test("End stops tracking, a new conversation starts fresh, and disposal removes all observers", (t) => {

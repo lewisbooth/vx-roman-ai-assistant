@@ -125,6 +125,7 @@ export function mountAssistant(
         viewport.setOpen(open);
         if (!open) composerFocus.cancel();
         navigation.setSidebarOpen(open);
+        session.setOpen(open);
         voiceAutostart?.setOpen(open);
         const { voice, conversation } = session.getSnapshot();
         if (

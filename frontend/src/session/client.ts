@@ -79,6 +79,7 @@ import {
 
 const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
 const VOICE_STORAGE_KEY = "roman:voice";
+const UNAVAILABLE_MESSAGE = "Roman is currently unavailable";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const idleVoice: VoiceClientState = {
   status: "idle",
@@ -370,6 +371,14 @@ class SessionRequestError extends Error {
   }
 }
 
+function requiresDurableReceipt(name: string) {
+  return (
+    isCartMutation(name) ||
+    name === "apply_measurements" ||
+    name === "configure_product"
+  );
+}
+
 function pendingUserMessage(
   requestId: string,
   text: string,
@@ -397,6 +406,8 @@ export function createConversationClient(
   executor?: ReturnType<typeof createStorefrontExecutor>,
 ): ConversationClient {
   let state: ConversationClientState = {
+    availability: "available",
+    availabilityChecked: !isConversationStorefront(window.location.origin),
     conversation: null,
     optimisticMessage: null,
     pending: false,
@@ -411,9 +422,14 @@ export function createConversationClient(
   let bootstrapping: { epoch: number; promise: Promise<void> } | undefined;
   let disposed = false;
   let pollTimer: number | undefined;
+  let availabilityTimer: number | undefined;
+  let availabilityOpen = false;
+  let checkingAvailability = false;
+  let availabilityFailureVersion = 0;
   let pollFailures = 0;
   let polling = false;
   let pollAfterCurrent = false;
+  let recoveryRefreshPending = false;
   let apiSequence = 0;
   let appliedSequence = 0;
   let readVersion: ConversationReadVersion | undefined;
@@ -440,6 +456,9 @@ export function createConversationClient(
   let processingTool = false;
   let toolController: AbortController | undefined;
   let activeToolId: string | undefined;
+  let activeToolClaimed = false;
+  let activeToolSettlement: Promise<void> | undefined;
+  let endingRequested = false;
   let approvalChoice:
     { id: string; resolve(confirmed: boolean): void } | undefined;
   const clientId = window.crypto.randomUUID();
@@ -447,6 +466,7 @@ export function createConversationClient(
     string,
     {
       claim: ToolClaim;
+      durable: boolean;
       attempts: number;
       confirmed?: boolean;
       approval?: PreparedToolApproval;
@@ -466,6 +486,8 @@ export function createConversationClient(
   const lifetime = new AbortController();
 
   function update(change: Partial<ConversationClientState>) {
+    if (state.availability === "suspended" && "error" in change)
+      change = { ...change, error: null };
     if (
       state.optimisticMessage &&
       change.conversation?.messages.some(
@@ -485,6 +507,95 @@ export function createConversationClient(
       return;
     state = { ...state, ...change };
     listeners.forEach((listener) => listener());
+    refreshAfterRecovery();
+  }
+
+  function isSuspended() {
+    return state.availability === "suspended";
+  }
+
+  function refreshAfterRecovery() {
+    if (
+      !recoveryRefreshPending ||
+      disposed ||
+      ending ||
+      isSuspended() ||
+      !access ||
+      polling ||
+      state.restoring ||
+      state.pending
+    )
+      return false;
+    recoveryRefreshPending = false;
+    pollFailures = 0;
+    window.clearTimeout(pollTimer);
+    void poll();
+    return true;
+  }
+
+  function setAvailability(availability: ConversationClientState["availability"]) {
+    if (state.availability === availability && state.availabilityChecked) return;
+    const wasSuspended = state.availability === "suspended";
+    if (availability === "suspended" && !wasSuspended) {
+      recoveryRefreshPending = false;
+      const id = voiceId;
+      closeVoiceLocally(false);
+      if (!activeToolClaimed) toolController?.abort();
+      voiceId = undefined;
+      if (id) bestEffortVoiceStop(id);
+      window.clearTimeout(pollTimer);
+      update({
+        availability,
+        availabilityChecked: true,
+        voice: idleVoice,
+        error: null,
+      });
+      scheduleAvailability();
+      return;
+    }
+    update({ availability, availabilityChecked: true });
+    if (wasSuspended && availability !== "suspended") {
+      if (state.restoring) return;
+      if (access) {
+        recoveryRefreshPending = true;
+        refreshAfterRecovery();
+      } else if (resumeAccess) restore();
+    }
+  }
+
+  function scheduleAvailability() {
+    window.clearTimeout(availabilityTimer);
+    if (disposed || !availabilityOpen) return;
+    availabilityTimer = window.setTimeout(
+      () => void checkAvailability(),
+      state.availability === "suspended" ? 3_000 : 10_000,
+    );
+  }
+
+  async function checkAvailability() {
+    if (disposed || !availabilityOpen || checkingAvailability) return;
+    checkingAvailability = true;
+    const failureVersion = availabilityFailureVersion;
+    try {
+      const result = await request(
+        new URL("/apps/roman/availability", window.location.origin).href,
+        { method: "GET", mode: "same-origin", credentials: "same-origin" },
+      );
+      if (
+        failureVersion === availabilityFailureVersion &&
+        record(result) &&
+        (result.status === "available" ||
+          result.status === "degraded" ||
+          result.status === "suspended")
+      )
+        setAvailability(result.status);
+    } catch {
+      // Keep the last confirmed status. A browser or proxy error cannot prove
+      // that the global AI service is suspended or recovered.
+    } finally {
+      checkingAvailability = false;
+      scheduleAvailability();
+    }
   }
 
   function persist() {
@@ -520,6 +631,8 @@ export function createConversationClient(
 
   function setVoice(voice: LiveVoice) {
     if (disposed) throw new Error("Roman has been removed.");
+    if (state.availability === "suspended")
+      throw new Error(UNAVAILABLE_MESSAGE);
     if (!isLiveVoice(voice))
       throw new Error("Choose one of the available voices.");
     if (
@@ -562,6 +675,15 @@ export function createConversationClient(
       const body: unknown = await response.json();
       if (disposed) throw new SessionRequestError("Roman has been removed.");
       if (!response.ok) {
+        if (
+          response.status === 503 &&
+          record(body) &&
+          record(body.error) &&
+          body.error.code === "SERVICE_UNAVAILABLE"
+        ) {
+          availabilityFailureVersion++;
+          setAvailability("suspended");
+        }
         const error =
           record(body) &&
           record(body.error) &&
@@ -635,6 +757,13 @@ export function createConversationClient(
   async function rawApi(path = "", body?: unknown, signal?: AbortSignal) {
     const credential = access;
     const requestedEpoch = epoch;
+    const cleanup =
+      (body === undefined && (path === "" || path.startsWith("?"))) ||
+      path === "/end" ||
+      /^\/voice\/[^/]+\/stop$/.test(path) ||
+      /^\/tools\/[^/]+\/result$/.test(path);
+    if (isSuspended() && !cleanup)
+      throw new SessionRequestError(UNAVAILABLE_MESSAGE, 503);
     if (!credential)
       throw new SessionRequestError("Start a conversation first.");
     const result = await request(
@@ -651,6 +780,8 @@ export function createConversationClient(
         signal,
       },
     );
+    if (isSuspended() && !cleanup)
+      throw new SessionRequestError(UNAVAILABLE_MESSAGE, 503);
     if (
       requestedEpoch !== epoch ||
       access?.conversationId !== credential.conversationId
@@ -780,6 +911,7 @@ export function createConversationClient(
     uncertainMeasurement = null;
     toolAttempts.clear();
     pollAfterCurrent = false;
+    recoveryRefreshPending = false;
     window.clearTimeout(pollTimer);
     persist();
     update({
@@ -797,6 +929,8 @@ export function createConversationClient(
     if (
       disposed ||
       ending ||
+      endingRequested ||
+      state.availability === "suspended" ||
       state.voice.status === "stopping" ||
       processingTool ||
       !executor ||
@@ -820,6 +954,12 @@ export function createConversationClient(
     const controller = new AbortController();
     toolController = controller;
     activeToolId = tool.id;
+    activeToolClaimed = false;
+    let settle!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    activeToolSettlement = settlement;
     let submitted = false;
     try {
       submitted =
@@ -840,9 +980,7 @@ export function createConversationClient(
     } finally {
       if (
         controller.signal.aborted &&
-        (isCartMutation(tool.name) ||
-          tool.name === "apply_measurements" ||
-          tool.name === "configure_product")
+        requiresDurableReceipt(tool.name)
       ) {
         const attempt = toolAttempts.get(tool.id);
         if (attempt) {
@@ -857,6 +995,7 @@ export function createConversationClient(
       if (toolController === controller) {
         toolController = undefined;
         activeToolId = undefined;
+        activeToolClaimed = false;
       }
       if (
         submitted &&
@@ -871,6 +1010,8 @@ export function createConversationClient(
           void poll();
         }
       }
+      if (activeToolSettlement === settlement) activeToolSettlement = undefined;
+      settle();
     }
   }
 
@@ -887,7 +1028,11 @@ export function createConversationClient(
         .replaceAll("+", "-")
         .replaceAll("/", "_")
         .replace(/=+$/, "");
-      attempt = { claim: { clientId, claimToken }, attempts: 0 };
+      attempt = {
+        claim: { clientId, claimToken },
+        durable: requiresDurableReceipt(tool.name),
+        attempts: 0,
+      };
       toolAttempts.set(tool.id, attempt);
     }
     const needsApproval = requiresCartConfirmation(tool.name);
@@ -929,6 +1074,7 @@ export function createConversationClient(
       });
     }
     signal.throwIfAborted();
+    if (isSuspended() || endingRequested) return;
     if (attempt.attempts++ >= 5) return;
     if (!attempt.outcome) {
       const claimed = await rawApi(`/tools/${tool.id}/claim`, {
@@ -948,7 +1094,15 @@ export function createConversationClient(
         throw new Error(
           "The cancelled action was not executed. Refresh Roman to check its status.",
         );
-      if (disposed || ending || signal.aborted || startedEpoch !== epoch)
+      activeToolClaimed = attempt.durable;
+      if (
+        disposed ||
+        ending ||
+        endingRequested ||
+        isSuspended() ||
+        signal.aborted ||
+        startedEpoch !== epoch
+      )
         return;
       try {
         if (attempt.abandoned)
@@ -1007,6 +1161,7 @@ export function createConversationClient(
         };
       }
     }
+    if (attempt.outcome) activeToolClaimed = attempt.durable;
     if (disposed || ending || signal.aborted || startedEpoch !== epoch) return;
     await api(`/tools/${tool.id}/result`, {
       ...attempt.claim,
@@ -1031,6 +1186,7 @@ export function createConversationClient(
     window.clearTimeout(pollTimer);
     if (
       !disposed &&
+      state.availability !== "suspended" &&
       (hasPendingWork() ||
         state.conversation?.voice?.status === "starting" ||
         state.conversation?.voice?.status === "active" ||
@@ -1042,7 +1198,14 @@ export function createConversationClient(
   }
 
   async function poll() {
-    if (disposed || polling || state.pending || ending) return;
+    if (
+      disposed ||
+      polling ||
+      state.pending ||
+      ending ||
+      state.availability === "suspended"
+    )
+      return;
     polling = true;
     const requestedEpoch = epoch;
     try {
@@ -1063,6 +1226,7 @@ export function createConversationClient(
         schedulePoll(Math.min(500 * 2 ** pollFailures, 8000));
     } finally {
       polling = false;
+      if (refreshAfterRecovery()) pollAfterCurrent = false;
       if (pollAfterCurrent) {
         pollAfterCurrent = false;
         if (
@@ -1079,7 +1243,7 @@ export function createConversationClient(
     }
   }
 
-  function closeVoiceLocally() {
+  function closeVoiceLocally(abortTool = true) {
     voiceEpoch++;
     queuedVoiceInput?.cancel?.();
     queuedVoiceInput = undefined;
@@ -1087,7 +1251,8 @@ export function createConversationClient(
     voiceConnection = undefined;
     window.clearTimeout(heartbeatTimer);
     window.clearTimeout(voiceLimitTimer);
-    toolController?.abort();
+    if (abortTool && !(isSuspended() && activeToolClaimed))
+      toolController?.abort();
   }
 
   function bestEffortVoiceStop(id: string, credential = access) {
@@ -1193,6 +1358,8 @@ export function createConversationClient(
       | import("../../../shared/product-choice").ProductChoice,
   ) {
     if (disposed) throw new Error("Roman has been removed.");
+    if (state.availability === "suspended")
+      throw new Error(UNAVAILABLE_MESSAGE);
     let id = voiceId;
     const starting =
       "text" in selection && state.voice.status === "starting" && voiceStart;
@@ -1441,6 +1608,7 @@ export function createConversationClient(
     if (
       disposed ||
       ending ||
+      state.availability === "suspended" ||
       state.pending ||
       state.restoring ||
       state.conversation?.busy ||
@@ -1570,6 +1738,53 @@ export function createConversationClient(
     update({ voice: idleVoice });
   }
 
+  async function settleToolBeforeEnd() {
+    const active = activeToolSettlement;
+    if (active) {
+      let timer: number | undefined;
+      try {
+        await Promise.race([
+          active,
+          new Promise<void>((_resolve, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error(
+                "Roman is still confirming a storefront action. Check your cart, then retry End chat.",
+              )),
+              25_000,
+            );
+          }),
+        ]);
+      } finally {
+        window.clearTimeout(timer);
+      }
+    }
+    for (const [id, attempt] of toolAttempts) {
+      if (!attempt.durable || !attempt.outcome) continue;
+      try {
+        await api(`/tools/${id}/result`, {
+          ...attempt.claim,
+          ...attempt.outcome,
+        });
+      } catch (error) {
+        if (error instanceof SessionRequestError && error.status === 409) {
+          try {
+            await api();
+            if (!state.conversation?.tools.some((tool) => tool.id === id))
+              // The server has a terminal result or an uncertain failure.
+              // Tell the shopper before allowing a second End attempt.
+              toolAttempts.delete(id);
+          } catch {
+            // Keep the unconfirmed result for another End attempt.
+          }
+        }
+        throw new Error(
+          "Roman could not confirm a storefront action. Check your cart, then retry End chat.",
+        );
+      }
+      toolAttempts.delete(id);
+    }
+  }
+
   function restore() {
     let saved: unknown;
     try {
@@ -1632,7 +1847,17 @@ export function createConversationClient(
         listeners.delete(listener);
       };
     },
+    setOpen(open) {
+      if (disposed || !isConversationStorefront(window.location.origin)) return;
+      availabilityOpen = open;
+      if (open) {
+        window.clearTimeout(availabilityTimer);
+        void checkAvailability();
+      } else window.clearTimeout(availabilityTimer);
+    },
     async sendMessage(value, selectedProduct) {
+      if (state.availability === "suspended")
+        throw new Error(UNAVAILABLE_MESSAGE);
       const choice = selectedProduct
         ? parseProductChoice(selectedProduct)
         : undefined;
@@ -1750,6 +1975,7 @@ export function createConversationClient(
       if (
         disposed ||
         ending ||
+        state.availability === "suspended" ||
         !access ||
         state.restoring ||
         state.conversation?.status !== "active"
@@ -1774,6 +2000,8 @@ export function createConversationClient(
       return task;
     },
     async executeMeasurements(name, input, signal) {
+      if (state.availability === "suspended")
+        throw new Error(UNAVAILABLE_MESSAGE);
       const call = parseMeasurementCall(name, input);
       signal?.throwIfAborted();
       if (
@@ -1911,10 +2139,16 @@ export function createConversationClient(
       return executor.loadProductGallery(url, signal);
     },
     resolveToolApproval(invocationId, confirmed) {
-      if (approvalChoice?.id === invocationId && typeof confirmed === "boolean")
+      if (
+        state.availability !== "suspended" &&
+        approvalChoice?.id === invocationId &&
+        typeof confirmed === "boolean"
+      )
         approvalChoice.resolve(confirmed);
     },
     startVoice() {
+      if (state.availability === "suspended")
+        return Promise.reject(new Error(UNAVAILABLE_MESSAGE));
       setVoiceAutostartPreference(true);
       return startVoice();
     },
@@ -1925,7 +2159,20 @@ export function createConversationClient(
     },
     async end() {
       setVoiceAutostartPreference(false);
-      if (!access || disposed || ending) return;
+      if (!access || disposed || ending || endingRequested) return;
+      if (
+        activeToolClaimed ||
+        [...toolAttempts.values()].some(
+          (attempt) => attempt.durable && !!attempt.outcome,
+        )
+      ) {
+        endingRequested = true;
+        try {
+          await settleToolBeforeEnd();
+        } finally {
+          endingRequested = false;
+        }
+      }
       ending = true;
       closeVoiceLocally();
       const hadVoice = voiceId || state.voice.status === "starting";
@@ -1956,7 +2203,7 @@ export function createConversationClient(
     clearError() {
       pollFailures = 0;
       update({ error: null });
-      if (access) void poll();
+      if (access && state.availability !== "suspended") void poll();
     },
     dispose() {
       onPageHide();
@@ -1966,6 +2213,7 @@ export function createConversationClient(
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("pagehide", onPageHide);
       window.clearTimeout(pollTimer);
+      window.clearTimeout(availabilityTimer);
       listeners.clear();
     },
   };

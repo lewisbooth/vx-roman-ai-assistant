@@ -171,6 +171,8 @@ test("closing text-only Roman preserves its saved conversation and pending store
   });
   ctx.window.fetch = async (url, init) => {
     calls.push(String(url));
+    if (String(url).endsWith("/apps/roman/availability"))
+      return response({ status: "available" });
     if (String(url).includes("/apps/roman/bootstrap"))
       return response({ ...access, conversation });
     if (String(url).endsWith("/claim")) return response({ claimed: true });
@@ -232,7 +234,14 @@ test("opening requests microphone once and permission denial leaves text usable 
     configurable: true,
   });
   ctx.window.RTCPeerConnection = class {};
-  ctx.window.fetch = async () => {
+  ctx.window.fetch = async (url) => {
+    if (String(url).endsWith("/apps/roman/availability"))
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ status: "available" }),
+      };
     requests++;
     throw new Error("Permission must precede conversation bootstrap");
   };
@@ -307,6 +316,8 @@ function voiceBackend(ctx) {
   });
   ctx.window.fetch = async (url, init) => {
     url = String(url);
+    if (url.endsWith("/apps/roman/availability"))
+      return response({ status: "available" });
     calls.push(url);
     if (url.includes("/apps/roman/bootstrap"))
       return response({ ...access, conversation });
@@ -419,7 +430,10 @@ test("closing during microphone permission prevents a late grant from starting v
   const backend = voiceBackend(ctx);
   const mounted = ctx.mount(0);
   mounted.runtime.setOpen(true);
-  assert.equal(media.calls.microphone, 1);
+  await until(
+    () => media.calls.microphone === 1,
+    "voice did not begin after availability was confirmed",
+  );
   mounted.runtime.setOpen(false);
   grant();
   await until(

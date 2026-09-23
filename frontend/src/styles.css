@@ -1163,6 +1163,14 @@
     @apply flex items-center gap-[6px] rounded-[26px] border border-solid border-[#e3e0d8] bg-white p-[3px];
   }
 
+  .roman-composer form[data-unavailable] {
+    @apply border-[#d3d1ce] bg-[#e9e8e5];
+  }
+
+  .roman-unavailable-bar {
+    @apply flex h-[44px] w-full items-center justify-center px-[12px] text-center text-[14px] leading-[20px] text-[#65625e];
+  }
+
   .roman-composer-field {
     @apply relative min-w-0 flex-1;
   }

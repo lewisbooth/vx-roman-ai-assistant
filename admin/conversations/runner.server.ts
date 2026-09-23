@@ -6,6 +6,11 @@ import type {
   SendMessageInput,
 } from "../../shared/conversation";
 import { ConversationError } from "./errors.server";
+import {
+  assertServiceAvailable,
+  isServiceSuspended,
+  UNAVAILABLE_MESSAGE,
+} from "./availability.server";
 import { requestBrowserTool } from "./browser-tools.server";
 import {
   generateReply,
@@ -112,6 +117,7 @@ export async function startTurn(
   id: string,
   input: SendMessageInput,
 ): Promise<ConversationSnapshot> {
+  await assertServiceAvailable();
   if (ending.has(id))
     throw new ConversationError(409, "This conversation is ending.");
   const existing = active.get(id);
@@ -212,10 +218,12 @@ async function completeTurn(
         }
       },
       signal,
-      (callId, name, input) =>
-        name === "set_measurements" || name === "get_measurements"
+      async (callId, name, input) => {
+        await assertServiceAvailable();
+        return name === "set_measurements" || name === "get_measurements"
           ? executeMeasurementTool(id, assistantId, callId, name, input)
-          : requestBrowserTool(id, assistantId, callId, name, input, signal),
+          : requestBrowserTool(id, assistantId, callId, name, input, signal);
+      },
       turn.voiceId ? "voice" : "text",
       (usage) => recordModelUsage(id, assistantId, usage),
       origin,
@@ -271,6 +279,7 @@ async function completeTurn(
       },
     );
     signal.throwIfAborted();
+    await assertServiceAvailable();
     const finished = await finishTurn(id, assistantId, {
       ...reply,
       status: "complete",
@@ -320,8 +329,9 @@ async function completeTurn(
       await finishTurn(id, assistantId, {
         text: turn.text,
         status: "failed",
-        error:
-          "Roman could not finish this reply. Please send another message to continue.",
+        error: isServiceSuspended()
+          ? UNAVAILABLE_MESSAGE
+          : "Roman could not finish this reply. Please send another message to continue.",
         model: TEXT_MODEL,
         voiceId: turn.voiceId,
         resumeQuestionId: turn.resumeQuestion?.invocationId,
@@ -348,6 +358,7 @@ export async function runVoiceDelegation(
   signal: AbortSignal,
   options?: { resumeQuestionId: string },
 ): Promise<ModelReply | undefined> {
+  await assertServiceAvailable();
   signal.throwIfAborted();
   if (ending.has(id) || active.has(id))
     throw new ConversationError(

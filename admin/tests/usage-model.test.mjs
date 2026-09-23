@@ -12,8 +12,18 @@ class StubAPIError extends Error {
     this.code = code;
   }
 }
+class StubAPIConnectionError extends StubAPIError {
+  constructor() {
+    super(undefined, undefined);
+    this.name = "Error"; // The installed SDK uses this generic name.
+  }
+}
 const bundle = await build({
-  entryPoints: ["admin/conversations/model.server.ts"],
+  stdin: {
+    contents: `export * from "./admin/conversations/model.server.ts";
+      export * from "./admin/conversations/availability.server.ts";`,
+    resolveDir: process.cwd(),
+  },
   bundle: true,
   write: false,
   platform: "node",
@@ -22,12 +32,20 @@ const bundle = await build({
     {
       name: "model-api",
       setup(build) {
+        build.onResolve({ filter: /api-errors\/repository\.server$/ }, (args) => ({
+          path: args.path,
+          namespace: "incidents",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "incidents" }, () => ({
+          contents: `export const getApiAvailability=async()=>mock.availability;
+            export const setApiAvailability=async(state)=>{mock.availability=state;mock.incidents.push(state)};`,
+        }));
         build.onResolve({ filter: /^openai$/ }, (args) => ({
           path: args.path,
           namespace: "stub",
         }));
         build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-          contents: `export default class OpenAI { static APIError = mock.APIError; constructor() { this.responses={create:(...args)=>mock.create(...args)}; } }`,
+          contents: `export default class OpenAI { static APIError = mock.APIError; static APIConnectionError = mock.APIConnectionError; constructor() { this.responses={create:(...args)=>mock.create(...args)}; } }`,
         }));
       },
     },
@@ -74,12 +92,17 @@ const toolRound = () =>
       arguments: '{"query":"synthetic blackout"}',
     },
   ]);
-function setup(scripts) {
+function setup(scripts, initialAvailability = "healthy") {
   const records = [];
   const requests = [];
+  const incidents = [];
+  const timers = [];
   const controller = new AbortController();
   const mock = {
     APIError: StubAPIError,
+    APIConnectionError: StubAPIConnectionError,
+    availability: initialAvailability,
+    incidents,
     create: async (...args) => {
       requests.push(args);
       const script = scripts.shift();
@@ -93,11 +116,31 @@ function setup(scripts) {
     exports: module.exports,
     require,
     mock,
+    setTimeout: (callback, ms) => {
+      const timer = { callback, ms, unref() {}, cancelled: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => {
+      timer.cancelled = true;
+    },
   });
   const record = async (value) => records.push(plain(value));
   return {
     records,
     requests,
+    incidents,
+    timers,
+    status: () => module.exports.getAvailabilityStatus(),
+    tick: async () => {
+      const timer = timers.find((item) => !item.cancelled && !item.ran);
+      assert.ok(timer, "Expected a pending recovery probe");
+      timer.ran = true;
+      timer.callback();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      return timer.ms;
+    },
     controller,
     diagnostics: module.exports.providerFailureDiagnostics,
     run: (onUsage = record, options = {}) =>
@@ -118,7 +161,7 @@ const events = (...values) =>
     yield* values;
   };
 
-test("a temporary model access rejection retries once before completing the same usage attempt", async () => {
+test("a primary access rejection falls back before output and records both attempts", async () => {
   const rejection = new StubAPIError(403, "model_not_found");
   const app = setup([
     async () => {
@@ -133,9 +176,19 @@ test("a temporary model access rejection retries once before completing the same
   );
   assert.equal(app.requests.length, 2);
   assert.deepEqual(
-    app.records.map((entry) => entry.status),
-    ["pending", "completed"],
+    app.requests.map(([request]) => request.model),
+    ["gpt-6-luna", "gpt-5.6-luna"],
   );
+  assert.deepEqual(
+    app.records.map((entry) => entry.status),
+    ["pending", "unavailable", "pending", "completed"],
+  );
+  assert.deepEqual(
+    app.records.filter((entry) => entry.status === "pending").map((entry) => entry.model),
+    ["gpt-6-luna", "gpt-5.6-luna"],
+  );
+  assert.deepEqual(app.incidents, ["fallback"]);
+  assert.equal(await app.status(), "degraded");
   assert.deepEqual(plain(app.diagnostics(rejection)), {
     providerHttpStatus: 403,
     providerCode: "model_not_found",
@@ -146,7 +199,7 @@ test("a temporary model access rejection retries once before completing the same
   );
 });
 
-test("model access retry is bounded and does not hide a second rejection", async () => {
+test("both model rejections suspend service without losing usage attempts", async () => {
   const rejection = new StubAPIError(403, "model_not_found");
   const app = setup([
     async () => {
@@ -160,23 +213,128 @@ test("model access retry is bounded and does not hide a second rejection", async
   assert.equal(app.requests.length, 2);
   assert.deepEqual(
     app.records.map((entry) => entry.status),
-    ["pending", "unavailable"],
+    ["pending", "unavailable", "pending", "unavailable"],
   );
+  assert.deepEqual(app.incidents, ["fallback", "outage"]);
+  assert.equal(await app.status(), "suspended");
+  await assert.rejects(app.run(), { status: 503 });
+  assert.equal(app.requests.length, 2);
 });
 
-test("other provider errors are reported without retrying or logging their body", async () => {
+test("provider rate limits use the fallback, but invalid prompts do not", async () => {
   const rejection = new StubAPIError(429, "rate_limit_exceeded");
   const app = setup([
     async () => {
       throw rejection;
     },
+    events(terminal()),
   ]);
-  await assert.rejects(app.run(), (error) => error === rejection);
-  assert.equal(app.requests.length, 1);
+  await app.run();
+  assert.equal(app.requests.length, 2);
   assert.deepEqual(plain(app.diagnostics(rejection)), {
     providerHttpStatus: 429,
     providerCode: "rate_limit_exceeded",
   });
+  const invalid = new StubAPIError(400, "invalid_prompt");
+  const rejected = setup([async () => { throw invalid; }]);
+  await assert.rejects(rejected.run(), (error) => error === invalid);
+  assert.equal(rejected.requests.length, 1);
+  assert.deepEqual(rejected.incidents, []);
+});
+
+test("connection, authentication and model access failures trigger fallback, while policy failures do not", async () => {
+  const failures = [
+    new StubAPIConnectionError(),
+    new StubAPIError(401, "invalid_api_key"),
+    new StubAPIError(403, "permission_denied"),
+    new StubAPIError(404, "model_not_found"),
+  ];
+  for (const failure of failures) {
+    const app = setup([
+      async () => { throw failure; },
+      events(terminal()),
+    ]);
+    await app.run();
+    assert.deepEqual(app.requests.map(([request]) => request.model), [
+      "gpt-6-luna",
+      "gpt-5.6-luna",
+    ]);
+    assert.equal(await app.status(), "degraded");
+  }
+  const policy = new StubAPIError(403, "bio_policy");
+  const blocked = setup([async () => { throw policy; }]);
+  await assert.rejects(blocked.run(), (error) => error === policy);
+  assert.equal(blocked.requests.length, 1);
+  assert.equal(await blocked.status(), "available");
+});
+
+test("suspended service probes both models with capped backoff and resumes on fallback recovery", async () => {
+  const unavailable = new StubAPIError(503, "server_error");
+  const scripts = [
+    async () => { throw unavailable; },
+    async () => { throw unavailable; },
+    ...Array.from({ length: 6 }, () => [
+      async () => { throw unavailable; },
+      async () => { throw unavailable; },
+    ]).flat(),
+    async () => { throw unavailable; },
+    async () => ({ status: "completed" }),
+    async () => ({ status: "completed" }),
+  ];
+  const app = setup(scripts);
+  await assert.rejects(app.run(), (error) => error === unavailable);
+  assert.equal(await app.status(), "suspended");
+  const delays = [];
+  for (let index = 0; index < 6; index++) delays.push(await app.tick());
+  assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]);
+  assert.equal(await app.status(), "suspended");
+  assert.equal(await app.tick(), 30_000);
+  assert.equal(await app.status(), "degraded");
+  assert.equal(await app.tick(), 1_000);
+  assert.equal(await app.status(), "available");
+  assert.deepEqual(app.incidents, ["fallback", "outage", "fallback", "healthy"]);
+  assert.equal(app.requests.slice(2).every(([request]) => request.input === "Reply with OK."), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.max_output_tokens === 256), true);
+});
+
+test("a later provider round falls back using prior tool results without replaying the action", async () => {
+  const unavailable = new StubAPIError(503, "server_error");
+  const first = toolRound();
+  first.response.output.unshift({
+    type: "reasoning",
+    id: "reasoning-from-primary",
+    encrypted_content: "opaque-model-specific-state",
+  });
+  const app = setup([
+    events(first),
+    async () => { throw unavailable; },
+    events(terminal()),
+  ]);
+  let actions = 0;
+  await app.run(undefined, {
+    execute: async () => {
+      actions++;
+      return { products: [], messages: [] };
+    },
+  });
+  assert.equal(actions, 1);
+  assert.deepEqual(app.requests.map(([request]) => request.model), [
+    "gpt-6-luna",
+    "gpt-6-luna",
+    "gpt-5.6-luna",
+  ]);
+  assert.equal(app.requests[2][0].input.some((item) => item.type === "function_call_output"), true);
+  assert.equal(app.requests[1][0].input.some((item) => item.type === "reasoning"), true);
+  assert.equal(app.requests[2][0].input.some((item) => item.type === "reasoning"), false);
+});
+
+test("a persisted outage remains suspended after restart until a probe succeeds", async () => {
+  const app = setup([async () => ({ status: "completed" })], "outage");
+  assert.equal(await app.status(), "suspended");
+  assert.equal(app.requests.length, 0);
+  assert.equal(await app.tick(), 1_000);
+  assert.equal(await app.status(), "available");
+  assert.deepEqual(app.incidents, ["healthy"]);
 });
 
 test("every tool round records a durable attempt and its own provider-reported usage", async () => {

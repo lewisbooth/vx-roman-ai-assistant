@@ -4,10 +4,12 @@ export function MessageQueue({
   messages,
   onRemove,
   onRetry,
+  disabled = false,
 }: {
   messages: QueuedMessage[];
   onRemove: (id: number) => void;
   onRetry: (id: number) => void;
+  disabled?: boolean;
 }) {
   const waiting = messages.filter((item) => item.status !== "sending");
   if (!waiting.length) return null;
@@ -26,7 +28,11 @@ export function MessageQueue({
               {item.error && <span role="alert">{item.error}</span>}
             </div>
             {item.status === "failed" && (
-              <button type="button" onClick={() => onRetry(item.id)}>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onRetry(item.id)}
+              >
                 Retry
               </button>
             )}

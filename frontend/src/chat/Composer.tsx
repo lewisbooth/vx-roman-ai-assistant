@@ -5,6 +5,7 @@ import { StartVoiceButton } from "./VoiceControls";
 type ComposerProps = {
   busy: boolean;
   disabled?: boolean;
+  unavailable?: boolean;
   voiceControls?: ReactNode;
   queuedMessages?: ReactNode;
   error: string | null;
@@ -16,6 +17,7 @@ type ComposerProps = {
 export function Composer({
   busy,
   disabled = false,
+  unavailable = false,
   voiceControls,
   queuedMessages,
   error,
@@ -31,7 +33,7 @@ export function Composer({
   const draftRevision = useRef(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const sendDisabled = disabled || sending;
-  const displayedError = error || sendError;
+  const displayedError = unavailable ? null : error || sendError;
   const sendLabel = busy ? "Queue message" : "Send";
 
   async function submit(event?: FormEvent) {
@@ -82,8 +84,16 @@ export function Composer({
           )}
         </p>
       )}
-      <form onSubmit={(event) => void submit(event)} aria-busy={sending}>
-        {voiceControls || (
+      <form
+        onSubmit={(event) => void submit(event)}
+        aria-busy={sending}
+        data-unavailable={unavailable || undefined}
+      >
+        {unavailable ? (
+          <div className="roman-unavailable-bar" role="status">
+            Roman is currently unavailable
+          </div>
+        ) : voiceControls || (
           <>
             <label htmlFor={id} className="sr-only">
               Message Roman

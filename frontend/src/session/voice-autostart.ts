@@ -12,6 +12,12 @@ export function createVoiceAutostart(
   function startWhenReady() {
     if (disposed || attempted || !readVoiceAutostartPreference()) return;
     const state = session.getSnapshot();
+    // An outage ends local media and requires an explicit restart in this
+    // runtime; it does not rewrite the customer's saved voice preference.
+    if (state.availability === "suspended") {
+      attempted = true;
+      return;
+    }
     // A manual start, an earlier failure or another active tab owns its lifecycle.
     if (
       state.voice.status !== "idle" ||
@@ -23,6 +29,7 @@ export function createVoiceAutostart(
     }
     if (
       !open ||
+      !state.availabilityChecked ||
       state.restoring ||
       state.pending ||
       state.error ||

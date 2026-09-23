@@ -22,6 +22,19 @@ const bundle = await build({
     {
       name: "mock-provider-only",
       setup(build) {
+        build.onResolve({ filter: /availability\.server$/ }, (args) => ({
+          path: args.path,
+          namespace: "availability-stub",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "availability-stub" }, () => ({
+          contents: `export const PRIMARY_TEXT_MODEL="gpt-6-luna";
+            export const FALLBACK_TEXT_MODEL="gpt-5.6-luna";
+            export const textModelForRequest=async()=>"gpt-6-luna";
+            export const assertServiceAvailable=async()=>{};
+            export const isServiceSuspended=()=>false;
+            export const reportPrimaryUnavailable=async()=>{};
+            export const reportFallbackUnavailable=async()=>{};`,
+        }));
         build.onResolve({ filter: /^openai$/ }, () => ({
           path: "openai",
           namespace: "stub",
@@ -47,12 +60,16 @@ const runnerBundle = await build({
       name: "runner-lifecycle-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /(?:model|repository|browser-tools|service)\.server$/ },
+          { filter: /(?:availability|model|repository|browser-tools|service)\.server$/ },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
             ? `export const TEXT_MODEL="gpt-6-luna"; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}; export const providerFailureDiagnostics=()=>({})`
+            : path.endsWith("availability.server")
+              ? `export const assertServiceAvailable=async()=>{};
+                 export const isServiceSuspended=()=>false;
+                 export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";`
             : path.endsWith("browser-tools.server")
               ? `export const requestBrowserTool=()=>{throw new Error("Unexpected browser call")};`
               : path.endsWith("service.server")
