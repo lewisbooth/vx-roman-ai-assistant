@@ -73,6 +73,7 @@ import {
   DEFAULT_LIVE_VOICE,
   isLiveVoice,
   parseVoiceEventPart,
+  VOICE_IDLE_WARNING_MS,
   type LiveVoice,
   type VoiceClientState,
 } from "../../../shared/voice";
@@ -86,6 +87,30 @@ const idleVoice: VoiceClientState = {
   muted: false,
   error: null,
 };
+
+function voiceIdleWarningAt(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? performance.now() + value - VOICE_IDLE_WARNING_MS
+    : null;
+}
+
+function latestVoiceCaption(
+  messages: readonly ConversationMessage[],
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    for (
+      let partIndex = message.parts.length - 1;
+      partIndex >= 0;
+      partIndex--
+    ) {
+      const part = message.parts[partIndex];
+      if (part.type === "voice")
+        return `${message.id}:${part.voiceId}:${part.endMs}:${part.text}`;
+    }
+  }
+  return null;
+}
 
 function voiceSnapshot(value: unknown) {
   return (
@@ -414,6 +439,7 @@ export function createConversationClient(
     restoring: false,
     error: null,
     voice: idleVoice,
+    voiceIdleWarningAt: null,
     selectedVoice: DEFAULT_LIVE_VOICE,
     approval: null,
   };
@@ -436,6 +462,7 @@ export function createConversationClient(
   let epoch = 0;
   let ending = false;
   let voiceEpoch = 0;
+  let voiceActivityVersion = 0;
   let voiceId: string | undefined;
   let voiceConnection: ReturnType<typeof createVoiceConnection> | undefined;
   let heartbeatTimer: number | undefined;
@@ -859,8 +886,15 @@ export function createConversationClient(
         !result.tools.some((tool) => tool.id === activeToolId)
       )
         toolController?.abort();
+      const voiceActivity =
+        state.voice.status === "active" &&
+        (latestVoiceCaption(result.messages) !==
+          latestVoiceCaption(state.conversation?.messages ?? []) ||
+          result.busy !== state.conversation?.busy);
+      if (voiceActivity) voiceActivityVersion++;
       update({
         conversation: result,
+        ...(voiceActivity ? { voiceIdleWarningAt: null } : {}),
         ...(acknowledged ? { optimisticMessage: null } : {}),
       });
       if (result.status === "ended") reset();
@@ -1245,6 +1279,8 @@ export function createConversationClient(
 
   function closeVoiceLocally(abortTool = true) {
     voiceEpoch++;
+    voiceActivityVersion++;
+    update({ voiceIdleWarningAt: null });
     queuedVoiceInput?.cancel?.();
     queuedVoiceInput = undefined;
     voiceConnection?.close();
@@ -1446,7 +1482,9 @@ export function createConversationClient(
         provenance,
         productProvenance,
       ),
+      voiceIdleWarningAt: null,
     });
+    voiceActivityVersion++;
     try {
       if (starting) {
         await Promise.race([starting, cancelled!]);
@@ -1575,10 +1613,19 @@ export function createConversationClient(
     window.clearTimeout(heartbeatTimer);
     if (disposed || voiceId !== id || startedVoiceEpoch !== voiceEpoch) return;
     heartbeatTimer = window.setTimeout(() => {
+      const activityVersion = voiceActivityVersion;
       void rawApi(`/voice/${id}/heartbeat`, { clientId })
         .then((result) => {
           if (!record(result) || result.ok !== true)
             throw new Error("Voice heartbeat failed.");
+          if (
+            voiceId === id &&
+            startedVoiceEpoch === voiceEpoch &&
+            activityVersion === voiceActivityVersion
+          )
+            update({
+              voiceIdleWarningAt: voiceIdleWarningAt(result.idleRemainingMs),
+            });
           scheduleHeartbeat(id, startedVoiceEpoch);
         })
         .catch(() => {
@@ -1682,6 +1729,7 @@ export function createConversationClient(
           input.claimed = true;
           input.voiceId = id;
         }
+        const activityVersion = voiceActivityVersion;
         const ready = await rawApi(`/voice/${id}/ready`, {
           clientId,
           ...(input
@@ -1691,6 +1739,10 @@ export function createConversationClient(
         if (!current()) return;
         if (!record(ready) || ready.ok !== true)
           throw new Error("Roman could not begin voice. Please try again.");
+        if (activityVersion === voiceActivityVersion)
+          update({
+            voiceIdleWarningAt: voiceIdleWarningAt(ready.idleRemainingMs),
+          });
       });
       if (!current()) return;
       update({ voice: { status: "active", muted: false, error: null } });

@@ -20,6 +20,8 @@ export interface ConversationClientState {
   restoring: boolean;
   error: string | null;
   voice: VoiceClientState;
+  /** Monotonic time to warn about this tab's active voice connection. */
+  voiceIdleWarningAt: number | null;
   selectedVoice: LiveVoice;
   approval: PendingToolApproval | null;
 }

@@ -59,6 +59,7 @@ interface ActiveTurn {
   controller: AbortController;
   voiceId?: string;
   resumeQuestion?: QuestionPart;
+  onToolActivity?: (name: string, active: boolean) => void;
 }
 
 // One process owns generation in the single-VM deployment. A durable pending row
@@ -277,6 +278,7 @@ async function completeTurn(
           return bindLibrarySource(id, origin, source, page);
         },
       },
+      turn.onToolActivity,
     );
     signal.throwIfAborted();
     await assertServiceAvailable();
@@ -356,7 +358,10 @@ export async function runVoiceDelegation(
   voiceId: string,
   requestId: string,
   signal: AbortSignal,
-  options?: { resumeQuestionId: string },
+  options?: {
+    resumeQuestionId?: string;
+    onToolActivity?: (name: string, active: boolean) => void;
+  },
 ): Promise<ModelReply | undefined> {
   await assertServiceAvailable();
   signal.throwIfAborted();
@@ -381,6 +386,7 @@ export async function runVoiceDelegation(
       initialized = resolve;
     }),
     controller: new AbortController(),
+    onToolActivity: options?.onToolActivity,
   };
   const abort = () => turn.controller.abort(signal.reason);
   signal.addEventListener("abort", abort, { once: true });

@@ -27,6 +27,8 @@ export const LIVE_VOICES = [
 
 export type LiveVoice = (typeof LIVE_VOICES)[number];
 export const DEFAULT_LIVE_VOICE: LiveVoice = "marin";
+export const VOICE_IDLE_MS = 60_000;
+export const VOICE_IDLE_WARNING_MS = 15_000;
 
 export function isLiveVoice(value: unknown): value is LiveVoice {
   return (

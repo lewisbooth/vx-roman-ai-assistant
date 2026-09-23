@@ -4,6 +4,7 @@ import type { JourneyInput } from "../../shared/conversation";
 import type { VoiceSelectionInput } from "../../shared/questions";
 import {
   DEFAULT_LIVE_VOICE,
+  VOICE_IDLE_MS,
   type LiveVoice,
   type VoiceStartResult,
 } from "../../shared/voice";
@@ -33,6 +34,7 @@ import {
   type VoiceProvider,
   type VoiceProviderEvent,
 } from "./provider.server";
+import { voiceToolProgress } from "./progress.server";
 import {
   activateVoiceSession,
   appendVoiceTranscript,
@@ -65,6 +67,10 @@ interface VoiceOwner {
   userSpeechObserved: boolean;
   error?: string;
   timer?: ReturnType<typeof setTimeout>;
+  idleTimer?: ReturnType<typeof setTimeout>;
+  idleExpiresAt?: number;
+  lastAssistantOutputAt?: number;
+  progress?: VoiceProgress;
   events: Promise<void>;
   eventCount: number;
   delegations: Promise<void>;
@@ -92,11 +98,24 @@ interface VoiceOwner {
   };
 }
 
+interface VoiceProgress {
+  timer?: ReturnType<typeof setTimeout>;
+  toolActive: boolean;
+  sentAt?: number;
+  outputAt?: number;
+  sending?: Promise<void>;
+  failed?: boolean;
+}
+
 // Ephemeral connections belong to this one server process; captions and leases
 // belong to SQLite. A restart expires old leases rather than replaying work.
 const owners = new Map<string, VoiceOwner>();
 const maxConnections = 4;
 const DELEGATION_TRANSCRIPT_WAIT_MS = 2_000;
+const TOOL_PROGRESS_DELAY_MS = 2_500;
+const PROGRESS_AUDIO_QUIET_MS = 650;
+const PROGRESS_NO_AUDIO_HOLD_MS = 3_500;
+const PROGRESS_MAX_HOLD_MS = 8_000;
 const disconnected = "Voice disconnected. Start voice again to reconnect.";
 
 onServiceSuspended(() => {
@@ -123,6 +142,33 @@ function lease(owner: VoiceOwner, expiresAt: Date) {
     Math.max(0, expiresAt.getTime() - Date.now()),
   );
   owner.timer.unref();
+}
+
+function idleDeadline(owner: VoiceOwner): string | null {
+  return owner.idleExpiresAt === undefined
+    ? null
+    : new Date(owner.idleExpiresAt).toISOString();
+}
+
+/** Only conversation activity renews this deadline; transport heartbeats do not. */
+function voiceActivity(owner: VoiceOwner) {
+  if (owner.stopping || owners.get(owner.conversationId) !== owner) return;
+  if (owner.idleTimer) clearTimeout(owner.idleTimer);
+  owner.idleExpiresAt = Date.now() + VOICE_IDLE_MS;
+  const timer = setTimeout(() => {
+    if (owner.idleTimer !== timer || owner.stopping) return;
+    if (owner.delegationCount > 0) {
+      // A tool call may take longer than the quiet period. Continue the live
+      // interaction and begin a fresh idle period after its result arrives.
+      voiceActivity(owner);
+      return;
+    }
+    void closeOwner(owner).catch(() => {
+      console.error("[Roman] Could not save idle voice shutdown.");
+    });
+  }, VOICE_IDLE_MS);
+  owner.idleTimer = timer;
+  timer.unref();
 }
 
 function beginConversation(owner: VoiceOwner) {
@@ -268,6 +314,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     return;
   }
   owner.scheduledCaption = owner.latestUserCaption;
+  voiceActivity(owner);
   owner.delegationController?.abort();
   const controller = new AbortController();
   owner.delegationController = controller;
@@ -276,6 +323,73 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     owner.resumeQuestionId = undefined;
   }
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
+  const progress: VoiceProgress = { toolActive: false };
+  owner.progress = progress;
+  const clearProgressTimer = () => {
+    if (progress.timer) clearTimeout(progress.timer);
+    progress.timer = undefined;
+  };
+  signal.addEventListener("abort", clearProgressTimer, { once: true });
+  const onToolActivity = (name: string, active: boolean) => {
+    if (signal.aborted || owner.stopping || owner.progress !== progress) return;
+    progress.toolActive = active;
+    if (!active) {
+      clearProgressTimer();
+      return;
+    }
+    if (progress.sentAt || progress.timer) return;
+    const cue = voiceToolProgress(name);
+    if (!cue) return;
+    const startedAt = Date.now();
+    const speakIfQuiet = () => {
+      progress.timer = undefined;
+      if (
+        signal.aborted ||
+        owner.stopping ||
+        owner.progress !== progress ||
+        !progress.toolActive
+      )
+        return;
+      const lastOutput = owner.lastAssistantOutputAt ?? startedAt;
+      const quietFor = Date.now() - Math.max(startedAt, lastOutput);
+      if (quietFor < TOOL_PROGRESS_DELAY_MS) {
+        progress.timer = setTimeout(
+          speakIfQuiet,
+          TOOL_PROGRESS_DELAY_MS - quietFor,
+        );
+        progress.timer.unref();
+        return;
+      }
+      progress.sentAt = Date.now();
+      progress.sending = owner.provider!
+        .appendProgress(request.kind === "speech" ? request.delegationId : null, cue)
+        .catch(() => {
+          // A courtesy update is optional; the verified result still follows.
+          progress.failed = true;
+          console.warn("[Roman] Voice progress update was skipped.");
+        });
+    };
+    progress.timer = setTimeout(speakIfQuiet, TOOL_PROGRESS_DELAY_MS);
+    progress.timer.unref();
+  };
+  const waitForProgress = async () => {
+    clearProgressTimer();
+    await progress.sending;
+    if (progress.failed || !progress.sentAt) return;
+    // Live acknowledges context injection, not audible completion. Generated
+    // audio activity plus a short quiet window gives the final briefing room;
+    // the bound prevents a lost activity signal from stalling the answer.
+    while (!signal.aborted) {
+      const now = Date.now();
+      const deadline = progress.sentAt + PROGRESS_MAX_HOLD_MS;
+      const quietUntil = progress.outputAt
+        ? progress.outputAt + PROGRESS_AUDIO_QUIET_MS
+        : progress.sentAt + PROGRESS_NO_AUDIO_HOLD_MS;
+      const readyAt = Math.min(deadline, quietUntil);
+      if (now >= readyAt) return;
+      await delay(readyAt - now, undefined, { signal });
+    }
+  };
   // A new delegation may be a spoken correction. Retire pending tools from
   // the earlier request before beginning work from the updated captions.
   const cancelled = cancelVoiceDelegation(owner.conversationId, owner.voiceId);
@@ -323,7 +437,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         owner.voiceId,
         request.kind === "input" ? request.requestId : randomUUID(),
         signal,
-        resumeQuestionId ? { resumeQuestionId } : undefined,
+        { ...(resumeQuestionId ? { resumeQuestionId } : {}), onToolActivity },
       );
       await owner.events;
       if (signal.aborted) return;
@@ -341,6 +455,8 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         : resumeQuestionId
           ? "The saved question could not be resumed. Do not repeat its previous instructions or claim any action. Ask the customer what they would like to continue with."
           : "The requested work could not be completed. Explain this briefly and ask the customer how they would like to continue. Do not claim an action succeeded.";
+      await waitForProgress();
+      if (signal.aborted) return;
       if (request.kind !== "speech")
         await owner.provider!.appendReply(response);
       else
@@ -355,9 +471,13 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         );
     })
     .finally(() => {
+      clearProgressTimer();
+      signal.removeEventListener("abort", clearProgressTimer);
+      if (owner.progress === progress) owner.progress = undefined;
       if (owner.resumeController === controller)
         owner.resumeController = undefined;
       owner.delegationCount--;
+      voiceActivity(owner);
     });
 }
 
@@ -368,6 +488,17 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
         "Voice stopped locally, but the provider did not confirm finalization. Some final captions may be missing.";
     else if (!owner.stopping) fail(owner, disconnected, event.code);
     return;
+  }
+  if (event.type === "output_audio_activity") {
+    owner.lastAssistantOutputAt = Date.now();
+    if (owner.progress?.sentAt) owner.progress.outputAt = Date.now();
+    return;
+  }
+  // Audio timing is optional on the Live sideband. Captions still tell us
+  // Roman is speaking, so do not interleave a progress cue or the final reply.
+  if (event.type === "transcript" && event.role === "assistant" && event.text.trim()) {
+    owner.lastAssistantOutputAt = Date.now();
+    if (owner.progress?.sentAt) owner.progress.outputAt = Date.now();
   }
   if (event.type === "closed") {
     const usage = event.usage;
@@ -391,6 +522,11 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
     beginConversation(owner);
     return;
   }
+  if (
+    (event.type === "transcript" && event.text.trim()) ||
+    event.type === "delegation"
+  )
+    voiceActivity(owner);
   // Captions can arrive before the queued readiness write. Do not offer a
   // generic welcome after the customer has already begun their request.
   if (event.type === "transcript" && event.role === "user") {
@@ -469,6 +605,8 @@ function closeOwner(owner: VoiceOwner): Promise<void> {
   owner.stopping = true;
   clearPendingSpeech(owner);
   if (owner.timer) clearTimeout(owner.timer);
+  if (owner.idleTimer) clearTimeout(owner.idleTimer);
+  owner.idleTimer = undefined;
   owner.controller.abort();
   owner.closing = (async () => {
     let failure: unknown;
@@ -645,7 +783,7 @@ export function readyVoice(
   voiceId: string,
   clientId: string,
   input?: { requestId: string; text: string },
-) {
+): string | null | Promise<string | null> {
   if (isServiceSuspended()) throw new ServiceUnavailableError();
   const owner = owners.get(conversationId);
   if (
@@ -662,16 +800,20 @@ export function readyVoice(
       voiceId,
       { clientId, ...input },
       true,
-    );
-  owner.browserReady = true;
+    ).then(() => idleDeadline(owner));
+  if (!owner.browserReady) {
+    owner.browserReady = true;
+    voiceActivity(owner);
+  }
   beginConversation(owner);
+  return idleDeadline(owner);
 }
 
 export async function heartbeatVoice(
   conversationId: string,
   voiceId: string,
   clientId: string,
-) {
+): Promise<string | null> {
   const owner = owners.get(conversationId);
   if (
     !owner ||
@@ -688,6 +830,7 @@ export async function heartbeatVoice(
     );
     if (!owner.stopping && owners.get(conversationId) === owner)
       lease(owner, session.leaseExpiresAt);
+    return idleDeadline(owner);
   } catch (error) {
     fail(owner, disconnected, "heartbeat_failed");
     throw error;
@@ -818,6 +961,7 @@ async function submitVoiceInput(
       input,
     );
     owner.userSpeechObserved = true;
+    if (receipt.created) voiceActivity(owner);
     if (startsConversation) {
       owner.browserReady = true;
       beginConversation(owner);

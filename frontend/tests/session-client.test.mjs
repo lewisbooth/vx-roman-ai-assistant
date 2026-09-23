@@ -84,6 +84,7 @@ function setup(
     mediaOptions,
     savedVoice,
     holdReady = false,
+    readyResponse = { ok: true },
   } = {},
 ) {
   const dom = new JSDOM("<!doctype html>", { url, runScripts: "outside-only" });
@@ -121,7 +122,7 @@ function setup(
         availabilityCalls.push(call);
       } else if (String(url).endsWith("/ready")) {
         readyCalls.push(call);
-        if (!holdReady) finish(call, { ok: true });
+        if (!holdReady) finish(call, readyResponse);
       } else calls.push(call);
     });
   window.eval(
@@ -3108,6 +3109,102 @@ test("voice starts explicitly, polls while idle, heartbeats, and drains before t
   assert.match(ctx.calls[5].url, /\/messages$/);
   ctx.respond(5, { ...pending, revision: 3 });
   await sending;
+});
+
+test("voice warning follows server remaining time despite a skewed device clock", async (t) => {
+  const ctx = setup(t, {
+    mediaOptions: {},
+    readyResponse: {
+      ok: true,
+      idleExpiresAt: "2000-01-01T00:00:00.000Z",
+      idleRemainingMs: 60_000,
+    },
+  });
+  const beforeReady = ctx.window.performance.now();
+  const voice = await activeVoice(ctx);
+  const afterReady = ctx.window.performance.now();
+  const firstWarning = ctx.client.getSnapshot().voiceIdleWarningAt;
+  assert.ok(firstWarning >= beforeReady + 45_000);
+  assert.ok(firstWarning <= afterReady + 45_000);
+
+  const [firstHeartbeatId, firstHeartbeat] = [...ctx.timers].find(
+    ([, timer]) => timer.ms === 20_000,
+  );
+  ctx.timers.delete(firstHeartbeatId);
+  firstHeartbeat.callback();
+  const beforeHeartbeat = ctx.window.performance.now();
+  ctx.respond(3, { ok: true, idleRemainingMs: 50_000 });
+  await delay(0);
+  const afterHeartbeat = ctx.window.performance.now();
+  const secondWarning = ctx.client.getSnapshot().voiceIdleWarningAt;
+  assert.ok(secondWarning >= beforeHeartbeat + 35_000);
+  assert.ok(secondWarning <= afterHeartbeat + 35_000);
+
+  const [secondHeartbeatId, secondHeartbeat] = [...ctx.timers].find(
+    ([, timer]) => timer.ms === 20_000,
+  );
+  ctx.timers.delete(secondHeartbeatId);
+  secondHeartbeat.callback();
+  const sending = ctx.client.sendMessage("Show me another blind");
+  assert.equal(ctx.client.getSnapshot().voiceIdleWarningAt, null);
+  ctx.respond(4, { ok: true, idleRemainingMs: 50_000 });
+  await delay(0);
+  assert.equal(
+    ctx.client.getSnapshot().voiceIdleWarningAt,
+    null,
+    "an in-flight heartbeat cannot restore a stale warning after input",
+  );
+  ctx.respond(5, { ...empty, revision: 2, voice });
+  await sending;
+
+  const stopping = ctx.client.stopVoice();
+  ctx.respond(6, {
+    ...empty,
+    revision: 3,
+    voice: { ...voice, status: "closed" },
+  });
+  await stopping;
+  assert.equal(ctx.client.getSnapshot().voiceIdleWarningAt, null);
+});
+
+test("new voice captions clear an approaching idle warning before the next heartbeat", async (t) => {
+  const ctx = setup(t, {
+    mediaOptions: {},
+    readyResponse: {
+      ok: true,
+      idleRemainingMs: 15_000,
+    },
+  });
+  const voice = await activeVoice(ctx);
+  assert.notEqual(ctx.client.getSnapshot().voiceIdleWarningAt, null);
+  const [pollId, poll] = [...ctx.timers].find(([, timer]) => timer.ms === 500);
+  ctx.timers.delete(pollId);
+  poll.callback();
+  ctx.respond(3, {
+    ...empty,
+    revision: 2,
+    voice,
+    messages: [
+      {
+        id: "new-caption",
+        role: "assistant",
+        status: "complete",
+        createdAt: new Date().toISOString(),
+        parts: [
+          {
+            type: "voice",
+            version: 1,
+            voiceId: voice.id,
+            text: "Let me check that for you.",
+            startMs: 0,
+            endMs: 1_000,
+          },
+        ],
+      },
+    ],
+  });
+  await delay(0);
+  assert.equal(ctx.client.getSnapshot().voiceIdleWarningAt, null);
 });
 
 test("voice restoration never reacquires a microphone and explicitly stops the previous lease", async (t) => {

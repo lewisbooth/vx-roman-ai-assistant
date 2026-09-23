@@ -342,7 +342,16 @@ export async function generateReply(
   onGuideReading?: (kinds: ProductGuideKind[] | undefined) => void,
   guideReuse?: GuideReuse,
   libraryReuse?: LibraryReuse,
+  onToolActivity?: (name: string, active: boolean) => void,
 ): Promise<ModelReply> {
+  const trackTool = async <T>(name: string, action: () => Promise<T>) => {
+    onToolActivity?.(name, true);
+    try {
+      return await action();
+    } finally {
+      onToolActivity?.(name, false);
+    }
+  };
   let turnModel = await textModelForRequest();
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
   const input: ResponseInput = history.map(({ role, text }) => ({
@@ -979,10 +988,8 @@ export async function generateReply(
             libraryBound = undefined;
           }
           onGuideReading?.(["measuring"]);
-          const read = await libraryReuse.read(
-            selection,
-            signal,
-            attachedGuideUrls,
+          const read = await trackTool("read_library_guides", () =>
+            libraryReuse.read(selection, signal, attachedGuideUrls),
           );
           signal.throwIfAborted();
           if (read.status !== "ready") {
@@ -1200,7 +1207,9 @@ export async function generateReply(
             priorRead = cached;
             cached = undefined;
           }
-          outcome = await execute(call.call_id, parsed.name, parsed.arguments);
+          outcome = await trackTool(parsed.name, () =>
+            execute(call.call_id, parsed.name, parsed.arguments),
+          );
         }
         signal.throwIfAborted();
         if (parsed.name === "get_product_configuration") {
@@ -1357,15 +1366,17 @@ export async function generateReply(
                       ],
                   ),
                 }
-              : await readProductGuideFiles(
-                  {
-                    ...guides,
-                    status: selected.length ? "found" : "unavailable",
-                    guides: selected,
-                  },
-                  storefrontOrigin,
-                  signal,
-                  { refresh: requestedGuides!.refresh },
+              : await trackTool("get_product_guides", () =>
+                  readProductGuideFiles(
+                    {
+                      ...guides,
+                      status: selected.length ? "found" : "unavailable",
+                      guides: selected,
+                    },
+                    storefrontOrigin,
+                    signal,
+                    { refresh: requestedGuides!.refresh },
+                  ),
                 )
             : {
                 status: "unavailable" as const,

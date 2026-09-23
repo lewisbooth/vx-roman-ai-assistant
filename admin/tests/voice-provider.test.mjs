@@ -409,6 +409,109 @@ test("thinking and commentary require matching acknowledgment and known delegati
   assert.equal(app.timers.size, 0);
 });
 
+test("optional progress accepts a known delegation without treating acknowledgment as speech", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  socket.event(delegation());
+  const progress = provider.appendProgress("item_delegated", "Checking the guide.");
+  assert.deepEqual(socket.sent[0], {
+    type: "session.commentary.append",
+    event_id: socket.sent[0].event_id,
+    delegation_id: "item_delegated",
+    content: "Checking the guide.",
+  });
+  assert.match(socket.sent[0].event_id, /^command-\d+$/);
+  socket.ack();
+  await progress;
+  assert.deepEqual(app.events, [
+    {
+      type: "delegation",
+      eventId: "delegation-item_delegated",
+      delegationId: "item_delegated",
+      offsetMs: 1200,
+    },
+  ]);
+  const general = provider.appendProgress(null, "Checking current options.");
+  assert.equal(socket.sent[1].delegation_id, null);
+  socket.ack();
+  await general;
+  assert.equal(app.timers.size, 0);
+  const closing = provider.close();
+  socket.event(ended);
+  await closing;
+});
+
+test("optional progress timeout and a late correlated error leave voice healthy", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const progress = provider.appendProgress(null, "Checking current options.");
+  const rejected = assert.rejects(progress, { code: "command_failed" });
+  const progressId = socket.sent[0].event_id;
+  app.fire(3_000);
+  await rejected;
+  socket.event({
+    type: "error",
+    event_id: "late-progress-error",
+    error: {
+      code: "invalid_request_error",
+      message: "PRIVATE_TOOL_DATA",
+      type: "invalid_request_error",
+      client_event_id: progressId,
+    },
+  });
+  assert.deepEqual(app.events, []);
+  assert.deepEqual(app.logs, []);
+  assert.equal(socket.sent.some((event) => event.type === "session.close"), false);
+  const ordinary = provider.appendThinking("Voice continues.");
+  socket.ack();
+  await ordinary;
+  const closing = provider.close();
+  socket.event(ended);
+  await closing;
+  assert.equal(app.timers.size, 0);
+});
+
+test("correlated progress rejection does not hide unrelated provider errors", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const progress = provider.appendProgress(null, "Checking current options.");
+  const rejected = assert.rejects(progress, { code: "command_failed" });
+  socket.event({
+    type: "error",
+    event_id: "progress-error",
+    client_event_id: socket.sent[0].event_id,
+    error: {
+      code: "invalid_request_error",
+      message: "PRIVATE_TOOL_DATA",
+      type: "invalid_request_error",
+    },
+  });
+  await rejected;
+  assert.deepEqual(app.events, []);
+  assert.deepEqual(app.logs, []);
+  const unrelated = provider.appendThinking("Voice continues.");
+  const unrelatedRejected = assert.rejects(unrelated, {
+    code: "command_failed",
+  });
+  socket.event({
+    type: "error",
+    event_id: "unrelated-error",
+    error: {
+      code: "invalid_request_error",
+      message: "PRIVATE_TOOL_DATA",
+      type: "invalid_request_error",
+    },
+  });
+  assert.deepEqual(app.events, [{ type: "error", code: "command_failed" }]);
+  socket.event(ended);
+  await unrelatedRejected;
+  await provider.close();
+  assert.doesNotMatch(JSON.stringify(app.logs), /PRIVATE/);
+});
+
 test("context and pending command queues are bounded", async () => {
   const app = setup();
   const provider = await app.connect();
@@ -720,6 +823,22 @@ test("reflected input and output audio without event IDs do not end a voice sess
     end_ms: 20,
   });
   socket.event({
+    type: "session.output_audio.delta",
+    delta: "PRIVATE_AUDIO_BYTES",
+  });
+  socket.event({
+    type: "session.output_audio.delta",
+    delta: "PRIVATE_AUDIO_BYTES",
+    start_ms: 30,
+    end_ms: 20,
+  });
+  socket.event({
+    type: "session.output_audio.delta",
+    delta: "",
+    start_ms: 20,
+    end_ms: 40,
+  });
+  socket.event({
     type: "session.provider_extension",
     detail: "PRIVATE_UNCONSUMED_DATA",
   });
@@ -731,6 +850,7 @@ test("reflected input and output audio without event IDs do not end a voice sess
     end_ms: 250,
   });
   assert.deepEqual(app.events, [
+    { type: "output_audio_activity", startMs: 0, endMs: 20 },
     {
       type: "transcript",
       eventId: "caption-after-audio",
@@ -740,6 +860,7 @@ test("reflected input and output audio without event IDs do not end a voice sess
       endMs: 250,
     },
   ]);
+  assert.doesNotMatch(JSON.stringify(app.events), /PRIVATE_AUDIO_BYTES/);
   assert.deepEqual(app.logs, []);
   assert.equal(socket.sent.length, 0);
   const closing = provider.close();

@@ -53,6 +53,7 @@ const REQUEST_ID = "68055cf5-a781-4c1d-a792-42861808b2c7";
 const CLIENT_ID = "8c06c56e-5d17-47ec-b1ae-8d1d82088908";
 const TOKEN = "A".repeat(43);
 const ORIGIN = "https://hd-dev-single.myshopify.com";
+const IDLE_EXPIRES_AT = new Date(Date.now() + 60_000).toISOString();
 const START = {
   requestId: REQUEST_ID,
   clientId: CLIENT_ID,
@@ -74,7 +75,7 @@ const SNAPSHOT = {
 };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function setup() {
+function setup({ idleExpiresAt = IDLE_EXPIRES_AT } = {}) {
   const calls = {
     authorize: [],
     start: [],
@@ -103,9 +104,11 @@ function setup() {
     },
     ready: (...args) => {
       calls.ready.push(plain(args));
+      return idleExpiresAt;
     },
     heartbeat: async (...args) => {
       calls.heartbeat.push(plain(args));
+      return idleExpiresAt;
     },
     stop: async (...args) => {
       calls.stop.push(plain(args));
@@ -194,7 +197,9 @@ test("voice start authorizes the conversation and passes only the validated offe
 test("voice lifecycle routes authenticate independently and retain conversation/client scope", async () => {
   for (const route of ["ready", "heartbeat", "stop"]) {
     const env = setup();
+    const remainingBefore = Math.max(0, Date.parse(IDLE_EXPIRES_AT) - Date.now());
     const response = await run(env, route);
+    const remainingAfter = Math.max(0, Date.parse(IDLE_EXPIRES_AT) - Date.now());
     assert.equal(response.status, 200);
     assert.equal(env.calls.authorize.length, 1);
     assert.deepEqual(env.calls[route], [
@@ -202,11 +207,32 @@ test("voice lifecycle routes authenticate independently and retain conversation/
         ? [ID, VOICE_ID, CLIENT_ID, null]
         : [ID, VOICE_ID, CLIENT_ID],
     ]);
-    assert.deepEqual(
-      await response.json(),
-      route !== "stop" ? { ok: true } : SNAPSHOT,
-    );
+    const body = await response.json();
+    if (route === "stop") assert.deepEqual(body, SNAPSHOT);
+    else {
+      assert.equal(body.ok, true);
+      assert.equal(body.idleExpiresAt, IDLE_EXPIRES_AT);
+      assert.ok(body.idleRemainingMs <= remainingBefore);
+      assert.ok(body.idleRemainingMs >= remainingAfter);
+    }
     assert.deepEqual(env.calls.order, route === "stop" ? ["stop", "read"] : []);
+  }
+});
+
+test("voice ready and heartbeat clamp expired idle deadlines and retain null", async () => {
+  for (const route of ["ready", "heartbeat"]) {
+    const expired = setup({ idleExpiresAt: "2000-01-01T00:00:00.000Z" });
+    assert.deepEqual(await (await run(expired, route)).json(), {
+      ok: true,
+      idleExpiresAt: "2000-01-01T00:00:00.000Z",
+      idleRemainingMs: 0,
+    });
+    const absent = setup({ idleExpiresAt: null });
+    assert.deepEqual(await (await run(absent, route)).json(), {
+      ok: true,
+      idleExpiresAt: null,
+      idleRemainingMs: null,
+    });
   }
 });
 

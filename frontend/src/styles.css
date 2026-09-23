@@ -1070,6 +1070,11 @@
     @apply min-w-0 flex-1 px-[18px] text-[14px] leading-[20px] text-[#797366];
   }
 
+  .roman-voice-idle-warning {
+    @apply mx-auto mb-[4px] mt-0 rounded-[12px] border border-solid border-[#bb4545] bg-[#fff0ee] px-[16px] py-[10px] text-center text-[13px] leading-[1.4] text-[#8a1c28];
+    width: min(calc(100% - 32px), 788px);
+  }
+
   .roman-voice-choice select {
     @apply min-h-[36px] cursor-pointer rounded-full border border-solid border-[#d1cbc0] bg-[#f7f5ef] px-[12px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;

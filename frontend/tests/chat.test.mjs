@@ -2768,6 +2768,58 @@ test("End voice restores the saved text draft without remounting the composer", 
   );
 });
 
+test("voice idle warning appears before the deadline and is transient", async (t) => {
+  const conversation = engagedConversation([
+    message("user-message", "user", "Help me choose a blind"),
+  ]);
+  const ctx = await setup(t, {
+    state: {
+      conversation,
+      voice: { status: "active", muted: false, error: null },
+    },
+  });
+  ctx.update({ voiceIdleWarningAt: ctx.window.performance.now() + 50 });
+  await until(
+    () => !!ctx.container.querySelector(".roman-voice-idle-warning"),
+    "The warning did not appear 15 seconds before idle closure",
+  );
+  const warning = ctx.container.querySelector(".roman-voice-idle-warning");
+  assert.equal(warning.getAttribute("role"), "alert");
+  assert.match(warning.textContent, /Voice will end soon due to inactivity/);
+  assert.equal(
+    ctx.container.querySelector(".roman-timeline").contains(warning),
+    false,
+  );
+
+  ctx.update({
+    voiceIdleWarningAt: ctx.window.performance.now() + 45_000,
+  });
+  await until(
+    () => !ctx.container.querySelector(".roman-voice-idle-warning"),
+    "Activity did not remove the warning",
+  );
+  ctx.update({
+    voiceIdleWarningAt: ctx.window.performance.now() - 5_000,
+  });
+  await until(
+    () => !!ctx.container.querySelector(".roman-voice-idle-warning"),
+    "The warning did not return near a new deadline",
+  );
+  ctx.update({ conversation: { ...conversation, busy: true } });
+  await until(
+    () => !ctx.container.querySelector(".roman-voice-idle-warning"),
+    "Delegated work did not suppress the warning",
+  );
+  ctx.update({
+    voice: { status: "idle", muted: false, error: null },
+    voiceIdleWarningAt: null,
+  });
+  await until(
+    () => !ctx.container.querySelector(".roman-voice-idle-warning"),
+    "Stopping voice did not remove the warning",
+  );
+});
+
 test("restored remote voice can be ended explicitly without activating the microphone", async (t) => {
   const ctx = await setup(t, {
     state: {

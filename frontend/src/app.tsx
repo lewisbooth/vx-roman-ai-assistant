@@ -168,6 +168,30 @@ function Assistant({
   const [startError, setStartError] = useState<string | null>(null);
   const startingTopic = useRef(false);
   const voice = state.voice;
+  const [voiceIdleWarning, setVoiceIdleWarning] = useState(false);
+  useEffect(() => {
+    const warningAt = state.voiceIdleWarningAt;
+    if (
+      voice.status !== "active" ||
+      state.conversation?.busy ||
+      typeof warningAt !== "number" ||
+      !Number.isFinite(warningAt)
+    ) {
+      setVoiceIdleWarning(false);
+      return;
+    }
+    const untilWarning = warningAt - performance.now();
+    if (untilWarning <= 0) {
+      setVoiceIdleWarning(true);
+      return;
+    }
+    setVoiceIdleWarning(false);
+    const timer = window.setTimeout(
+      () => setVoiceIdleWarning(true),
+      untilWarning,
+    );
+    return () => window.clearTimeout(timer);
+  }, [state.voiceIdleWarningAt, state.conversation?.busy, voice.status]);
   const localVoice =
     voice.status === "starting" ||
     voice.status === "active" ||
@@ -612,6 +636,12 @@ function Assistant({
                   session={session}
                   disabled={suspended}
                 />
+              )}
+              {voiceIdleWarning && (
+                <p className="roman-voice-idle-warning" role="alert">
+                  Voice will end soon due to inactivity. Speak or reply to keep
+                  it open.
+                </p>
               )}
               <Composer
                 key={chatVersion}

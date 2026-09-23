@@ -1862,7 +1862,7 @@ test("measuring direction survives brevity rules in text, briefings and live spe
   assert.match(live, /do not repeat an allowance or method you have just spoken/);
 });
 
-test("Live alone acknowledges substantive input without stacking filler or weakening delegation", () => {
+test("Live acknowledges substantive input and speaks bounded tool progress without weakening delegation", () => {
   const live = romanVoicePrompt("marin");
   assert.match(live, /An early answer to the current question is new input even if you were still explaining it/);
   assert.match(live, /even with "yes", "no", "1200 millimetres" or "that's correct", including while you are speaking/);
@@ -1872,8 +1872,9 @@ test("Live alone acknowledges substantive input without stacking filler or weake
   assert.match(live, /grounded in the latest known answer or preference/);
   assert.match(live, /Silence is fine, especially for routine yes\/no fit checks or measurement answers/);
   assert.match(live, /already acknowledged this input or the result is ready, skip the acknowledgement/);
-  assert.match(live, /Do not stack a habitual "Right, got it" with a second progress sentence/);
-  assert.match(live, /a measurement is valid or saved, or an action has started or succeeded/);
+  assert.match(live, /If the application later sends one tool-progress cue because verified work is taking longer/);
+  assert.match(live, /without another generic acknowledgement/);
+  assert.match(live, /a measurement is valid or saved, or an action has succeeded/);
   assert.match(live, /do not delegate that same input again or replace the result with a bare acknowledgement/);
   assert.match(live, /supersedes the previous follow-up and any unfinished speech about it immediately/);
   assert.match(live, /Only the backend may request a necessary replacement or configuration confirmation/);

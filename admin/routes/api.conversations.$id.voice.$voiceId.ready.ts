@@ -12,8 +12,17 @@ function handle({ request, params }: LoaderFunctionArgs) {
     const conversation = await authenticateConversation(request, params.id);
     const voiceId = voiceSessionId(params.voiceId);
     const { clientId, input } = voiceReadyInput(await readJsonObject(request));
-    await readyVoice(conversation.id, voiceId, clientId, input);
-    return { ok: true };
+    const idleExpiresAt = await readyVoice(
+      conversation.id,
+      voiceId,
+      clientId,
+      input,
+    );
+    const idleRemainingMs =
+      idleExpiresAt === null
+        ? null
+        : Math.max(0, Date.parse(idleExpiresAt) - Date.now());
+    return { ok: true, idleExpiresAt, idleRemainingMs };
   });
 }
 

@@ -118,8 +118,9 @@ function setup() {
     onProviderClose: undefined,
     onDelegate: undefined,
     onCancelDelegation: undefined,
-    delay: async (_ms, _value, options) => {
+    delay: async (ms, _value, options) => {
       options.signal.throwIfAborted();
+      await mock.onDelay?.(ms, options);
     },
     reserve: async (conversationId, input) => {
       calls.reserve.push([conversationId, input]);
@@ -202,6 +203,7 @@ function setup() {
         closeCount: 0,
         openingCount: 0,
         commentaries: [],
+        progress: [],
         thoughts: [],
         inputs: [],
         replies: [],
@@ -222,6 +224,11 @@ function setup() {
           record.closed = true;
         },
         appendCommentary: async (...args) => record.commentaries.push(args),
+        appendProgress: async (...args) => {
+          record.progress.push(args);
+          order.push("progress-sent");
+          await mock.onProgress?.(...args);
+        },
         appendThinking: async (...args) => record.thoughts.push(args),
         appendCustomerInput: async (text) => {
           record.inputs.push(text);
@@ -326,7 +333,11 @@ function setup() {
     exports: module.exports,
     require,
     mock,
-    Date,
+    Date: class extends Date {
+      static now() {
+        return mock.now ?? Date.now();
+      }
+    },
     URL,
     AbortController,
     AbortSignal,
@@ -341,6 +352,7 @@ function setup() {
     clearTimeout: (timer) => timers.delete(timer),
     console: {
       error: (...args) => logs.push(args),
+      warn: (...args) => logs.push(args),
       debug: (...args) => timings.push(args),
     },
   });
@@ -1103,6 +1115,180 @@ test("a successful question-only delegation speaks the question instead of annou
   await state.stop();
 });
 
+test("a slow catalog tool gets one spoken cue and queues its verified answer", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  const tool = deferred();
+  const quiet = deferred();
+  state.mock.onDelay = (ms) => (ms > 200 ? quiet.promise : undefined);
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+    options.onToolActivity("search_products", true);
+    await tool.promise;
+    options.onToolActivity("search_products", false);
+    return { text: "Here are three verified options." };
+  };
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "catalog-work" });
+  await flush();
+  const timer = [...state.timers].find((entry) => entry.ms === 2_500);
+  assert.ok(timer);
+  assert.equal(state.providers[0].progress.length, 0);
+  state.timers.delete(timer);
+  state.mock.now += 2_500;
+  timer.callback();
+  await flush();
+  assert.deepEqual(plain(state.providers[0].progress), [
+    ["catalog-work", "I'm checking the current range against what you've told me."],
+  ]);
+  tool.resolve();
+  await flush();
+  assert.deepEqual(state.providers[0].commentaries, []);
+  state.mock.now += 3_500;
+  quiet.resolve();
+  await flush();
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["catalog-work", "Here are three verified options."],
+  ]);
+  await state.stop();
+});
+
+test("assistant captions keep a queued answer behind long filler without audio timing", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  const tool = deferred();
+  const waits = [];
+  state.mock.onDelay = (ms) => {
+    if (ms <= 200) return;
+    const gate = deferred();
+    waits.push({ ms, gate });
+    return gate.promise;
+  };
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+    options.onToolActivity("search_products", true);
+    await tool.promise;
+    options.onToolActivity("search_products", false);
+    return { text: "The verified answer follows." };
+  };
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "audio-work" });
+  await flush();
+  const timer = [...state.timers].find((entry) => entry.ms === 2_500);
+  assert.ok(timer);
+  state.timers.delete(timer);
+  state.mock.now += 2_500;
+  timer.callback();
+  state.emit({ type: "output_audio_activity", startMs: 500, endMs: 650 });
+  tool.resolve();
+  await flush();
+  assert.equal(waits.length, 1);
+  assert.equal(waits[0].ms, 650);
+  state.mock.now += 4_500;
+  state.emit(transcript({
+    eventId: "filler-caption",
+    role: "assistant",
+    text: "I'm still checking.",
+    startMs: 650,
+    endMs: 820,
+  }));
+  waits[0].gate.resolve();
+  await flush();
+  assert.equal(waits.length, 2);
+  assert.deepEqual(state.providers[0].commentaries, []);
+  state.mock.now += 650;
+  waits[1].gate.resolve();
+  await flush();
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["audio-work", "The verified answer follows."],
+  ]);
+  await state.stop();
+});
+
+test("a quick catalog tool finishes without unnecessary filler", async () => {
+  const state = setup();
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+    options.onToolActivity("search_products", true);
+    options.onToolActivity("search_products", false);
+    return { text: "Here is the current result." };
+  };
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "quick-work" });
+  await flush();
+  assert.deepEqual(state.providers[0].progress, []);
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["quick-work", "Here is the current result."],
+  ]);
+  assert.equal([...state.timers].some((entry) => entry.ms === 2_500), false);
+  await state.stop();
+});
+
+test("a rejected courtesy cue does not suppress the verified answer or close voice", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  const tool = deferred();
+  state.mock.onProgress = async () => {
+    throw new Error("optional progress rejected");
+  };
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+    options.onToolActivity("search_products", true);
+    await tool.promise;
+    options.onToolActivity("search_products", false);
+    return { text: "Here is the verified answer." };
+  };
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "failed-cue" });
+  await flush();
+  const timer = [...state.timers].find((entry) => entry.ms === 2_500);
+  assert.ok(timer);
+  state.timers.delete(timer);
+  state.mock.now += 2_500;
+  timer.callback();
+  await flush();
+  tool.resolve();
+  await flush();
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["failed-cue", "Here is the verified answer."],
+  ]);
+  assert.equal(state.providers[0].closed, false);
+  assert.equal(state.logs.some(([label]) => /progress update was skipped/.test(label)), true);
+  await state.stop();
+});
+
+test("a correction drops an old tool's pending filler and answer", async () => {
+  const state = setup();
+  const oldTool = deferred();
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+    if (state.calls.delegate.length === 1) {
+      options.onToolActivity("search_products", true);
+      await oldTool.promise;
+      options.onToolActivity("search_products", false);
+      return { text: "Old options must not be spoken." };
+    }
+    return { text: "The corrected options are ready." };
+  };
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "old-work", offsetMs: 200 });
+  await flush();
+  assert.equal([...state.timers].some((entry) => entry.ms === 2_500), true);
+  state.emit(transcript({ eventId: "correction", text: "I meant black", startMs: 300, endMs: 400 }));
+  state.emit({ type: "delegation", delegationId: "new-work", offsetMs: 500 });
+  oldTool.resolve();
+  await flush();
+  assert.deepEqual(state.providers[0].progress, []);
+  assert.equal(
+    state.providers[0].commentaries.some(([, text]) => text.includes("Old options")),
+    false,
+  );
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["new-work", "The corrected options are ready."],
+  ]);
+  await state.stop();
+});
+
 function savedMeasurement(state) {
   const part = {
     type: "question",
@@ -1161,7 +1347,7 @@ test("the server resumes one saved question silently at readiness without a Live
   state.emit({ type: "delegation", delegationId: "fresh_customer" });
   await flush();
   assert.equal(state.calls.delegate.length, 2);
-  assert.equal(state.calls.delegate[1][4], undefined);
+  assert.equal(typeof state.calls.delegate[1][4].onToolActivity, "function");
   await state.stop();
 });
 
@@ -1247,7 +1433,7 @@ test("an unchanged startup page observation preserves eligibility, while early s
   speaking.emit({ type: "delegation", delegationId: "spoken_request" });
   await flush();
   assert.equal(speaking.calls.delegate.length, 1);
-  assert.equal(speaking.calls.delegate[0][4], undefined);
+  assert.equal(typeof speaking.calls.delegate[0][4].onToolActivity, "function");
   await speaking.stop();
 });
 
@@ -1794,6 +1980,80 @@ test("heartbeats require the active browser owner and expiry shuts down the conn
   await flush();
   assert.equal(state.rows.get(state.input.requestId).status, "failed");
   assert.equal(state.providers[0].closed, true);
+});
+
+test("quiet voice closes after a minute; heartbeats cannot extend its idle deadline", async () => {
+  const state = setup();
+  await state.start();
+  const deadline = state.ready();
+  assert.ok(Number.isFinite(Date.parse(deadline)));
+  const idle = [...state.timers].find((timer) => timer.ms === 60_000);
+  assert.ok(idle);
+  assert.equal(
+    await state.api.heartbeatVoice(
+      state.conversationId,
+      state.input.requestId,
+      state.input.clientId,
+    ),
+    deadline,
+  );
+  assert.equal([...state.timers].find((timer) => timer.ms === 60_000), idle);
+  idle.callback();
+  await flush();
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).status, "closed");
+  assert.equal(state.providers[0].closed, true);
+  assert.equal(state.timers.size, 0);
+});
+
+test("customer and Roman speech renew idle; stale timers cannot close the voice", async () => {
+  const state = setup();
+  await state.start();
+  state.ready();
+  const first = [...state.timers].find((timer) => timer.ms === 60_000);
+  state.emit(transcript());
+  await flush();
+  const second = [...state.timers].find((timer) => timer.ms === 60_000);
+  assert.notEqual(second, first);
+  first.callback();
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).status, "active");
+  state.emit(transcript({ role: "assistant", eventId: "event_2" }));
+  await flush();
+  const third = [...state.timers].find((timer) => timer.ms === 60_000);
+  assert.notEqual(third, second);
+  second.callback();
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).status, "active");
+  await state.stop();
+});
+
+test("active delegated work postpones idle close until its result arrives", async () => {
+  const state = setup();
+  const answer = deferred();
+  state.mock.onDelegate = () => answer.promise;
+  await state.start();
+  state.ready();
+  state.emit(transcript());
+  await flush();
+  state.emit({ type: "delegation", delegationId: "item_1" });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  const busyDeadline = [...state.timers].find((timer) => timer.ms === 60_000);
+  busyDeadline.callback();
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).status, "active");
+  const renewed = [...state.timers].find((timer) => timer.ms === 60_000);
+  assert.notEqual(renewed, busyDeadline);
+  answer.resolve({ text: "Here is a verified answer." });
+  await flush();
+  await flush();
+  const afterWork = [...state.timers].find((timer) => timer.ms === 60_000);
+  assert.notEqual(afterWork, renewed);
+  afterWork.callback();
+  await flush();
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).status, "closed");
 });
 
 test("a pending heartbeat cannot re-arm a lease timer after its owner stops", async () => {

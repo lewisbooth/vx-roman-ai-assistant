@@ -60,6 +60,7 @@ export type VoiceProviderEvent =
       delegationId: string;
       offsetMs: number;
     }
+  | { type: "output_audio_activity"; startMs: number; endMs: number }
   | { type: "closed"; reason: string; confirmed: boolean; usage?: VoiceUsage }
   | { type: "error"; code: VoiceProviderErrorCode };
 
@@ -70,6 +71,7 @@ export interface VoiceProvider {
   beginConversation(): Promise<void>;
   appendThinking(text: string): Promise<void>;
   appendCommentary(delegationId: string, text: string): Promise<void>;
+  appendProgress(delegationId: string | null, text: string): Promise<void>;
   appendCustomerInput(text: string): Promise<void>;
   appendReply(text: string): Promise<void>;
   close(): Promise<void>;
@@ -199,11 +201,20 @@ export async function createVoiceProvider(options: {
     string,
     {
       type: string;
+      optional: boolean;
       timer: ReturnType<typeof setTimeout>;
       resolve(): void;
       reject(error: Error): void;
     }
   >();
+  // Correlated provider errors may arrive after an optional update times out.
+  // Keep a small bounded set so those late errors cannot end a healthy call.
+  const optionalCommandIds = new Set<string>();
+  const rememberOptionalCommand = (id: string) => {
+    optionalCommandIds.add(id);
+    if (optionalCommandIds.size > 128)
+      optionalCommandIds.delete(optionalCommandIds.values().next().value!);
+  };
   const knownDelegations = new Set<string>();
   const emit = (event: VoiceProviderEvent) => {
     options.onEvent(event);
@@ -280,12 +291,31 @@ export async function createVoiceProvider(options: {
     // Live reflects audio to trusted sidebands without event_id. Those frames
     // are documented by the native Live schema but absent from this SDK's
     // sideband union. Packets can contain silence and do not prove speech.
-    // WebRTC owns playback; Roman never inspects or stores reflected audio.
-    if (
-      eventType === "session.input_audio.append" ||
-      eventType === "session.output_audio.delta"
-    )
+    // WebRTC owns playback. Forward only valid output timing metadata; audio
+    // bytes remain uninspected and unrecorded. Missing metadata is optional.
+    if (eventType === "session.output_audio.delta") {
+      // The installed sideband union omits reflected audio, although Live sends
+      // it to trusted sidebands. Validate only the fields this signal needs.
+      const audioEvent = event as unknown as {
+        delta?: unknown;
+        start_ms?: unknown;
+        end_ms?: unknown;
+      };
+      if (
+        typeof audioEvent.delta === "string" &&
+        audioEvent.delta.length > 0 &&
+        timestamp(audioEvent.start_ms) &&
+        timestamp(audioEvent.end_ms) &&
+        audioEvent.end_ms > audioEvent.start_ms
+      )
+        emit({
+          type: "output_audio_activity",
+          startMs: audioEvent.start_ms,
+          endMs: audioEvent.end_ms,
+        });
       return;
+    }
+    if (eventType === "session.input_audio.append") return;
     // Validate the events we consume, not every future provider event envelope.
     if (!eventType || !consumedEventTypes.has(eventType)) return;
     let invalidField = "event_id";
@@ -403,9 +433,32 @@ export async function createVoiceProvider(options: {
         if (command?.type === event.type) {
           clearTimeout(command.timer);
           commands.delete(event.client_event_id!);
+          if (command.optional) rememberOptionalCommand(event.client_event_id!);
           command.resolve();
         }
       } else if (event.type === "error") {
+        // Only a correlated progress-command error is nonfatal. An unrelated
+        // provider error still uses the normal connection failure path.
+        const topLevelId = event.client_event_id;
+        const nestedId = event.error?.client_event_id;
+        if (
+          topLevelId &&
+          nestedId &&
+          topLevelId !== nestedId
+        ) {
+          fail("command_failed");
+          return;
+        }
+        const commandId = nestedId ?? topLevelId;
+        const command = commandId ? commands.get(commandId) : undefined;
+        if (command?.optional && commandId) {
+          clearTimeout(command.timer);
+          commands.delete(commandId);
+          rememberOptionalCommand(commandId);
+          command.reject(new VoiceProviderError("command_failed"));
+          return;
+        }
+        if (commandId && optionalCommandIds.has(commandId)) return;
         fail("command_failed");
       }
     } catch {
@@ -505,6 +558,7 @@ export async function createVoiceProvider(options: {
       type: "instructions" | "thinking" | "commentary",
       delegationId: string | null,
       text: string,
+      optional = false,
     ) => {
       if (
         closed ||
@@ -522,21 +576,31 @@ export async function createVoiceProvider(options: {
       return new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           commands.delete(eventId);
+          if (optional) rememberOptionalCommand(eventId);
           reject(new VoiceProviderError("command_failed"));
-          fail("command_failed");
+          if (!optional) fail("command_failed");
         }, COMMAND_MS);
         commands.set(eventId, {
           type: `session.${type}.appended`,
+          optional,
           timer,
           resolve,
           reject,
         });
-        sideband!.send({
-          type: `session.${type}.append`,
-          event_id: eventId,
-          delegation_id: delegationId,
-          content: text,
-        });
+        try {
+          sideband!.send({
+            type: `session.${type}.append`,
+            event_id: eventId,
+            delegation_id: delegationId,
+            content: text,
+          });
+        } catch {
+          clearTimeout(timer);
+          commands.delete(eventId);
+          if (optional) rememberOptionalCommand(eventId);
+          reject(new VoiceProviderError("command_failed"));
+          if (!optional) fail("command_failed");
+        }
       });
     };
     return {
@@ -561,6 +625,8 @@ export async function createVoiceProvider(options: {
       appendThinking: (text) => append("thinking", null, text),
       appendCommentary: (delegationId, text) =>
         append("commentary", delegationId, text),
+      appendProgress: (delegationId, text) =>
+        append("commentary", delegationId, text, true),
       appendCustomerInput: async (text) => {
         if (!text.trim() || text.length > MAX_MESSAGE_LENGTH)
           throw new VoiceProviderError("command_failed");
