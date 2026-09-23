@@ -52,7 +52,7 @@ const runnerBundle = await build({
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
-            ? `export const TEXT_MODEL="gpt-5.6-luna"; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}`
+            ? `export const TEXT_MODEL="gpt-6-luna"; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}`
             : path.endsWith("browser-tools.server")
               ? `export const requestBrowserTool=()=>{throw new Error("Unexpected browser call")};`
               : path.endsWith("service.server")
@@ -341,7 +341,7 @@ test("failed PDP read falls back to a discovered library, selected same-kind ori
   assert.match(serializedOutputs, /Diagrams and videos were not interpreted/);
   assert.match(serializedOutputs, /Angled bay guide/);
   for (const request of state.requests) {
-    assert.equal(request.model, "gpt-5.6-luna");
+    assert.equal(request.model, "gpt-6-luna");
     assert.equal(request.reasoning.effort, "medium");
     assert.equal(request.service_tier, "fast");
     assert.equal(request.store, false);

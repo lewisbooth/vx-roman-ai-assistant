@@ -99,7 +99,7 @@ import {
   MAX_GUIDE_DOCUMENTS,
 } from "../guides/library.server";
 
-export const TEXT_MODEL = "gpt-5.6-luna";
+export const TEXT_MODEL = "gpt-6-luna";
 export const TEXT_SERVICE_TIER = "fast";
 
 const incompleteReasons = [

@@ -135,6 +135,47 @@ test("Terra uses dated Standard and Fast rates without changing Luna history", (
   assert.equal(laterLuna.rateId, "luna-fast-2026-09-15");
 });
 
+test("GPT-6 Luna uses its dated Standard and Fast rates without repricing earlier calls", () => {
+  const next = usage({
+    model: "gpt-6-luna",
+    createdAt: "2026-09-23T00:00:00.000Z",
+  });
+  const fastResult = estimateModelUsage(next);
+  close(fastResult.usd, 0.000333);
+  assert.equal(fastResult.rateId, "gpt-6-luna-fast-2026-09-23");
+  assert.deepEqual(
+    estimateModelUsage({ ...next, serviceTier: "fast" }),
+    fastResult,
+  );
+  const standardResult = estimateModelUsage({
+    ...next,
+    serviceTier: "default",
+  });
+  close(standardResult.usd, 0.0001665);
+  assert.equal(standardResult.rateId, "gpt-6-luna-standard-2026-09-23");
+  assert.equal(
+    estimateModelUsage({
+      ...next,
+      createdAt: "2026-09-22T23:59:59.999Z",
+    }).reason,
+    "missing_rate",
+  );
+  close(
+    estimateModelUsage({
+      ...next,
+      inputTokens: 272001,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+    }).usd,
+    0.1088004,
+  );
+  assert.equal(
+    estimateModelUsage(usage({ createdAt: next.createdAt })).rateId,
+    "luna-fast-2026-09-15",
+  );
+});
+
 test("Terra long-context rates cover all token categories above 272K input", () => {
   const terra = usage({
     model: "gpt-5.6-terra",
