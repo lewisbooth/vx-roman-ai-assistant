@@ -34,7 +34,11 @@ import {
   type VoiceProvider,
   type VoiceProviderEvent,
 } from "./provider.server";
-import { voiceInputProgress, voiceToolProgress } from "./progress.server";
+import {
+  voiceDiscoveryAcknowledgement,
+  voiceInputProgress,
+  voiceToolProgress,
+} from "./progress.server";
 import {
   activateVoiceSession,
   appendVoiceTranscript,
@@ -70,6 +74,7 @@ interface VoiceOwner {
   idleTimer?: ReturnType<typeof setTimeout>;
   idleExpiresAt?: number;
   lastAssistantOutputAt?: number;
+  lastAssistantCaptionAt?: number;
   progress?: VoiceProgress;
   events: Promise<void>;
   eventCount: number;
@@ -108,6 +113,11 @@ interface VoiceProgress {
   failed?: boolean;
 }
 
+interface EarlyProgress {
+  sentAt: number;
+  delivery: Promise<boolean>;
+}
+
 // Ephemeral connections belong to this one server process; captions and leases
 // belong to SQLite. A restart expires old leases rather than replaying work.
 const owners = new Map<string, VoiceOwner>();
@@ -115,7 +125,7 @@ const maxConnections = 4;
 const DELEGATION_TRANSCRIPT_WAIT_MS = 2_000;
 const TOOL_PROGRESS_DELAY_MS = 2_500;
 const PROGRESS_AUDIO_QUIET_MS = 650;
-const PROGRESS_NO_AUDIO_HOLD_MS = 3_500;
+const PROGRESS_NO_AUDIO_HOLD_MS = 1_200;
 const PROGRESS_MAX_HOLD_MS = 8_000;
 const disconnected = "Voice disconnected. Start voice again to reconnect.";
 
@@ -234,6 +244,7 @@ type AdvisorRequest =
       requestId: string;
       caption: string;
       progressCue: string;
+      earlyProgress?: EarlyProgress;
     }
   | { kind: "resume"; questionId: string };
 
@@ -327,6 +338,20 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
   const progress: VoiceProgress = { toolActive: false };
   owner.progress = progress;
+  if (request.kind === "input" && request.earlyProgress) {
+    progress.sentAt = request.earlyProgress.sentAt;
+    progress.outputAt =
+      owner.lastAssistantCaptionAt &&
+      owner.lastAssistantCaptionAt >= progress.sentAt
+        ? owner.lastAssistantCaptionAt
+        : undefined;
+    progress.sending = request.earlyProgress.delivery.then((sent) => {
+      if (!sent) {
+        progress.failed = true;
+        console.warn("[Roman] Voice progress update was skipped.");
+      }
+    });
+  }
   const clearProgressTimer = () => {
     if (progress.timer) clearTimeout(progress.timer);
     progress.timer = undefined;
@@ -387,7 +412,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     scheduleProgress(Date.now(), () => progress.toolCue);
   };
   const startInputProgress = () => {
-    if (request.kind !== "input") return;
+    if (request.kind !== "input" || request.earlyProgress) return;
     scheduleProgress(Date.now(), () => progress.toolCue ?? request.progressCue);
   };
   const waitForProgress = async () => {
@@ -513,13 +538,15 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
   }
   if (event.type === "output_audio_activity") {
     owner.lastAssistantOutputAt = Date.now();
-    if (owner.progress?.sentAt) owner.progress.outputAt = Date.now();
+    // Reflected audio can be silence. Only a caption extends the final-answer
+    // hold; an accepted but inaudible cue must not stall a ready result.
     return;
   }
   // Audio timing is optional on the Live sideband. Captions still tell us
   // Roman is speaking, so do not interleave a progress cue or the final reply.
   if (event.type === "transcript" && event.role === "assistant" && event.text.trim()) {
     owner.lastAssistantOutputAt = Date.now();
+    owner.lastAssistantCaptionAt = owner.lastAssistantOutputAt;
     if (owner.progress?.sentAt) owner.progress.outputAt = Date.now();
   }
   if (event.type === "closed") {
@@ -1026,7 +1053,27 @@ async function submitVoiceInput(
         (receipt.productChoice
           ? `Customer chose ${receipt.productChoice.title} (${receipt.productChoice.productPath}).`
           : `Question: ${receipt.question}\nCustomer answer: ${receipt.answer}`);
-      await owner.provider!.appendCustomerInput(customerInput);
+      // Both commands are sent on the same sideband in order. The short
+      // discovery cue can begin while the input mirror awaits its ACK, so the
+      // shopper does not wait for the model's first catalog tool to hear Roman.
+      const mirrored = owner.provider!.appendCustomerInput(customerInput);
+      const discoveryCue = voiceDiscoveryAcknowledgement(receipt);
+      const cueSentAt = Date.now();
+      const earlyProgress = discoveryCue
+        ? {
+            sentAt: cueSentAt,
+            delivery: owner.provider!.appendProgress(null, discoveryCue).then(
+              () => {
+                console.debug("[Roman] Voice discovery cue accepted.", {
+                  ackMs: Date.now() - cueSentAt,
+                });
+                return true;
+              },
+              () => false,
+            ),
+          }
+        : undefined;
+      await mirrored;
       if (owner.stopping || owners.get(conversationId) !== owner)
         throw new ConversationError(409, disconnected);
       // Queue the canonical advisor directly. HTTP acceptance does not wait for
@@ -1036,6 +1083,7 @@ async function submitVoiceInput(
         requestId: receipt.messageId,
         caption: `answer:${receipt.messageId}`,
         progressCue: voiceInputProgress(receipt),
+        earlyProgress,
       });
     } catch {
       const message =

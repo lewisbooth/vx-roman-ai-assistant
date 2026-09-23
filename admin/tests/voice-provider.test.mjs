@@ -983,7 +983,7 @@ test("customer input redirects unfinished speech alongside quiet context without
   );
   assert.match(
     socket.sent[2].content,
-    /once if useful and not already acknowledged/,
+    /If it does, say it promptly and naturally as one sentence/,
   );
   assert.match(
     socket.sent[2].content,

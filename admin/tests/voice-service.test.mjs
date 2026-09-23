@@ -170,7 +170,7 @@ function setup() {
         created: true,
         messageId: input.requestId,
         sequence: nextMessageSequence++,
-        question: "Which room?",
+        question: mock.question ?? "Which room?",
         answer: input.answer,
         ...("text" in input
           ? { customerText: input.text, answer: input.text, question: "" }
@@ -1186,6 +1186,51 @@ test("a slow clicked answer receives one spoken cue even without a tool", async 
   await state.stop();
 });
 
+test("a discovery choice cues Live before its input mirror ACK and does not hold a silent result", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  state.mock.question = "What matters most for the kitchen or bathroom blinds?";
+  const input = await answerableVoice(state);
+  input.answer = "Privacy";
+  const mirror = deferred();
+  const advisor = deferred();
+  const quiet = deferred();
+  state.mock.onCustomerInput = () => mirror.promise;
+  state.mock.onDelegate = () => advisor.promise;
+  state.mock.onDelay = (ms) => {
+    if (ms > 200) {
+      assert.equal(ms, 1_200);
+      return quiet.promise;
+    }
+  };
+
+  const submitted = state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  assert.deepEqual(plain(state.providers[0].progress), [
+    [null, "I'll look for blinds that give you privacy in your kitchen or bathroom."],
+  ]);
+  assert.equal(state.calls.delegate.length, 0, "the cue does not await the mirror ACK");
+
+  mirror.resolve();
+  await submitted;
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal([...state.timers].some((entry) => entry.ms === 2_500), false);
+  state.emit({ type: "output_audio_activity", startMs: 500, endMs: 650 });
+  advisor.resolve({ text: "Here are current privacy options." });
+  await flush();
+  assert.deepEqual(state.providers[0].replies, []);
+  state.mock.now += 1_200;
+  quiet.resolve();
+  await flush();
+  assert.deepEqual(state.providers[0].replies, ["Here are current privacy options."]);
+  await state.stop();
+});
+
 test("one UI progress cue uses an active tool but survives earlier short tools", async () => {
   for (const toolActiveAtDeadline of [true, false]) {
     const state = setup();
@@ -1254,7 +1299,7 @@ test("assistant captions keep a queued answer behind long filler without audio t
   tool.resolve();
   await flush();
   assert.equal(waits.length, 1);
-  assert.equal(waits[0].ms, 650);
+  assert.equal(waits[0].ms, 1_200, "silent reflected audio is not a spoken cue");
   state.mock.now += 4_500;
   state.emit(transcript({
     eventId: "filler-caption",

@@ -55,3 +55,35 @@ export function voiceInputProgress(
     return "I'm narrowing the options around that.";
   return "I'm checking the next step for you.";
 }
+
+/** A prompt first response for discovery choices that are likely to need catalog work. */
+export function voiceDiscoveryAcknowledgement(
+  input: VoiceQuestionAnswerReceipt,
+): string | undefined {
+  if (!input.question || input.productChoice || input.customerText) return;
+  const question = input.question.toLowerCase();
+  if (!/\b(?:what matters most|main priority|most important)\b/.test(question))
+    return;
+  if (!/\b(?:blinds?|shades?|windows?|room|kitchen|bathroom|bedroom)\b/.test(question))
+    return;
+  const room = question.match(
+    /\b(kitchen or bathroom|living room|dining room|bedroom|kitchen|bathroom|nursery|office|conservatory)\b/,
+  )?.[1];
+  const place = room ? ` for your ${room}` : "";
+  const answer = input.answer.toLowerCase();
+  if (/\bprivacy\b/.test(answer))
+    return `I'll look for blinds that give you privacy${room ? ` in your ${room}` : ""}.`;
+  if (/\bblackout\b/.test(answer))
+    return `I'll look for blackout options${place}.`;
+  if (/\bglare\b/.test(answer))
+    return `I'll look for blinds that reduce glare${place}.`;
+  if (/\beasy clean|cleaning\b/.test(answer))
+    return `I'll look for blinds that are easy to clean${place}.`;
+  if (/\bmoisture|steam\b/.test(answer))
+    return `I'll look for moisture-resistant options${place}.`;
+  if (/\blight control\b/.test(answer))
+    return `I'll look for blinds with flexible light control${place}.`;
+  if (/\bdecorative|pattern|style\b/.test(answer))
+    return `I'll look for decorative styles${place}.`;
+  return;
+}
