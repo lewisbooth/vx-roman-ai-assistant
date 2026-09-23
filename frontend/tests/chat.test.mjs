@@ -1980,23 +1980,7 @@ test("revealed carousel choices stay enabled while Roman works and queue with pr
           "Choice is loaded",
         );
         const card = ctx.container.querySelector(".roman-choose-blind");
-        if (sourceStatus === "pending") {
-          assert.ok(
-            card.closest("[hidden]"),
-            "An unfinished reply preloads its carousel without showing it",
-          );
-          assert.equal(card.disabled, true);
-          ctx.update({
-            conversation: {
-              ...engagedConversation([productsMessage()]),
-              busy: true,
-            },
-          });
-          await until(
-            () => !card.closest("[hidden]") && !card.disabled,
-            "Completed reply releases its carousel after the text reveal",
-          );
-        }
+        assert.equal(card.closest("[hidden]"), null);
         assert.equal(card.disabled, false, "Busy work must not disable hover");
         card.click();
         card.click();

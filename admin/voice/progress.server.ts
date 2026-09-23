@@ -1,3 +1,5 @@
+import type { VoiceQuestionAnswerReceipt } from "../conversations/repository.server";
+
 /** A short, factual progress cue for work that has actually started. */
 export function voiceToolProgress(name: string): string | undefined {
   switch (name) {
@@ -32,4 +34,24 @@ export function voiceToolProgress(name: string): string | undefined {
     default:
       return undefined;
   }
+}
+
+/** A truthful cue while a clicked or typed request is still being reasoned through. */
+export function voiceInputProgress(
+  input: VoiceQuestionAnswerReceipt,
+): string {
+  if (input.productChoice) return "I'm checking that blind's details.";
+  const answer = (input.answer || input.customerText || "").toLowerCase();
+  const context = `${input.question} ${answer}`.toLowerCase();
+  if (/\b(show me more|more options|browse|explore|different (?:colou?rs?|styles?|blinds?|products?)|another (?:blind|product))\b/.test(answer))
+    return "I'm finding a few more options for you.";
+  if (/\b(measur\w*|width|drop|height|size|units?)\b/.test(context))
+    return "I'm checking the next measuring step.";
+  if (/\b(recess|frame|handle|bead|fit|fitting)\b/.test(context))
+    return "I'm checking the fit guidance for that.";
+  if (/\b(cart|basket|sample|checkout|order|guarantee|insur\w*)\b/.test(context))
+    return "I'm checking that with the store.";
+  if (/\b(blinds?|styles?|colou?r|rooms?|privacy|light|blackout)\b/.test(context))
+    return "I'm narrowing the options around that.";
+  return "I'm checking the next step for you.";
 }

@@ -18,7 +18,7 @@ function ProductCardsView({
   session,
   onChoose,
   disabled,
-  deferred = false,
+  preload = false,
   onContentChange,
 }: {
   productIds: readonly string[];
@@ -26,8 +26,8 @@ function ProductCardsView({
   session: ConversationClient;
   onChoose?: (carouselId: string, product: CatalogProduct) => Promise<void>;
   disabled?: boolean;
-  /** Prepare a fresh widget while preceding reply text is still revealing. */
-  deferred?: boolean;
+  /** Load a fresh carousel while its surrounding reply text reveals. */
+  preload?: boolean;
   onContentChange: () => void;
 }) {
   const ids = productIds.join(",");
@@ -70,7 +70,7 @@ function ProductCardsView({
   const choosingRef = useRef(false);
 
   async function choose(product: CatalogProduct) {
-    if (!onChoose || disabled || deferred || choosingRef.current) return;
+    if (!onChoose || disabled || choosingRef.current) return;
     choosingRef.current = true;
     setChoosing(true);
     setChoiceError(undefined);
@@ -89,11 +89,11 @@ function ProductCardsView({
   }
   const target = useRef<HTMLDivElement>(null);
   const [nearby, setNearby] = useState(
-    () => deferred || !window.IntersectionObserver,
+    () => preload || !window.IntersectionObserver,
   );
   useLayoutEffect(() => {
-    if (deferred) setNearby(true);
-  }, [deferred]);
+    if (preload) setNearby(true);
+  }, [preload]);
   const [visible, setVisible] = useState(true);
 
   useLayoutEffect(() => {
@@ -105,7 +105,6 @@ function ProductCardsView({
       ancestors.push(parent);
       parent = parent.parentElement;
     }
-    // The widget's own hidden flag deliberately does not prevent preloading.
     // Hidden Chat, Settings or the assistant shell still cancel optional work.
     const update = () =>
       setVisible(
@@ -126,10 +125,10 @@ function ProductCardsView({
       document.removeEventListener("visibilitychange", update);
     };
   }, []);
-  const active = visible && (nearby || deferred);
+  const active = visible && (nearby || preload);
 
   useEffect(() => {
-    if (deferred || !window.IntersectionObserver || !target.current) return;
+    if (preload || !window.IntersectionObserver || !target.current) return;
     let current = true;
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -145,7 +144,7 @@ function ProductCardsView({
       current = false;
       observer.disconnect();
     };
-  }, [deferred]);
+  }, [preload]);
 
   useLayoutEffect(onContentChange, [ids, result, error, onContentChange]);
 
@@ -194,7 +193,7 @@ function ProductCardsView({
   }, [ids, session, attempt, active, result]);
 
   const frame = (content: ReactNode) => (
-    <div ref={target} hidden={deferred}>
+    <div ref={target}>
       {content}
     </div>
   );
@@ -252,7 +251,7 @@ function ProductCardsView({
                 <button
                   type="button"
                   className="roman-product-card roman-choose-blind"
-                  disabled={!onChoose || disabled || deferred || choosing}
+                  disabled={!onChoose || disabled || choosing}
                   aria-label={`Choose ${product.title}`}
                   onClick={() => void choose(product)}
                 >

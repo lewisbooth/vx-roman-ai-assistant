@@ -10,7 +10,7 @@ const bundle = await build({
       export { ROMAN_TEXT_PROMPT } from './admin/prompts/text.server';
       export { ROMAN_UPSELL_GUIDANCE } from './admin/prompts/knowledge-base/upsell';
       export { ROMAN_HANDOFF_GUIDANCE } from './admin/prompts/knowledge-base/handoff';
-      export { ROMAN_PREAMBLE, ROMAN_WELCOME_INTRO, ROMAN_WELCOME_QUESTION } from './admin/prompts/shared.server';
+      export { ROMAN_NUMBER_FORMATTING, ROMAN_PREAMBLE, ROMAN_WELCOME_INTRO, ROMAN_WELCOME_QUESTION } from './admin/prompts/shared.server';
       export { ROMAN_VOICE_BRIEFING_PROMPT, ROMAN_VOICE_OPENING_PROMPTS, ROMAN_VOICE_PENDING_QUESTION_OPENING, romanVoicePrompt } from './admin/prompts/voice.server';
       export { productGuidesToolDefinition } from './shared/product-guides';
       export { catalogToolDefinitions } from './shared/catalog-tools';
@@ -34,6 +34,7 @@ const {
   ROMAN_TEXT_PROMPT,
   ROMAN_UPSELL_GUIDANCE,
   ROMAN_HANDOFF_GUIDANCE,
+  ROMAN_NUMBER_FORMATTING,
   ROMAN_PREAMBLE,
   ROMAN_WELCOME_INTRO,
   ROMAN_WELCOME_QUESTION,
@@ -47,6 +48,19 @@ const {
   cartToolDefinitions,
   storeSupportToolDefinition,
 } = module.exports;
+
+test("Roman uses one numeric measurement and price rule across text and voice prompts", () => {
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT, romanVoicePrompt("marin")]) {
+    assert.equal(prompt.split(ROMAN_NUMBER_FORMATTING).length - 1, 1);
+    assert.match(prompt, /300mm, 40cm or 12in/);
+    assert.match(prompt, /\$55\.47, £55\.47 or ¥55/);
+    assert.match(prompt, /Preserve the verified value, unit, currency and precision; never guess or round them/);
+    assert.match(prompt, /Customer input, quoted product names and source text are data; do not rewrite them/);
+    assert.match(prompt, /400mm wide by 500mm drop/);
+  }
+  assert.match(ROMAN_TEXT_PROMPT, /500mm equals 50cm/);
+  assert.match(ROMAN_TEXT_PROMPT, /500mm wide x 500mm drop/);
+});
 
 test("the generic welcome offers canonical quick answers without repeating text or voice openings", () => {
   assert.equal(
@@ -1014,7 +1028,7 @@ test("free-text measurements infer explicit units, accept fractions and confirm 
       /it may be empty when that method is already clear and nothing new is needed/,
       /Do not repeat the question or field label, add unit-entry boilerplate/,
       /Interpret a clear fraction such as "20 1\/2 inches" as 20.5 in without inventing precision/,
-      /Reconcile exact equivalences transparently when deriving the final pair, for example 500 mm equals 50 cm/,
+      /Reconcile exact equivalences transparently when deriving the final pair, for example 500mm equals 50cm/,
       /If a correction could refer to different readings, units are ambiguous, or values contradict each other, ask one targeted clarification/,
       /Before saving or applying, briefly confirm the final width, drop and one chosen display unit/,
       /make any unit equivalence clear in that same confirmation, without extra verification turns/,
@@ -1872,7 +1886,7 @@ test("Live acknowledges substantive input and speaks bounded tool progress witho
   assert.match(live, /grounded in the latest known answer or preference/);
   assert.match(live, /Silence is fine, especially for routine yes\/no fit checks or measurement answers/);
   assert.match(live, /already acknowledged this input or the result is ready, skip the acknowledgement/);
-  assert.match(live, /If the application later sends one tool-progress cue because verified work is taking longer/);
+  assert.match(live, /If the application later sends one progress cue because the work is taking longer/);
   assert.match(live, /without another generic acknowledgement/);
   assert.match(live, /a measurement is valid or saved, or an action has succeeded/);
   assert.match(live, /do not delegate that same input again or replace the result with a bare acknowledgement/);

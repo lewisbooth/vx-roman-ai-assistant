@@ -1153,6 +1153,77 @@ test("a slow catalog tool gets one spoken cue and queues its verified answer", a
   await state.stop();
 });
 
+test("a slow clicked answer receives one spoken cue even without a tool", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  const input = await answerableVoice(state);
+  const advisor = deferred();
+  const quiet = deferred();
+  state.mock.onDelegate = () => advisor.promise;
+  state.mock.onDelay = (ms) => (ms > 200 ? quiet.promise : undefined);
+  await state.api.answerVoiceQuestion(
+    state.conversationId,
+    state.input.requestId,
+    input,
+  );
+  await flush();
+  const timer = [...state.timers].find((entry) => entry.ms === 2_500);
+  assert.ok(timer);
+  state.timers.delete(timer);
+  state.mock.now += 2_500;
+  timer.callback();
+  await flush();
+  assert.deepEqual(plain(state.providers[0].progress), [
+    [null, "I'm narrowing the options around that."],
+  ]);
+  advisor.resolve({ text: "Here are suitable options." });
+  await flush();
+  assert.deepEqual(state.providers[0].replies, []);
+  state.mock.now += 3_500;
+  quiet.resolve();
+  await flush();
+  assert.deepEqual(state.providers[0].replies, ["Here are suitable options."]);
+  await state.stop();
+});
+
+test("one UI progress cue uses an active tool but survives earlier short tools", async () => {
+  for (const toolActiveAtDeadline of [true, false]) {
+    const state = setup();
+    state.mock.now = 100_000;
+    const input = await answerableVoice(state);
+    const advisor = deferred();
+    state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
+      options.onToolActivity("search_products", true);
+      if (!toolActiveAtDeadline) options.onToolActivity("search_products", false);
+      await advisor.promise;
+      if (toolActiveAtDeadline) options.onToolActivity("search_products", false);
+      return { text: "Here are the verified options." };
+    };
+    await state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    );
+    await flush();
+    const timer = [...state.timers].find((entry) => entry.ms === 2_500);
+    assert.ok(timer, "the input's timer outlives a short tool");
+    state.timers.delete(timer);
+    state.mock.now += 2_500;
+    timer.callback();
+    await flush();
+    assert.deepEqual(plain(state.providers[0].progress), [
+      [
+        null,
+        toolActiveAtDeadline
+          ? "I'm checking the current range against what you've told me."
+          : "I'm narrowing the options around that.",
+      ],
+    ]);
+    await state.stop();
+    advisor.resolve();
+  }
+});
+
 test("assistant captions keep a queued answer behind long filler without audio timing", async () => {
   const state = setup();
   state.mock.now = 100_000;
@@ -2358,6 +2429,7 @@ test("typed replies, quick answers and carousel choices send only the completed 
     assert.deepEqual(state.providers[0].replies, [
       "Which of these styles suits your room?",
     ]);
+    assert.deepEqual(state.providers[0].progress, []);
     assert.deepEqual(state.providers[0].commentaries, []);
     assert.equal(state.providers[0].closed, false);
     await state.stop();

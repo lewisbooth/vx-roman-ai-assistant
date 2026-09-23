@@ -17,7 +17,7 @@ const bundle = await build({
         const choose = async () => {};
         return {
           render(rows) { flushSync(() => root.render(<ol>{rows.map((row, index) =>
-            <li key={index} hidden={row.deferred}>
+            <li key={index}>
               <ProductCards {...row} carouselId={String(index)} session={session} onChoose={choose} onContentChange={change} />
             </li>)}</ol>)); },
           dispose() { flushSync(() => root.unmount()); }
@@ -181,30 +181,30 @@ test("nearby carousels warm every horizontal image through two metadata slots ea
   );
 });
 
-test("a deferred fresh carousel prepares invisibly and releases without cancelling image work", async (t) => {
-  const row = { productIds: ids(), deferred: true };
+test("a fresh carousel preloads visibly without restarting image work", async (t) => {
+  const row = { productIds: ids(), preload: true };
   const ctx = setup(t, [row]);
   assert.equal(
     ctx.observers.length,
     0,
-    "Intentionally hidden cards do not observe obsolete intersections",
+    "Fresh cards preload without waiting for an intersection",
   );
   await until(
     () => ctx.images.length === 2,
-    "Deferred cards start preloading despite intentional hidden rows",
+    "Fresh cards start preloading while visible",
   );
-  assert.ok(ctx.root.querySelector("button").closest("[hidden]"));
+  assert.equal(ctx.root.querySelector("button").closest("[hidden]"), null);
   assert.ok(
     [...ctx.root.querySelectorAll("button.roman-choose-blind")].every(
-      (button) => button.disabled,
+      (button) => !button.disabled,
     ),
   );
-  ctx.render([{ ...row, deferred: false }]);
+  ctx.render([{ ...row, preload: false }]);
   await delay(15);
   assert.equal(ctx.images.length, 2);
   assert.ok(
     ctx.images.every((call) => !call.signal.aborted),
-    "Releasing text does not restart the metadata requests",
+    "Finishing text does not restart the metadata requests",
   );
   ctx.observers[0].intersect(true);
   assert.equal(ctx.root.querySelector("button").closest("[hidden]"), null);
@@ -216,10 +216,10 @@ test("a deferred fresh carousel prepares invisibly and releases without cancelli
   assert.equal(ctx.catalogs.length, 1);
 });
 
-test("actual Chat or shell hiding aborts deferred lookups and does not admit more until visible", async (t) => {
+test("actual Chat or shell hiding aborts fresh lookups and does not admit more until visible", async (t) => {
   for (const area of ["chat", "shell", "document"]) {
     await t.test(area, async (t) => {
-      const ctx = setup(t, [{ productIds: ids(), deferred: true }]);
+      const ctx = setup(t, [{ productIds: ids(), preload: true }]);
       await until(() => ctx.images.length === 2, "Initial image lookups start");
       const setHidden = (hidden) => {
         if (area !== "document") ctx[area].hidden = hidden;

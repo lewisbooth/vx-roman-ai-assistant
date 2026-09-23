@@ -122,7 +122,7 @@ const products = (overrides = {}) => ({
   ...overrides,
 });
 
-test("carousels preload invisibly and inline receipts wait for the same text reveal as quick answers", async (t) => {
+test("carousels and receipts appear while quick answers wait for their text", async (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
   ctx.render({
@@ -146,10 +146,8 @@ test("carousels preload invisibly and inline receipts wait for the same text rev
   });
   await delay(0);
   const cards = ctx.container.querySelector(".roman-products");
-  assert.ok(
-    cards?.closest("[hidden]"),
-    "Loaded carousel stays out of layout and accessibility tree",
-  );
+  assert.ok(cards);
+  assert.equal(cards.closest("[hidden]"), null);
   assert.equal(
     ctx.window.catalogLoads.length,
     1,
@@ -160,46 +158,47 @@ test("carousels preload invisibly and inline receipts wait for the same text rev
     2,
     "Both carousel images warm before reveal ends",
   );
-  assert.equal(ctx.container.querySelector(".roman-cart-added"), null);
+  assert.ok(ctx.container.querySelector(".roman-cart-added"));
   assert.equal(choices(ctx), null);
   ctx.tick(1000);
-  assert.equal(cards.closest("[hidden]"), null);
   assert.equal(
     ctx.container.querySelector(".roman-products"),
     cards,
-    "Releasing the carousel keeps its loaded content",
+    "The visible carousel keeps its loaded content",
   );
-  assert.ok(ctx.container.querySelector(".roman-cart-added"));
   assert.ok(choices(ctx));
 });
 
-test("an early widget-only snapshot stays hidden until the final text arrives and finishes", async (t) => {
+test("an early carousel appears while quick answers wait for final text", async (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
   ctx.render({
-    messages: [user(), message("reply", "assistant", [products()], "pending")],
+    messages: [user(), message("reply", "assistant", [products(), question()], "pending")],
+    activeQuestionId: "q",
   });
   await delay(0);
   const cards = ctx.container.querySelector(".roman-products");
-  assert.ok(cards.closest("[hidden]"));
+  assert.equal(cards.closest("[hidden]"), null);
   assert.equal(ctx.window.catalogLoads.length, 1);
+  assert.equal(choices(ctx), null);
   ctx.tick(1000);
-  assert.ok(
-    cards.closest("[hidden]"),
-    "No timer guesses completion before prose arrives",
-  );
+  assert.equal(cards.closest("[hidden]"), null);
+  assert.equal(choices(ctx), null, "Pending quick answers await final prose");
   ctx.render({
     messages: [
       user(),
       message("reply", "assistant", [
         text("Here is the finished comparison."),
         products(),
+        question(),
       ]),
     ],
+    activeQuestionId: "q",
   });
-  assert.ok(cards.closest("[hidden]"));
-  ctx.tick(1000);
   assert.equal(cards.closest("[hidden]"), null);
+  assert.equal(choices(ctx), null);
+  ctx.tick(1000);
+  assert.ok(choices(ctx));
 });
 
 test("older and voice carousels are not hidden by a new text reply", async (t) => {
@@ -265,17 +264,10 @@ test("new complete blocks reveal before answers, preserve formatting and do not 
   assert.equal(ctx.timers.size, 0);
 });
 
-test("streamed append holds an early measurement question until both source and reveal finish", (t) => {
+test("streamed append holds quick answers until both source and reveal finish", (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
-  const offered = question({
-    measurement: {
-      productPath: "/products/blind",
-      label: "Width",
-      unit: "mm",
-      instructions: "Take the shortest width.",
-    },
-  });
+  const offered = question();
   ctx.render({
     messages: [
       user(),
@@ -308,6 +300,28 @@ test("streamed append holds an early measurement question until both source and 
   assert.equal(displayed(ctx), "Measure the width.");
   assert.equal(choices(ctx), null);
   ctx.tick(1000);
+  assert.ok(choices(ctx));
+});
+
+test("measurement input appears while its accompanying text reveals", (t) => {
+  const ctx = setup(t);
+  ctx.render({ messages: [user()] });
+  const offered = question({
+    measurement: {
+      productPath: "/products/blind",
+      label: "Width",
+      unit: "mm",
+      instructions: "Take the shortest width.",
+    },
+  });
+  ctx.render({
+    messages: [
+      user(),
+      message("reply", "assistant", [text("Measure the width."), offered]),
+    ],
+    activeQuestionId: "q",
+  });
+  assert.equal(displayed(ctx), "");
   assert.ok(ctx.container.querySelector(".roman-measurement-form"));
 });
 

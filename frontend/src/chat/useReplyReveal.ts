@@ -117,28 +117,13 @@ export function useReplyReveal(
     return () => window.clearTimeout(timer);
   }, [current, revealing]);
 
-  const lastCustomer = lastCustomerIndex(messages);
-  const holdWidgets =
-    revealing ||
-    messages.some(
-      (message, index) =>
-        index > lastCustomer &&
-        message.role === "assistant" &&
-        message.status === "pending" &&
-        !message.parts.some((part) => part.type === "voice"),
-    );
   const visibleCharacters = current.parts.reduce(
     (total, part) => total + Math.floor(part.visible),
     0,
   );
-  useLayoutEffect(onContentChange, [
-    onContentChange,
-    visibleCharacters,
-    holdWidgets,
-  ]);
+  useLayoutEffect(onContentChange, [onContentChange, visibleCharacters]);
 
   return {
     parts: new Map(current.parts.map((part) => [part.part, part])),
-    holdWidgets,
   };
 }

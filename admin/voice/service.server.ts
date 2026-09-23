@@ -34,7 +34,7 @@ import {
   type VoiceProvider,
   type VoiceProviderEvent,
 } from "./provider.server";
-import { voiceToolProgress } from "./progress.server";
+import { voiceInputProgress, voiceToolProgress } from "./progress.server";
 import {
   activateVoiceSession,
   appendVoiceTranscript,
@@ -101,6 +101,7 @@ interface VoiceOwner {
 interface VoiceProgress {
   timer?: ReturnType<typeof setTimeout>;
   toolActive: boolean;
+  toolCue?: string;
   sentAt?: number;
   outputAt?: number;
   sending?: Promise<void>;
@@ -232,6 +233,7 @@ type AdvisorRequest =
       kind: "input";
       requestId: string;
       caption: string;
+      progressCue: string;
     }
   | { kind: "resume"; questionId: string };
 
@@ -330,26 +332,21 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     progress.timer = undefined;
   };
   signal.addEventListener("abort", clearProgressTimer, { once: true });
-  const onToolActivity = (name: string, active: boolean) => {
-    if (signal.aborted || owner.stopping || owner.progress !== progress) return;
-    progress.toolActive = active;
-    if (!active) {
-      clearProgressTimer();
-      return;
-    }
-    if (progress.sentAt || progress.timer) return;
-    const cue = voiceToolProgress(name);
-    if (!cue) return;
-    const startedAt = Date.now();
+  const scheduleProgress = (
+    startedAt: number,
+    cue: () => string | undefined,
+  ) => {
     const speakIfQuiet = () => {
       progress.timer = undefined;
       if (
         signal.aborted ||
         owner.stopping ||
         owner.progress !== progress ||
-        !progress.toolActive
+        progress.sentAt
       )
         return;
+      const text = cue();
+      if (!text) return;
       const lastOutput = owner.lastAssistantOutputAt ?? startedAt;
       const quietFor = Date.now() - Math.max(startedAt, lastOutput);
       if (quietFor < TOOL_PROGRESS_DELAY_MS) {
@@ -362,7 +359,10 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
       }
       progress.sentAt = Date.now();
       progress.sending = owner.provider!
-        .appendProgress(request.kind === "speech" ? request.delegationId : null, cue)
+        .appendProgress(
+          request.kind === "speech" ? request.delegationId : null,
+          text,
+        )
         .catch(() => {
           // A courtesy update is optional; the verified result still follows.
           progress.failed = true;
@@ -371,6 +371,24 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     };
     progress.timer = setTimeout(speakIfQuiet, TOOL_PROGRESS_DELAY_MS);
     progress.timer.unref();
+  };
+  const onToolActivity = (name: string, active: boolean) => {
+    if (signal.aborted || owner.stopping || owner.progress !== progress) return;
+    progress.toolActive = active;
+    progress.toolCue = active ? voiceToolProgress(name) : undefined;
+    // UI input has one turn-wide timer. Short tools must not reset its clock.
+    if (request.kind === "input") return;
+    if (!active) {
+      clearProgressTimer();
+      return;
+    }
+    if (progress.sentAt || progress.timer) return;
+    if (!progress.toolCue) return;
+    scheduleProgress(Date.now(), () => progress.toolCue);
+  };
+  const startInputProgress = () => {
+    if (request.kind !== "input") return;
+    scheduleProgress(Date.now(), () => progress.toolCue ?? request.progressCue);
   };
   const waitForProgress = async () => {
     clearProgressTimer();
@@ -432,6 +450,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         return;
       }
       owner.delegatedCaption = owner.latestUserCaption;
+      startInputProgress();
       const reply = await runVoiceDelegation(
         owner.conversationId,
         owner.voiceId,
@@ -439,6 +458,9 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         signal,
         { ...(resumeQuestionId ? { resumeQuestionId } : {}), onToolActivity },
       );
+      // The result is ready; a pending courtesy cue must not overtake it while
+      // caption/event persistence drains before the verified briefing.
+      clearProgressTimer();
       await owner.events;
       if (signal.aborted) return;
       if (resumeQuestionId && owner.userSpeechObserved) return;
@@ -1013,6 +1035,7 @@ async function submitVoiceInput(
         kind: "input",
         requestId: receipt.messageId,
         caption: `answer:${receipt.messageId}`,
+        progressCue: voiceInputProgress(receipt),
       });
     } catch {
       const message =
