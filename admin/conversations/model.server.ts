@@ -5,8 +5,10 @@ import {
 } from "../../shared/checkout";
 import OpenAI from "openai";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type {
   Response,
+  ResponseCreateParamsStreaming,
   ResponseError,
   ResponseInput,
   ResponseInputFile,
@@ -166,6 +168,46 @@ export class ModelResponseError extends Error {
           }
         : {}),
     };
+  }
+}
+
+const providerErrorCodes = [
+  "model_not_found",
+  "rate_limit_exceeded",
+  "insufficient_quota",
+] as const;
+
+/** SDK error messages and bodies may contain request data; log only safe fields. */
+export function providerFailureDiagnostics(error: unknown) {
+  if (error instanceof ModelResponseError) return error.diagnostics;
+  if (!(error instanceof OpenAI.APIError)) return {};
+  return {
+    providerHttpStatus: error.status ?? null,
+    providerCode:
+      providerErrorCodes.find((code) => code === error.code) ?? "unknown",
+  };
+}
+
+async function createWithModelAccessRetry(
+  client: OpenAI,
+  params: ResponseCreateParamsStreaming,
+  signal: AbortSignal,
+) {
+  const request = () => client.responses.create(params, { signal });
+  try {
+    return await request();
+  } catch (error) {
+    if (
+      !(error instanceof OpenAI.APIError) ||
+      error.status !== 403 ||
+      error.code !== "model_not_found" ||
+      signal.aborted
+    )
+      throw error;
+    // Newly enabled model access can briefly differ across provider requests.
+    // Retry once before any response or storefront action has occurred.
+    await delay(1_000, undefined, { signal });
+    return request();
   }
 }
 
@@ -490,7 +532,8 @@ export async function generateReply(
     let repairIncompleteAnswer = false;
     try {
       signal.throwIfAborted();
-      const stream = await client.responses.create(
+      const stream = await createWithModelAccessRetry(
+        client,
         {
           model: TEXT_MODEL,
           service_tier: TEXT_SERVICE_TIER,
@@ -582,7 +625,7 @@ export async function generateReply(
           store: false,
           stream: true,
         },
-        { signal },
+        signal,
       );
       for await (const event of stream) {
         if (

@@ -5,6 +5,13 @@ import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 
 const require = createRequire(import.meta.url);
+class StubAPIError extends Error {
+  constructor(status, code) {
+    super("Provider error body must not be logged.");
+    this.status = status;
+    this.code = code;
+  }
+}
 const bundle = await build({
   entryPoints: ["admin/conversations/model.server.ts"],
   bundle: true,
@@ -20,7 +27,7 @@ const bundle = await build({
           namespace: "stub",
         }));
         build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-          contents: `export default class OpenAI { constructor() { this.responses={create:(...args)=>mock.create(...args)}; } }`,
+          contents: `export default class OpenAI { static APIError = mock.APIError; constructor() { this.responses={create:(...args)=>mock.create(...args)}; } }`,
         }));
       },
     },
@@ -72,6 +79,7 @@ function setup(scripts) {
   const requests = [];
   const controller = new AbortController();
   const mock = {
+    APIError: StubAPIError,
     create: async (...args) => {
       requests.push(args);
       const script = scripts.shift();
@@ -91,6 +99,7 @@ function setup(scripts) {
     records,
     requests,
     controller,
+    diagnostics: module.exports.providerFailureDiagnostics,
     run: (onUsage = record, options = {}) =>
       module.exports.generateReply(
         [{ role: "user", text: "Private synthetic test request." }],
@@ -108,6 +117,67 @@ const events = (...values) =>
   async function* () {
     yield* values;
   };
+
+test("a temporary model access rejection retries once before completing the same usage attempt", async () => {
+  const rejection = new StubAPIError(403, "model_not_found");
+  const app = setup([
+    async () => {
+      throw rejection;
+    },
+    events(terminal()),
+  ]);
+  const reply = await app.run();
+  assert.equal(
+    reply.questionPresentation.question,
+    "Which room are you shopping for?",
+  );
+  assert.equal(app.requests.length, 2);
+  assert.deepEqual(
+    app.records.map((entry) => entry.status),
+    ["pending", "completed"],
+  );
+  assert.deepEqual(plain(app.diagnostics(rejection)), {
+    providerHttpStatus: 403,
+    providerCode: "model_not_found",
+  });
+  assert.doesNotMatch(
+    JSON.stringify(app.diagnostics(rejection)),
+    /Provider error body/,
+  );
+});
+
+test("model access retry is bounded and does not hide a second rejection", async () => {
+  const rejection = new StubAPIError(403, "model_not_found");
+  const app = setup([
+    async () => {
+      throw rejection;
+    },
+    async () => {
+      throw rejection;
+    },
+  ]);
+  await assert.rejects(app.run(), (error) => error === rejection);
+  assert.equal(app.requests.length, 2);
+  assert.deepEqual(
+    app.records.map((entry) => entry.status),
+    ["pending", "unavailable"],
+  );
+});
+
+test("other provider errors are reported without retrying or logging their body", async () => {
+  const rejection = new StubAPIError(429, "rate_limit_exceeded");
+  const app = setup([
+    async () => {
+      throw rejection;
+    },
+  ]);
+  await assert.rejects(app.run(), (error) => error === rejection);
+  assert.equal(app.requests.length, 1);
+  assert.deepEqual(plain(app.diagnostics(rejection)), {
+    providerHttpStatus: 429,
+    providerCode: "rate_limit_exceeded",
+  });
+});
 
 test("every tool round records a durable attempt and its own provider-reported usage", async () => {
   const app = setup([
@@ -315,7 +385,10 @@ test("a model-selected follow-up remains authoritative instead of becoming a gen
             type: "function_call",
             name: "ask_question",
             call_id: "chosen-question",
-            arguments: JSON.stringify({ message: "Let's start with your room.", ...question }),
+            arguments: JSON.stringify({
+              message: "Let's start with your room.",
+              ...question,
+            }),
           },
         ]),
       ),
@@ -327,7 +400,10 @@ test("a model-selected follow-up remains authoritative instead of becoming a gen
     });
     assert.equal(reply.text, overview);
     assert.equal(app.requests.length, 1);
-    assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "completed"]);
+    assert.deepEqual(
+      app.records.map((entry) => entry.status),
+      ["pending", "completed"],
+    );
     assert.equal(app.records.at(-1).totalTokens, 25);
     assert.doesNotMatch(
       JSON.stringify(reply),
@@ -388,11 +464,25 @@ test("an invalid saved-question resume records its bounded repair without invent
     answers: ["Kitchen", "Bedroom"],
   };
   const app = setup([events(terminal()), events(terminal())]);
-  await assert.rejects(app.run(undefined, { mode: "voice", resumeQuestion }), /did not finish with a valid answer request/);
+  await assert.rejects(
+    app.run(undefined, { mode: "voice", resumeQuestion }),
+    /did not finish with a valid answer request/,
+  );
   assert.equal(app.requests.length, 2);
-  assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "completed", "pending", "completed"]);
-  assert.equal(app.records.filter((entry) => entry.status === "completed").reduce((sum, entry) => sum + entry.totalTokens, 0), 30);
-  assert.match(JSON.stringify(app.requests[1][0].input), /Resume only the saved unanswered question/);
+  assert.deepEqual(
+    app.records.map((entry) => entry.status),
+    ["pending", "completed", "pending", "completed"],
+  );
+  assert.equal(
+    app.records
+      .filter((entry) => entry.status === "completed")
+      .reduce((sum, entry) => sum + entry.totalTokens, 0),
+    30,
+  );
+  assert.match(
+    JSON.stringify(app.requests[1][0].input),
+    /Resume only the saved unanswered question/,
+  );
 });
 
 test("unreadable PDP guides preserve usage while the model chooses a supported next step", async () => {

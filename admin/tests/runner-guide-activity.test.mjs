@@ -25,7 +25,7 @@ const bundle = await build({
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
           contents: path.endsWith("model.server")
-            ? "export const TEXT_MODEL='synthetic'; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}"
+            ? "export const TEXT_MODEL='synthetic'; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}; export const providerFailureDiagnostics=()=>({})"
             : path.endsWith("library.server")
               ? `export const readLibraryInventory=(...args)=>{mock.libraryReads.push(args);return []};
                  export const readBoundLibrarySource=()=>undefined;

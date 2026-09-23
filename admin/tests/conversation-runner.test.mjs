@@ -45,6 +45,7 @@ const bundle = await build({
           contents:
             args.path === "openai"
               ? `export default class OpenAI {
+              static APIError = class APIError extends Error {};
               constructor(options) {
                 mock.clients.push(options);
                 this.responses={create:(...args)=>mock.createResponse(...args)};
