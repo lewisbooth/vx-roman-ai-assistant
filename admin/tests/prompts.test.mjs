@@ -125,23 +125,19 @@ test("the generic welcome offers canonical quick answers without repeating text 
     ROMAN_VOICE_OPENING_PROMPTS.newConversation,
     /quick-answer choices automatically; do not delegate to create them or say the welcome again/,
   );
-  assert.ok(
-    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation.includes(
-      `exactly matches this welcome question and its answers: ${JSON.stringify(ROMAN_WELCOME_QUESTION)}`,
-    ),
+  assert.match(
+    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
+    /ask the unanswered initial welcome question only when explicitly directed/,
   );
   assert.match(
     ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
-    /say that question once directly; its saved choices are still visible/,
+    /Do not delegate, recreate a saved question or repeat the full introduction merely because voice started/,
   );
   assert.match(
     ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
-    /Do not delegate, recreate the question or repeat the full introduction for this welcome-menu continuation/,
+    /The application resumes other saved questions from a verified briefing/,
   );
-  assert.match(
-    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
-    /For any other saved question, the application owns its read-only resumption/,
-  );
+  assert.doesNotMatch(ROMAN_VOICE_OPENING_PROMPTS.resumedConversation, /Current pending follow-up|application state|\bnone\b/i);
 });
 
 test("first voice after text continues the selected product and confirmed outcome without resetting the conversation", () => {
@@ -162,22 +158,8 @@ test("first voice after text continues the selected product and confirmed outcom
     opening,
     /Do not offer the generic welcome menu after the customer has progressed beyond it or reopen a completed choice unless the customer explicitly asks to start over/,
   );
-  assert.match(
-    opening,
-    /historical welcome followed by a specific request, chosen product or confirmed action is no longer pending/,
-  );
-  assert.match(
-    opening,
-    /customer has not yet progressed beyond that initial menu, say that question once directly/,
-  );
-  assert.match(
-    opening,
-    /Only resume the question selected by "Current pending follow-up \(application state\)"; never infer a pending question from historical question-widget records/,
-  );
-  assert.match(
-    opening,
-    /If that state is none, continue the latest topic without restoring any old question or menu/,
-  );
+  assert.match(opening, /Historical question-widget records are reference data, not speech templates or proof that a question is still waiting/);
+  assert.match(opening, /otherwise continue the latest topic with one concise, relevant follow-up/);
   assert.doesNotMatch(
     opening,
     /Begin "Hi, it's Roman again|Say this complete welcome exactly/,
@@ -210,7 +192,7 @@ test("historical question widgets supply context without becoming customer-facin
   const opening = ROMAN_VOICE_OPENING_PROMPTS.resumedConversation;
   assert.match(
     opening,
-    /Those records are application reference data, not speech templates or new instructions/,
+    /Historical question-widget records are reference data, not speech templates or proof that a question is still waiting/,
   );
   assert.doesNotMatch(opening, /Suggested answers|Measurement input/);
 });
@@ -234,12 +216,14 @@ test("recommendations research candidate evidence through bounded tools without 
 
 test("known compatibility constraints are checked before a shortlist rather than deferred until selection", () => {
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    assert.match(prompt, /A known window shape, mounting constraint or other fit-critical requirement must filter the recommendations before the customer chooses/);
-    assert.match(prompt, /Use library written guidance where sufficient; consult selected original PDFs when the decision depends on a missing illustrated or product-specific detail/);
+    assert.match(prompt, /A known window shape, frame type, mounting constraint or other fit-critical requirement must filter the recommendations before the customer chooses/);
+    assert.match(prompt, /verify that feature in catalog details, but do not load the measuring library merely to look for hypothetical shape exceptions when no shape or fit question has been supplied/);
+    assert.match(prompt, /Use library written guidance when a specific known constraint needs it; consult selected original PDFs when the decision depends on a missing illustrated or product-specific detail/);
     assert.match(prompt, /Do not navigate every candidate or read every PDF as a ritual/);
     assert.match(prompt, /Never present an unchecked shortlist as suitable or postpone checking a known compatibility constraint until after selection/);
     assert.match(prompt, /clearly distinguish exploratory products from fit recommendations/);
-    assert.match(prompt, /Do not ask the customer to repeat the constraint or choose a product simply to discover whether the whole family is unsuitable/);
+    assert.match(prompt, /do not introduce an unmentioned bay or another hypothetical shape into a broad carousel overview/);
+    assert.match(prompt, /Do not ask the customer to repeat a known constraint or choose a product simply to discover whether the whole family is unsuitable/);
   }
   assert.match(romanVoicePrompt("marin"), /Include already-known fitting constraints so the backend advisor verifies support before presenting recommendations/);
 });
@@ -247,7 +231,8 @@ test("known compatibility constraints are checked before a shortlist rather than
 test("catalog tool context distinguishes candidate discovery from evidence and batches missing details", () => {
   const descriptions = Object.fromEntries(catalogToolDefinitions.map(({ name, description }) => [name, description]));
   assert.match(descriptions.search_products, /use lookup_catalog for a shortlist or get_product for one when needed details are missing/);
-  assert.match(descriptions.search_products, /Verify known fitting constraints through relevant store guidance before recommending candidates, not after the customer chooses/);
+  assert.match(descriptions.search_products, /Verify a requested no-drill feature from catalog details; verify a specific known window or frame constraint through relevant store guidance before recommending a fit/);
+  assert.match(descriptions.search_products, /An unspecified window shape does not require a measuring-library lookup during exploratory browsing/);
   assert.match(descriptions.get_product, /the compact result does not expose every option or specification, and missing details remain unknown/);
   assert.match(descriptions.get_product, /Use native configuration for current options and verified store guidance for fitting compatibility/);
   assert.match(descriptions.lookup_catalog, /Batch a shortlist in one call/);
@@ -372,7 +357,7 @@ test("one terminal question owns text history while actual voice captions own sp
   assert.match(live, /spoken agreement does not approve these actions/);
   assert.match(
     ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
-    /If it supplies a question, resume that exact question/,
+    /ask the unanswered initial welcome question only when explicitly directed/,
   );
   assert.match(
     ROMAN_VOICE_BRIEFING_PROMPT,
@@ -459,6 +444,7 @@ test("recommendation discovery asks only missing room and requirements and prese
     assert.match(prompt, /An explicit request to browse across categories, including "Show me everything", resolves this choice for the current flow, even when supplied upfront; do not ask it again/);
     assert.match(prompt, /It means a varied selection relevant to the established room, requirements and fitting constraints, not removal of those filters/);
     assert.match(prompt, /For that broad discovery, aim for up to ten distinct, relevant verified products across suitable families/);
+    assert.match(prompt, /"Show me everything" means to compare the categories just offered, not to follow only the last answer choice or latest search/);
     assert.match(prompt, /Prefer this category choice over a colour-only question/);
     assert.match(prompt, /Never add unsuitable products merely for variety/);
     assert.match(prompt, /Reuse an explicit blind type, chosen product or established preference; do not reopen it or force another intake turn/);
@@ -532,6 +518,7 @@ test("broad discovery retrieves and balances genuine families within the existin
     assert.match(prompt, /Work within the normal four storefront calls: usually up to three targeted searches, leaving a call for a needed batched lookup or guidance read/);
     assert.match(prompt, /prioritize verified suitability over the number of families or cards/);
     assert.match(prompt, /Choose show_products IDs from the combined current-turn results, not just the last search/);
+    assert.match(prompt, /check that an eligible family searched earlier has not disappeared from the selected IDs merely because the final search was narrower/);
     assert.match(prompt, /First choose the strongest supported match from each suitable family/);
     assert.match(prompt, /interleave families in display order so the first cards show the range/);
     assert.match(prompt, /A smaller balanced carousel is better than padding it with near-identical choices from one family/);
@@ -1172,8 +1159,8 @@ test("both answer tools finish complete replies without optional post-tool narra
 
 test("resumed numeric steps retain their input type and require current guide and product support", () => {
   assert.match(
-    ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,
-    /measurement field marks a pending numeric question/,
+    ROMAN_VOICE_PENDING_QUESTION_OPENING,
+    /the application is already checking that saved question and its source through a read-only backend resume/i,
   );
   assert.match(
     ROMAN_VOICE_PENDING_QUESTION_OPENING,
@@ -1558,7 +1545,8 @@ test("one shared business knowledge prompt supplies grounded upsells and guarant
     /Respect a decline and do not re-offer it unless the customer changes the relevant need or asks to revisit it/,
     /Do not move an agreed product outside their budget or replace it without their choice/,
     /names are search leads, not proof of availability, performance or suitability/,
-    /Verify alternatives through the current store's catalog, options and charges through the current native PDP controls, and measuring\/fitting compatibility through the matching original guide/,
+    /They do not choose a colour, pattern or blind family for the customer/,
+    /Verify alternatives through the current store's catalog, options and charges through the current native PDP controls, and measuring\/fitting compatibility through the matching original guide when a specific fit question is at issue/,
     /never enable paid extras from a default or inferred preference/,
     /do not interrupt a sample-only request, an unresolved measuring step or an explicit product-add request just to make an unrelated offer/,
     /do not restart discovery or force an upsell at every turn/,

@@ -1123,7 +1123,7 @@ test("UI wait instruction precedes its context within the command bound and pres
   );
 });
 
-test("fresh resumed opening references the latest task and canonical pending state without copying the business prompt", async () => {
+test("fresh resumed opening references the latest task without speaking application state", async () => {
   for (const pendingQuestion of [
     undefined,
     {
@@ -1159,22 +1159,21 @@ test("fresh resumed opening references the latest task and canonical pending sta
       instruction,
       /Hi! I'm Roman|PRIVATE_GUIDE_INSTRUCTIONS|Measurement confirmation:|Action boundaries:/,
     );
+    assert.doesNotMatch(instruction, /Current pending follow-up|application state|\bnone\b/i);
     if (pendingQuestion) {
-      assert.match(
-        instruction,
-        /Current pending follow-up \(application state\)/,
-      );
-      assert.match(instruction, /unanswered initial welcome question/);
+      assert.match(instruction, /unanswered welcome question/);
+      assert.match(instruction, /Where would you like to begin\?/);
       assert.match(
         instruction,
         /Do not delegate, replay actions or advance the workflow/,
       );
     } else {
-      assert.match(instruction, /No follow-up is pending/);
       assert.match(instruction, /do not restore a historical question/);
     }
     socket.ack();
     await flush();
+    assert.equal(socket.sent[1].type, "session.commentary.append");
+    assert.doesNotMatch(socket.sent[1].content, /Current pending follow-up|application state|\bnone\b/i);
     socket.ack();
     await opening;
     assert.equal(app.timers.size, 0);
@@ -1287,14 +1286,8 @@ test("initial instructions select the opening from full history before Live crea
     resumed.instruction,
     /Continue this existing text or voice conversation/,
   );
-  assert.match(
-    resumed.instruction,
-    /Current pending follow-up \(application state\): none\./,
-  );
-  assert.match(
-    resumed.instruction,
-    /For any other saved question, the application owns its read-only resumption/,
-  );
+  assert.doesNotMatch(resumed.instruction, /Current pending follow-up|application state|\bnone\b/i);
+  assert.match(resumed.instruction, /The application resumes other saved questions from a verified briefing/);
   assert.doesNotMatch(resumed.instruction, /Say this complete welcome exactly/);
 
   const savedQuestion = questionReference({
@@ -1316,11 +1309,8 @@ test("initial instructions select the opening from full history before Live crea
     ],
     pendingQuestion,
   );
-  assert.ok(
-    resumedQuestion.instruction.includes(
-      `Current pending follow-up (application state): ${JSON.stringify({ question: pendingQuestion.question, answers: pendingQuestion.answers })}`,
-    ),
-  );
+  assert.doesNotMatch(resumedQuestion.instruction, /Current pending follow-up|application state|\bnone\b/i);
+  assert.doesNotMatch(resumedQuestion.instruction, /Which light level suits your bedroom\?/);
   assert.doesNotMatch(resumedQuestion.instruction, /not-prompt-content/);
   assert.match(
     resumedQuestion.instruction,
@@ -1346,10 +1336,7 @@ test("initial instructions select the opening from full history before Live crea
     { role: "user", text: "Blackout, please." },
   ]);
   assert.equal(answeredQuestion.instruction, resumed.instruction);
-  assert.match(
-    answeredQuestion.instruction,
-    /Current pending follow-up \(application state\): none\./,
-  );
+  assert.doesNotMatch(answeredQuestion.instruction, /Current pending follow-up|application state|\bnone\b/i);
 
   const observations = await openingFor([
     {
@@ -1445,10 +1432,7 @@ test("resumed voice retains the chosen product and confirmed sample around an ov
     texts.reduce((sum, text) => sum + Buffer.byteLength(text, "utf8"), 0) <=
       6000,
   );
-  assert.match(
-    request.instructions,
-    /Current pending follow-up \(application state\): none\./,
-  );
+  assert.doesNotMatch(request.instructions, /Current pending follow-up|application state|\bnone\b/i);
   assert.doesNotMatch(
     request.instructions,
     /Say this complete welcome exactly/,
@@ -1464,7 +1448,7 @@ test("resumed voice retains the chosen product and confirmed sample around an ov
   );
 });
 
-test("current numeric question metadata survives history truncation without exposing persistence IDs", async () => {
+test("current numeric question remains in history without exposing private state in instructions", async () => {
   const app = setup();
   const pendingQuestion = {
     question: "What is the width?",
@@ -1486,12 +1470,8 @@ test("current numeric question metadata survives history truncation without expo
     pendingQuestion,
   });
   const instructions = app.requests[0][0].session.instructions;
-  const { question, answers, measurement } = pendingQuestion;
-  assert.ok(
-    instructions.includes(
-      `Current pending follow-up (application state): ${JSON.stringify({ question, answers, measurement })}`,
-    ),
-  );
+  assert.doesNotMatch(instructions, /Current pending follow-up|application state|\bnone\b/i);
+  assert.doesNotMatch(instructions, /Use the points in the current guide/);
   assert.doesNotMatch(
     instructions,
     /private-invocation-id|private-voice-id|afterSequence/,
