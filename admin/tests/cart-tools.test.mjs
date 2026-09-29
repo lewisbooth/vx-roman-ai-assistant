@@ -156,6 +156,22 @@ test("confirmed additions carry only actual bounded public product facts", () =>
   );
 });
 
+test("confirmed product receipts preserve an optional exact line key and reject malformed identities", () => {
+  const product = {
+    productPath: "/products/shade",
+    title: "Configured shade",
+  };
+  assert.deepEqual(parseCartAddedProduct(product), product, "old receipts remain valid");
+  const identified = { ...product, lineKey: "123:configured-line" };
+  assert.deepEqual(parseCartAddedProduct(identified), identified);
+  assert.deepEqual(parseCartResult("add_to_cart", {
+    status: "added", message: "Added.", addedProduct: identified,
+  }).addedProduct, identified);
+  for (const lineKey of [null, 123, "", " ", "123:line\n", "https://other.example/cart", "x".repeat(257)]) {
+    assert.throws(() => parseCartAddedProduct({ ...product, lineKey }));
+  }
+});
+
 test("confirmed sample additions remain distinct from full product additions", () => {
   const sample = {
     productPath: "/en-gb/products/shade",

@@ -377,22 +377,17 @@ test("current product guide extraction preserves exact Shopify file CDN links an
 
 test("manual tool resolves current collection/locale product scope but explicit model path stays exact", async (t) => {
   const ctx = setup(t, `/en-gb/collections/roman${productPath}?variant=123`);
-  assert.deepEqual(
-    plain(await ctx.tools.execute("get_product_guides", {})),
-    result,
-  );
-  assert.deepEqual(
-    plain(await ctx.tools.execute("get_product_guides", { productPath })),
-    result,
-  );
-  assert.deepEqual(
-    plain(
-      await ctx.tools.execute("get_product_guides", {
-        productPath: "/products/other",
-      }),
-    ),
-    { status: "unavailable", productPath: "/products/other", guides: [] },
-  );
+  for (const input of [{}, { productPath }, { productPath: "/products/other" }]) {
+    const { configuration, ...found } = plain(
+      await ctx.tools.execute("get_product_guides", input),
+    );
+    assert.deepEqual(found, input.productPath === "/products/other"
+      ? { status: "unavailable", productPath: "/products/other", guides: [] }
+      : result);
+    assert.equal(configuration.productPath, input.productPath ?? productPath);
+    assert.equal(configuration.status, "unavailable");
+    assert.equal(configuration.configurationId, null);
+  }
   await assert.rejects(
     ctx.tools.execute("get_product_guides", { productPath, token: "private" }),
   );
@@ -402,6 +397,46 @@ test("manual tool resolves current collection/locale product scope but explicit 
     /Wait for storefront navigation/,
   );
   assert.equal(ctx.fetches(), 0);
+});
+
+test("guide discovery reads native setup in the same guarded operation without changing form values", async (t) => {
+  const ctx = setup(t);
+  const { window } = ctx;
+  window.document.querySelector("main#main").insertAdjacentHTML("beforeend", `
+    <dynamic-pricing><form data-dynamic-pricing-form>
+      <fieldset data-feature="1"><input type="radio" name="Fitting##1" value="Exact##7" data-feature-option="1##7" checked></fieldset>
+      <dynamic-pricing-measurements>
+        <select data-measurement-select><option value="mm">mm</option></select>
+        <div data-input-measurement-group="mm" data-active-input-measurement>
+          <input name="_width" data-width-input type="number" min="400" max="850" step="1">
+          <input name="_drop" data-drop-input type="number" min="200" max="2200" step="1">
+        </div>
+      </dynamic-pricing-measurements>
+    </form></dynamic-pricing>`);
+  for (const name of ["dynamic-pricing", "dynamic-pricing-measurements"])
+    window.customElements.define(name, class extends window.HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML = "<slot></slot>";
+      }
+    });
+  for (const event of ["input", "change", "submit"])
+    window.document.querySelector("form").addEventListener(event, () =>
+      assert.fail("Reading a guide and native setup must not alter the product."));
+  const found = plain(await ctx.tools.execute("get_product_guides", { productPath }));
+  const parsed = plain(ctx.api.parseProductGuidesResult(found, origin));
+  assert.deepEqual(parsed.guides, guides);
+  assert.equal(parsed.configuration.status, "available");
+  assert.equal(parsed.configuration.measurements.unit, "mm");
+  assert.equal(parsed.configuration.measurements.width, null);
+  assert.equal(parsed.configuration.controls[0].options[0].label, "Exact");
+  assert.equal(ctx.fetches(), 0);
+  assert.throws(() => ctx.api.parseProductGuidesResult({
+    ...found, configuration: { ...found.configuration, productPath: "/products/other" },
+  }, origin), /same product/);
+  assert.throws(() => ctx.api.parseProductGuidesResult({
+    ...found, configuration: { ...found.configuration, configurationId: "invalid" },
+  }, origin));
 });
 
 test("missing, unsafe or ambiguously linked sections do not fall back to generic site guides", async (t) => {

@@ -129,7 +129,7 @@ function request(env, signal = new AbortController().signal) {
   );
 }
 
-test("guide lookup preserves only verified current-product links and releases after durable completion", async () => {
+test("guide lookup preserves verified current-product links and configuration after durable completion", async () => {
   const env = setup();
   env.mock.toolName = "get_product_guides";
   env.mock.toolArguments = { productPath: "/products/shade" };
@@ -163,9 +163,20 @@ test("guide lookup preserves only verified current-product links and releases af
     status: "found",
     productPath: "/products/shade",
     guides: [guide],
+    configuration: {
+      status: "unavailable",
+      productPath: "/products/shade",
+      configurationId: null,
+      controls: [],
+      measurements: null,
+      configuredPrice: null,
+      message: "No supported product controls.",
+    },
   };
   for (const invalid of [
     { ...result, productPath: "/products/other" },
+    { ...result, configuration: { ...result.configuration, productPath: "/products/other" } },
+    { ...result, configuration: { ...result.configuration, instructions: "Unverified form instructions" } },
     {
       ...result,
       guides: [

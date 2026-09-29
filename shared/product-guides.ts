@@ -1,5 +1,9 @@
 import type { GuidePart } from "./conversation";
 import { parseProductPath, productPathSchema } from "./product-path";
+import {
+  parseProductConfigurationResult,
+  type ProductConfiguration,
+} from "./product-configuration";
 
 export type ProductGuideKind = "measuring" | "fitting";
 export interface ProductGuide {
@@ -10,6 +14,8 @@ export interface ProductGuidesResult {
   status: "found" | "unavailable";
   productPath: string;
   guides: ProductGuide[];
+  /** A fresh native read only; PDF cache entries never carry this capability. */
+  configuration?: ProductConfiguration;
 }
 
 export const PRODUCT_GUIDE_LABELS = {
@@ -26,7 +32,7 @@ export const productGuidesToolDefinition = {
   type: "function",
   name: "get_product_guides",
   description:
-    "Read selected original measuring/fitting PDFs and diagrams for the verified current productPath. kinds chooses only originals needed for this question. refresh:false reuses matching cached originals without browser lookup/download; refresh:true discovers fresh current-page links. Files attach for this turn and return source provenance; inventory alone is not document content.",
+    "Read selected original measuring/fitting PDFs and diagrams for the verified current productPath. A fresh browser discovery includes native configuration, supported measurement inputs and limits in the same operation. kinds chooses only originals needed for this question. refresh:false reuses matching cached originals without browser lookup/download; cached files do not provide fresh configuration. refresh:true discovers fresh current-page links. Files attach for this turn and return source provenance; inventory alone is not document content.",
   strict: true,
   parameters: {
     type: "object",
@@ -184,8 +190,25 @@ export function parseProductGuidesResult(
   storefrontOrigin: string,
 ): ProductGuidesResult {
   const value = object(input);
-  exact(value, ["status", "productPath", "guides"]);
+  exact(value, [
+    "status",
+    "productPath",
+    "guides",
+    ...(value.configuration !== undefined ? ["configuration"] : []),
+  ]);
   const guides = parseGuides(value.guides, storefrontOrigin);
+  const productPath = parseProductPath(value.productPath);
+  const configuration =
+    value.configuration === undefined
+      ? undefined
+      : parseProductConfigurationResult(
+          "get_product_configuration",
+          value.configuration,
+        );
+  if (configuration && configuration.productPath !== productPath)
+    throw new Error(
+      "Product guides and configuration must belong to the same product.",
+    );
   if (
     (value.status !== "found" && value.status !== "unavailable") ||
     (value.status === "found") !== guides.length > 0
@@ -193,8 +216,9 @@ export function parseProductGuidesResult(
     throw new Error("Product guide availability does not match its links.");
   return {
     status: value.status,
-    productPath: parseProductPath(value.productPath),
+    productPath,
     guides,
+    ...(configuration ? { configuration } : {}),
   };
 }
 

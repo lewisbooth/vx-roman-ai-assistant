@@ -66,6 +66,15 @@ export class StorefrontTurn {
   checkoutAttempted = false;
   checkoutHandoff = false;
 
+  /** Only a newly validated browser read can establish a mutable capability. */
+  observeConfiguration(configuration: ProductConfiguration) {
+    this.currentConfiguration = undefined;
+    if (configuration.status === "available") {
+      this.currentConfiguration = configuration;
+      this.configurationMode = true;
+    }
+  }
+
   allows(name: string): boolean {
     if (
       this.checkoutHandoff ||
@@ -156,10 +165,7 @@ export class StorefrontTurn {
         configuration.productPath !== call.arguments.productPath
       )
         throw new Error("Configuration returned a different product.");
-      if (configuration.status === "available") {
-        this.currentConfiguration = configuration;
-        this.configurationMode = true;
-      }
+      this.observeConfiguration(configuration);
     }
     if (call.name === "configure_product" || call.name === "apply_measurements")
       this.formBlocked = !(

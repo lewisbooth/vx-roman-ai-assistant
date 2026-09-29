@@ -21,11 +21,36 @@ export interface ProductConfigurationControl {
   purpose?: "measurement_guarantee";
   description?: string;
 }
+export const MAX_NATIVE_MEASUREMENT_VALUES = 512;
+export type NativeMeasurementConstraint =
+  | {
+      kind: "number";
+      min: number | null;
+      max: number | null;
+      step: number | "any";
+      stepBase: number;
+    }
+  | { kind: "select"; values: number[] };
+export interface ProductMeasurementConstraints {
+  unit: "mm" | "cm" | "in";
+  /** In inches these describe the whole-inch controls, not the combined value. */
+  width: NativeMeasurementConstraint;
+  height: NativeMeasurementConstraint;
+  /** Separate fractional-inch controls. No derived combined bounds are implied. */
+  fractions?: {
+    width: NativeMeasurementConstraint;
+    height: NativeMeasurementConstraint;
+  };
+}
 export interface ProductMeasurements {
   unit: "mm" | "cm" | "in" | null;
   width: number | null;
   height: number | null;
   availableUnits: ("mm" | "cm" | "in")[];
+  /** Present only when the current native form exposes one unambiguous pair. */
+  entry?: "single_pair";
+  /** Observed native constraints, by unit; missing units/limits remain unknown. */
+  constraints?: ProductMeasurementConstraints[];
 }
 export interface ProductConfiguration {
   status: "available" | "unavailable";
@@ -69,7 +94,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "get_product_configuration",
     description:
-      "Read supported native options, dependencies, dimensions and settled configuredPrice for the currently loaded verified productPath. Returns short-lived single-use configurationId/control/option IDs. Available choices only are mutable; parent IDs belong to this snapshot. option.priceLabel is a surcharge; configuredPrice excludes the separate measurement guarantee and null means unknown. Unsupported widgets and purchase controls are excluded.",
+      "Read supported native options, dependencies, dimensions, per-unit native limits/choices and settled configuredPrice for the currently loaded verified productPath. Returns short-lived single-use configurationId/control/option IDs. Available choices only are mutable; parent IDs belong to this snapshot. option.priceLabel is a surcharge; configuredPrice excludes the separate measurement guarantee and null means unknown. Unsupported widgets and purchase controls are excluded.",
     strict: true,
     parameters: {
       type: "object",
@@ -127,6 +152,102 @@ function id(value: unknown, pattern: RegExp): string {
   if (typeof value !== "string" || !pattern.test(value))
     throw new Error("Invalid product configuration identifier.");
   return value;
+}
+function nativeNumber(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Math.abs(value) <= Number.MAX_SAFE_INTEGER
+  );
+}
+function parseNativeConstraint(input: unknown): NativeMeasurementConstraint {
+  const value = object(input);
+  if (value.kind === "select") {
+    exact(value, ["kind", "values"]);
+    if (
+      !Array.isArray(value.values) ||
+      !value.values.length ||
+      value.values.length > MAX_NATIVE_MEASUREMENT_VALUES ||
+      !value.values.every(nativeNumber) ||
+      new Set(value.values).size !== value.values.length
+    )
+      throw new Error("Invalid native measurement choices.");
+    return { kind: "select", values: [...value.values] };
+  }
+  exact(value, ["kind", "min", "max", "step", "stepBase"]);
+  if (
+    value.kind !== "number" ||
+    (value.min !== null && !nativeNumber(value.min)) ||
+    (value.max !== null && !nativeNumber(value.max)) ||
+    (typeof value.min === "number" &&
+      typeof value.max === "number" &&
+      value.min > value.max) ||
+    (value.step !== "any" && (!nativeNumber(value.step) || value.step <= 0)) ||
+    !nativeNumber(value.stepBase)
+  )
+    throw new Error("Invalid native measurement limits.");
+  return {
+    kind: "number",
+    min: value.min as number | null,
+    max: value.max as number | null,
+    step: value.step as number | "any",
+    stepBase: value.stepBase,
+  };
+}
+function parseMeasurementConstraints(
+  input: unknown,
+  available: readonly string[],
+): ProductMeasurementConstraints[] {
+  if (!Array.isArray(input) || input.length > 3)
+    throw new Error("Invalid native measurement units.");
+  const seen = new Set<string>();
+  return input.map((entry): ProductMeasurementConstraints => {
+    const value = object(entry);
+    exact(value, [
+      "unit",
+      "width",
+      "height",
+      ...(value.unit === "in" ? ["fractions"] : []),
+    ]);
+    if (
+      typeof value.unit !== "string" ||
+      !units.includes(value.unit as (typeof units)[number]) ||
+      !available.includes(value.unit) ||
+      seen.has(value.unit)
+    )
+      throw new Error("Invalid native measurement unit.");
+    seen.add(value.unit);
+    const width = parseNativeConstraint(value.width),
+      height = parseNativeConstraint(value.height);
+    let fractions: ProductMeasurementConstraints["fractions"];
+    if (value.unit === "in") {
+      const parts = object(value.fractions);
+      exact(parts, ["width", "height"]);
+      fractions = {
+        width: parseNativeConstraint(parts.width),
+        height: parseNativeConstraint(parts.height),
+      };
+      if (
+        [width, height].some(
+          (part) =>
+            part.kind === "select" &&
+            part.values.some((value) => !Number.isInteger(value) || value < 0),
+        ) ||
+        [fractions.width, fractions.height].some(
+          (part) =>
+            part.kind === "select" &&
+            part.values.some((value) => value < 0 || value >= 1),
+        )
+      )
+        throw new Error("Invalid whole or fractional inch choices.");
+    }
+    return {
+      unit: value.unit as ProductMeasurementConstraints["unit"],
+      width,
+      height,
+      ...(fractions ? { fractions } : {}),
+    };
+  });
 }
 export function isProductConfigurationTool(
   name: string,
@@ -336,7 +457,14 @@ export function parseProductConfigurationResult(
   let measurements: ProductMeasurements | null = null;
   if (value.measurements !== null) {
     const current = object(value.measurements);
-    exact(current, ["unit", "width", "height", "availableUnits"]);
+    exact(current, [
+      "unit",
+      "width",
+      "height",
+      "availableUnits",
+      ...(current.entry !== undefined ? ["entry"] : []),
+      ...(current.constraints !== undefined ? ["constraints"] : []),
+    ]);
     if (
       (current.unit !== null &&
         !units.includes(current.unit as (typeof units)[number])) ||
@@ -355,7 +483,25 @@ export function parseProductConfigurationResult(
           (current[key] as number) > Number.MAX_SAFE_INTEGER)
       )
         throw new Error("Invalid current product measurement.");
+    if (
+      current.entry !== undefined &&
+      (current.entry !== "single_pair" ||
+        current.unit === null ||
+        !current.availableUnits.includes(current.unit))
+    )
+      throw new Error("Invalid native measurement entry.");
+    const constraints =
+      current.constraints === undefined
+        ? undefined
+        : parseMeasurementConstraints(
+            current.constraints,
+            current.availableUnits,
+          );
     measurements = {
+      ...(current.entry === "single_pair"
+        ? { entry: "single_pair" as const }
+        : {}),
+      ...(constraints ? { constraints } : {}),
       unit: current.unit as ProductMeasurements["unit"],
       width: current.width as number | null,
       height: current.height as number | null,

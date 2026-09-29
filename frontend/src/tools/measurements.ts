@@ -2,7 +2,12 @@ import type {
   ApplyMeasurementsResult,
   MeasurementDraft,
 } from "../../../shared/measurements";
-import type { ProductMeasurements } from "../../../shared/product-configuration";
+import {
+  MAX_NATIVE_MEASUREMENT_VALUES,
+  type NativeMeasurementConstraint,
+  type ProductMeasurementConstraints,
+  type ProductMeasurements,
+} from "../../../shared/product-configuration";
 import {
   controlVisible,
   currentProductForm,
@@ -169,6 +174,125 @@ function dimensions(group: Element, draft: MeasurementDraft): DimensionField[] {
   ];
 }
 
+function nativeConstraint(
+  control: NumericControl,
+  form: HTMLFormElement,
+): NativeMeasurementConstraint | null {
+  if (
+    control.form !== form ||
+    control.matches(":disabled") ||
+    (control instanceof HTMLInputElement && control.readOnly)
+  )
+    return null;
+  if (control instanceof HTMLSelectElement) {
+    const options = [...control.options].filter(
+      (option) =>
+        option.value.trim() &&
+        !option.disabled &&
+        !option.closest("optgroup[disabled]"),
+    );
+    if (!options.length || options.length > MAX_NATIVE_MEASUREMENT_VALUES)
+      return null;
+    const values = options.map((option) => Number(option.value));
+    if (
+      values.some(
+        (value) =>
+          !Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER,
+      ) ||
+      new Set(values).size !== values.length
+    )
+      return null;
+    return { kind: "select", values };
+  }
+  // Native min/max/step use HTML's floating-point parsing rules, which accept
+  // a numeric prefix and ASCII leading whitespace. No live control is changed.
+  const attributeNumber = (attribute: string) => {
+    const raw = control.getAttribute(attribute);
+    if (
+      raw === null ||
+      /[^\t\n\f\r ]/.test(raw.slice(0, raw.length - raw.trimStart().length))
+    )
+      return null;
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) ? value : null;
+  };
+  const min = attributeNumber("min"),
+    max = attributeNumber("max"),
+    step = attributeNumber("step"),
+    initial = attributeNumber("value");
+  if (
+    [min, max, step, initial].some(
+      (value) => value !== null && Math.abs(value) > Number.MAX_SAFE_INTEGER,
+    ) ||
+    (min !== null && max !== null && min > max)
+  )
+    return null;
+  return {
+    kind: "number",
+    min,
+    max,
+    step:
+      control.step.toLowerCase() === "any"
+        ? "any"
+        : step !== null && step > 0
+          ? step
+          : 1,
+    stepBase: min ?? initial ?? 0,
+  };
+}
+
+function constraintForUnit(
+  component: Element,
+  unit: NonNullable<ProductMeasurements["unit"]>,
+  form: HTMLFormElement,
+): ProductMeasurementConstraints | null {
+  try {
+    const group = groupFor(component, themeUnit[unit]);
+    const width = nativeConstraint(
+        numericControl(group, "[data-width-input]"),
+        form,
+      ),
+      height = nativeConstraint(
+        numericControl(group, "[data-drop-input]"),
+        form,
+      );
+    if (!width || !height) return null;
+    if (unit !== "in") return { unit, width, height };
+    const fractionalWidth = nativeConstraint(
+        numericControl(group, "[data-width-inches-input]"),
+        form,
+      ),
+      fractionalHeight = nativeConstraint(
+        numericControl(group, "[data-drop-inches-input]"),
+        form,
+      );
+    if (
+      !fractionalWidth ||
+      !fractionalHeight ||
+      [width, height].some(
+        (part) =>
+          part.kind === "select" &&
+          part.values.some((value) => !Number.isInteger(value) || value < 0),
+      ) ||
+      [fractionalWidth, fractionalHeight].some(
+        (part) =>
+          part.kind === "select" &&
+          part.values.some((value) => value < 0 || value >= 1),
+      )
+    )
+      return null;
+    return {
+      unit,
+      width,
+      height,
+      fractions: { width: fractionalWidth, height: fractionalHeight },
+    };
+  } catch {
+    // One unavailable inactive unit must not hide known current dimensions.
+    return null;
+  }
+}
+
 export function readProductMeasurements(
   form: HTMLFormElement,
 ): ProductMeasurements | null {
@@ -191,15 +315,42 @@ export function readProductMeasurements(
       width: null,
       height: null,
       availableUnits,
+      constraints: availableUnits.flatMap((available) => {
+        const constraints = constraintForUnit(component, available, form);
+        return constraints ? [constraints] : [];
+      }),
     };
-    if (!unit) return result;
+    if (!unit || !availableUnits.includes(unit)) return result;
     const group = groupFor(component, units.value);
-    if (!group.hasAttribute("data-active-input-measurement")) return result;
+    const active = component.querySelectorAll(
+      "[data-active-input-measurement]",
+    );
+    if (active.length !== 1 || active[0] !== group) return result;
+    const fields = [
+      numericControl(group, "[data-width-input]"),
+      numericControl(group, "[data-drop-input]"),
+    ];
+    if (unit === "in")
+      fields.push(
+        numericControl(group, "[data-width-inches-input]"),
+        numericControl(group, "[data-drop-inches-input]"),
+      );
+    if (
+      fields.some(
+        (control) =>
+          control.form !== form ||
+          control.matches(":disabled") ||
+          (control instanceof HTMLInputElement && control.readOnly) ||
+          !controlVisible(control),
+      )
+    )
+      return result;
+    result.entry = "single_pair";
     const read = (axis: "width" | "drop") => {
-      const input = numericControl(group, `[data-${axis}-input]`);
+      const input = numericControl(group, "[data-" + axis + "-input]");
       const fraction =
         unit === "in"
-          ? numericControl(group, `[data-${axis}-inches-input]`)
+          ? numericControl(group, "[data-" + axis + "-inches-input]")
           : null;
       if (!input.value.trim() || (fraction && !fraction.value.trim()))
         return null;

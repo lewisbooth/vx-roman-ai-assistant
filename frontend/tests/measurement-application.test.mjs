@@ -320,7 +320,11 @@ test("ordinary measurement execution fills current controls after its queue wait
   const current = previous.cloneNode(true);
   previous.replaceWith(current);
   current.value = "500";
-  release({ products: [], messages: [], queries: [{query:"blind",status:"succeeded",productIds:[]}] });
+  release({
+    products: [],
+    messages: [],
+    queries: [{ query: "blind", status: "succeeded", productIds: [] }],
+  });
   await search;
   assert.equal((await applying).status, "applied");
   assert.equal(current.value, "300");
@@ -346,7 +350,9 @@ test("queued measurement application validates the current page and cancellation
       });
       t.after(() => executor.dispose());
       const controller = new ctx.window.AbortController();
-      const search = executor.execute("search_products", { queries: ["blind"] });
+      const search = executor.execute("search_products", {
+        queries: ["blind"],
+      });
       const applying = executor.execute(
         "apply_measurements",
         { productPath: draft.productPath, draft },
@@ -359,7 +365,11 @@ test("queued measurement application validates the current page and cancellation
       if (change === "disabled")
         ctx.form.querySelector("select").disabled = true;
       if (change === "abort") controller.abort();
-      release({ products: [], messages: [], queries: [{query:"blind",status:"succeeded",productIds:[]}] });
+      release({
+        products: [],
+        messages: [],
+        queries: [{ query: "blind", status: "succeeded", productIds: [] }],
+      });
       await search;
       await rejected;
       assert.deepEqual(ctx.events, []);
@@ -490,10 +500,12 @@ test("cancellation or theme failure during a unit change never reports dimension
 test("configuration measurement reading preserves exact units and reports missing fields as unknown", async (t) => {
   const ctx = setup(t);
   addInches(ctx);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(ctx.readProductMeasurements(ctx.form))),
-    { unit: "mm", width: 200, height: 250, availableUnits: ["mm", "cm", "in"] },
-  );
+  assert.deepEqual(currentDimensions(ctx), {
+    unit: "mm",
+    width: 200,
+    height: 250,
+    availableUnits: ["mm", "cm", "in"],
+  });
   ctx.form.querySelector(
     "[data-active-input-measurement] [data-width-input]",
   ).value = "";
@@ -502,15 +514,12 @@ test("configuration measurement reading preserves exact units and reports missin
     { ...draft, unit: "in", width: 20.125, height: 30.75 },
     new ctx.window.AbortController().signal,
   );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(ctx.readProductMeasurements(ctx.form))),
-    {
-      unit: "in",
-      width: 20.125,
-      height: 30.75,
-      availableUnits: ["mm", "cm", "in"],
-    },
-  );
+  assert.deepEqual(currentDimensions(ctx), {
+    unit: "in",
+    width: 20.125,
+    height: 30.75,
+    availableUnits: ["mm", "cm", "in"],
+  });
 });
 
 test("theme-created duplicate active dimensions cannot be reported as applied", async (t) => {
@@ -744,4 +753,225 @@ test("single-step products wait through native debounced pricing without clickin
   assert.equal(ctx.form.classList.contains("loading"), false);
   assert.equal(ctx.form.classList.contains("variant-loading"), false);
   assert.equal(submissions.length, 0);
+});
+
+function currentDimensions(ctx) {
+  const { unit, width, height, availableUnits } = ctx.readProductMeasurements(
+    ctx.form,
+  );
+  return JSON.parse(JSON.stringify({ unit, width, height, availableUnits }));
+}
+function nativeMeasurements(ctx) {
+  return JSON.parse(JSON.stringify(ctx.readProductMeasurements(ctx.form)));
+}
+
+test("measurement discovery exposes native per-unit limits before any measurements or unit switches", (t) => {
+  const ctx = setup(t),
+    mm = ctx.form.querySelector('[data-input-measurement-group="mm"]'),
+    cm = ctx.form.querySelector('[data-input-measurement-group="cm"]');
+  for (const field of mm.querySelectorAll("input")) field.value = "";
+  cm.hidden = true;
+  for (const field of cm.querySelectorAll("input")) {
+    field.min = "40";
+    field.max = "233";
+    field.step = "0.1";
+    field.value = "";
+  }
+  cm.querySelector("[data-drop-input]").max = "240";
+  const before = ctx.form.innerHTML;
+  const result = nativeMeasurements(ctx);
+  assert.equal(result.entry, "single_pair");
+  assert.equal(result.width, null);
+  assert.equal(result.height, null);
+  assert.deepEqual(result.constraints, [
+    {
+      unit: "mm",
+      width: { kind: "number", min: 100, max: 2000, step: 1, stepBase: 100 },
+      height: { kind: "number", min: 100, max: 2000, step: 1, stepBase: 100 },
+    },
+    {
+      unit: "cm",
+      width: { kind: "number", min: 40, max: 233, step: 0.1, stepBase: 40 },
+      height: { kind: "number", min: 40, max: 240, step: 0.1, stepBase: 40 },
+    },
+  ]);
+  assert.equal(ctx.form.innerHTML, before);
+  assert.equal(ctx.form.querySelector("[data-measurement-select]").value, "mm");
+  assert.deepEqual(ctx.events, []);
+});
+
+test("native number semantics preserve unknown bounds, any step and native step bases without converted limits", (t) => {
+  const ctx = setup(t),
+    cm = ctx.form.querySelector('[data-input-measurement-group="cm"]');
+  const width = cm.querySelector("[data-width-input]"),
+    drop = cm.querySelector("[data-drop-input]");
+  width.setAttribute("value", "20.25");
+  width.value = "30";
+  width.step = "any";
+  width.min = "not a number";
+  drop.removeAttribute("value");
+  drop.max = "not a number";
+  drop.step = "0";
+  assert.deepEqual(
+    nativeMeasurements(ctx).constraints.find((item) => item.unit === "cm"),
+    {
+      unit: "cm",
+      width: {
+        kind: "number",
+        min: null,
+        max: null,
+        step: "any",
+        stepBase: 20.25,
+      },
+      height: { kind: "number", min: null, max: null, step: 1, stepBase: 0 },
+    },
+  );
+  width.min = "1.25";
+  width.step = "0.5";
+  assert.equal(
+    nativeMeasurements(ctx).constraints.find((item) => item.unit === "cm").width
+      .stepBase,
+    1.25,
+  );
+  width.step = "1e30";
+  assert.equal(
+    nativeMeasurements(ctx).constraints.some((item) => item.unit === "cm"),
+    false,
+  );
+});
+
+test("inch constraints retain distinct exact whole and fractional choices without inventing combined bounds", (t) => {
+  const ctx = setup(t);
+  addInches(ctx);
+  assert.equal(
+    nativeMeasurements(ctx).constraints.some((item) => item.unit === "in"),
+    false,
+    "empty controls remain unknown",
+  );
+  const inches = ctx.form.querySelector(
+    '[data-input-measurement-group="inches"]',
+  );
+  for (const select of inches.querySelectorAll(
+    "[data-width-input],[data-drop-input]",
+  )) {
+    select.innerHTML =
+      '<option value="">Choose</option><option value="4">4</option><option value="8">8</option><option value="9">9</option><option value="12" disabled>12</option><optgroup disabled><option value="14">14</option></optgroup>';
+  }
+  const before = ctx.form.innerHTML;
+  assert.deepEqual(
+    nativeMeasurements(ctx).constraints.find((item) => item.unit === "in"),
+    {
+      unit: "in",
+      width: { kind: "select", values: [4, 8, 9] },
+      height: { kind: "select", values: [4, 8, 9] },
+      fractions: {
+        width: {
+          kind: "select",
+          values: [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],
+        },
+        height: {
+          kind: "select",
+          values: [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],
+        },
+      },
+    },
+  );
+  assert.equal(ctx.form.innerHTML, before);
+  assert.deepEqual(ctx.events, []);
+});
+
+test("malformed or oversized inactive choices do not hide valid current dimensions or yield partial limits", async (t) => {
+  for (const html of [
+    '<option value="4">4</option><option value="4.0">4 again</option>',
+    '<option value="4">4</option><option value="wide">Wide</option>',
+    '<option value="4.5">4.5</option>',
+    Array.from(
+      { length: 513 },
+      (_, i) => '<option value="' + (i + 1) + '">' + i + "</option>",
+    ).join(""),
+  ])
+    await t.test("reject incomplete native choices", (t) => {
+      const ctx = setup(t);
+      addInches(ctx);
+      const group = ctx.form.querySelector(
+        '[data-input-measurement-group="inches"]',
+      );
+      group.querySelector("[data-width-input]").innerHTML = html;
+      group.querySelector("[data-drop-input]").innerHTML =
+        '<option value="4">4</option>';
+      const result = nativeMeasurements(ctx);
+      assert.equal(
+        result.constraints.some((item) => item.unit === "in"),
+        false,
+      );
+      assert.equal(result.width, 200);
+      assert.equal(result.entry, "single_pair");
+      assert.deepEqual(ctx.events, []);
+    });
+});
+
+test("single-pair capability is withheld for ambiguous active groups and unavailable native fields", async (t) => {
+  for (const mutate of [
+    (ctx) =>
+      ctx.form
+        .querySelector('[data-input-measurement-group="cm"]')
+        .setAttribute("data-active-input-measurement", ""),
+    (ctx) =>
+      (ctx.form.querySelector(
+        "[data-active-input-measurement] [data-width-input]",
+      ).disabled = true),
+    (ctx) =>
+      (ctx.form.querySelector(
+        "[data-active-input-measurement] [data-width-input]",
+      ).readOnly = true),
+    (ctx) =>
+      ctx.form
+        .querySelector("[data-active-input-measurement] [data-width-input]")
+        .setAttribute("form", "other"),
+    (ctx) => {
+      const field = ctx.form.querySelector(
+        "[data-active-input-measurement] [data-width-input]",
+      );
+      field.after(field.cloneNode(true));
+    },
+  ])
+    await t.test("cannot claim supported native entry", (t) => {
+      const ctx = setup(t);
+      mutate(ctx);
+      assert.equal(ctx.readProductMeasurements(ctx.form)?.entry, undefined);
+      assert.deepEqual(ctx.events, []);
+    });
+});
+
+test("number attribute discovery follows the same parsing and step grid as native validity", (t) => {
+  const ctx = setup(t),
+    width = ctx.form.querySelector(
+      '[data-input-measurement-group="cm"] [data-width-input]',
+    );
+  width.min = " +1.25cm";
+  width.max = "2.75cm";
+  width.step = "0.5cm";
+  const result = nativeMeasurements(ctx).constraints.find(
+    (item) => item.unit === "cm",
+  ).width;
+  assert.deepEqual(result, {
+    kind: "number",
+    min: 1.25,
+    max: 2.75,
+    step: 0.5,
+    stepBase: 1.25,
+  });
+  for (const value of [1.25, 1.75, 2.25, 2.75]) {
+    width.value = String(value);
+    assert.equal(width.checkValidity(), true);
+  }
+  width.value = "2";
+  assert.equal(width.validity.stepMismatch, true);
+  width.min = "\u00a040";
+  assert.equal(
+    nativeMeasurements(ctx).constraints.find((item) => item.unit === "cm").width
+      .min,
+    null,
+    "non-ASCII leading space is not a valid native numeric prefix",
+  );
 });

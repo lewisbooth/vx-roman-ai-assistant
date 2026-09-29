@@ -35,7 +35,7 @@ async function checkModel(model: string): Promise<boolean> {
     const response = await probeClient.responses.create({
       model,
       service_tier: "fast",
-      reasoning: { effort: "medium" },
+      reasoning: { effort: "low" },
       input: "Reply with OK.",
       max_output_tokens: 256,
       store: false,

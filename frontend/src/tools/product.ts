@@ -1,8 +1,9 @@
 import {
   parseCartCall,
   type CartAddedProduct,
+  type CartSnapshot,
 } from "../../../shared/cart-tools";
-import { cartVariantQuantity } from "./cart";
+import { cartVariantQuantity, summarizeCart, validateStoreCart } from "./cart";
 
 type PricingElement = HTMLElement & { variantId?: unknown; cart?: unknown };
 type ProductActionResult = {
@@ -132,6 +133,38 @@ function submittedProduct(form: HTMLFormElement): CartAddedProduct | undefined {
   return { productPath, title, ...(measurements ? { measurements } : {}) };
 }
 
+function cartIdentitySnapshot(input: unknown): CartSnapshot | undefined {
+  try {
+    // Copy validated public fields now: the theme may mutate its cart in place.
+    return summarizeCart(validateStoreCart(input));
+  } catch {
+    // A quantity-only theme event can confirm an add, but cannot identify its line.
+    return;
+  }
+}
+
+function addedLineKey(
+  before: CartSnapshot | undefined,
+  after: CartSnapshot | undefined,
+  variantId: string,
+  quantityAdded: number,
+): string | undefined {
+  if (!before || !after) return;
+  const previous = new Map(before.items.map((item) => [item.lineKey, item]));
+  const increases = [];
+  for (const item of after.items) {
+    if (String(item.variantId) !== variantId) continue;
+    const prior = previous.get(item.lineKey);
+    if (prior && prior.variantId !== item.variantId) return;
+    const delta = item.quantity - (prior?.quantity ?? 0);
+    if (delta > 0) increases.push({ lineKey: item.lineKey, delta });
+  }
+  // Multiple configured lines can share a variant. Never choose by variant alone,
+  // or mistake a removed/rotated line plus an increase for this submitted line.
+  if (increases.length === 1 && increases[0].delta === quantityAdded)
+    return increases[0].lineKey;
+}
+
 export async function addConfiguredProduct(
   signal: AbortSignal,
 ): Promise<ProductActionResult> {
@@ -170,10 +203,6 @@ export async function addConfiguredProduct(
   if (!form.reportValidity()) return needsConfiguration;
   signal.throwIfAborted();
 
-  const variantId = String(product.variantId ?? "");
-  const previousQuantity = /^\d+$/.test(variantId)
-    ? cartVariantQuantity(product.cart, variantId)
-    : null;
   pendingProducts.add(product);
 
   return new Promise((resolve, reject) => {
@@ -181,6 +210,9 @@ export async function addConfiguredProduct(
     let submitted = false;
     let captured = false;
     let addedProduct: CartAddedProduct | undefined;
+    let variantId = "";
+    let previousQuantity: number | null = null;
+    let previousCart: CartSnapshot | undefined;
     const handedOff: ProductActionResult = {
       status: "handed_off",
       message:
@@ -210,6 +242,11 @@ export async function addConfiguredProduct(
       // Snapshot the fields before the theme's slot handler submits them.
       // Later edits or pricing updates must not rewrite the recorded add.
       addedProduct = submittedProduct(form);
+      variantId = String(product.variantId ?? "");
+      previousQuantity = /^\d+$/.test(variantId)
+        ? cartVariantQuantity(product.cart, variantId)
+        : null;
+      previousCart = cartIdentitySnapshot(product.cart);
     };
     const onSubmit = (event: SubmitEvent) => {
       if (event.target !== form) return;
@@ -233,15 +270,22 @@ export async function addConfiguredProduct(
         previousQuantity === null
       )
         return;
-      const quantity = cartVariantQuantity(
-        (event as CustomEvent<unknown>).detail,
-        variantId,
-      );
+      const cart = (event as CustomEvent<unknown>).detail;
+      const quantity = cartVariantQuantity(cart, variantId);
       if (quantity !== null && quantity > previousQuantity) {
+        const quantityAdded = quantity - previousQuantity;
+        const lineKey = addedLineKey(
+          previousCart,
+          cartIdentitySnapshot(cart),
+          variantId,
+          quantityAdded,
+        );
         finish({
           status: "added",
-          quantityAdded: quantity - previousQuantity,
-          ...(addedProduct ? { addedProduct } : {}),
+          quantityAdded,
+          ...(addedProduct
+            ? { addedProduct: { ...addedProduct, ...(lineKey ? { lineKey } : {}) } }
+            : {}),
           message:
             "The storefront confirmed the configured product was added to the cart.",
         });

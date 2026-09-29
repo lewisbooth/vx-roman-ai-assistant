@@ -47,6 +47,28 @@ const kitchenHistory = [
   { role: "user", text: "Privacy" },
 ];
 const flowCases = [
+  {
+    name: "room-only",
+    history: [{ role: "user", text: "Help me find blinds that suit my room and style. I want something different from the blind on this page." }],
+    intake: /room|space/i,
+    notQuestion: /what matters|priorit|window|opening|colou?r|pattern/i,
+  },
+  {
+    name: "concern-only",
+    history: [{ role: "user", text: "I'd like blinds for a bedroom. It's a standard rectangular recessed window, with one blind across the opening." }],
+    intake: /matter|priorit|important|want|need|concern/i,
+    notQuestion: /colou?r|pattern|which room|what room/i,
+  },
+  {
+    name: "door-type-only",
+    history: [
+      { role: "user", text: "Bedroom blinds for light control." },
+      { role: "assistant", text: "What kind of opening are you covering?" },
+      { role: "user", text: "A patio door" },
+    ],
+    intake: /sliding|bifold|door/i,
+    notQuestion: /whole opening|each pane|individual panes|colou?r/i,
+  },
   { name: "missing-opening", history: kitchenHistory, intake: /window|opening|door|pane/i },
   {
     name: "missing-aesthetic",
@@ -73,10 +95,12 @@ const flowCases = [
   },
 ];
 const cases = flow
-  ? flowCases.flatMap(sample => ["text", "voice"].map(mode => ({ ...sample, mode, effort: "medium" })))
+  ? flowCases.flatMap(sample => ["text", "voice"].map(mode => ({ ...sample, mode, effort: "low" })))
   : ["medium", "low"].flatMap(effort => ["text", "voice"].map(mode => ({ name: "balanced-discovery", history, minQueries: 2, mode, effort })));
+const selectedCase = process.argv.find(arg => arg.startsWith("--case="))?.slice(7);
+assert.ok(!selectedCase || cases.some(sample => sample.name === selectedCase), "Unknown evaluation case.");
 const report = [];
-for (const sample of cases) {
+for (const sample of cases.filter(sample => !selectedCase || sample.name === selectedCase)) {
   const { effort, mode } = sample;
   const metrics = new TurnMetrics();
   const operations = [];
@@ -108,7 +132,8 @@ for (const sample of cases) {
     const families = [...new Set(selected.map(id => products.get(id)?.title.split(" ")[1]))];
     const question = reply.questionPresentation;
     // Topic checks are deliberately broad; saved synthetic output also needs human review.
-    const passed = !!question && (sample.intake
+    const passed = !!question && !question.answers.some(answer => /\s[—–-]\s/.test(answer)) &&
+      (!sample.notQuestion || !sample.notQuestion.test(question.question)) && (sample.intake
       ? attempts === 1 && operations.length === 0 && selected.length === 0 && sample.intake.test([question.question, ...question.answers].join(" "))
       : attempts === 2 && operations.length === 1 && operations[0].name === "search_products" &&
         operations[0].queries.length >= sample.minQueries && selected.length > 0 && selected.length <= 10 &&

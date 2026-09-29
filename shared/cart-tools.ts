@@ -36,6 +36,8 @@ export interface CartSnapshot {
 export interface CartAddedProduct {
   productPath: string;
   title: string;
+  /** Exact line observed changing during submission; refresh get_cart before editing. */
+  lineKey?: string;
   measurements?: {
     width: number;
     height: number;
@@ -190,10 +192,16 @@ export function parseCartAddedProduct(input: unknown): CartAddedProduct {
   exact(value, [
     "productPath",
     "title",
+    ...(value.lineKey !== undefined ? ["lineKey"] : []),
     ...(value.measurements !== undefined ? ["measurements"] : []),
   ]);
   const path = productPath(value.productPath);
   if (!text(value.title, 300)) throw new Error("Invalid added product title.");
+  if (
+    value.lineKey !== undefined &&
+    (typeof value.lineKey !== "string" || !lineKeyPattern.test(value.lineKey))
+  )
+    throw new Error("Invalid added product line key.");
   let measurements: CartAddedProduct["measurements"];
   if (value.measurements !== undefined) {
     const dimensions = object(value.measurements);
@@ -218,6 +226,7 @@ export function parseCartAddedProduct(input: unknown): CartAddedProduct {
   return {
     productPath: path,
     title: value.title,
+    ...(value.lineKey !== undefined ? { lineKey: value.lineKey as string } : {}),
     ...(measurements ? { measurements } : {}),
   };
 }

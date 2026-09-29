@@ -791,7 +791,7 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   const { input, options } = env.calls.requests[0];
   assert.equal(input.model, "gpt-6-luna");
   assert.equal(input.service_tier, "fast");
-  assert.deepEqual(plain(input.reasoning), { effort: "medium" });
+  assert.deepEqual(plain(input.reasoning), { effort: "low" });
   assert.equal(input.store, false);
   assert.equal(input.stream, true);
   assert.equal(input.max_output_tokens, 1600);
@@ -2178,7 +2178,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
   ]);
   for (const { input } of env.calls.requests) {
     assert.equal(input.service_tier, "fast");
-    assert.deepEqual(input.reasoning, { effort: "medium" });
+    assert.deepEqual(input.reasoning, { effort: "low" });
     assert.deepEqual(input.include, ["reasoning.encrypted_content"]);
     assert.equal(input.store, false);
     assert.equal(input.parallel_tool_calls, false);
@@ -3483,7 +3483,7 @@ test("terminal numeric replies preserve selected cards, visible text and complet
       ({ input }) =>
         input.model === "gpt-6-luna" &&
         input.service_tier === "fast" &&
-        input.reasoning.effort === "medium" &&
+        input.reasoning.effort === "low" &&
         input.store === false,
     ),
   );
@@ -4076,7 +4076,7 @@ test("original guide prefixes and scoped cache keys survive different history an
       ({ input }) =>
         input.model === "gpt-6-luna" &&
         input.service_tier === "fast" &&
-        input.reasoning.effort === "medium" &&
+        input.reasoning.effort === "low" &&
         input.store === false,
     ),
   );

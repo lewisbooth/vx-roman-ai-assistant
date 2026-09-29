@@ -12,7 +12,7 @@ Prisma's `Session` model stores Shopify authentication. Separate `Conversation` 
 
 ## Text conversations
 
-The same backend advisor serves text and voice briefings through the Responses API: `gpt-6-luna`, Fast tier, medium reasoning and `store: false`. The database owns conversation history; provider conversation IDs are not used. Keep `OPENAI_API_KEY` in the private root `.env`; recreate Docker after environment changes.
+The same backend advisor serves text and voice briefings through the Responses API: `gpt-6-luna`, Fast tier, low reasoning and `store: false`. The database owns conversation history; provider conversation IDs are not used. Keep `OPENAI_API_KEY` in the private root `.env`; recreate Docker after environment changes.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -29,7 +29,7 @@ Keep new domain rules in the appropriate knowledge module. The stable prompt inc
 
 ### Discovery and complete responses
 
-Before recommending, discovery establishes room, priorities, opening/coverage and a broad colour or pattern preference, reusing supplied context and accepting uncertainty. The current-product entry card remains a separate choice. Category exploration does not select a product, even when only one matching card was shown.
+Before recommending, discovery establishes room, opening/coverage, priorities and a broad colour or pattern preference, one decision per question, reusing supplied context and accepting uncertainty. The current-product entry card remains a separate choice. Category exploration does not select a product, even when only one matching card was shown.
 
 Normal discovery is two Luna completions: `search_products({queries: [...]})`, then one terminal answer. One to three targeted searches run concurrently **inside one claimed browser operation**, below its single-operation guard. They share a 20-second deadline; cancellation aborts all work, while a failed query retains successful siblings. Results contain query provenance and up to 30 deduplicated candidates. The projected result is limited to 120 KiB within the 128 KiB HTTP envelope; each raw MCP response is limited to 1 MiB. Navigation, configuration and cart changes remain serial.
 
@@ -49,11 +49,13 @@ Cart writes remain limited to one per reply and cannot share a turn with form ch
 
 Explicit 30-minute provider cache breakpoints cover stable instructions/tools and deterministically ordered requested documents, before changing history. Identical PDF bytes reached through both library and product page attach once. Cache receipts prove a read, not suitability or consent. Read/write/cached/reasoning usage is recorded for each provider attempt; actual cache savings depend on prefix matches and expiry.
 
+Fresh `get_product_guides` includes the current native configuration within the same browser operation, including one-pair entry support and observed per-unit size limits/choices. Configuration remains useful if the PDF fails; cached PDFs never replay live configuration capabilities. Multi-pane measuring establishes the count first, validates and configures one pair, then checks whether the others are identical. Different pairs proceed individually; identical copies use the verified added line key, a fresh cart read and the existing reviewed quantity action. Native limits, guide applicability and purchase consent remain separate checks.
+
 Provider availability failures retry that round on `gpt-5.6-luna` without replaying completed tools. Synthetic probes retry the primary at 1, 2, 4, 8, 16 then 30 seconds. If both models fail, input and voice suspend until recovery. Policy, invalid-prompt, malformed and incomplete responses do not trigger model fallback. A completed tool round followed by `max_messages` may use the single terminal-only repair. Incidents and each billable attempt persist separately; logs exclude provider bodies and customer text.
 
 ### Latency verification
 
-`[Roman] Advisor turn metrics.` logs completion count, provider time, prompt/cache/reasoning tokens, tool durations, and time until cards or a voice briefing are committed. These are server-ready times, not browser paint or audible speech. [The controlled evaluation](evals/README.md) compares medium and low reasoning using synthetic catalogue data and no storefront actions. Medium remains the default; reducing reasoning needs broader behavioral evidence than a small latency sample.
+`[Roman] Advisor turn metrics.` logs completion count, provider time, prompt/cache/reasoning tokens, tool durations, and time until cards or a voice briefing are committed. These are server-ready times, not browser paint or audible speech. [The controlled evaluation](evals/README.md) compares medium and low reasoning using synthetic catalogue data and no storefront actions. Low is the current demo default for speed testing; continue checking judgment in real measuring and configuration flows.
 
 ## Voice conversations
 

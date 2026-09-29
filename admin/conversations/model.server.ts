@@ -272,7 +272,7 @@ export async function generateReply(
   guideReuse?: GuideReuse,
   libraryReuse?: LibraryReuse,
   onToolActivity?: (name: string, active: boolean) => void,
-  reasoningEffort: "low" | "medium" = "medium",
+  reasoningEffort: "low" | "medium" = "low",
 ): Promise<ModelReply> {
   const trackTool = async <T>(name: string, action: () => Promise<T>) => {
     onToolActivity?.(name, true);
@@ -302,6 +302,8 @@ export async function generateReply(
     signal,
     storefrontOrigin,
     onGuideReading,
+    onConfiguration: (configuration) =>
+      actions.observeConfiguration(configuration),
     guideReuse,
     libraryReuse,
     resumeQuestion,

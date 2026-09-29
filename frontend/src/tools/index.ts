@@ -323,7 +323,19 @@ export function createAssistantTools(
                 throw new Error(
                   "Wait for storefront navigation to finish before reading product guides.",
                 );
-              return getProductGuides(call.productPath, request.signal);
+              const guides = await getProductGuides(
+                call.productPath,
+                request.signal,
+              );
+              // Both DOM reads share this operation's guard and cancellation.
+              // No second executor admission or PDF fetch is needed.
+              const configuration =
+                productConfiguration.getProductConfiguration(
+                  call.productPath,
+                  request.signal,
+                );
+              request.signal.throwIfAborted();
+              return { ...guides, configuration };
             }
             case "get_cart":
               argumentsObject(input, []);

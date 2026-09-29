@@ -31,7 +31,10 @@ import {
 import type { CachedGuideSource } from "./presentation.server";
 import type { BrowserToolOutcome } from "./browser-tools.server";
 import type { MeasurementToolResult } from "../../shared/measurements";
-import type { ProductConfigurationResult } from "../../shared/product-configuration";
+import type {
+  ProductConfiguration,
+  ProductConfigurationResult,
+} from "../../shared/product-configuration";
 import type { QuestionPart } from "../../shared/questions";
 
 type GuideToolOutcome =
@@ -79,6 +82,7 @@ interface GuideTurnOptions {
   signal: AbortSignal;
   storefrontOrigin?: string;
   onGuideReading?: (kinds: ProductGuideKind[] | undefined) => void;
+  onConfiguration?: (configuration: ProductConfiguration) => void;
   guideReuse?: GuideReuse;
   libraryReuse?: LibraryReuse;
   resumeQuestion?: QuestionPart;
@@ -101,6 +105,7 @@ export function createGuideTurn({
   signal,
   storefrontOrigin,
   onGuideReading,
+  onConfiguration,
   guideReuse,
   libraryReuse,
   resumeQuestion,
@@ -461,6 +466,10 @@ export function createGuideTurn({
       } catch {
         guides = undefined;
       }
+      // Fresh live form evidence is independent of whether the linked PDF can
+      // be read or applies to this product. Cached originals have no capability.
+      if (!cachedRead && guides?.configuration)
+        onConfiguration?.(guides.configuration);
       const selected =
         guides?.guides.filter((guide) =>
           requestedGuides!.kinds.includes(guide.kind),
@@ -527,6 +536,9 @@ export function createGuideTurn({
           output: {
             documentStatus: "unavailable",
             reason: read.reason,
+            ...(guides?.configuration
+              ? { configuration: guides.configuration }
+              : {}),
             instruction: resumeQuestion
               ? "The saved measuring question cannot be grounded from these sources. Explain that limitation without substituting a new question or unsupported instructions."
               : "These PDP documents were not read. Try discover_guides for the relevant store library before giving up. Use only matching verified evidence; do not invent steps or repeat the failed lookup.",

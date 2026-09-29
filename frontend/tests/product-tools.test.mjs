@@ -139,6 +139,126 @@ test("configured-product add uses the actual submitter and waits for a scoped ca
   assert.equal(env.hasDeadline(), false);
 });
 
+function storeCart(items) {
+  return {
+    currency: "GBP",
+    item_count: items.reduce((sum, item) => sum + item.quantity, 0),
+    total_price: items.reduce((sum, item) => sum + item.quantity * 2500, 0),
+    items: items.map((item) => ({
+      title: "Configured shade",
+      final_line_price: item.quantity * 2500,
+      ...item,
+    })),
+  };
+}
+
+function updateCart(env, cart) {
+  env.product.dispatchEvent(new env.window.CustomEvent("cart:updated", {
+    detail: cart,
+  }));
+}
+
+test("a new configured line is identified separately from another configuration of the same variant", async (t) => {
+  const env = setup(t);
+  const previous = { key: "123:first-size", variant_id: 123, quantity: 1 };
+  env.product.cart = storeCart([previous]);
+  const action = env.run();
+  updateCart(env, storeCart([
+    previous,
+    { key: "123:second-size", variant_id: 123, quantity: 1 },
+    // Linked items do not confuse the configured product's exact line identity.
+    { key: "999:guarantee", variant_id: 999, quantity: 1 },
+  ]));
+  const result = await action;
+  assert.equal(result.status, "added");
+  assert.equal(result.quantityAdded, 1);
+  assert.equal(result.addedProduct.lineKey, "123:second-size");
+});
+
+test("an increased existing configured line supplies its key without guessing from the variant", async (t) => {
+  const env = setup(t);
+  const previous = [
+    { key: "123:first-size", variant_id: 123, quantity: 1 },
+    { key: "123:second-size", variant_id: 123, quantity: 3 },
+  ];
+  env.product.cart = storeCart(previous);
+  const action = env.run();
+  updateCart(env, storeCart([{ ...previous[0], quantity: 3 }, previous[1]]));
+  const result = await action;
+  assert.equal(result.quantityAdded, 2);
+  assert.equal(result.addedProduct.lineKey, "123:first-size");
+});
+
+test("ambiguous concurrent same-variant changes and rotated keys never identify one line", async (t) => {
+  for (const change of ["two increases", "increase and removal", "rotated key"]) {
+    await t.test(change, async (t) => {
+      const env = setup(t);
+      env.product.cart = storeCart([
+        { key: "123:first-size", variant_id: 123, quantity: 1 },
+        { key: "123:second-size", variant_id: 123, quantity: 1 },
+      ]);
+      const action = env.run();
+      const next = change === "two increases"
+        ? [
+            { key: "123:first-size", variant_id: 123, quantity: 2 },
+            { key: "123:second-size", variant_id: 123, quantity: 2 },
+          ]
+        : change === "increase and removal"
+          ? [{ key: "123:first-size", variant_id: 123, quantity: 3 }]
+          : [
+              { key: "123:first-size", variant_id: 123, quantity: 1 },
+              { key: "123:rotated-key", variant_id: 123, quantity: 2 },
+            ];
+      updateCart(env, storeCart(next));
+      const result = await action;
+      assert.equal(result.status, "added");
+      assert.equal("lineKey" in result.addedProduct, false);
+      assert.equal(env.submissions(), 1);
+    });
+  }
+});
+
+test("line identity requires a valid keyed baseline and result, not just a matching variant", async (t) => {
+  for (const invalid of ["keyless baseline", "duplicate baseline keys", "keyless result", "invalid result key"]) {
+    await t.test(invalid, async (t) => {
+      const env = setup(t);
+      const previous = { key: "123:configured", variant_id: 123, quantity: 1 };
+      env.product.cart = invalid === "keyless baseline"
+        ? { items: [{ variant_id: 123, quantity: 1 }] }
+        : storeCart(invalid === "duplicate baseline keys" ? [previous, previous] : [previous]);
+      const action = env.run();
+      const resultCart = invalid === "keyless result"
+        ? { items: [{ variant_id: 123, quantity: 3 }] }
+        : storeCart([{ ...previous, quantity: 3,
+            ...(invalid === "invalid result key" ? { key: "https://invalid.example" } : {}),
+          }]);
+      updateCart(env, resultCart);
+      const result = await action;
+      assert.equal(result.status, "added");
+      assert.equal("lineKey" in result.addedProduct, false);
+    });
+  }
+});
+
+test("line identity snapshots the actual pre-submit cart before in-place theme mutations", async (t) => {
+  const env = setup(t);
+  env.button.addEventListener("click", () => {
+    env.product.variantId = "456";
+    env.product.cart = storeCart([{ key: "456:configured", variant_id: 456, quantity: 2 }]);
+  });
+  env.product.shadowRoot.querySelector("slot").addEventListener("submit", () => {
+    env.product.cart.items[0].quantity = 3;
+    env.product.cart.item_count = 3;
+    env.product.cart.items[0].final_line_price = 7500;
+    env.product.cart.total_price = 7500;
+    updateCart(env, env.product.cart);
+  });
+  const result = await env.run();
+  assert.equal(result.status, "added");
+  assert.equal(result.quantityAdded, 1);
+  assert.equal(result.addedProduct.lineKey, "456:configured");
+});
+
 function measurements(env, unit = "mm") {
   const component = env.document.createElement("dynamic-pricing-measurements");
   component.innerHTML = `<select name="_product_measurement_type" data-measurement-select><option value="${unit}">${unit}</option></select>

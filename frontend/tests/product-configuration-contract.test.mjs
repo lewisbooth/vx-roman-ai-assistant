@@ -201,3 +201,93 @@ test("guarantee metadata is a bounded, paired contract, not a generic insurance 
     assert.throws(() => parse("get_product_configuration", input));
   }
 });
+
+function measurementSnapshot() {
+  const input = snapshot();
+  input.measurements = {
+    unit: "mm",
+    width: null,
+    height: null,
+    availableUnits: ["mm", "cm", "in"],
+    entry: "single_pair",
+    constraints: [
+      {
+        unit: "mm",
+        width: { kind: "number", min: 400, max: 2330, step: 1, stepBase: 400 },
+        height: { kind: "number", min: 400, max: 2400, step: 1, stepBase: 400 },
+      },
+      {
+        unit: "cm",
+        width: {
+          kind: "number",
+          min: null,
+          max: null,
+          step: "any",
+          stepBase: 0,
+        },
+        height: { kind: "number", min: 40, max: 240, step: 0.1, stepBase: 40 },
+      },
+      {
+        unit: "in",
+        width: { kind: "select", values: [4, 8, 9] },
+        height: { kind: "select", values: [4, 8, 9] },
+        fractions: {
+          width: { kind: "select", values: [0, 0.125, 0.25, 0.75] },
+          height: { kind: "select", values: [0, 0.125, 0.25, 0.75] },
+        },
+      },
+    ],
+  };
+  return input;
+}
+test("native measurement constraints survive transport with exact inch parts and no mutable aliases", () => {
+  const input = measurementSnapshot(),
+    result = parse("get_product_configuration", input);
+  assert.deepEqual(result, input);
+  result.measurements.constraints[2].fractions.width.values[0] = 0.5;
+  assert.equal(input.measurements.constraints[2].fractions.width.values[0], 0);
+  result.measurements.constraints[0].width.min = 10;
+  assert.equal(input.measurements.constraints[0].width.min, 400);
+  delete input.measurements.entry;
+  delete input.measurements.constraints;
+  assert.deepEqual(
+    parse("get_product_configuration", input),
+    input,
+    "historical measurement results remain readable",
+  );
+});
+
+test("native measurement constraints reject unsupported units, invalid limits and oversized or ambiguous choices", () => {
+  for (const mutate of [
+    (m) => (m.entry = "multi_pair"),
+    (m) => (m.unit = null),
+    (m) => m.constraints.push(m.constraints[0]),
+    (m) => (m.constraints[1].unit = "mm"),
+    (m) => (m.constraints[1].unit = "feet"),
+    (m) => m.availableUnits.pop(),
+    (m) => (m.constraints[0].width.min = 3000),
+    (m) => (m.constraints[0].width.max = Infinity),
+    (m) => (m.constraints[0].width.step = 0),
+    (m) => (m.constraints[0].width.stepBase = "0"),
+    (m) => (m.constraints[0].width.selector = "input"),
+    (m) =>
+      (m.constraints[1].fractions = {
+        width: { kind: "select", values: [0] },
+        height: { kind: "select", values: [0] },
+      }),
+    (m) => delete m.constraints[2].fractions,
+    (m) => (m.constraints[2].width.values = [4, 4]),
+    (m) => (m.constraints[2].width.values = [4.5]),
+    (m) => (m.constraints[2].fractions.width.values = [1]),
+    (m) => (m.constraints[2].fractions.width.values = []),
+    (m) =>
+      (m.constraints[2].width.values = Array.from(
+        { length: 513 },
+        (_, i) => i,
+      )),
+  ]) {
+    const input = measurementSnapshot();
+    mutate(input.measurements);
+    assert.throws(() => parse("get_product_configuration", input));
+  }
+});

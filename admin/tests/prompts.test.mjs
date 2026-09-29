@@ -133,12 +133,21 @@ test("discovery owns one batched read and grounded balanced terminal selection",
   assert.doesNotMatch(kb.discovery, /three targeted searches|show_products/);
 });
 
-test("discovery owns adaptive opening and style intake before recommendations", () => {
+test("discovery owns adaptive single-decision intake before recommendations", () => {
   assert.match(kb.discovery, /Before the first recommendation carousel/);
   for (const fact of ["room", "main requirements", "window/opening type", "colour/pattern direction"]) {
     assert.ok(kb.discovery.includes(fact));
   }
+  assert.match(
+    kb.discovery,
+    /room, window\/opening type, main requirements, then general colour\/pattern direction/,
+  );
+  assert.match(kb.discovery, /one decision per question/);
+  assert.match(kb.discovery, /easy answers addressing that decision only/);
+  assert.match(kb.discovery, /Do not combine room with priorities/);
+  assert.match(kb.discovery, /establish the door type before asking/);
   assert.match(kb.discovery, /Reuse supplied facts/);
+  assert.match(kb.discovery, /skip resolved steps/);
   assert.match(kb.discovery, /Accept uncertainty or no preference/);
   assert.match(kb.discovery, /browse without more questions/);
   assert.match(kb.discovery, /Learn the opening before suggesting blind families/);
@@ -212,6 +221,20 @@ test("product replacement and sample continuation retain unfinished intent and c
     kb.shopping,
     /old cart event must not repeatedly restart intake/,
   );
+});
+
+test("multi-pane measuring uses native limits and preserves one current configuration", () => {
+  assert.match(kb.measuring, /guide AND native product configuration together/);
+  assert.match(kb.measuring, /single_pair form configures one blind/);
+  assert.match(kb.measuring, /how many separate blinds.*before taking readings/);
+  assert.match(kb.measuring, /stop an incompatible reading before asking for the next dimension/);
+  assert.match(kb.measuring, /exactly the same required dimensions and fitting conditions/);
+  assert.match(kb.measuring, /do not overwrite an unadded pane/);
+  assert.match(kb.guides, /Cached PDFs do not refresh native configuration/);
+  assert.match(kb.cart, /addedProduct.lineKey, fresh get_cart/);
+  assert.match(kb.cart, /Never identify a configured line by title\/variant alone/);
+  assert.match(kb.cart, /pane count alone is not purchase consent/);
+  assert.match(kb.shopping, /unfinished multi-pane\/window task/);
 });
 
 test("cart and checkout preserve distinct action authority and truthful outcomes", () => {
