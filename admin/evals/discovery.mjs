@@ -32,27 +32,67 @@ await build({
 const { generateReply, TurnMetrics } = await import(pathToFileURL(file).href);
 const origin = "https://synthetic.example";
 const history = [
-  { role: "user", text: "I'd like living-room blinds for light control and privacy. Standard rectangular windows, no special mount requirements." },
+  { role: "user", text: "I'd like living-room blinds for light control and privacy. Standard rectangular windows, no special mount requirements. I'm open to any colours or patterns." },
   { role: "assistant", text: "Would you like fabric rollers, adjustable slats, softer Roman blinds, or a mix?" },
   { role: "user", text: "Show me everything. I want a varied selection of styles, not different colours of the same blind." },
 ];
+const flow = process.argv.includes("--flow");
+const kitchenHistory = [
+  { role: "user", text: "I need some blinds for my kitchen." },
+  { role: "assistant", text: "Do you want to start with the blind you're currently looking at, or something else?" },
+  { role: "user", text: "Something else" },
+  { role: "assistant", text: "Would you like roller blinds, Roman blinds, or all styles?" },
+  { role: "user", text: "Show me everything" },
+  { role: "assistant", text: "What matters most for the kitchen?" },
+  { role: "user", text: "Privacy" },
+];
+const flowCases = [
+  { name: "missing-opening", history: kitchenHistory, intake: /window|opening|door|pane/i },
+  {
+    name: "missing-aesthetic",
+    history: [...kitchenHistory,
+      { role: "assistant", text: "What kind of opening is it?" },
+      { role: "user", text: "A bifold patio door. I want one blind covering the whole opening, not separate ones on each pane." },
+    ],
+    intake: /colou?r|pattern|texture|neutral|look|style/i,
+  },
+  {
+    name: "all-facts-supplied",
+    history: [{ role: "user", text: "I want blinds for a kitchen, for daytime privacy. Standard recessed rectangular window, no special mount. Soft natural textures; show a mix of colours. Please show me everything across different blind families." }],
+    minQueries: 2,
+  },
+  {
+    name: "category-is-not-a-product-choice",
+    history: [
+      { role: "user", text: "Kitchen bifold patio doors, one covering for the whole opening. I want privacy while letting daylight in, in soft light neutral colours. I'm open to different blind families." },
+      { role: "assistant", text: "Here are a vertical blind, a privacy sheer and a panel blind. The privacy sheer is Synthetic Ivory Privacy Sheer, gid://shopify/Product/9100, /products/ivory-privacy-sheer, described for patio bifold doors. Which style would you like to explore?" },
+      { role: "user", text: "Let's look at privacy sheers." },
+    ],
+    minQueries: 1,
+    query: /sheer/i,
+  },
+];
+const cases = flow
+  ? flowCases.flatMap(sample => ["text", "voice"].map(mode => ({ ...sample, mode, effort: "medium" })))
+  : ["medium", "low"].flatMap(effort => ["text", "voice"].map(mode => ({ name: "balanced-discovery", history, minQueries: 2, mode, effort })));
 const report = [];
-for (const effort of ["medium", "low"]) for (const mode of ["text", "voice"]) {
+for (const sample of cases) {
+  const { effort, mode } = sample;
   const metrics = new TurnMetrics();
   const operations = [];
   const products = new Map();
   let attempts = 0;
   try {
-    const reply = await generateReply(history, () => {}, AbortSignal.timeout(60_000), async (_callId, name, input) => {
+    const reply = await generateReply(sample.history, () => {}, AbortSignal.timeout(60_000), async (_callId, name, input) => {
       operations.push({ name, ...(name === "search_products" ? { queries: input.queries } : {}) });
       if (name !== "search_products") throw new Error("Synthetic discovery permits only search_products.");
       await delay(100);
       const queries = input.queries.map((query, group) => {
-        const family = /roman/i.test(query) ? "Roman" : /venetian|wood|slats/i.test(query) ? "Venetian" : /pleat|cellular|honeycomb/i.test(query) ? "Cellular" : "Roller";
+        const family = /sheer/i.test(query) ? "Sheer" : /roman/i.test(query) ? "Roman" : /venetian|wood|slats/i.test(query) ? "Venetian" : /pleat|cellular|honeycomb/i.test(query) ? "Cellular" : "Roller";
         const productIds = Array.from({length:10}, (_, i) => {
           const id = `gid://shopify/Product/${1000 + group * 100 + i}`;
-          const description = family === "Venetian" ? "Adjustable slats let customers balance privacy and daylight." : family === "Cellular" ? "Cellular light-filtering fabric softens daylight and provides daytime privacy." : family === "Roman" ? "Soft fabric folds with optional light-filtering or blackout lining for privacy and light control." : "Smooth roller fabric with optional light-filtering or blackout lining for privacy and light control.";
-          products.set(id, { id, title: `Synthetic ${family} Style ${i + 1}`, description, url: `${origin}/products/${family.toLowerCase()}-${i}`, priceLabel: `From GBP ${20+i}.00` });
+          const description = family === "Sheer" ? "Light neutral sheer fabric slats designed for patio bifold doors, covering the whole opening with adjustable privacy and daylight." : family === "Venetian" ? "Adjustable slats let customers balance privacy and daylight." : family === "Cellular" ? "Cellular light-filtering fabric softens daylight and provides daytime privacy." : family === "Roman" ? "Soft fabric folds with optional light-filtering or blackout lining for privacy and light control." : "Smooth roller fabric with optional light-filtering or blackout lining for privacy and light control.";
+          products.set(id, { id, title: `Synthetic ${family} Style ${i + 1}`, description: `${description} Available in soft natural textures and a mix of colours.`, url: `${origin}/products/${family.toLowerCase()}-${i}`, priceLabel: `From GBP ${20+i}.00` });
           return id;
         });
         return {query,status:"succeeded",productIds};
@@ -66,13 +106,19 @@ for (const effort of ["medium", "low"]) for (const mode of ["text", "voice"]) {
     metrics.ready(!!reply.presentation, mode === "voice");
     const selected = reply.presentation?.productIds ?? [];
     const families = [...new Set(selected.map(id => products.get(id)?.title.split(" ")[1]))];
-    const passed = attempts === 2 && operations.length === 1 && operations[0].name === "search_products" &&
-      operations[0].queries.length >= 2 && selected.length > 0 && selected.length <= 10 && families.length >= 2 && !!reply.questionPresentation;
-    report.push({effort,mode,passed,operations,cards:selected.length,families,metrics:metrics.snapshot()});
+    const question = reply.questionPresentation;
+    // Topic checks are deliberately broad; saved synthetic output also needs human review.
+    const passed = !!question && (sample.intake
+      ? attempts === 1 && operations.length === 0 && selected.length === 0 && sample.intake.test([question.question, ...question.answers].join(" "))
+      : attempts === 2 && operations.length === 1 && operations[0].name === "search_products" &&
+        operations[0].queries.length >= sample.minQueries && selected.length > 0 && selected.length <= 10 &&
+        families.length >= sample.minQueries && (!sample.query || operations[0].queries.every(query => sample.query.test(query))));
+    report.push({case:sample.name,effort,mode,passed,operations,cards:selected.length,families,
+      ...(flow ? {message:reply.text,question:question?.question,answers:question?.answers} : {}),metrics:metrics.snapshot()});
   } catch (error) {
-    report.push({effort,mode,passed:false,operations,error:error.name,metrics:metrics.snapshot()});
+    report.push({case:sample.name,effort,mode,passed:false,operations,error:error.name,metrics:metrics.snapshot()});
   }
   console.log(JSON.stringify(report.at(-1)));
 }
-await writeFile(".agents/discovery-evaluation.json", JSON.stringify({fixture:"synthetic catalog, 100ms operation; ready times exclude network polling, image loading and Live audio",samples:report},null,2));
+await writeFile(`.agents/discovery-${flow ? "flow-" : ""}evaluation.json`, JSON.stringify({fixture:"synthetic catalog, 100ms operation; ready times exclude network polling, image loading and Live audio",samples:report},null,2));
 if (report.some(sample => !sample.passed)) process.exitCode=1;

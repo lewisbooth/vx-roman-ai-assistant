@@ -133,6 +133,22 @@ test("discovery owns one batched read and grounded balanced terminal selection",
   assert.doesNotMatch(kb.discovery, /three targeted searches|show_products/);
 });
 
+test("discovery owns adaptive opening and style intake before recommendations", () => {
+  assert.match(kb.discovery, /Before the first recommendation carousel/);
+  for (const fact of ["room", "main requirements", "window/opening type", "colour/pattern direction"]) {
+    assert.ok(kb.discovery.includes(fact));
+  }
+  assert.match(kb.discovery, /Reuse supplied facts/);
+  assert.match(kb.discovery, /Accept uncertainty or no preference/);
+  assert.match(kb.discovery, /browse without more questions/);
+  assert.match(kb.discovery, /Learn the opening before suggesting blind families/);
+  assert.match(kb.discovery, /does not answer the opening or aesthetic questions/);
+  assert.match(kb.discovery, /distinguish a category direction from a product choice/);
+  assert.match(kb.discovery, /even if only one sheer was shown/);
+  assert.match(kb.shopping, /continue the missing discovery context/);
+  assert.doesNotMatch(kb.shopping, /continue missing room\/requirements/);
+});
+
 test("questions and product selections share a single terminal response owner", () => {
   assert.match(kb.response, /one terminal ask_question or ask_measurement/);
   assert.match(kb.response, /productIds/);
