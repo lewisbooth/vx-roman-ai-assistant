@@ -14,6 +14,7 @@ const bundle = await build({
       export { cartToolDefinitions } from './shared/cart-tools';
       export { productGuidesToolDefinition } from './shared/product-guides';
       export { askMeasurementToolDefinition } from './shared/questions';
+      export { measurementToolDefinitions, applyMeasurementsToolDefinition } from './shared/measurements';
     `,
     resolveDir: cwd(),
   },
@@ -48,6 +49,8 @@ const {
   cartToolDefinitions,
   productGuidesToolDefinition,
   askMeasurementToolDefinition,
+  measurementToolDefinitions,
+  applyMeasurementsToolDefinition,
 } = module.exports;
 const kb = ROMAN_KNOWLEDGE_MODULES;
 
@@ -142,7 +145,7 @@ test("discovery owns adaptive single-decision intake before recommendations", ()
   }
   assert.match(
     kb.discovery,
-    /room, window\/opening type, main requirements, then general colour\/pattern direction/,
+    /room, window\/opening type, main requirements, fitting preference, then general colour\/pattern direction/,
   );
   assert.match(kb.discovery, /one decision per question/);
   assert.match(kb.discovery, /easy answers addressing that decision only/);
@@ -192,6 +195,22 @@ test("discovery distinguishes no-drill fitting from family diversity", () => {
   assert.match(kb.discovery, /Omit products whose no-drill option is unverified/);
 });
 
+test("discovery owns a single no-drill decision and retains its eligibility meaning", () => {
+  assert.match(kb.discovery, /Ask whether avoiding drilling matters before recommendations/);
+  assert.match(kb.discovery, /not already stated or unambiguous from their request/);
+  assert.match(kb.discovery, /one short decision after the opening and main needs/);
+  assert.match(kb.discovery, /inability to make holes resolves it/);
+  assert.match(kb.discovery, /room, recess or native default alone does not/);
+  assert.match(kb.discovery, /no preference leaves both fitting methods eligible/);
+  assert.match(kb.discovery, /Retain the answer across category\/colour refinements and more results/);
+  assert.match(kb.discovery, /do not ask again unless the customer changes it/);
+  assert.match(kb.discovery, /Required no-drill remains a hard eligibility filter/);
+  assert.match(kb.discovery, /fitting or appearance need no catalogue tools/);
+  for (const owner of [kb.measuring, kb.upsell, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
+    assert.doesNotMatch(owner, /Ask whether avoiding drilling matters/);
+  }
+});
+
 test("guide owner researches fallback without customer permission and preserves source limits", () => {
   assert.match(kb.guides, /automatically use discover_guides/);
   assert.match(kb.guides, /already authorizes this read-only research/);
@@ -237,11 +256,43 @@ test("guide and measurement owners preserve applicability, provenance and effici
   assert.match(kb.measuring, /vertical drop.*left\/middle\/right/);
   assert.match(kb.measuring, /one step, not separate turns/);
   assert.match(kb.measuring, /Clearance matters without a form field/);
-  assert.match(kb.measuring, /Drop:800 provisionally means 800mm/);
-  assert.match(kb.measuring, /That's correct \/ Change measurements/);
+  assert.match(kb.measuring, /Drop:800 means 800mm unless the context introduces uncertainty/);
   assert.match(kb.measuring, /known incompatibility or unresolved suitability/);
   assert.match(kb.measuring, /Save-only stays save-only/);
   assert.match(kb.measuring, /invalid_measurements/);
+});
+
+test("both advisor channels enter clear customer dimensions without a separate confirmation turn", () => {
+  assert.match(kb.measuring, /clear customer-supplied width\/drop pair and unit intended for its form/);
+  assert.match(kb.measuring, /set_measurements as kind:order.*apply_measurements in the same reply/);
+  assert.match(kb.measuring, /Do not insert a separate Is that correct \/ That's correct turn/);
+  assert.match(kb.measuring, /together, one at a time or as a clear correction/);
+  assert.match(kb.measuring, /Clarify only missing or genuinely ambiguous values, units, product or measurement meaning/);
+  assert.match(kb.measuring, /uncertain window notes cannot be applied/);
+  assert.match(kb.measuring, /After successful application, reread configuration.*actual width\/drop with units and settled configuredPrice/);
+  assert.match(kb.measuring, /if no quote is available, say so without inventing one/);
+  assert.match(kb.replacement, /After explicit carry-over permission.*without a second pair-confirmation turn/);
+  assert.match(kb.configuration, /dimension entry alone never authorizes adding the blind/);
+  assert.match(kb.upsell, /measurement_guarantee requires explicit consent even if preselected/);
+  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
+    includesOnce(prompt, kb.measuring);
+    assert.doesNotMatch(prompt, /Confirm (?:a complete width\/drop|the final compatible) pair|Changes require revised-pair confirmation/);
+  }
+  const save = measurementToolDefinitions.find(({ name }) => name === "set_measurements");
+  for (const definition of [save, applyMeasurementsToolDefinition]) {
+    assert.match(definition.description, /clear customer-supplied pair and unit intended for/);
+    assert.match(definition.description, /(?:without a separate confirmation turn|No separate customer confirmation is required)/);
+    assert.doesNotMatch(definition.description, /customer-confirmed final pair|after customer confirmation/);
+  }
+  assert.match(applyMeasurementsToolDefinition.description, /field verification; native limits can reject the pair/);
+});
+
+test("configuration completion offers an actionable measurement edit without losing real decline choices", () => {
+  assert.match(kb.configuration, /Use Change measurements instead of an inert Keep current options answer at completion/);
+  assert.match(kb.configuration, /Retain meaningful declines within an unresolved choice, such as Keep no pelmet/);
+  for (const owner of [kb.measuring, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
+    assert.doesNotMatch(owner, /inert Keep current options/);
+  }
 });
 
 test("measuring owns clearance timing and confirmation without losing safety conditions", () => {
@@ -286,6 +337,21 @@ test("product replacement and sample continuation retain unfinished intent and c
     kb.shopping,
     /old cart event must not repeatedly restart intake/,
   );
+});
+
+test("measuring defaults ordinary windows to one blind and gates multi-blind planning on context", () => {
+  assert.match(kb.measuring, /standard single window, including an inside-recess fit, as one blind/);
+  assert.match(kb.measuring, /unless the customer or product\/opening indicates otherwise/);
+  assert.match(kb.measuring, /Do not ask how many blinds merely because the form supports single_pair/);
+  assert.match(kb.measuring, /one blind across the whole opening also needs no count question/);
+  assert.match(kb.measuring, /multi-blind sequence only when separate coverings are indicated/);
+  assert.match(kb.measuring, /individual bifold panes, separate bay sections or several windows/);
+  assert.match(kb.measuring, /whole-opening versus individual coverage only when genuinely unresolved/);
+  assert.match(kb.measuring, /For those multiple separate blinds/);
+  assert.match(kb.measuring, /how many separate blinds.*before taking readings/);
+  for (const owner of [kb.discovery, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
+    assert.doesNotMatch(owner, /Do not ask how many blinds merely because/);
+  }
 });
 
 test("multi-pane measuring uses native limits and preserves one current configuration", () => {

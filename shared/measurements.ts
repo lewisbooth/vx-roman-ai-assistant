@@ -52,7 +52,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "set_measurements",
     description:
-      "Save width and height (drop), common display unit and mount for a verified productPath. kind window is customer notes; kind order requires the customer-confirmed final pair and unit. unknown mount is supported. Values are stored unchanged: no conversion, rounding, allowances, form entry or fit validation.",
+      "Save width and height (drop), common display unit and mount for a verified productPath. kind window is customer notes; kind order requires a clear customer-supplied pair and unit intended for this product's form, without a separate confirmation turn. unknown mount is supported. Values are stored unchanged: no conversion, rounding, allowances, form entry or fit validation.",
     strict: true,
     parameters: {
       type: "object",
@@ -72,7 +72,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "get_measurements",
     description:
-      "Read this conversation's saved draft for one verified productPath. No draft means unknown dimensions. A window-kind draft is not confirmed order input or fit evidence.",
+      "Read this conversation's saved draft for one verified productPath. No draft means unknown dimensions. A window-kind draft is neither ready for form entry nor evidence of fit.",
     strict: true,
     parameters: {
       type: "object",
@@ -87,7 +87,7 @@ export const applyMeasurementsToolDefinition = {
   type: "function",
   name: "apply_measurements",
   description:
-    "Apply the chosen current product's saved order-kind draft after customer confirmation of its pair and units. Selects mm/cm/in and fills dimensions unchanged, invoking the supported native quote step when needed. No second on-screen approval, unit conversion, rounding, option selection, fit validation or cart addition. Returns applied only after field verification; native limits can reject the pair.",
+    "Apply the chosen current product's saved order-kind draft with a clear customer-supplied pair and unit intended for its form. No separate customer confirmation is required. Selects mm/cm/in and fills dimensions unchanged, invoking the supported native quote step when needed. No on-screen approval, unit conversion, rounding, option selection, fit validation or cart addition. Returns applied only after field verification; native limits can reject the pair.",
   strict: true,
   parameters: {
     type: "object",

@@ -5875,7 +5875,7 @@ test("a genuine voice delegation provider failure remains a failed reply", async
   assert.doesNotMatch(JSON.stringify(env.logs), /private provider failure/);
 });
 
-test("confirmed order dimensions can be saved then applied in one text or voice reply", async (t) => {
+test("clear customer dimensions save and apply without a confirmation turn, then read the quote in text and voice", async (t) => {
   for (const mode of ["text", "voice"]) {
     for (const outcome of [
       "applied",
@@ -5898,6 +5898,11 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
           mount: "recess",
         };
         const draft = { ...input, updatedAt: "2026-09-16T10:00:00.000Z" };
+        const nativeConfiguration = {
+          ...configuration(1, input.productPath),
+          measurements: { width: 300, height: 300, unit: "mm", availableUnits: ["mm"] },
+          configuredPrice: "£45.00",
+        };
         const appliedResult = {
           status: outcome,
           productPath: input.productPath,
@@ -5915,8 +5920,9 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
           saved = true;
           return { status: "saved", draft };
         };
-        env.mock.executeTool = async () => {
+        env.mock.executeTool = async (...args) => {
           assert.equal(saved, true, "Application follows the completed save");
+          if (args[3] === "get_product_configuration") return nativeConfiguration;
           await apply.promise;
           if (outcome === "apply_error")
             throw new Error("PRIVATE_APPLY_FAILURE");
@@ -5924,7 +5930,7 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
         };
         const finalText =
           outcome === "applied"
-            ? "The confirmed width and drop are filled in the product form."
+            ? "300mm wide × 300mm drop are entered. The current blind quote is £45.00."
             : "I could not confirm that the product form was filled.";
         env.streams.push(
           events(
@@ -5945,10 +5951,13 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
                   }),
                 ),
               ]),
+          ...(outcome === "applied"
+            ? [events(completed("", { output: [configRead(1, input.productPath)] }))]
+            : []),
           events(completed(finalText)),
         );
         const text =
-          "Configure this blind with confirmed order dimensions 300 mm wide by 300 mm drop, recess fitting.";
+          "This blind needs 300mm width and 300mm drop, recess fitting.";
         let pending;
         if (mode === "voice") {
           voiceHistory(env, [{ role: "user", text }]);
@@ -6037,9 +6046,19 @@ test("confirmed order dimensions can be saved then applied in one text or voice 
           mode === "voice" ? `${finalText} ${nextActionQuestion}` : finalText,
         );
         assertNextActions(env.calls.finishes[0].result);
+        if (outcome === "applied") {
+          assert.deepEqual(
+            env.calls.browserTools.map((args) => args[3]),
+            ["apply_measurements", "get_product_configuration"],
+          );
+          const quoteOutput = env.calls.requests.at(-1).input.input.find(
+            (item) => item.type === "function_call_output" && item.call_id === "read-1",
+          );
+          assert.deepEqual(JSON.parse(quoteOutput.output), nativeConfiguration);
+        }
         assert.ok(
           env.calls.browserTools.every(
-            (args) => args[3] === "apply_measurements",
+            (args) => ["apply_measurements", "get_product_configuration"].includes(args[3]),
           ),
           "Configuring dimensions never adds to or changes the cart",
         );
