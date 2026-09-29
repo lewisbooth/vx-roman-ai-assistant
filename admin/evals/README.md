@@ -21,15 +21,18 @@ Run from the repository root:
 node admin/evals/discovery.mjs --live
 node admin/evals/discovery.mjs --live --flow
 node admin/evals/discovery.mjs --live --flow --case=pleated-category-refinement,pleated-no-eligible,explicit-bifold-switch --max-requests=12
+node admin/evals/discovery.mjs --live --flow --case=current-product-offer,current-product-accept-answer,current-product-accept-card,current-product-accept-name,current-product-decline --max-requests=24
 ```
 
-These are **billable OpenAI requests** using the private root `.env` key. History and catalogue results are synthetic; the catalogue stub takes 100ms and cannot navigate, read guides or mutate a storefront. Each sample is bounded to four provider requests and 60 seconds. `--max-requests=N` also caps the entire run before each provider request. Exhaustion fails remaining samples instead of exceeding the cap.
+These are **billable OpenAI requests** using the private root `.env` key. History, catalogue and navigation results are synthetic; the stubs take 100ms and cannot read guides or change a real storefront. Each sample is bounded to four provider requests and 60 seconds. `--max-requests=N` also caps the entire run before each provider request. Exhaustion fails remaining samples instead of exceeding the cap.
 
 The default suite compares Medium and Low reasoning in text and voice briefings. `--flow` defaults to **Medium**. Use `--effort=low` or `--effort=medium` to select one effort, and `--case=name[,name]` to run specific cases. Reports, selected products, queries, responses and failures go to ignored `.agents/discovery-evaluation.json` or `.agents/discovery-flow-evaluation.json`.
 
 ## Behaviour checks
 
 Normal discovery should use two completions and one catalogue operation, then return grounded cards and a useful question. Broad discovery checks category coverage. Intake asks one focused question with no catalogue call. Flow cases also cover missing room/opening/priority/aesthetic information, no-drill family choices and category exploration after an earlier suggestion. Synthetic product descriptions include enough evidence to make unnecessary detail or guide calls a failure.
+
+Current-product cases verify the entry card has **This blind / Something else**, acceptance by answer/card/name activates the exact offered product even when its page is already loaded, and decline continues discovery. Acceptance must offer product actions without restarting intake or searching alternatives. A known-ID refresh is permitted when details are needed. Fixture/grader tests run in `npm test`.
 
 The adversarial category cases preserve a living-room request for a standard window, no-drill fitting, daytime privacy and pattern/texture through the short follow-up "Pleated blind":
 
@@ -40,6 +43,8 @@ The adversarial category cases preserve a living-room request for a standard win
 Read the saved outputs as well as the assertions. These tests exercise advisor orchestration and synthetic suitability judgment; they do not prove real Shopify relevance, fitting compatibility, image loading or audible GPT-Live delivery. Runtime tests separately cover execution, partial failure, cancellation, persistence and mutation safeguards.
 
 ## Recorded samples
+
+The 2026-09-29 current-product run passed nine of ten text/voice samples. The named-selection text sample reached the right product/actions but made an unnecessary exact-title search first. After clarifying identity reuse, both named-selection channels passed without that search. The other eight cases passed against the immediately preceding prompt; they were not rerun after this narrow clarification.
 
 After the 2026-09-29 knowledge-base consolidation, all six adversarial text/voice samples preserved the requested category and opening, or returned no cards when nothing qualified. Each used two completions and one catalogue operation (12 requests total). Manual review confirmed the no-match text explanation; the assertion was broadened to recognize “haven't found” without another provider call.
 

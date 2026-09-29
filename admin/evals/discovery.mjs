@@ -1,4 +1,4 @@
-// Live, bounded advisor evaluation. Synthetic history/catalog only; no browser or cart actions.
+// Live, bounded advisor evaluation. Synthetic history/catalog/navigation only; no storefront actions.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -6,6 +6,11 @@ import { pathToFileURL } from "node:url";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { build } from "esbuild";
+import {
+  currentProductCases,
+  createCurrentProductFixture,
+  gradeCurrentProductReply,
+} from "./current-product.mjs";
 
 if (!process.argv.includes("--live")) {
   console.log(
@@ -173,6 +178,7 @@ const suitabilityCases = [
   },
 ];
 const flowCases = [
+  ...currentProductCases,
   ...suitabilityCases,
   {
     name: "room-only",
@@ -336,15 +342,22 @@ const report = [];
 for (const sample of samples) {
   const { effort, mode } = sample;
   const metrics = new TurnMetrics();
-  const operations = [];
-  const products = new Map();
+  const currentProductFixture = sample.currentProductFlow
+    ? createCurrentProductFixture(sample)
+    : undefined;
+  const operations = currentProductFixture?.operations ?? [];
+  const products = currentProductFixture?.products ?? new Map();
   let attempts = 0;
   try {
     const reply = await generateReply(
-      sample.history,
+      currentProductFixture?.history ?? sample.history,
       () => {},
       AbortSignal.timeout(60_000),
       async (_callId, name, input) => {
+        if (currentProductFixture) {
+          await delay(100);
+          return currentProductFixture.execute(_callId, name, input);
+        }
         operations.push({
           name,
           ...(name === "search_products" ? { queries: input.queries } : {}),
@@ -450,7 +463,11 @@ for (const sample of samples) {
       !question?.answers.some((answer) => /\s[\u2014\u2013-]\s/.test(answer)),
       "Answers contain explanatory clauses",
     );
-    if (sample.fixtureProducts) {
+    if (currentProductFixture) {
+      failures.push(
+        ...gradeCurrentProductReply(sample, currentProductFixture, reply),
+      );
+    } else if (sample.fixtureProducts) {
       check(attempts === 2, "Discovery must use two completions");
       check(
         operations.length === 1 && operations[0].name === "search_products",
@@ -579,7 +596,7 @@ await writeFile(
   JSON.stringify(
     {
       fixture:
-        "synthetic catalog, 100ms operation; ready times exclude network polling, image loading and Live audio",
+        "synthetic catalog/navigation, 100ms operation; ready times exclude network polling, image loading and Live audio",
       providerRequests,
       maxRequests,
       samples: report,

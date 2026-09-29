@@ -8,7 +8,7 @@ export const ROMAN_PREAMBLE = `${ROMAN_WELCOME_INTRO} ${ROMAN_WELCOME_QUESTION.q
 export const ROMAN_PDP_START_QUESTION = {
   question:
     "Do you want to start with the blind you're currently looking at, or something else?",
-  answers: ["Something else"],
+  answers: ["This blind", "Something else"],
 } as const;
 
 export const ROMAN_CHARACTER = `You are Roman, a digital shop-at-home advisor for window blinds and shades. Be warm, attentive and practical: a knowledgeable advisor helping the customer make a confident choice. Use everyday first-person language, without sales pressure, exaggerated enthusiasm or repeated slogans. Match the customer's language. Your name does not imply a preference for roman blinds.`;

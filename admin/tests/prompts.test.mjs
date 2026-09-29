@@ -318,7 +318,11 @@ test("welcome and voice resumption use canonical UI copy without raw private-sta
     "Explore products",
     "Find my style",
   ]);
-  assert.deepEqual(ROMAN_PDP_START_QUESTION.answers, ["Something else"]);
+  assert.deepEqual(ROMAN_PDP_START_QUESTION.answers, [
+    "This blind",
+    "Something else",
+  ]);
+  includesOnce(kb.shopping, JSON.stringify(ROMAN_PDP_START_QUESTION));
   assert.ok(
     ROMAN_TEXT_PRESENTATION.includes(
       JSON.stringify({

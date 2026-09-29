@@ -4882,7 +4882,7 @@ test("the initial product choice and a later Something else preserve current int
   const selection = {
     question:
       "Do you want to start with the blind you're currently looking at, or something else?",
-    answers: ["Something else"],
+    answers: ["This blind", "Something else"],
   };
   for (const mode of ["text", "voice"])
     await t.test(mode, async () => {
@@ -4907,6 +4907,10 @@ test("the initial product choice and a later Something else preserve current int
       );
       assert.deepEqual(plain(reply.presentation.productIds), [productGid(123)]);
       assert.equal(reply.questionPresentation.question, selection.question);
+      assert.deepEqual(
+        plain(reply.questionPresentation.answers),
+        selection.answers,
+      );
       const followup = await env.api.generateReply(
         [
           ...initial,
