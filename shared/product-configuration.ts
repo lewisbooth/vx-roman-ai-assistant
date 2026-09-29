@@ -107,7 +107,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "configure_product",
     description:
-      "Apply one available choice using IDs from the latest configuration snapshot and authorized customer intent. A measurement_guarantee requires explicit consent to its current fee and terms, even when preselected; apply an explicit yes/no to record that decision. Waits for the native update; no measurements, cart or purchase action. Snapshot must be read again before another change.",
+      "Apply one available choice using IDs from the latest configuration snapshot and authorized customer intent. A measurement_guarantee requires explicit consent to its current fee and terms, even when preselected; apply an explicit yes/no to record that decision. Waits for the native update and consumes the snapshot. Returns status only; get_product_configuration supplies the changed options and quote. No measurements, cart or purchase action.",
     strict: true,
     parameters: {
       type: "object",

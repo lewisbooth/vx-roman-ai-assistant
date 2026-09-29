@@ -4,6 +4,8 @@ The Roman backend is a React Router framework app with a separate embedded admin
 
 Run all commands from the repository root. Both apps share its package manifest and lockfile.
 
+Admin-owned static assets live in `assets/` and are imported by the app. Vite handles their production URLs; there is no root public directory.
+
 ## Backend ownership
 
 This server and its embedded admin UI run together locally in Docker for now; the same image can run on one Azure VM later. Customer sidebar API routes also belong in this app, outside the merchant-only `/app` layout. They need their own customer/session authorization; storefront visitors do not have Shopify Admin sessions. Keep AI clients and data-access logic in server-only modules, with browser-safe request/response types shared only when needed.
@@ -26,6 +28,8 @@ The same backend advisor serves text and voice briefings through the Responses A
 | `conversations/repository.server.ts` | Durable ordering, source provenance, idempotency and restart recovery |
 
 Keep new domain rules in the appropriate knowledge module. The stable prompt includes all modules without a classifier call or keyword router. Customer constraints, corrections and unresolved requests retain their full conversation history; current selection, background page and pending question are supplied once as application facts. A background page never establishes the active task. Guide bindings are compact facts, not repeated workflow instructions.
+
+Configuration owns the fresh reread after option or dimension changes. Roman compares newly available controls and choices at any nesting depth, resolves relevant operation/hardware/cost decisions before unrelated upsells, and retains harmless or already resolved defaults. Upsells own upgrade selection and guarantee consent; cart owns purchase consent and the form/cart execution boundary.
 
 ### Discovery and complete responses
 
@@ -57,7 +61,7 @@ Provider availability failures retry that round on `gpt-5.6-luna` without replay
 
 ### Latency verification
 
-`[Roman] Advisor turn metrics.` logs completion count, provider time, prompt/cache/reasoning tokens, tool durations, and time until cards or a voice briefing are committed. These are server-ready times, not browser paint or audible speech. [The controlled evaluation](evals/README.md) compares medium and low reasoning using synthetic catalogue data and no storefront actions. Medium is the advisor default; low remains an explicit evaluation override for speed comparisons.
+`[Roman] Advisor turn metrics.` logs completion count, provider time, prompt/cache/reasoning tokens, tool durations, and time until cards or a voice briefing are committed. These are server-ready times, not browser paint or audible speech. [Controlled evaluations](evals/README.md) cover discovery and dynamic configuration with synthetic data and no storefront actions. Medium is the advisor default; discovery also permits a low-reasoning override for speed comparisons.
 
 ## Voice conversations
 

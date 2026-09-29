@@ -1,4 +1,19 @@
-# Discovery evaluation
+# Advisor evaluations
+
+## Configuration
+
+```powershell
+node admin/evals/configuration.mjs --live --max-requests=40
+node admin/evals/configuration.mjs --live --case=motorization-reveals-remote --max-requests=12
+```
+
+These billable Medium-reasoning samples use the current backend model in text and voice briefing modes, with synthetic history and native configuration. There is no browser, storefront mutation or database write. Each sample has a six-request/60-second limit plus the run-wide request cap. Without `--live`, no provider requests are made. Fixture and grader tests run in `npm test`.
+
+The four cases cover newly enabled remote hardware, an already owned compatible remote, a harmless nested default, and an explicitly requested remote at a disclosed surcharge. They require fresh configuration before and after changes, consent for paid choices, and a relevant next question. Read the saved replies as well as the assertions; these are behavioral samples, not a guarantee of future model output or real theme compatibility. Reports go to ignored `.agents/configuration-evaluation.json`.
+
+On 2026-09-29, all eight corrected text/voice samples passed with four completions each (32 requests): read, change, reread, complete. An earlier 32-request fixture run was inconclusive because it also requested a trim preference unavailable with electric controls; that conflicting instruction and missing prior measurement receipt were corrected before rerunning.
+
+## Discovery
 
 Run from the repository root:
 
@@ -25,6 +40,8 @@ The adversarial category cases preserve a living-room request for a standard win
 Read the saved outputs as well as the assertions. These tests exercise advisor orchestration and synthetic suitability judgment; they do not prove real Shopify relevance, fitting compatibility, image loading or audible GPT-Live delivery. Runtime tests separately cover execution, partial failure, cancellation, persistence and mutation safeguards.
 
 ## Recorded samples
+
+After the 2026-09-29 knowledge-base consolidation, all six adversarial text/voice samples preserved the requested category and opening, or returned no cards when nothing qualified. Each used two completions and one catalogue operation (12 requests total). Manual review confirmed the no-match text explanation; the assertion was broadened to recognize “haven't found” without another provider call.
 
 The 2026-09-29 adversarial Medium run used exactly 12 provider requests: each of six text/voice samples made two completions and one targeted search, with no guide reads or navigation. Server-ready times were 3.82-5.82s. Five samples met the semantic criteria. The no-eligible **text** sample explained the lack of a matching pleated blind but still displayed a roller before the customer accepted changing category; the no-eligible voice sample correctly displayed no cards. A narrow alternatives-topic assertion was corrected and the saved outputs regraded without another request. The mixed-results and explicit-bifold-correction cases passed in both channels.
 

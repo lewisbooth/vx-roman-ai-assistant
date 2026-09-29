@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
   const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(host);
 
   return {
+    publicDir: false,
     server: {
       allowedHosts: [host],
       cors: {

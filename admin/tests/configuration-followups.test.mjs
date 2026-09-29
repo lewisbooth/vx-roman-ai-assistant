@@ -21,24 +21,20 @@ new Function("module", "exports", result.outputFiles[0].text)(
 );
 const { configuration, upsell } = module.exports.ROMAN_KNOWLEDGE_MODULES;
 
-test("configuration policy owns fresh-read nested option discovery and meaningful follow-ups", () => {
+test("configuration owns dependent choices, fresh evidence and completion; model behaviour is evaluated separately", () => {
+  assert.match(configuration, /get_product_configuration/);
+  assert.match(configuration, /preceding snapshot/);
+  assert.match(configuration, /parent relationships/);
   assert.match(
     configuration,
-    /After every successful option change or dimension application, read configuration again/,
+    /operation, compatibility, included hardware or cost/,
   );
-  assert.match(configuration, /newly revealed\/enabled controls/);
-  assert.match(configuration, /meaningful decision/);
+  assert.match(configuration, /harmless default/);
   assert.match(configuration, /option.priceLabel/);
   assert.match(configuration, /At most three.*one apply_measurements/);
-  assert.match(
-    configuration,
-    /Add product to cart only if required fields are valid and priced/,
-  );
+  assert.match(configuration, /only when valid and priced/);
   assert.match(configuration, /actions.sampleAvailable/);
-  assert.match(
-    configuration,
-    /This invitation is not a required review before an explicit add request/,
-  );
+  assert.match(configuration, /cart workflow/);
 });
 
 test("upsell policy separates research leads, paid choice consent and guarantee consent", () => {
@@ -59,7 +55,8 @@ test("upsell policy separates research leads, paid choice consent and guarantee 
     /not proof of stock, suitability, colour or category preference/,
   );
   assert.match(upsell, /Respect declines/);
-  assert.match(upsell, /exploration does not authorize enabling a paid extra/);
+  assert.match(upsell, /Product configuration owns paid-option consent/);
+  assert.match(configuration, /Exploration alone does not/);
   assert.match(
     upsell,
     /measurement_guarantee requires explicit consent even if preselected/,

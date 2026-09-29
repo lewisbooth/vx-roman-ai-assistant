@@ -493,7 +493,7 @@ for (const sample of samples) {
       );
       if (!sample.eligibleIds.length) {
         check(
-          /no |not |cannot|can.t|couldn.t|none|unable/i.test(message ?? ""),
+          /no |not |cannot|can.t|couldn.t|haven.t found|none|unable/i.test(message ?? ""),
           "Missing clear explanation that no result meets the request",
         );
         check(

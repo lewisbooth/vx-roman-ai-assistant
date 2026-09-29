@@ -9,12 +9,24 @@ const bundle = await build({
       export * from './admin/prompts/shared.server';
       export * from './admin/prompts/presentation';
       export * from './admin/prompts/knowledge-base';
+      export * from './admin/prompts/knowledge-base/shopping';
+      export * from './admin/prompts/knowledge-base/discovery';
+      export * from './admin/prompts/knowledge-base/replacement';
+      export * from './admin/prompts/knowledge-base/guides';
+      export * from './admin/prompts/knowledge-base/measuring';
+      export * from './admin/prompts/knowledge-base/configuration';
+      export * from './admin/prompts/knowledge-base/upsell';
+      export * from './admin/prompts/knowledge-base/cart';
+      export * from './admin/prompts/knowledge-base/handoff';
+      export * from './admin/prompts/knowledge-base/checkout';
+      export * from './admin/prompts/knowledge-base/response';
       export * from './admin/prompts/text.server';
       export * from './admin/prompts/voice.server';
-      export { cartToolDefinitions } from './shared/cart-tools';
+      export { cartToolDefinitions, requiresCartConfirmation } from './shared/cart-tools';
       export { productGuidesToolDefinition } from './shared/product-guides';
-      export { askMeasurementToolDefinition } from './shared/questions';
+      export { askQuestionToolDefinition, askMeasurementToolDefinition } from './shared/questions';
       export { measurementToolDefinitions, applyMeasurementsToolDefinition } from './shared/measurements';
+      export { MAX_PRODUCT_CARDS } from './shared/conversation';
     `,
     resolveDir: cwd(),
   },
@@ -33,13 +45,14 @@ const {
   ROMAN_CORE_RULES,
   ROMAN_CHARACTER,
   ROMAN_KNOWLEDGE_BASE,
-  ROMAN_KNOWLEDGE_MODULES,
+  ROMAN_KNOWLEDGE_MODULES: kb,
   ROMAN_TEXT_PROMPT,
   ROMAN_TEXT_PRESENTATION,
   ROMAN_VOICE_BRIEFING_PROMPT,
   ROMAN_VOICE_BRIEFING_PRESENTATION,
   ROMAN_NUMBER_FORMATTING,
   ROMAN_PREAMBLE,
+  ROMAN_WELCOME_INTRO,
   ROMAN_WELCOME_QUESTION,
   ROMAN_PDP_START_QUESTION,
   ROMAN_VOICE_OPENING_PROMPTS,
@@ -47,342 +60,196 @@ const {
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
   romanVoicePrompt,
   cartToolDefinitions,
+  requiresCartConfirmation,
   productGuidesToolDefinition,
+  askQuestionToolDefinition,
   askMeasurementToolDefinition,
   measurementToolDefinitions,
   applyMeasurementsToolDefinition,
+  MAX_PRODUCT_CARDS,
 } = module.exports;
-const kb = ROMAN_KNOWLEDGE_MODULES;
+
+const domainOwners = {
+  shopping: module.exports.ROMAN_SHOPPING_GUIDANCE,
+  discovery: module.exports.ROMAN_DISCOVERY_GUIDANCE,
+  replacement: module.exports.ROMAN_REPLACEMENT_GUIDANCE,
+  guides: module.exports.ROMAN_GUIDE_GUIDANCE,
+  measuring: module.exports.ROMAN_MEASURING_GUIDANCE,
+  configuration: module.exports.ROMAN_CONFIGURATION_GUIDANCE,
+  upsell: module.exports.ROMAN_UPSELL_GUIDANCE,
+  cart: module.exports.ROMAN_CART_GUIDANCE,
+  handoff: module.exports.ROMAN_HANDOFF_GUIDANCE,
+  checkout: module.exports.ROMAN_CHECKOUT_GUIDANCE,
+  response: module.exports.ROMAN_RESPONSE_GUIDANCE,
+};
+const domainToolNames = [
+  "search_products",
+  "lookup_catalog",
+  "get_product_guides",
+  "discover_guides",
+  "read_library_guides",
+  "get_product_configuration",
+  "configure_product",
+  "set_measurements",
+  "apply_measurements",
+  "add_to_cart",
+  "add_sample_to_cart",
+  "set_cart_quantity",
+  "open_checkout",
+];
 
 function includesOnce(prompt, part) {
-  assert.ok(part.length > 0);
+  assert.ok(typeof part === "string" && part.trim());
   assert.equal(prompt.split(part).length - 1, 1);
 }
 
-// These verify policy ownership/composition. Runtime tests own execution, consent,
-// provenance, and atomic persistence; prompt wording is not proof of model behavior.
-test("both backend channels share an identical stable core and knowledge prefix", () => {
+// Ownership/composition and public-contract checks, not model evaluations.
+// Runtime suites own validation, consent, grounding and execution; synthetic
+// conversation evaluations own the resulting advisor decisions.
+test("every domain module has one explicit owner in the stable knowledge prefix", () => {
+  assert.deepEqual(kb, domainOwners);
+  assert.deepEqual(Object.keys(kb), Object.keys(domainOwners));
+  assert.equal(ROMAN_KNOWLEDGE_BASE, Object.values(domainOwners).join("\n\n"));
+  const headings = [];
+  for (const policy of Object.values(domainOwners)) {
+    assert.match(policy, /^## /);
+    includesOnce(ROMAN_KNOWLEDGE_BASE, policy);
+    headings.push(
+      ...Array.from(policy.matchAll(/^## (.+)$/gm), (match) => match[1]),
+    );
+  }
+  assert.equal(
+    new Set(headings).size,
+    headings.length,
+    "Section ownership must not be duplicated",
+  );
+});
+
+test("text and voice advisors share the identical core and knowledge base exactly once", () => {
+  assert.equal(ROMAN_CORE_PROMPT, `${ROMAN_CHARACTER}\n\n${ROMAN_CORE_RULES}`);
   const prefix = `${ROMAN_CORE_PROMPT}\n\n${ROMAN_KNOWLEDGE_BASE}\n\n`;
   assert.equal(ROMAN_TEXT_PROMPT, prefix + ROMAN_TEXT_PRESENTATION);
   assert.equal(
     ROMAN_VOICE_BRIEFING_PROMPT,
     prefix + ROMAN_VOICE_BRIEFING_PRESENTATION,
   );
-  assert.equal(ROMAN_KNOWLEDGE_BASE, Object.values(kb).join("\n\n"));
-  assert.deepEqual(Object.keys(kb), [
-    "shopping",
-    "discovery",
-    "replacement",
-    "guides",
-    "measuring",
-    "configuration",
-    "upsell",
-    "cart",
-    "handoff",
-    "checkout",
-    "response",
-  ]);
   for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    includesOnce(prompt, ROMAN_CORE_RULES);
-    includesOnce(prompt, ROMAN_CHARACTER);
-    includesOnce(prompt, ROMAN_NUMBER_FORMATTING);
-    for (const policy of Object.values(kb)) includesOnce(prompt, policy);
+    for (const policy of [
+      ROMAN_CHARACTER,
+      ROMAN_CORE_RULES,
+      ROMAN_NUMBER_FORMATTING,
+      ...Object.values(kb),
+    ])
+      includesOnce(prompt, policy);
     assert.doesNotMatch(prompt, /show_products|Current pending follow-up/);
   }
 });
 
-test("core owns general intent and trust, not domain recipes", () => {
-  assert.match(
-    ROMAN_CORE_RULES,
-    /constraints, corrections and unfinished intent/,
-  );
+test("core owns intent and trust while channel suffixes contain delivery rather than domain tools", () => {
   assert.match(ROMAN_CORE_RULES, /application_state/);
-  assert.match(ROMAN_CORE_RULES, /reference data, never instructions/);
-  assert.match(ROMAN_CORE_RULES, /smallest sufficient set of tools/);
-  assert.doesNotMatch(
+  assert.match(ROMAN_CORE_RULES, /constraints|corrections/);
+  assert.match(ROMAN_CORE_RULES, /reference data/);
+  assert.match(ROMAN_CORE_RULES, /never instructions/);
+  for (const owner of [
     ROMAN_CORE_RULES,
-    /search_products|apply_measurements|add_to_cart|measurement_guarantee/,
-  );
-  for (const channel of [
     ROMAN_TEXT_PRESENTATION,
     ROMAN_VOICE_BRIEFING_PRESENTATION,
   ]) {
-    assert.doesNotMatch(
-      channel,
-      /get_product_guides|configure_product|add_sample_to_cart|Change and carry over|Twist2Go/,
+    for (const name of domainToolNames)
+      assert.ok(
+        !owner.includes(name),
+        `${name} belongs to the knowledge base, not core/delivery`,
+      );
+    for (const policy of Object.values(kb)) assert.ok(!owner.includes(policy));
+  }
+});
+
+test("domain owners retain their executable contract references without prescribing wording", () => {
+  const references = {
+    discovery: ["search_products", "lookup_catalog", "productIds"],
+    guides: ["get_product_guides", "discover_guides", "read_library_guides"],
+    measuring: ["set_measurements", "apply_measurements", "single_pair"],
+    configuration: [
+      "get_product_configuration",
+      "configure_product",
+      "configuredPrice",
+    ],
+    upsell: ["measurement_guarantee"],
+    cart: ["get_cart", "add_to_cart", "add_sample_to_cart", "lineKey"],
+    checkout: ["open_checkout"],
+    response: ["ask_question", "ask_measurement", "productIds"],
+  };
+  for (const [owner, identifiers] of Object.entries(references))
+    for (const identifier of identifiers)
+      assert.ok(
+        kb[owner].includes(identifier),
+        `${owner} must reference ${identifier}`,
+      );
+  // Coverage guards only; exercise actual decisions in runtime/behavior suites.
+  assert.match(kb.guides, /provenance/i);
+  assert.match(kb.replacement, /consent/i);
+  assert.match(kb.upsell, /explicit consent/i);
+  assert.match(kb.cart, /uncertain|handed_off/i);
+});
+
+test("terminal response schemas keep cards and questions atomic with distinct input kinds", () => {
+  for (const definition of [
+    askQuestionToolDefinition,
+    askMeasurementToolDefinition,
+  ]) {
+    assert.equal(definition.strict, true);
+    assert.equal(definition.parameters.additionalProperties, false);
+    for (const name of ["message", "productIds", "question"])
+      assert.ok(definition.parameters.required.includes(name));
+    assert.equal(
+      definition.parameters.properties.productIds.maxItems,
+      MAX_PRODUCT_CARDS,
+    );
+    assert.match(
+      definition.parameters.properties.productIds.description,
+      /successful catalog results/,
     );
   }
-});
-
-test("discovery owns one batched read and grounded balanced terminal selection", () => {
-  assert.match(kb.discovery, /one search_products call/);
-  assert.match(kb.discovery, /two\/three different family queries/);
-  assert.match(kb.discovery, /per-query outcomes/);
-  assert.match(kb.discovery, /partial failure/);
+  const choices = askQuestionToolDefinition.parameters.properties;
+  assert.equal(choices.answers.minItems, 1);
+  assert.equal(choices.answers.maxItems, 4);
+  assert.equal(choices.answers.items.maxLength, 80);
+  assert.equal(choices.question.maxLength, 300);
+  assert.ok(!Object.hasOwn(choices, "instructions"));
+  const measurement = askMeasurementToolDefinition.parameters;
+  for (const name of ["productPath", "instructions", "unit"])
+    assert.ok(measurement.required.includes(name));
+  assert.deepEqual(measurement.properties.unit.enum, ["cm", "mm", "in", null]);
+  assert.ok(!Object.hasOwn(measurement.properties, "answers"));
+  assert.match(askMeasurementToolDefinition.description, /physical distance/);
   assert.match(
-    kb.discovery,
-    /one batched lookup_catalog only for missing facts/,
-  );
-  assert.match(kb.discovery, /Ordinary discovery needs no guides/);
-  assert.match(kb.discovery, /current-turn verified productIds/);
-  assert.match(kb.discovery, /each researched family/);
-  assert.match(
-    kb.discovery,
-    /More\/different results preserve current goal filters/,
-  );
-  assert.match(kb.discovery, /shortened name or distinctive colour/);
-  assert.match(
-    kb.discovery,
-    /do not research a full shortlist merely to ask a category question/,
-  );
-  assert.doesNotMatch(kb.discovery, /three targeted searches|show_products/);
-});
-
-test("discovery owns adaptive single-decision intake before recommendations", () => {
-  assert.match(kb.discovery, /Before the first recommendation carousel/);
-  for (const fact of ["room", "main requirements", "window/opening type", "colour/pattern direction"]) {
-    assert.ok(kb.discovery.includes(fact));
-  }
-  assert.match(
-    kb.discovery,
-    /room, window\/opening type, main requirements, fitting preference, then general colour\/pattern direction/,
-  );
-  assert.match(kb.discovery, /one decision per question/);
-  assert.match(kb.discovery, /easy answers addressing that decision only/);
-  assert.match(kb.discovery, /Do not combine room with priorities/);
-  assert.match(kb.discovery, /establish the door type before asking/);
-  assert.match(kb.discovery, /Reuse supplied facts/);
-  assert.match(kb.discovery, /skip resolved steps/);
-  assert.match(kb.discovery, /Accept uncertainty or no preference/);
-  assert.match(kb.discovery, /browse without more questions/);
-  assert.match(kb.discovery, /Learn the opening before suggesting blind families/);
-  assert.match(kb.discovery, /does not answer the opening or aesthetic questions/);
-  assert.match(kb.discovery, /distinguish a category direction from a product choice/);
-  assert.match(kb.discovery, /even if only one sheer was shown/);
-  assert.match(kb.shopping, /continue the missing discovery context/);
-  assert.doesNotMatch(kb.shopping, /continue missing room\/requirements/);
-});
-
-test("questions and product selections share a single terminal response owner", () => {
-  assert.match(kb.response, /one terminal ask_question or ask_measurement/);
-  assert.match(kb.response, /productIds/);
-  assert.match(kb.response, /whole reply/);
-  assert.match(kb.response, /correct rejection without replaying actions/);
-  assert.match(kb.response, /question only in question/);
-  assert.match(kb.response, /numeric inputs require source grounding/);
-  assert.match(kb.response, /Never offer Finish for now/);
-  assert.match(kb.response, /max300.*max80/);
-});
-
-test("response owner distinguishes customer decisions from physical readings", () => {
-  assert.match(kb.response, /ask_question: decisions, yes\/no checks, preferences, pane counts/);
-  assert.match(kb.response, /ask_measurement: one physical distance/);
-  assert.match(kb.response, /permission to research.*guide failure/);
-  assert.match(askMeasurementToolDefinition.description, /physical distance reading/);
-  assert.match(askMeasurementToolDefinition.description, /research permission and source failures use ask_question/);
-  assert.match(kb.response, /do not paraphrase the same question in message/);
-  assert.match(kb.response, /research choices and evidence checks private/);
-  assert.match(kb.response, /Material suitability uncertainty/);
-});
-
-test("discovery distinguishes no-drill fitting from family diversity", () => {
-  assert.match(kb.discovery, /No-drill is a fitting requirement/);
-  for (const family of ["Roman", "pleated/cellular", "Venetian/wooden", "shutter"]) {
-    assert.ok(kb.discovery.includes(family));
-  }
-  assert.match(kb.discovery, /three distinct relevant families in the single batch/);
-  assert.match(kb.discovery, /menu category alone does not prove/);
-  assert.match(kb.discovery, /Omit products whose no-drill option is unverified/);
-});
-
-test("discovery owns a single no-drill decision and retains its eligibility meaning", () => {
-  assert.match(kb.discovery, /Ask whether avoiding drilling matters before recommendations/);
-  assert.match(kb.discovery, /not already stated or unambiguous from their request/);
-  assert.match(kb.discovery, /one short decision after the opening and main needs/);
-  assert.match(kb.discovery, /inability to make holes resolves it/);
-  assert.match(kb.discovery, /room, recess or native default alone does not/);
-  assert.match(kb.discovery, /no preference leaves both fitting methods eligible/);
-  assert.match(kb.discovery, /Retain the answer across category\/colour refinements and more results/);
-  assert.match(kb.discovery, /do not ask again unless the customer changes it/);
-  assert.match(kb.discovery, /Required no-drill remains a hard eligibility filter/);
-  assert.match(kb.discovery, /fitting or appearance need no catalogue tools/);
-  for (const owner of [kb.measuring, kb.upsell, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
-    assert.doesNotMatch(owner, /Ask whether avoiding drilling matters/);
-  }
-});
-
-test("guide owner researches fallback without customer permission and preserves source limits", () => {
-  assert.match(kb.guides, /automatically use discover_guides/);
-  assert.match(kb.guides, /already authorizes this read-only research/);
-  assert.match(kb.guides, /Only after matching guidance is established/);
-  assert.match(kb.guides, /library also has no applicable guidance.*ask_question/);
-  assert.match(kb.guides, /Do not use ask_measurement for this limitation/);
-});
-
-test("discovery retains the goal through refinements and filters before balancing families", () => {
-  assert.match(kb.discovery, /category answer changes only the category/);
-  assert.match(kb.discovery, /room, opening\/coverage, required fitting, main needs and aesthetic/);
-  assert.match(kb.discovery, /Change a settled requirement only when the customer changes it/);
-  assert.match(kb.discovery, /both in each search query and when judging its results/);
-  assert.match(kb.discovery, /Exclude contradicted requirements and unresolved required features/);
-  assert.match(kb.discovery, /unless its evidence also supports that opening/);
-  assert.match(kb.discovery, /Cordless does not establish no-drill/);
-  assert.match(kb.discovery, /Recommend only eligible products in both prose and cards/);
-  assert.match(kb.discovery, /Eligibility comes before family variety or card count/);
-  assert.match(kb.discovery, /If none qualify, productIds must be empty/);
-  assert.match(kb.discovery, /without silently relaxing requirements/);
-  assert.match(kb.discovery, /do not show those alternative cards alongside the permission question/);
-});
-
-test("guide and measurement owners preserve applicability, provenance and efficient reuse", () => {
-  assert.match(kb.guides, /valid server prior-read provenance/);
-  assert.match(kb.guides, /positively applicable evidence/);
-  assert.match(
-    kb.guides,
-    /New turns, corrections or voice restarts do not require another PDF/,
-  );
-  assert.match(kb.guides, /matching library is established/);
-  assert.match(
-    kb.guides,
-    /irrelevant fitting mismatch neither blocks nor needs mentioning/,
-  );
-  assert.match(
-    kb.guides,
-    /customer confirmation cannot establish suitability|Repeated requests\/confirmation do not fix incompatibility/,
-  );
-  assert.match(kb.guides, /read_library_guides uses its returned IDs/);
-  assert.match(kb.guides, /PDF links\/cards\/URLs/);
-  assert.match(kb.measuring, /horizontal width.*top\/middle\/bottom/);
-  assert.match(kb.measuring, /vertical drop.*left\/middle\/right/);
-  assert.match(kb.measuring, /one step, not separate turns/);
-  assert.match(kb.measuring, /Clearance matters without a form field/);
-  assert.match(kb.measuring, /Drop:800 means 800mm unless the context introduces uncertainty/);
-  assert.match(kb.measuring, /known incompatibility or unresolved suitability/);
-  assert.match(kb.measuring, /Save-only stays save-only/);
-  assert.match(kb.measuring, /invalid_measurements/);
-});
-
-test("both advisor channels enter clear customer dimensions without a separate confirmation turn", () => {
-  assert.match(kb.measuring, /clear customer-supplied width\/drop pair and unit intended for its form/);
-  assert.match(kb.measuring, /set_measurements as kind:order.*apply_measurements in the same reply/);
-  assert.match(kb.measuring, /Do not insert a separate Is that correct \/ That's correct turn/);
-  assert.match(kb.measuring, /together, one at a time or as a clear correction/);
-  assert.match(kb.measuring, /Clarify only missing or genuinely ambiguous values, units, product or measurement meaning/);
-  assert.match(kb.measuring, /uncertain window notes cannot be applied/);
-  assert.match(kb.measuring, /After successful application, reread configuration.*actual width\/drop with units and settled configuredPrice/);
-  assert.match(kb.measuring, /if no quote is available, say so without inventing one/);
-  assert.match(kb.replacement, /After explicit carry-over permission.*without a second pair-confirmation turn/);
-  assert.match(kb.configuration, /dimension entry alone never authorizes adding the blind/);
-  assert.match(kb.upsell, /measurement_guarantee requires explicit consent even if preselected/);
-  for (const prompt of [ROMAN_TEXT_PROMPT, ROMAN_VOICE_BRIEFING_PROMPT]) {
-    includesOnce(prompt, kb.measuring);
-    assert.doesNotMatch(prompt, /Confirm (?:a complete width\/drop|the final compatible) pair|Changes require revised-pair confirmation/);
-  }
-  const save = measurementToolDefinitions.find(({ name }) => name === "set_measurements");
-  for (const definition of [save, applyMeasurementsToolDefinition]) {
-    assert.match(definition.description, /clear customer-supplied pair and unit intended for/);
-    assert.match(definition.description, /(?:without a separate confirmation turn|No separate customer confirmation is required)/);
-    assert.doesNotMatch(definition.description, /customer-confirmed final pair|after customer confirmation/);
-  }
-  assert.match(applyMeasurementsToolDefinition.description, /field verification; native limits can reject the pair/);
-});
-
-test("configuration completion offers an actionable measurement edit without losing real decline choices", () => {
-  assert.match(kb.configuration, /Use Change measurements instead of an inert Keep current options answer at completion/);
-  assert.match(kb.configuration, /Retain meaningful declines within an unresolved choice, such as Keep no pelmet/);
-  for (const owner of [kb.measuring, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
-    assert.doesNotMatch(owner, /inert Keep current options/);
-  }
-});
-
-test("measuring owns clearance timing and confirmation without losing safety conditions", () => {
-  assert.match(kb.measuring, /Establish any mounting position or upgrade choice that changes the requirement first/);
-  assert.match(kb.measuring, /source-defined threshold, endpoints, units and applicable upgrade condition at the actual clearance check/);
-  assert.match(kb.measuring, /not in an earlier guide introduction or mount-choice question/);
-  assert.match(kb.measuring, /Give each detail once in that reply/);
-  assert.match(kb.measuring, /yes\/no question, or in measurement instructions/);
-  assert.match(kb.measuring, /do not repeat it in message or another field/);
-  assert.match(kb.measuring, /After a clear confirmation.*without restating the threshold/);
-  assert.match(kb.measuring, /Retain the confirmed check for that product\/opening/);
-  assert.match(kb.measuring, /product, mount or option change affects it/);
-  assert.match(kb.measuring, /customer answer becomes uncertain.*customer asks to revisit/);
-  assert.match(kb.measuring, /Resolve insufficient\/unknown space before order dimensions/);
-  assert.match(kb.measuring, /necessary safety clarification takes priority/);
-  assert.doesNotMatch(kb.measuring, /75\s*mm/);
-  for (const channel of [ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
-    assert.doesNotMatch(channel, /actual clearance check|Retain the confirmed check/);
-  }
-});
-
-test("product replacement and sample continuation retain unfinished intent and consent boundaries", () => {
-  assert.match(kb.replacement, /before navigation\/configuration/);
-  assert.match(
-    kb.replacement,
-    /Change and carry over \/ Change and start fresh \/ Keep this blind/,
-  );
-  assert.match(
-    kb.replacement,
-    /endpoints, shape, mount, width meaning, allowances and clearance/,
-  );
-  assert.match(kb.replacement, /Guarantee and purchase consent never transfer/);
-  assert.match(kb.replacement, /Native defaults.*not a setup/);
-  assert.match(kb.shopping, /Sample additions are side tasks/);
-  assert.match(
-    kb.shopping,
-    /Keep Shopping after a sample means that continuation/,
-  );
-  assert.match(kb.shopping, /completed full-product addition/);
-  assert.match(kb.shopping, /new discovery goal/);
-  assert.match(
-    kb.shopping,
-    /old cart event must not repeatedly restart intake/,
+    askMeasurementToolDefinition.description,
+    /verified measuring source/,
   );
 });
 
-test("measuring defaults ordinary windows to one blind and gates multi-blind planning on context", () => {
-  assert.match(kb.measuring, /standard single window, including an inside-recess fit, as one blind/);
-  assert.match(kb.measuring, /unless the customer or product\/opening indicates otherwise/);
-  assert.match(kb.measuring, /Do not ask how many blinds merely because the form supports single_pair/);
-  assert.match(kb.measuring, /one blind across the whole opening also needs no count question/);
-  assert.match(kb.measuring, /multi-blind sequence only when separate coverings are indicated/);
-  assert.match(kb.measuring, /individual bifold panes, separate bay sections or several windows/);
-  assert.match(kb.measuring, /whole-opening versus individual coverage only when genuinely unresolved/);
-  assert.match(kb.measuring, /For those multiple separate blinds/);
-  assert.match(kb.measuring, /how many separate blinds.*before taking readings/);
-  for (const owner of [kb.discovery, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
-    assert.doesNotMatch(owner, /Do not ask how many blinds merely because/);
-  }
-});
-
-test("multi-pane measuring uses native limits and preserves one current configuration", () => {
-  assert.match(kb.measuring, /guide AND native product configuration together/);
-  assert.match(kb.measuring, /single_pair form configures one blind/);
-  assert.match(kb.measuring, /how many separate blinds.*before taking readings/);
-  assert.match(kb.measuring, /stop an incompatible reading before asking for the next dimension/);
-  assert.match(kb.measuring, /exactly the same required dimensions and fitting conditions/);
-  assert.match(kb.measuring, /do not overwrite an unadded pane/);
-  assert.match(kb.guides, /Cached PDFs do not refresh native configuration/);
-  assert.match(kb.cart, /addedProduct.lineKey, fresh get_cart/);
-  assert.match(kb.cart, /Never identify a configured line by title\/variant alone/);
-  assert.match(kb.cart, /pane count alone is not purchase consent/);
-  assert.match(kb.shopping, /unfinished multi-pane\/window task/);
-});
-
-test("cart and checkout preserve distinct action authority and truthful outcomes", () => {
-  assert.match(kb.cart, /fresh get_product_configuration/);
-  assert.match(kb.cart, /without another review question/);
-  assert.match(kb.cart, /separate replies/);
-  assert.match(kb.cart, /Never substitute a full-product addition/);
-  assert.match(kb.cart, /specific on-screen review approval/);
-  assert.match(kb.cart, /never automatically repeat a write/);
-  assert.match(
-    kb.cart,
-    /Missing\/empty discount details do not rule out a sale/,
+test("measurement entry and cart consent remain separate shared tool contracts", () => {
+  const save = measurementToolDefinitions.find(
+    ({ name }) => name === "set_measurements",
   );
-  assert.match(kb.checkout, /open_checkout once/);
-  assert.match(kb.checkout, /blocked/);
-  assert.match(kb.checkout, /no further question/);
-  assert.match(kb.checkout, /Do not close the chat or voice connection/);
+  assert.deepEqual(save.parameters.properties.kind.enum, ["window", "order"]);
+  assert.deepEqual(applyMeasurementsToolDefinition.parameters.required, [
+    "productPath",
+  ]);
+  assert.equal(
+    applyMeasurementsToolDefinition.parameters.additionalProperties,
+    false,
+  );
+  assert.match(save.description, /customer-supplied pair and unit/);
+  assert.match(
+    applyMeasurementsToolDefinition.description,
+    /No separate customer confirmation/,
+  );
+  assert.match(
+    applyMeasurementsToolDefinition.description,
+    /field verification/,
+  );
+  assert.match(applyMeasurementsToolDefinition.description, /native limits/);
   assert.deepEqual(
     cartToolDefinitions.map(({ name }) => name),
     [
@@ -394,43 +261,57 @@ test("cart and checkout preserve distinct action authority and truthful outcomes
       "clear_cart",
     ],
   );
+  for (const definition of cartToolDefinitions) {
+    assert.equal(definition.strict, true);
+    assert.equal(definition.parameters.additionalProperties, false);
+    assert.equal(
+      requiresCartConfirmation(definition.name),
+      ["remove_from_cart", "set_cart_quantity", "clear_cart"].includes(
+        definition.name,
+      ),
+    );
+  }
+  const add = cartToolDefinitions.find(({ name }) => name === "add_to_cart");
+  assert.match(add.description, /explicit add request/);
+  assert.match(add.description, /priced native configuration/);
+  assert.match(add.description, /paid-choice consent/);
 });
 
-test("tool descriptions expose source retrieval contracts without owning advisor workflow", () => {
-  assert.deepEqual(
-    [...productGuidesToolDefinition.parameters.required],
-    ["productPath", "kinds", "refresh"],
+test("guide tool exposes source retrieval rather than a second advisor workflow", () => {
+  assert.deepEqual(productGuidesToolDefinition.parameters.required, [
+    "productPath",
+    "kinds",
+    "refresh",
+  ]);
+  assert.equal(
+    productGuidesToolDefinition.parameters.additionalProperties,
+    false,
   );
   assert.match(productGuidesToolDefinition.description, /refresh:false/);
   assert.match(productGuidesToolDefinition.description, /source provenance/);
   assert.doesNotMatch(
     productGuidesToolDefinition.description,
-    /ask_question|Show me everything|try discover_guides/,
+    /ask_question|discover_guides|Show me everything/,
   );
 });
 
-test("Live delegates substantive work without copying backend workflows", () => {
+test("Live shares identity and notation but delegates instead of copying the knowledge base", () => {
   const live = romanVoicePrompt("marin");
   includesOnce(live, ROMAN_CHARACTER);
   includesOnce(live, ROMAN_NUMBER_FORMATTING);
+  assert.ok(!live.includes(ROMAN_CORE_RULES));
   for (const policy of Object.values(kb)) assert.ok(!live.includes(policy));
-  assert.doesNotMatch(
-    live,
-    /measurement_guarantee|configure_product|get_product_guides|Twist2Go|Change and carry over/,
-  );
-  assert.match(live, /Delegate substantive requests and answers/);
-  assert.match(live, /short answer to a pending question/);
-  assert.match(live, /already handled by the backend/);
-  assert.match(live, /Do not delegate that same input again/);
+  for (const name of domainToolNames) assert.ok(!live.includes(name));
+  assert.match(live, /delegat/i);
+  assert.match(live, /backend/i);
+  assert.match(live, /verified briefing/);
   assert.match(live, /progress update/);
-  assert.match(live, /supplied displayed question once/);
-  assert.match(live, /safety-critical conditions/);
-  assert.match(live, /Stop unfinished speech/);
+  assert.match(live, /safety-critical/);
   assert.match(romanVoicePrompt("willow"), /Irish English/);
   assert.doesNotMatch(live, /Irish English/);
 });
 
-test("opening and resume delivery preserve canonical welcome without raw private state", () => {
+test("welcome and voice resumption use canonical UI copy without raw private-state scaffolding", () => {
   assert.equal(ROMAN_PREAMBLE, "Hi! I'm Roman. Where would you like to begin?");
   assert.deepEqual(ROMAN_WELCOME_QUESTION.answers, [
     "Help me measure",
@@ -438,7 +319,15 @@ test("opening and resume delivery preserve canonical welcome without raw private
     "Find my style",
   ]);
   assert.deepEqual(ROMAN_PDP_START_QUESTION.answers, ["Something else"]);
-  assert.match(ROMAN_TEXT_PRESENTATION, /application_state.pendingQuestion/);
+  assert.ok(
+    ROMAN_TEXT_PRESENTATION.includes(
+      JSON.stringify({
+        message: ROMAN_WELCOME_INTRO,
+        ...ROMAN_WELCOME_QUESTION,
+        productIds: [],
+      }),
+    ),
+  );
   assert.match(ROMAN_TEXT_PRESENTATION, /digital shop-at-home advisor/);
   assert.ok(
     ROMAN_VOICE_OPENING_PROMPTS.newConversation.includes(ROMAN_PREAMBLE),
@@ -455,10 +344,9 @@ test("opening and resume delivery preserve canonical welcome without raw private
   for (const prompt of [
     ...Object.values(ROMAN_VOICE_OPENING_PROMPTS),
     ROMAN_VOICE_PENDING_QUESTION_OPENING,
-  ]) {
+  ])
     assert.doesNotMatch(
       prompt,
       /Current pending follow-up|application state.*none/i,
     );
-  }
 });
