@@ -265,6 +265,9 @@ test("known theme update states retain same-product choices while hiding the old
   ]) {
     await t.test(state, async (t) => {
       const { window, container } = await setup(t);
+      const priceSlot = container.querySelector(
+        ".roman-product-stage-price-slot",
+      );
       const form = window.document.querySelector("form");
       const target =
         state === "dynamic-pricing.loading" ? form.parentElement : form;
@@ -273,6 +276,30 @@ test("known theme update states retain same-product choices while hiding the old
       await until(
         () => !container.querySelector(".roman-product-stage-price"),
         "Stale quote is removed",
+      );
+      const placeholder = container.querySelector(
+        ".roman-product-stage-price-loading",
+      );
+      assert.equal(
+        placeholder,
+        priceSlot,
+        "Price keeps its original layout node",
+      );
+      assert.equal(placeholder.getAttribute("aria-label"), "Updating price");
+      assert.equal(
+        placeholder.firstElementChild.getAttribute("aria-hidden"),
+        "true",
+      );
+      assert.ok(
+        container.querySelector(
+          ".roman-product-cart-placeholder[aria-hidden=true]",
+        ),
+      );
+      assert.equal(
+        [...container.querySelectorAll("button")].some(
+          (button) => button.textContent === "Add to Cart",
+        ),
+        false,
       );
       assert.match(container.querySelector("dl").textContent, /FittingRecess/);
       assert.match(container.textContent, /500 × 600 mm/);
@@ -291,6 +318,16 @@ test("known theme update states retain same-product choices while hiding the old
       );
       assert.match(container.textContent, /750 × 600 mm/);
       assert.match(container.querySelector("dl").textContent, /FittingExact/);
+      assert.equal(
+        container.querySelector(".roman-product-stage-price-slot"),
+        priceSlot,
+      );
+      assert.equal(
+        container.querySelector(
+          ".roman-product-stage-price-loading, .roman-product-cart-placeholder",
+        ),
+        null,
+      );
     });
   }
 });
@@ -322,6 +359,12 @@ test("retained transient configuration clears when its form is unsupported, depa
         "Unrelated or unsupported pages must not retain old configuration",
       );
       assert.equal(ctx.messages.length, 0);
+      assert.equal(
+        ctx.container.querySelector(
+          ".roman-product-stage-price-loading, .roman-product-cart-placeholder",
+        ),
+        null,
+      );
     });
   }
 });
@@ -892,6 +935,16 @@ test("expanded mobile selection reflects current native measurements, quote and 
     () => !dialog.querySelector(".roman-product-stage-price"),
     "Expanded view hides stale pricing",
   );
+  for (const content of [
+    dialog,
+    ctx.container.querySelector("aside > .roman-product-stage-content"),
+  ]) {
+    assert.ok(
+      content.querySelector(
+        ".roman-product-stage-price-loading[aria-label='Updating price']",
+      ),
+    );
+  }
   assert.match(dialog.textContent, /500 × 600 mm/);
   assert.match(dialog.querySelector("dl").textContent, /FittingRecess/);
   form.classList.remove("loading");
@@ -905,6 +958,10 @@ test("expanded mobile selection reflects current native measurements, quote and 
   );
   assert.match(dialog.textContent, /750 × 600 mm/);
   assert.match(dialog.querySelector("dl").textContent, /FittingExact/);
+  assert.equal(
+    ctx.container.querySelector(".roman-product-stage-price-loading"),
+    null,
+  );
   assert.equal(
     ctx.dialogs.length,
     1,

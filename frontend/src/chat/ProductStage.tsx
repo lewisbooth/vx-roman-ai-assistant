@@ -285,6 +285,7 @@ export function ProductStage({
       title={title}
       startingPrice={display?.startingPrice ?? null}
       configuration={configuration ?? null}
+      pricePending={!!configuration && !!display?.updating}
       gallery={gallery}
       pending={page.pending}
       hidden={hidden}

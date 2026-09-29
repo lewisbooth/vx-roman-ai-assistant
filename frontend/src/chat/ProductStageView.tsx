@@ -13,6 +13,9 @@ type ProductDetails = {
   title: string;
   startingPrice?: string | null;
   configuration: ReturnType<typeof readProductConfigurationDisplay>;
+  pricePending?: boolean;
+  priceFootprint?: string | null;
+  reserveCart?: boolean;
   onAction: (action: "cart" | "sample") => Promise<void>;
   disabled: boolean;
 };
@@ -21,6 +24,9 @@ function Details({
   title,
   configuration,
   startingPrice,
+  pricePending = false,
+  priceFootprint,
+  reserveCart = false,
   compact = false,
   onAction,
   disabled,
@@ -51,8 +57,9 @@ function Details({
     !!measurements?.unit &&
     measurements.width !== null &&
     measurements.height !== null;
-  const price =
-    configuration?.configuredPrice || (compact ? startingPrice : null);
+  const price = pricePending
+    ? null
+    : configuration?.configuredPrice || (compact ? startingPrice : null);
   const selected =
     configuration?.controls.flatMap((control) =>
       control.options
@@ -70,9 +77,15 @@ function Details({
   return (
     <div className="roman-product-stage-content">
       <h2>{title}</h2>
-      {price && (
-        <p className="roman-product-stage-price">
-          <span>{price}</span>
+      {(price || pricePending) && (
+        <p
+          className={`roman-product-stage-price-slot ${pricePending ? "roman-product-stage-price-loading" : "roman-product-stage-price"}`}
+          role={pricePending ? "status" : undefined}
+          aria-label={pricePending ? "Updating price" : undefined}
+        >
+          <span aria-hidden={pricePending || undefined}>
+            {pricePending ? priceFootprint || "00.00" : price}
+          </span>
         </p>
       )}
       {hasMeasurements ? (
@@ -106,7 +119,7 @@ function Details({
       )}
       {!compact && (
         <div className="roman-product-actions">
-          {configuration?.configuredPrice && (
+          {!pricePending && configuration?.configuredPrice && (
             <button
               type="button"
               disabled={disabled || submitting}
@@ -114,6 +127,11 @@ function Details({
             >
               Add to Cart
             </button>
+          )}
+          {pricePending && reserveCart && (
+            <span className="roman-product-cart-placeholder" aria-hidden="true">
+              Add to Cart
+            </span>
           )}
           <button
             type="button"
@@ -147,6 +165,9 @@ function ExpandIcon({ collapse = false }: { collapse?: boolean }) {
 function ExpandedProduct({
   title,
   configuration,
+  pricePending,
+  priceFootprint,
+  reserveCart,
   gallery,
   pending,
   close,
@@ -218,6 +239,9 @@ function ExpandedProduct({
       <Details
         title={title}
         configuration={configuration}
+        pricePending={pricePending}
+        priceFootprint={priceFootprint}
+        reserveCart={reserveCart}
         disabled={disabled}
         onAction={async (action) => {
           await onAction(action);
@@ -233,6 +257,7 @@ export function ProductStageView({
   title,
   startingPrice,
   configuration,
+  pricePending = false,
   gallery,
   pending,
   hidden,
@@ -247,6 +272,12 @@ export function ProductStageView({
     () => window.matchMedia?.("(max-width: 1023px)").matches ?? false,
   );
   const [expanded, setExpanded] = useState(false);
+  // Display sizing only: never expose or submit a preceding quote as current.
+  // This owner is keyed by selected product and shared with the expanded view.
+  const lastQuote = useRef<string | null>(null);
+  if (configuration?.configuredPrice)
+    lastQuote.current = configuration.configuredPrice;
+  const priceFootprint = lastQuote.current || startingPrice || null;
   const close = useCallback(() => setExpanded(false), []);
   useEffect(() => {
     const media = window.matchMedia?.("(max-width: 1023px)");
@@ -302,6 +333,9 @@ export function ProductStageView({
         title={title}
         startingPrice={startingPrice}
         configuration={configuration}
+        pricePending={pricePending}
+        priceFootprint={priceFootprint}
+        reserveCart={!!lastQuote.current}
         compact={compact}
         onAction={onAction}
         disabled={disabled}
@@ -325,6 +359,9 @@ export function ProductStageView({
         <ExpandedProduct
           title={title}
           configuration={configuration}
+          pricePending={pricePending}
+          priceFootprint={lastQuote.current}
+          reserveCart={!!lastQuote.current}
           gallery={gallery}
           pending={pending}
           close={close}
