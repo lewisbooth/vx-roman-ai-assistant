@@ -35,7 +35,7 @@ import {
   type VoiceProviderEvent,
 } from "./provider.server";
 import {
-  voiceDiscoveryProgress,
+  voiceAnswerProgress,
   voiceInputProgress,
   voiceToolProgress,
 } from "./progress.server";
@@ -1069,17 +1069,17 @@ async function submitVoiceInput(
           ? `Customer chose ${receipt.productChoice.title} (${receipt.productChoice.productPath}).`
           : `Question: ${receipt.question}\nCustomer answer: ${receipt.answer}`);
       // Both commands are sent on the same sideband in order. The short
-      // discovery cue can begin while the input mirror awaits its ACK, so the
+      // answer cue can begin while the input mirror awaits its ACK, so the
       // shopper does not wait for the model's first catalog tool to hear Roman.
       const mirrored = owner.provider!.appendCustomerInput(customerInput);
-      const discoveryCue = voiceDiscoveryProgress(receipt);
+      const answerCue = voiceAnswerProgress(receipt);
       const cueSentAt = Date.now();
-      const earlyProgress = discoveryCue
+      const earlyProgress = answerCue
         ? {
             sentAt: cueSentAt,
-            delivery: owner.provider!.appendProgress(null, discoveryCue).then(
+            delivery: owner.provider!.appendProgress(null, answerCue).then(
               () => {
-                console.debug("[Roman] Voice discovery cue accepted.", {
+                console.debug("[Roman] Voice answer cue accepted.", {
                   ackMs: Date.now() - cueSentAt,
                 });
                 return true;

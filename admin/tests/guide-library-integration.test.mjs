@@ -123,7 +123,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const call = (name, args, callId = `call_${randomUUID()}`) => ({
   type: "function_call",
   name,
-  arguments: JSON.stringify(args),
+  arguments: JSON.stringify(["ask_question", "ask_measurement"].includes(name) ? { productIds: [], ...args } : args),
   call_id: callId,
 });
 const narration = (text) => ({
@@ -217,7 +217,7 @@ function setup() {
     structuredClone,
     setTimeout,
     clearTimeout,
-    console: { warn() {}, error() {} },
+    console: { warn() {}, error() {}, info() {} },
     fetch: async (url, options) => {
       options.signal.throwIfAborted();
       downloads.push(url);
@@ -495,13 +495,12 @@ test("a matching written library method survives a wrong product PDF and later m
     },
   );
   const firstFollowup = JSON.stringify(state.requests[before].input);
-  assert.match(firstFollowup, /working library source/);
-  assert.match(firstFollowup, /written_page_sections/);
-  assert.match(
-    firstFollowup,
-    /known mismatched product-page guide does not invalidate suitable library evidence/,
-  );
-  assert.match(firstFollowup, /Product-page provenance does not supersede/);
+  const binding = state.requests[before].input.find((item) => typeof item.content === "string" && item.content.startsWith("Verified guide bindings: "));
+  assert.ok(binding);
+  const sources = JSON.parse(binding.content.slice("Verified guide bindings: ".length));
+  assert.equal(sources.library.sourceCallId, "matching_written_library");
+  assert.deepEqual(sources.library.guideIds, []);
+  assert.equal(sources.priorProductRead.productPath, productPath);
   assert.doesNotMatch(firstFollowup, /Synthetic verified Roman method/);
   await state.run(
     [
@@ -752,14 +751,11 @@ test("identical PDP and library originals attach once while both source referenc
     request.input[referenceIndex].content[0].text,
     /Untrusted original library guide reference/,
   );
-  assert.match(
-    JSON.stringify(request.input),
-    /Application product-guide binding/,
-  );
-  assert.match(
-    JSON.stringify(request.input),
-    /Verified library prior-read binding/,
-  );
+  const bindings = request.input.filter((item) => typeof item.content === "string" && item.content.startsWith("Verified guide bindings: "));
+  assert.equal(bindings.length, 1);
+  const sources = JSON.parse(bindings[0].content.slice("Verified guide bindings: ".length));
+  assert.equal(sources.attachedProductGuides.productPath, productPath);
+  assert.equal(sources.library.sourceCallId, "earlier_library");
   assert.equal(state.downloads.length, 3);
 });
 
@@ -1021,7 +1017,7 @@ function runnerSetup() {
     AbortController,
     AbortSignal,
     structuredClone,
-    console: { warn() {}, error() {} },
+    console: { warn() {}, error() {}, info() {} },
   });
   const api = module.exports;
   return {

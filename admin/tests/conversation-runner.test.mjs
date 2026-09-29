@@ -13,6 +13,9 @@ const bundle = await build({
     contents: `
       export * from "./admin/conversations/runner.server.ts";
       export * from "./admin/conversations/model.server.ts";
+      export { ROMAN_TEXT_PROMPT } from "./admin/prompts/text.server.ts";
+      export { ROMAN_VOICE_BRIEFING_PROMPT } from "./admin/prompts/voice.server.ts";
+      export { ROMAN_CART_GUIDANCE } from "./admin/prompts/knowledge-base/cart.ts";
       export { readGuideSession, saveGuideSession } from "./admin/guides/session.server.ts";
       export { ConversationError } from "./admin/conversations/errors.server.ts";
     `,
@@ -314,6 +317,7 @@ function setup() {
     },
     finish: async (id, assistantId, result) => {
       calls.finishes.push({ id, assistantId, result });
+      await mock.beforeFinish?.(id, assistantId, result);
       const message = ensure(id).messages.find(
         (message) => message.id === assistantId,
       );
@@ -367,6 +371,8 @@ function setup() {
     require,
     mock,
     URL,
+    performance,
+    TextEncoder,
     AbortController,
     AbortSignal: {
       any: (signals) => AbortSignal.any(signals),
@@ -376,6 +382,7 @@ function setup() {
       },
     },
     console: {
+      info: (...args) => (calls.metrics ??= []).push(args),
       error: (...args) => logs.push(args),
       warn: (...args) => logs.push(args),
     },
@@ -463,6 +470,51 @@ test("a persisted completed reply is never overwritten by stale streaming text",
     commit.resolve();
     await flush();
   }
+});
+
+test("a complete recommendation stays invisible until its persistence commits", async (t) => {
+  for (const outcome of ["committed", "failed"])
+    await t.test(outcome, async () => {
+      const env = setup();
+      const commit = deferred();
+      env.mock.beforeFinish = (_id, _assistant, result) =>
+        result.status === "complete" ? commit.promise : undefined;
+      env.mock.executeTool = async () => catalogResult(123);
+      env.streams.push(
+        events(completed("", { output: [catalogCall("search")] })),
+        recommendation([123], {
+          ...questionSelection,
+          message: "COMPLETE_RECOMMENDATION",
+        }),
+      );
+      await env.api.startTurn("atomic", firstInput);
+      await flush();
+      assert.equal(env.calls.finishes.length, 1);
+      const pending = await env.api.readConversation("atomic");
+      assert.equal(pending.messages.at(-1).status, "pending");
+      assert.doesNotMatch(
+        JSON.stringify(pending),
+        /COMPLETE_RECOMMENDATION|Shade 123/,
+      );
+      if (outcome === "committed") commit.resolve();
+      else commit.reject(new Error("Persistence unavailable"));
+      await flush();
+      const final = await env.api.readConversation("atomic");
+      assert.equal(
+        final.messages.at(-1).status,
+        outcome === "committed" ? "complete" : "failed",
+      );
+      if (outcome === "committed")
+        assert.equal(
+          final.messages.at(-1).parts[0].text,
+          "COMPLETE_RECOMMENDATION",
+        );
+      else
+        assert.doesNotMatch(
+          JSON.stringify(final),
+          /COMPLETE_RECOMMENDATION|Shade 123/,
+        );
+    });
 });
 
 test("the global concurrency bound counts initializing owners and releases finished slots", async () => {
@@ -750,26 +802,9 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   );
   assert.equal(options.signal, signal);
   assert.equal(input.instructions.includes("Private room preference"), false);
-  assert.match(input.instructions, /untrusted|not instructions/i);
-  assert.match(input.instructions, /Never invent manufacturer tolerances/);
-  assert.match(input.instructions, /Use Markdown in message with short paragraphs/);
-  assert.match(
-    input.instructions,
-    /For a greeting or open-ended start in a new conversation, finish with ask_question/,
-  );
-  assert.match(
-    input.instructions,
-    /An explicit full-product add request is sufficient authorization for that verified configuration/,
-  );
-  assert.match(
-    input.instructions,
-    /remove_from_cart, set_cart_quantity or clear_cart[^\n]+these three actions still require/,
-  );
-  assert.match(input.instructions, /actual submitted width, drop and units/);
-  assert.doesNotMatch(input.instructions, /Every cart mutation requires/);
-  assert.doesNotMatch(input.instructions, /visualize blinds in your room/);
+  assert.equal(input.instructions, env.api.ROMAN_TEXT_PROMPT);
   assert.deepEqual(
-    plain(input.input.slice(1)),
+    plain(input.input.filter(({role}) => role !== "developer")),
     history.map(({ role, text }) => ({ role, content: text })),
   );
   assert.deepEqual(plain(env.mock.clients), [
@@ -788,28 +823,9 @@ test("voice backend requests retain tool policy without text greetings or presen
     "voice",
   );
   const instructions = env.calls.requests[0].input.instructions;
-  assert.match(instructions, /backend advisor supporting Roman's live voice/);
-  assert.match(instructions, /Never invent manufacturer tolerances/);
-  assert.match(
-    instructions,
-    /Use add_to_cart only when the shopper asks to add the chosen, configured product on the current product page/,
-  );
-  assert.match(
-    instructions,
-    /An explicit full-product add request is sufficient authorization for that verified configuration/,
-  );
-  assert.match(
-    instructions,
-    /remove_from_cart, set_cart_quantity or clear_cart[^\n]+these three actions still require/,
-  );
-  assert.match(instructions, /cart[^\n]+separate/i);
-  assert.doesNotMatch(instructions, /Every cart mutation requires/);
-  assert.match(instructions, /save those exact values with set_measurements/);
-  assert.match(instructions, /Except after a verified open_checkout result, complete the backend reply with exactly one terminal ask_question or ask_measurement/);
-  assert.doesNotMatch(
-    instructions,
-    /For a greeting or open-ended start in a new conversation, finish with ask_question|Use Markdown|In your written recommendation|400-pixel|visualize blinds in your room/,
-  );
+  assert.equal(instructions, env.api.ROMAN_VOICE_BRIEFING_PROMPT);
+  assert.notEqual(instructions, env.api.ROMAN_TEXT_PROMPT);
+
 });
 
 test("streaming and completed output show text/refusal content but never reasoning or tool data", async () => {
@@ -1298,13 +1314,13 @@ function events(...values) {
 function catalogCall(
   callId,
   name = "search_products",
-  args = { query: "no drill" },
+  args = { queries: ["no drill"] },
 ) {
   return {
     type: "function_call",
     call_id: callId,
     name,
-    arguments: typeof args === "string" ? args : JSON.stringify(args),
+    arguments: typeof args === "string" ? args : JSON.stringify((name === "ask_question" || name === "ask_measurement") ? {productIds:[],...args} : args),
   };
 }
 
@@ -1339,8 +1355,7 @@ test("text and voice receive the cart's named, rounded discount evidence intact"
       );
       assert.deepEqual(JSON.parse(output.output), cart);
       const prompt = env.calls.requests[0].input.instructions;
-      assert.match(prompt, /Missing discount fields mean the details were not supplied, not that no offer applies/);
-      assert.match(prompt, /allocations explain those totals, never subtract them again/);
+      assert.equal(prompt.split(env.api.ROMAN_CART_GUIDANCE).length - 1, 1);
     });
   }
 });
@@ -1993,7 +2008,6 @@ test("configuration cap allows three choices and one measurement application, th
   ]);
   assert.equal(reply.questionPresentation.question, "What next?");
   assert.deepEqual(allowedToolNames(env.calls.requests[12].input), [
-    "show_products",
     "ask_question",
     "ask_measurement",
   ]);
@@ -2160,7 +2174,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
     execute,
   );
   assert.deepEqual(plain(executions), [
-    ["call-1", "search_products", { query: "no drill" }],
+    ["call-1", "search_products", { queries: ["no drill"] }],
   ]);
   for (const { input } of env.calls.requests) {
     assert.equal(input.service_tier, "fast");
@@ -2189,8 +2203,7 @@ test("catalog loops preserve encrypted reasoning within the turn without exposin
         "clear_cart",
         "get_product_configuration",
         "apply_measurements",
-        "show_products",
-        "ask_question",
+          "ask_question",
         "ask_measurement",
       ],
     );
@@ -2257,7 +2270,7 @@ test("catalog call budget leaves only presentation after four lookups and reject
     assert.equal(env.calls.requests.length, 5);
     assert.deepEqual(
       allowedTools(env.calls.requests[4].input).map((tool) => tool.name),
-      ["show_products", "ask_question", "ask_measurement"],
+      ["ask_question", "ask_measurement"],
     );
     assert.equal(env.calls.requests[4].input.tool_choice.type, "allowed_tools");
     assert.equal(env.calls.requests[4].input.tool_choice.mode, "required");
@@ -2280,7 +2293,7 @@ test("invalid or failed catalog calls return a safe error to the model without f
     const env = setup();
     env.streams.push(
       events(completed("", { output: [call] })),
-      events(completed("", { output: [showCall([123])] })),
+      events(completed("", { output: [questionCall({...questionSelection,productIds:[productGid(123)]},"invalid-selection")] })),
       events(completed("I could not check that catalog.")),
     );
     let executions = 0;
@@ -2310,17 +2323,17 @@ test("invalid or failed catalog calls return a safe error to the model without f
     assert.equal(reply.presentation, undefined);
     assert.ok(
       allowedTools(env.calls.requests[1].input).some(
-        (tool) => tool.name === "show_products",
+        (tool) => tool.name === "ask_question",
       ),
       "Failed catalog calls do not hide the carousel capability",
     );
     const selectionOutput = env.calls.requests[2].input.input.find(
       (item) =>
-        item.type === "function_call_output" && item.call_id === "show-1",
+        item.type === "function_call_output" && item.call_id === "invalid-selection",
     );
     assert.match(
       JSON.parse(selectionOutput.output).error,
-      /No product cards were selected/,
+      /verified by successful catalogue results/,
     );
   }
 });
@@ -2337,8 +2350,6 @@ const catalogResult = (...ids) => ({
   })),
   messages: [],
 });
-const showCall = (ids, callId = "show-1") =>
-  catalogCall(callId, "show_products", { productIds: ids.map(productGid) });
 const guidePath = "/products/shade-123";
 const guideResult = (kinds = ["measuring", "fitting"]) => ({
   status: kinds.length ? "found" : "unavailable",
@@ -2574,7 +2585,7 @@ test("cached library authority supports the next numeric step without reattachin
   const request = JSON.stringify(env.calls.requests[0].input.input);
   assert.match(
     request,
-    /Untrusted general measuring-library inventory.*no document contents/,
+    /guideIds.*discoveryId/,
   );
   assert.doesNotMatch(request, /FULL_LIBRARY_SECTIONS|file_data/);
   assert.equal(reply.questionPresentation.measurement.label, "Width");
@@ -2803,7 +2814,7 @@ test("a routine measuring reply retains prior-read authority without attaching P
   assert.equal(guideFiles(firstDocumentRequest).length, 1);
   assert.match(
     JSON.stringify(continued.input),
-    /Verified prior-read guide inventory/,
+    /priorProductRead/,
   );
   assert.doesNotMatch(JSON.stringify(continued.input), /file_data/);
   assert.equal(
@@ -2964,10 +2975,8 @@ test("an established measuring method accepts unknown units and empty instructio
     );
     assert.equal(reply.text, mode === "text" ? "" : question);
     if (resume)
-      assert.match(
-        JSON.stringify(env.calls.requests[0].input.input),
-        /known unit hint, including null when unknown/,
-      );
+      assert.ok(env.calls.requests[0].input.input.some(({content}) =>
+        typeof content === "string" && content.includes('"unit":null')));
   }
 });
 
@@ -3041,7 +3050,7 @@ test("cached original PDFs stay off the request during pending style and cart re
         assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
         assert.match(
           JSON.stringify(env.calls.requests[0].input.input),
-          /Verified prior-read guide inventory/,
+          /priorProductRead/,
         );
         assert.doesNotMatch(
           JSON.stringify(env.calls.requests[0].input.input),
@@ -3434,13 +3443,12 @@ test("terminal numeric replies preserve selected cards, visible text and complet
   const note = "Keep the selected mounting method.";
   env.streams.push(
     events(completed("", { output: [catalogCall("lookup")] })),
-    events(completed("", { output: [showCall([123])] })),
     events(completed("", { output: [guideLookup()] })),
     events(
       completed("", {
         output: [
           { type: "message", content: [{ type: "output_text", text: note }] },
-          measurementCall({ ...measurementSelection, message: note }),
+          measurementCall({ ...measurementSelection, message: note, productIds: [productGid(123)] }),
         ],
         usage: { input_tokens: 100, output_tokens: 40, total_tokens: 140 },
       }),
@@ -3456,10 +3464,10 @@ test("terminal numeric replies preserve selected cards, visible text and complet
     async (value) => usage.push(plain(value)),
     guideOrigin,
   );
-  assert.equal(env.calls.requests.length, 4);
+  assert.equal(env.calls.requests.length, 3);
   assert.equal(reply.text, note);
   assert.deepEqual(plain(reply.presentation), {
-    callId: "show-1",
+    callId: "measurement-1",
     productIds: [productGid(123)],
     productRefs: productRefs([123]),
   });
@@ -3467,7 +3475,7 @@ test("terminal numeric replies preserve selected cards, visible text and complet
     reply.questionPresentation.measurement.instructions,
     measurementSelection.instructions,
   );
-  assert.equal(usage.length, 8);
+  assert.equal(usage.length, 6);
   assert.equal(usage.at(-1).status, "completed");
   assert.equal(usage.at(-1).totalTokens, 140);
   assert.ok(
@@ -4710,731 +4718,409 @@ test("partial guide reads attach only readable evidence in text and voice withou
     });
 });
 
-test("explicit product presentation selects only the requested ordered subset without browser dispatch", async () => {
+const recommendation = (
+  ids,
+  selection = questionSelection,
+  callId = "recommendation",
+) =>
+  events(
+    completed("", {
+      output: [
+        questionCall(
+          {
+            message: "Here are useful choices.",
+            ...selection,
+            productIds: ids.map(productGid),
+          },
+          callId,
+        ),
+      ],
+    }),
+  );
+
+test("ordinary multi-category discovery returns ten grounded cards and a follow-up in two completions and one browser operation", async (t) => {
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const env = setup();
+      const queries = [
+        "living room rollers privacy",
+        "living room Romans privacy",
+        "living room Venetians privacy",
+      ];
+      const ids = Array.from({ length: 30 }, (_, i) => i + 1);
+      const selected = [1, 11, 21, 2, 12, 22, 3, 13, 23, 24];
+      env.streams.push(
+        events(
+          completed("", {
+            output: [catalogCall("batch", "search_products", { queries })],
+          }),
+        ),
+        recommendation(selected),
+      );
+      const dispatches = [];
+      const history = [
+        {
+          role: "user",
+          text: "Living room, daytime privacy. Show me everything.",
+        },
+      ];
+      const reply = await env.api.generateReply(
+        history,
+        () => {},
+        new AbortController().signal,
+        async (...args) => {
+          dispatches.push(args);
+          const result = catalogResult(...ids);
+          result.queries = queries.map((query, i) => ({
+            query,
+            status: "succeeded",
+            productIds: ids.slice(i * 10, i * 10 + 10).map(productGid),
+          }));
+          return result;
+        },
+        mode,
+      );
+      assert.equal(env.calls.requests.length, 2);
+      assert.deepEqual(plain(dispatches), [
+        ["batch", "search_products", { queries }],
+      ]);
+      assert.equal(env.calls.guideReads.length, 0);
+      assert.deepEqual(plain(reply.presentation), {
+        callId: "recommendation",
+        productIds: selected.map(productGid),
+        productRefs: productRefs(selected),
+      });
+      assert.equal(reply.questionPresentation.callId, "recommendation");
+      assert.equal(
+        reply.text,
+        "Here are useful choices." +
+          (mode === "voice" ? ` ${questionSelection.question}` : ""),
+      );
+      const terminal = env.calls.requests[1].input.tools.find(
+        ({ name }) => name === "ask_question",
+      );
+      assert.equal(terminal.parameters.properties.productIds.maxItems, 10);
+      assert.ok(
+        env.calls.requests.every(
+          ({ input }) =>
+            !input.tools.some(({ name }) => name === "show_products"),
+        ),
+      );
+      const supplied = env.calls.requests[1].input.input.filter(
+        ({ type }) => type === "function_call_output",
+      );
+      assert.equal(supplied.length, 1);
+      assert.equal(JSON.parse(supplied[0].output).products.length, 30);
+    });
+});
+
+test("missing detail evidence permits one batched lookup without a separate presentation completion", async () => {
   const env = setup();
   env.streams.push(
-    events(completed("", { output: [catalogCall("catalog-1")] })),
-    events(completed("", { output: [showCall([456, 123])] })),
-    events(completed("These two blackout options fit your preferences.")),
+    events(completed("", { output: [catalogCall("batch")] })),
+    events(
+      completed("", {
+        output: [
+          catalogCall("details", "lookup_catalog", {
+            ids: [productGid(123), productGid(456)],
+          }),
+        ],
+      }),
+    ),
+    recommendation([456, 123]),
   );
-  const dispatched = [];
+  const dispatches = [];
   const reply = await env.api.generateReply(
     [],
     () => {},
     new AbortController().signal,
     async (...args) => {
-      dispatched.push(args);
-      return catalogResult(123, 456, 789);
+      dispatches.push(args);
+      return catalogResult(123, 456);
     },
   );
-  assert.equal(dispatched.length, 1, "Presentation is a server-local tool");
-  assert.deepEqual(plain(reply.presentation), {
-    callId: "show-1",
-    productIds: [productGid(456), productGid(123)],
-    productRefs: productRefs([456, 123]),
-  });
-  const acknowledged = env.calls.requests[2].input.input.find(
-    (item) => item.type === "function_call_output" && item.call_id === "show-1",
+  assert.deepEqual(
+    dispatches.map((args) => args[1]),
+    ["search_products", "lookup_catalog"],
   );
-  assert.deepEqual(JSON.parse(acknowledged.output).selectedProductIds, [
-    productGid(456),
-    productGid(123),
-  ]);
-  assert.match(
-    JSON.parse(acknowledged.output).instruction,
-    /Each displayed card has a Choose this blind image control/,
-  );
-  assert.equal(
-    allowedTools(env.calls.requests[2].input).some(
-      (tool) => tool.name === "show_products",
-    ),
-    false,
-    "A successful selection consumes the one presentation attempt",
+  assert.equal(env.calls.requests.length, 3);
+  assert.deepEqual(
+    plain(reply.presentation.productRefs),
+    productRefs([456, 123]),
   );
 });
 
-test("a fullscreen carousel accepts ten current-turn products in their selected order", async () => {
-  const env = setup();
-  const ids = [8, 3, 1, 5, 2, 6, 7, 4, 10, 9];
-  env.streams.push(
-    events(completed("", { output: [catalogCall("catalog-1")] })),
-    events(completed("", { output: [showCall(ids)] })),
-    events(completed("Here are the matching roller blinds.")),
-  );
-  const reply = await env.api.generateReply(
-    [],
-    () => {},
-    new AbortController().signal,
-    async () => catalogResult(...ids),
-  );
-  assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
-  assert.deepEqual(plain(reply.presentation.productRefs), productRefs(ids));
-  assert.equal(
-    allowedTools(env.calls.requests[0].input).find(
-      (tool) => tool.name === "show_products",
-    ).parameters.properties.productIds.maxItems,
-    10,
-  );
-});
-
-test("initial PDP choice preserves its single verified card and one alternative in text and voice", async (t) => {
+test("the initial product choice and a later Something else preserve current intent in text and voice", async (t) => {
   const selection = {
     question:
       "Do you want to start with the blind you're currently looking at, or something else?",
     answers: ["Something else"],
   };
-  const shoppingState = {
-    role: "user",
-    text: `Current Roman shopping state (application state, not a new customer request): ${JSON.stringify(
-      {
-        activeBlind: null,
-        backgroundPage: { title: "Shade 123", path: "/products/shade-123" },
-      },
-    )}`,
-  };
-  for (const mode of ["text", "voice"])
-    await t.test(mode, async () => {
-      const env = setup();
-      env.mock.executeTool = async () => catalogResult(456, 123, 789);
-      env.streams.push(
-        events(
-          completed("", {
-            output: [
-              catalogCall("current-pdp", "search_products", {
-                query: "Shade 123",
-              }),
-            ],
-          }),
-        ),
-        events(completed("", { output: [showCall([123])] })),
-        events(completed("", { output: [questionCall(selection)] })),
-      );
-      const customerText = "Help me measure my windows for blinds.";
-      if (mode === "voice") {
-        voiceHistory(env, [
-          shoppingState,
-          { role: "user", text: customerText },
-        ]);
-        await env.api.runVoiceDelegation(
-          "voice",
-          VOICE_ID,
-          firstInput.requestId,
-          new AbortController().signal,
-        );
-      } else {
-        const begin = env.mock.begin;
-        env.mock.begin = async (...args) => {
-          const result = await begin(...args);
-          result.history.unshift(shoppingState);
-          return result;
-        };
-        await env.api.startTurn("text", { ...firstInput, text: customerText });
-        await flush();
-      }
-      assert.equal(env.calls.finishes.length, 1);
-      const { result } = env.calls.finishes[0];
-      assert.equal(result.status, "complete");
-      assert.deepEqual(plain(result.presentation), {
-        callId: "show-1",
-        productIds: [productGid(123)],
-        productRefs: productRefs([123]),
-      });
-      assert.deepEqual(plain(result.questionPresentation), {
-        callId: "question-1",
-        ...selection,
-      });
-      assert.equal(result.text, mode === "voice" ? selection.question : "");
-      assert.equal(env.calls.browserTools.length, 1);
-      assert.equal(env.calls.browserTools[0][3], "search_products");
-      assert.equal(env.calls.guideReads.length, 0);
-      assert.equal(env.calls.requests.length, 3);
-      assert.match(env.calls.requests[0].input.instructions, /Something else/);
-    });
-});
-
-test("declining the initial PDP can continue with room discovery without restoring product cards", async (t) => {
-  const selection = {
-    question: "Which room are you shopping for?",
-    answers: ["Bedroom", "Living room", "Another room"],
-  };
   for (const mode of ["text", "voice"])
     await t.test(mode, async () => {
       const env = setup();
       env.streams.push(
-        events(completed("", { output: [questionCall(selection)] })),
+        events(completed("", { output: [catalogCall("product-choice")] })),
+        recommendation([123], selection),
+        recommendation([], {
+          question: "Which room are you shopping for?",
+          answers: ["Bedroom", "Living room", "Another room"],
+        }),
       );
-      const history = [
+      const initial = [
         { role: "user", text: "Help me measure my windows for blinds." },
-        {
-          role: "user",
-          source: "roman_question",
-          text: 'Historical Roman question widget: {"question":"Do you want to start with the blind you\'re currently looking at, or something else?","answers":["Something else"]}',
-        },
-        { role: "user", text: "Something else" },
       ];
-      if (mode === "voice") {
-        voiceHistory(env, history);
-        await env.api.runVoiceDelegation(
-          "voice",
-          VOICE_ID,
-          firstInput.requestId,
-          new AbortController().signal,
-        );
-      } else {
-        const begin = env.mock.begin;
-        env.mock.begin = async (...args) => {
-          const result = await begin(...args);
-          result.history = history;
-          return result;
-        };
-        await env.api.startTurn("text", {
-          ...firstInput,
-          text: "Something else",
-        });
-        await flush();
-      }
-      const { result } = env.calls.finishes[0];
-      assert.equal(result.status, "complete");
-      assert.deepEqual(plain(result.questionPresentation), {
-        callId: "question-1",
-        ...selection,
-      });
-      assert.equal(result.presentation, undefined);
-      assert.equal(env.calls.browserTools.length, 0);
-      assert.equal(env.calls.guideReads.length, 0);
-      assert.equal(env.calls.requests.length, 1);
-    });
-});
-
-test("model-owned browsing question finishes the selected carousel in text and voice", async () => {
-  for (const mode of ["text", "voice"]) {
-    const env = setup();
-    env.streams.push(
-      events(completed("", { output: [catalogCall("catalog-1")] })),
-      events(completed("", { output: [showCall([456, 123, 789])] })),
-      events(
-        completed("", {
-          output: [
-            questionCall({
-              message: "These are the available blinds.",
-              ...{
-                question: "Would you like to explore more options?",
-                answers: [
-                  "Show me more",
-                  "Different colours",
-                  "Help me narrow it down",
-                ],
-              },
-            }),
-          ],
-        }),
-      ),
-    );
-    const reply = await env.api.generateReply(
-      [{ role: "user", text: "Let's continue measuring this window." }],
-      () => {},
-      new AbortController().signal,
-      async () => catalogResult(123, 456, 789, 999),
-      mode,
-    );
-    assert.deepEqual(plain(reply.questionPresentation).answers, [
-      "Show me more",
-      "Different colours",
-      "Help me narrow it down",
-    ]);
-    assert.equal(
-      reply.questionPresentation.question,
-      "Would you like to explore more options?",
-    );
-    assert.equal(env.calls.requests.length, 3);
-    assert.equal(
-      reply.text.includes(reply.questionPresentation.question),
-      mode === "voice",
-    );
-    assert.doesNotMatch(
-      JSON.stringify(reply.questionPresentation),
-      /Shade 999|Help me measure|Explore products/,
-    );
-  }
-});
-
-test("carousel title data never rewrites the model selected browsing question", async () => {
-  for (const titles of [
-    ["Only shade"],
-    ["Shade one", "Shade two", "Shade three", "Shade four"],
-    ["Same name", "same name"],
-    ["Long title ".repeat(10), "Another shade"],
-    ["<Unsafe title>", "Another shade"],
-    ["A different blind", "Another shade"],
-  ]) {
-    const env = setup();
-    const ids = titles.map((_, index) => index + 1);
-    const result = catalogResult(...ids);
-    result.products.forEach((product, index) => {
-      product.title = titles[index];
-    });
-    env.streams.push(
-      events(completed("", { output: [catalogCall("catalog-1")] })),
-      events(completed("", { output: [showCall(ids)] })),
-      events(
-        completed("", {
-          output: [
-            questionCall({
-              message: "These are the available choices.",
-              ...{
-                question: "Would you like to explore more options?",
-                answers: [
-                  "Show me more",
-                  "Different colours",
-                  "Help me narrow it down",
-                ],
-              },
-            }),
-          ],
-        }),
-      ),
-    );
-    const reply = await env.api.generateReply(
-      [],
-      () => {},
-      new AbortController().signal,
-      async () => result,
-    );
-    assert.deepEqual(plain(reply.questionPresentation).answers, [
-      "Show me more",
-      "Different colours",
-      "Help me narrow it down",
-    ]);
-    assert.equal(
-      reply.questionPresentation.question,
-      "Would you like to explore more options?",
-    );
-    assert.deepEqual(plain(reply.presentation.productIds), ids.map(productGid));
-    assert.deepEqual(
-      plain(reply.presentation.productRefs),
-      productRefs(ids, (id) => titles[id - 1]),
-    );
-  }
-});
-
-test("validated model questions remain authoritative without hidden menu substitutions", async () => {
-  const welcome = {
-    question: "Where would you like to begin?",
-    answers: ["Help me measure", "Explore products", "Find my style"],
-  };
-  const nextActions = {
-    ...welcome,
-    question: "What would you like to do next?",
-  };
-  for (const selection of [
-    welcome,
-    nextActions,
-    { question: "Which blind?", answers: ["Shade 456", "Shade 123"] },
-    {
-      question: "Change the current blind?",
-      answers: ["Yes, change blind", "No, keep this blind"],
-    },
-    {
-      question: "Which part would you like help with?",
-      answers: [...welcome.answers],
-    },
-  ]) {
-    const env = setup();
-    env.streams.push(
-      events(completed("", { output: [catalogCall("catalog-1")] })),
-      events(completed("", { output: [showCall([456, 123, 789])] })),
-      events(completed("", { output: [questionCall(selection)] })),
-    );
-    const reply = await env.api.generateReply(
-      [],
-      () => {},
-      new AbortController().signal,
-      async () => catalogResult(123, 456, 789),
-    );
-    const expected = selection;
-    assert.deepEqual(plain(reply.questionPresentation), {
-      callId: "question-1",
-      ...expected,
-    });
-    assert.equal(env.calls.requests.length, 3);
-  }
-});
-
-test("explicit browsing and completed product choices each author their own terminal question", async () => {
-  for (const next of ["question", "navigate"]) {
-    const env = setup();
-    env.streams.push(
-      events(completed("", { output: [catalogCall("catalog-1")] })),
-      events(
-        completed("", {
-          output: [showCall([123, 456])],
-        }),
-      ),
-    );
-    env.streams.push(
-      events(
-        completed("", {
-          output: [
-            next === "question"
-              ? questionCall()
-              : catalogCall("open-chosen", "navigate", {
-                  path: "/products/shade-123",
-                }),
-          ],
-        }),
-      ),
-    );
-    if (next === "navigate")
-      env.streams.push(events(completed("Here is the useful next step.")));
-    const reply = await env.api.generateReply(
-      [],
-      () => {},
-      new AbortController().signal,
-      async (_id, name, args) =>
-        name === "navigate"
-          ? { status: "navigated", path: args.path }
-          : catalogResult(123, 456),
-    );
-    if (next === "question") {
-      assert.deepEqual(plain(reply.questionPresentation), {
-        callId: "question-1",
-        ...questionSelection,
-      });
-    } else assertNextActions(reply);
-  }
-});
-
-test("broad discovery can pool three family searches and needed details into ten ordered cards within four storefront calls", async (t) => {
-  const searches = [
-    { family: "Roller", query: "living room roller blinds privacy daylight", ids: [101, 102, 103, 104, 105, 106, 107, 108, 109, 110] },
-    { family: "Roman", query: "living room Roman blinds privacy daylight", ids: [201, 202, 203, 204] },
-    { family: "Pleated", query: "living room pleated cellular blinds privacy daylight", ids: [301, 302, 303, 304] },
-  ];
-  const selected = [101, 201, 301, 102, 202, 302, 103, 203, 303, 204];
-  const detailIds = [101, 201, 301];
-  for (const mode of ["text", "voice"]) {
-    await t.test(mode, async () => {
-      const env = setup();
-      env.streams.push(
-        ...searches.map(({ query }, index) => events(completed("", {
-          output: [catalogCall(`family-${index}`, "search_products", { query })],
-        }))),
-        events(completed("", {
-          output: [catalogCall("missing-details", "lookup_catalog", {
-            ids: detailIds.map(productGid),
-          })],
-        })),
-        events(completed("", { output: [showCall(selected)] })),
-        events(completed("", { output: [questionCall()] })),
-      );
-      const dispatched = [];
       const reply = await env.api.generateReply(
-        [
-          { role: "user", text: "Living room blinds for privacy with daylight." },
-          { role: "assistant", text: "Would you like roller, Roman, pleated blinds, or to see everything?" },
-          { role: "user", text: "Show me everything" },
-        ],
+        initial,
         () => {},
         new AbortController().signal,
-        async (callId, name, args) => {
-          dispatched.push({ callId, name, args });
-          const ids = name === "lookup_catalog"
-            ? detailIds
-            : searches.find(({ query }) => query === args.query).ids;
-          const result = catalogResult(...ids);
-          for (const product of result.products) {
-            const family = searches.find(({ ids }) => ids.some((id) => productGid(id) === product.id)).family;
-            product.title = `${family} ${product.title}`;
-            product.description = "Light-filtering fabric allows daylight while providing daytime privacy.";
-          }
-          return result;
-        },
+        async () => catalogResult(123, 456),
         mode,
       );
-      assert.deepEqual(dispatched.map(({ name }) => name), [
-        "search_products", "search_products", "search_products", "lookup_catalog",
-      ]);
-      assert.deepEqual(plain(reply.presentation), {
-        callId: "show-1",
-        productIds: selected.map(productGid),
-        productRefs: productRefs(selected, (id) => {
-          const family = searches.find(({ ids }) => ids.includes(id)).family;
-          return `${family} Shade ${id}`;
-        }),
-      });
-      const lastCatalogRequest = env.calls.requests[4].input;
-      assert.equal(allowedToolNames(lastCatalogRequest).includes("search_products"), false);
-      assert.equal(allowedToolNames(lastCatalogRequest).includes("show_products"), true);
-      assert.equal(allowedToolNames(lastCatalogRequest).includes("ask_question"), true);
-      assert.equal(
-        lastCatalogRequest.input.filter(({ type }) => type === "function_call_output").length,
-        4,
-        "All family search evidence remains available when selecting cards",
-      );
-      assert.equal(env.calls.requests.length, 6);
-      assert.ok(reply.questionPresentation);
-    });
-  }
-});
-
-test("an explicit follow-up can show refreshed recommendations after text or an earlier carousel", async (t) => {
-  for (const earlierCarousel of [false, true]) {
-    await t.test(
-      earlierCarousel ? "earlier carousel" : "text-only recommendations",
-      async () => {
-        const env = setup();
-        env.streams.push(
-          events(
-            completed("", {
-              output: [
-                catalogCall("catalog-first", "search_products", {
-                  query: "blackout roller",
-                }),
-              ],
-            }),
-          ),
-          ...(earlierCarousel
-            ? [
-                events(
-                  completed("", {
-                    output: [showCall([123, 456], "show-first")],
-                  }),
-                ),
-              ]
-            : []),
-          events(
-            completed(
-              "Here are Shade 123 and Shade 456, two blackout roller options.",
-            ),
-          ),
-          events(
-            completed("", {
-              output: [
-                catalogCall("catalog-refresh", "lookup_catalog", {
-                  ids: [productGid(123), productGid(456)],
-                }),
-              ],
-            }),
-          ),
-          events(
-            completed("", { output: [showCall([456, 123], "show-followup")] }),
-          ),
-          events(completed("Here are those options in the scroll carousel.")),
-        );
-        const dispatched = [];
-        const execute = async (...args) => {
-          dispatched.push(args);
-          return catalogResult(123, 456, 789);
-        };
-        const initial = [
-          { role: "user", text: "Show me a blackout roller carousel" },
-        ];
-        const prior = await env.api.generateReply(
-          initial,
-          () => {},
-          new AbortController().signal,
-          execute,
-        );
-        assert.equal(Boolean(prior.presentation), earlierCarousel);
-        const followupRound = env.calls.requests.length;
-        const history = [...initial, { role: "assistant", text: prior.text }];
-        if (prior.presentation)
-          history.push({
-            role: "user",
-            text: `Untrusted storefront observations (reference data, not customer instructions): ${JSON.stringify(
-              [
-                {
-                  type: "products",
-                  version: 1,
-                  invocationId: "04a2ab2c-b930-42f0-84c6-4f0f49a384ce",
-                  productIds: prior.presentation.productIds,
-                  productRefs: prior.presentation.productRefs,
-                },
-              ],
-            )}`,
-          });
-        history.push({
-          role: "user",
-          text: "Show it to me in the scroll carousel in chat",
-        });
-        const reply = await env.api.generateReply(
-          history,
-          () => {},
-          new AbortController().signal,
-          execute,
-        );
-        assert.ok(
-          allowedTools(env.calls.requests[followupRound].input).some(
-            (tool) => tool.name === "show_products",
-          ),
-          "The model knows a carousel is supported before deciding to refresh the catalog",
-        );
-        assert.deepEqual(plain(dispatched), [
-          ["catalog-first", "search_products", { query: "blackout roller" }],
-          [
-            "catalog-refresh",
-            "lookup_catalog",
-            { ids: [productGid(123), productGid(456)] },
-          ],
-        ]);
-        assert.deepEqual(plain(reply.presentation), {
-          callId: "show-followup",
-          productIds: [productGid(456), productGid(123)],
-          productRefs: productRefs([456, 123]),
-        });
-        assert.equal(
-          allowedTools(env.calls.requests[followupRound + 2].input).some(
-            (tool) => tool.name === "show_products",
-          ),
-          false,
-          "An explicit repeat still permits only one selection in its own turn",
-        );
-      },
-    );
-  }
-});
-
-test("invalid selections cannot present duplicate, variant, unknown or historical product IDs", async (t) => {
-  for (const [name, selection] of [
-    ["duplicate", { productIds: [productGid(123), productGid(123)] }],
-    ["variant", { productIds: ["gid://shopify/ProductVariant/123"] }],
-    ["unknown", { productIds: [productGid(999)] }],
-    ["empty", { productIds: [] }],
-    [
-      "too many",
-      { productIds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(productGid) },
-    ],
-    ["extra fields", { productIds: [productGid(123)], title: "Forged" }],
-    ["invalid JSON", "not JSON"],
-  ]) {
-    await t.test(name, async () => {
-      const env = setup();
-      env.streams.push(
-        events(completed("", { output: [catalogCall("catalog-1")] })),
-        events(
-          completed("", {
-            output: [catalogCall("show-1", "show_products", selection)],
-          }),
-        ),
-        events(completed("I can explain the available option.")),
-      );
-      const reply = await env.api.generateReply(
+      assert.deepEqual(plain(reply.presentation.productIds), [productGid(123)]);
+      assert.equal(reply.questionPresentation.question, selection.question);
+      const followup = await env.api.generateReply(
         [
-          {
-            role: "assistant",
-            text: `Earlier product reference: ${productGid(999)}`,
-          },
+          ...initial,
+          { role: "assistant", text: selection.question },
+          { role: "user", text: "Something else" },
         ],
         () => {},
         new AbortController().signal,
-        async () => catalogResult(123, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+        async () => assert.fail("Room discovery needs no research"),
+        mode,
       );
-      assert.equal(reply.presentation, undefined);
-      const result = env.calls.requests[2].input.input.find(
-        (item) =>
-          item.type === "function_call_output" && item.call_id === "show-1",
-      );
-      assert.deepEqual(Object.keys(JSON.parse(result.output)), ["error"]);
+      assert.equal(followup.presentation, undefined);
       assert.equal(
-        allowedTools(env.calls.requests[2].input).some(
-          (tool) => tool.name === "show_products",
-        ),
-        false,
-        "An invalid selection also consumes the presentation attempt",
+        followup.questionPresentation.question,
+        "Which room are you shopping for?",
       );
+      assert.equal(env.calls.requests.length, 3);
+      assert.equal(env.calls.guideReads.length, 0);
     });
-  }
 });
 
-test("a second presentation attempt fails without replacing the first selection", async () => {
+test("catalog titles and card order cannot rewrite the selected follow-up", async () => {
   const env = setup();
+  const result = catalogResult(1, 2, 3);
+  result.products[0].title = "A different blind";
+  result.products[1].title = "<Untrusted title>";
+  const selection = {
+    question: "Would you like more colours?",
+    answers: ["Show me more", "Different styles"],
+  };
   env.streams.push(
-    events(completed("", { output: [catalogCall("catalog-1")] })),
-    events(completed("", { output: [showCall([123])] })),
-    events(completed("", { output: [showCall([456], "show-2")] })),
+    events(completed("", { output: [catalogCall("search")] })),
+    recommendation([2, 1], selection),
   );
-  await assert.rejects(
-    env.api.generateReply(
-      [],
-      () => {},
-      new AbortController().signal,
-      async () => catalogResult(123, 456),
-    ),
-    /presentation limit/,
-  );
-  assert.equal(env.calls.requests.length, 3);
-});
-
-test("four browser calls and product presentation finish at the terminal answer tool", async () => {
-  const env = setup();
-  for (let index = 0; index < 2; index++)
-    env.streams.push(
-      events(
-        completed("", {
-          output: [catalogCall(`catalog-${index}`)],
-        }),
-      ),
-    );
-  env.streams.push(
-    events(
-      completed("", {
-        output: [
-          catalogCall("navigate-1", "navigate", {
-            path: "/products/shade-123",
-          }),
-        ],
-      }),
-    ),
-    events(completed("", { output: [guideLookup()] })),
-    events(completed("", { output: [showCall([123])] })),
-    events(
-      completed("", {
-        output: [
-          catalogCall("question", "ask_question", {
-            message: "I opened the product and selected this option.",
-            question: "Which room?",
-            answers: ["Bedroom", "Kitchen"],
-          }),
-        ],
-      }),
-    ),
-  );
-  const dispatched = [];
   const reply = await env.api.generateReply(
     [],
     () => {},
     new AbortController().signal,
-    async (...args) => {
-      dispatched.push(args);
-      return args[1] === "navigate"
-        ? { status: "navigated", path: "/products/shade-123" }
-        : args[1] === "get_product_guides"
-          ? guideResult()
-          : catalogResult(123);
-    },
-    "text",
-    undefined,
-    guideOrigin,
+    async () => result,
   );
-  assert.equal(dispatched.length, 4);
-  assert.deepEqual(plain(dispatched[2]), [
-    "navigate-1",
-    "navigate",
-    { path: "/products/shade-123" },
+  assert.deepEqual(plain(reply.questionPresentation), {
+    callId: "recommendation",
+    ...selection,
+  });
+  assert.deepEqual(plain(reply.presentation.productRefs), [
+    { id: productGid(2), title: "<Untrusted title>" },
+    { id: productGid(1), title: "A different blind" },
   ]);
-  assert.deepEqual(
-    allowedTools(env.calls.requests[4].input).map((tool) => tool.name),
-    ["show_products", "ask_question", "ask_measurement"],
-  );
-  assert.deepEqual(
-    allowedTools(env.calls.requests[5].input).map((tool) => tool.name),
-    ["ask_question", "ask_measurement"],
-  );
-  assert.equal(env.calls.requests.length, 6);
-  assert.equal(reply.text, "I opened the product and selected this option.");
-  assert.equal(reply.questionPresentation.question, "Which room?");
-  assert.equal(reply.presentation.productIds[0], productGid(123));
 });
+
+test("invalid terminal cards or question cannot publish a partial recommendation and get only one local repair", async (t) => {
+  for (const [label, fields] of [
+    ["duplicate", { productIds: [productGid(123), productGid(123)] }],
+    ["variant", { productIds: ["gid://shopify/ProductVariant/123"] }],
+    ["unverified", { productIds: [productGid(999)] }],
+    [
+      "too many",
+      { productIds: Array.from({ length: 11 }, (_, i) => productGid(i + 1)) },
+    ],
+    ["empty question", { productIds: [productGid(123)], question: "" }],
+    [
+      "unsupported answer",
+      { productIds: [productGid(123)], answers: ["Finish for now"] },
+    ],
+    ["extra fields", { productIds: [productGid(123)], title: "Forged title" }],
+  ])
+    await t.test(label, async () => {
+      const env = setup();
+      const observed = [];
+      env.streams.push(
+        events(completed("", { output: [catalogCall("search")] })),
+        events(
+          completed("", {
+            output: [
+              questionCall(
+                { ...questionSelection, message: "INVALID PARTIAL", ...fields },
+                "invalid",
+              ),
+            ],
+          }),
+        ),
+        recommendation(
+          [],
+          { ...questionSelection, message: "Safe clarification." },
+          "repaired",
+        ),
+      );
+      const reply = await env.api.generateReply(
+        [{ role: "assistant", text: `Earlier product ${productGid(999)}` }],
+        (text) => observed.push(text),
+        new AbortController().signal,
+        async () =>
+          catalogResult(123, ...Array.from({ length: 11 }, (_, i) => i + 1)),
+      );
+      assert.equal(reply.presentation, undefined);
+      assert.equal(reply.questionPresentation.callId, "repaired");
+      assert.doesNotMatch(JSON.stringify(observed), /INVALID PARTIAL/);
+      assert.deepEqual(allowedToolNames(env.calls.requests[2].input), [
+        "ask_question",
+        "ask_measurement",
+      ]);
+      assert.equal(env.calls.requests.length, 3);
+    });
+});
+
+test("a measurement without verified guide provenance cannot publish otherwise grounded cards", async () => {
+  const env = setup();
+  const observed = [];
+  env.streams.push(
+    events(completed("", { output: [catalogCall("search")] })),
+    events(
+      completed("", {
+        output: [
+          measurementCall({
+            ...measurementSelection,
+            productIds: [productGid(123)],
+          }),
+        ],
+      }),
+    ),
+    recommendation([]),
+  );
+  const reply = await env.api.generateReply(
+    [],
+    (text) => observed.push(text),
+    new AbortController().signal,
+    async () => catalogResult(123),
+  );
+  assert.equal(reply.presentation, undefined);
+  assert.equal(reply.questionPresentation.measurement, undefined);
+  assert.doesNotMatch(JSON.stringify(observed), /wall to wall/);
+});
+
+test("a later turn must refresh products before recommending historical cards", async () => {
+  const env = setup();
+  env.streams.push(
+    events(completed("", { output: [catalogCall("first")] })),
+    recommendation([123]),
+    recommendation([123], questionSelection, "stale"),
+    recommendation([], questionSelection, "clarify"),
+    events(
+      completed("", {
+        output: [
+          catalogCall("refresh", "lookup_catalog", { ids: [productGid(123)] }),
+        ],
+      }),
+    ),
+    recommendation([123], questionSelection, "fresh"),
+  );
+  const execute = async () => catalogResult(123);
+  const first = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    execute,
+  );
+  const history = [
+    {
+      role: "assistant",
+      text: `Earlier recommendation: ${first.presentation.productIds[0]}`,
+    },
+    { role: "user", text: "Show it again" },
+  ];
+  const stale = await env.api.generateReply(
+    history,
+    () => {},
+    new AbortController().signal,
+    execute,
+  );
+  assert.equal(stale.presentation, undefined);
+  const fresh = await env.api.generateReply(
+    history,
+    () => {},
+    new AbortController().signal,
+    execute,
+  );
+  assert.deepEqual(plain(fresh.presentation.productIds), [productGid(123)]);
+});
+
+test("the retired standalone show_products tool cannot execute or publish cards", async () => {
+  const env = setup();
+  env.streams.push(
+    events(
+      completed("", {
+        output: [
+          catalogCall("retired", "show_products", {
+            productIds: [productGid(123)],
+          }),
+        ],
+      }),
+    ),
+    recommendation([]),
+  );
+  let dispatches = 0;
+  const reply = await env.api.generateReply(
+    [],
+    () => {},
+    new AbortController().signal,
+    async () => {
+      dispatches++;
+      return catalogResult(123);
+    },
+  );
+  assert.equal(dispatches, 0);
+  assert.equal(reply.presentation, undefined);
+});
+
+test("provider failure or cancellation before terminal completion cannot return cards", async (t) => {
+  for (const mode of ["failed", "cancelled"])
+    await t.test(mode, async () => {
+      const env = setup();
+      const controller = new AbortController();
+      const observed = [];
+      env.streams.push(
+        events(completed("", { output: [catalogCall("search")] })),
+        (async function* () {
+          if (mode === "cancelled") controller.abort(new Error("Ended"));
+          yield mode === "failed"
+            ? { type: "response.failed" }
+            : completed("", {
+                output: [
+                  questionCall({
+                    ...questionSelection,
+                    productIds: [productGid(123)],
+                  }),
+                ],
+              });
+        })(),
+      );
+      await assert.rejects(
+        env.api.generateReply(
+          [],
+          (text) => observed.push(text),
+          controller.signal,
+          async () => catalogResult(123),
+        ),
+      );
+      assert.equal(env.calls.requests.length, 2);
+      assert.deepEqual(observed, []);
+    });
+});
+
 
 test("navigation success is passed to the model without creating product evidence", async () => {
   const env = setup();
@@ -5462,7 +5148,7 @@ test("navigation success is passed to the model without creating product evidenc
   assert.equal(reply.presentation, undefined);
   assert.equal(
     allowedTools(env.calls.requests[1].input).some(
-      (tool) => tool.name === "show_products",
+      (tool) => tool.name === "ask_question",
     ),
     true,
   );
@@ -5497,66 +5183,6 @@ test("invalid or interrupted navigation yields an honest error without automatic
       assert.match(JSON.parse(result.output).error, /could not be confirmed/);
       assert.doesNotMatch(result.output, /PRIVATE_NAVIGATION_FAILURE/);
       assert.equal(reply.presentation, undefined);
-    });
-  }
-});
-
-test("product evidence does not survive into another model turn", async () => {
-  const env = setup();
-  env.streams.push(
-    events(completed("", { output: [catalogCall("catalog-1")] })),
-    events(completed("", { output: [showCall([123])] })),
-    events(completed("Here is a shade.")),
-    events(completed("", { output: [showCall([123], "show-later")] })),
-    events(completed("I need a fresh lookup to recommend it again.")),
-  );
-  const execute = async () => catalogResult(123);
-  await env.api.generateReply(
-    [],
-    () => {},
-    new AbortController().signal,
-    execute,
-  );
-  const reply = await env.api.generateReply(
-    [{ role: "assistant", text: `Earlier product: ${productGid(123)}` }],
-    () => {},
-    new AbortController().signal,
-    execute,
-  );
-  assert.equal(reply.presentation, undefined);
-  assert.equal(
-    allowedTools(env.calls.requests[3].input).some(
-      (tool) => tool.name === "show_products",
-    ),
-    true,
-    "Advertising the carousel capability does not trust historical IDs",
-  );
-});
-
-test("a selected carousel is not returned when the final answer fails or is cancelled", async (t) => {
-  for (const mode of ["failed", "cancelled"]) {
-    await t.test(mode, async () => {
-      const env = setup();
-      const controller = new AbortController();
-      env.streams.push(
-        events(completed("", { output: [catalogCall("catalog-1")] })),
-        events(completed("", { output: [showCall([123])] })),
-        (async function* () {
-          if (mode === "cancelled") controller.abort(new Error("Ended"));
-          yield mode === "failed"
-            ? { type: "response.failed" }
-            : completed("A late answer.");
-        })(),
-      );
-      await assert.rejects(
-        env.api.generateReply(
-          [],
-          () => {},
-          controller.signal,
-          async () => catalogResult(123),
-        ),
-      );
-      assert.equal(env.calls.requests.length, 3);
     });
   }
 });
@@ -5926,17 +5552,10 @@ test("voice delegation forwards canonical caption history to the advisor without
     },
   ]);
   assert.deepEqual(
-    env.calls.requests[0].input.input.slice(1),
+    env.calls.requests[0].input.input.filter(({role}) => role !== "developer"),
     history.map(({ role, text }) => ({ role, content: text })),
   );
-  assert.match(
-    env.calls.requests[0].input.instructions,
-    /latest request, whether spoken, typed or clicked/,
-  );
-  assert.match(
-    env.calls.requests[0].input.instructions,
-    /Except after a verified open_checkout result, complete the backend reply with exactly one terminal ask_question or ask_measurement/,
-  );
+  assert.equal(env.calls.requests[0].input.instructions, env.api.ROMAN_VOICE_BRIEFING_PROMPT);
   assert.equal(env.calls.requests[0].input.model, "gpt-6-luna");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");
   assert.equal(env.calls.requests[0].input.store, false);
@@ -6005,9 +5624,8 @@ test("voice delegation uses the existing browser executor and local carousel pre
   ]);
   env.streams.push(
     events(completed("", { output: [catalogCall("voice-search")] })),
-    events(completed("", { output: [showCall([456, 123], "voice-show")] })),
     events(
-      completed("Two blackout rollers are displayed in the chat carousel."),
+      completed("", { output: [questionCall({message:"Two blackout rollers are displayed in the chat carousel.", ...questionSelection, productIds:[productGid(456), productGid(123)]},"voice-show")] }),
     ),
   );
   env.mock.executeTool = async () => catalogResult(123, 456, 789);
@@ -6028,7 +5646,7 @@ test("voice delegation uses the existing browser executor and local carousel pre
     "voice-voice-0",
     "voice-search",
     "search_products",
-    { query: "no drill" },
+    { queries: ["no drill"] },
   ]);
   assert.equal(env.calls.browserTools[0].at(-1).aborted, false);
   assert.deepEqual(
@@ -6166,7 +5784,7 @@ test("a corrected voice request silently retires its search while the replacemen
     events(
       completed("", {
         output: [
-          catalogCall("old-search", "search_products", { query: "sheer" }),
+          catalogCall("old-search", "search_products", { queries: ["sheer"] }),
         ],
       }),
     ),

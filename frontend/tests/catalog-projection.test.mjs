@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import { build } from "esbuild";
 
@@ -9,9 +10,126 @@ const bundle = await build({
   format: "esm",
   platform: "browser",
 });
-const { normalizeCatalogResult, parseCatalogResult } = await import(
+const {
+  normalizeCatalogResult,
+  parseCatalogResult,
+  assertCatalogQueryProvenance,
+  MAX_CATALOG_CANDIDATES,
+} = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
 );
+
+test("batch projections permit thirty grounded candidates and reject forged query provenance", () => {
+  const products = Array.from({ length: 30 }, (_, index) => ({
+    id: `gid://shopify/Product/${index + 1}`,
+    title: `Blind ${index + 1}`,
+    description: "Verified catalog detail",
+    url: `https://hd-dev-multi.myshopify.com/products/blind-${index + 1}`,
+  }));
+  const queries = ["roller", "roman", "venetian"].map((query, index) => ({
+    query,
+    status: "succeeded",
+    productIds: products.slice(index * 10, index * 10 + 10).map(({ id }) => id),
+  }));
+  const result = { products, messages: [], queries };
+  const origin = "https://hd-dev-multi.myshopify.com";
+  assert.equal(MAX_CATALOG_CANDIDATES, 30);
+  assert.deepEqual(parseCatalogResult(result, origin), result);
+  assert.doesNotThrow(() =>
+    assertCatalogQueryProvenance(result, ["roller", "roman", "venetian"]),
+  );
+  for (const changed of [
+    { ...result, queries: undefined },
+    {
+      ...result,
+      products: [
+        ...products,
+        { ...products[0], id: "gid://shopify/Product/31" },
+      ],
+    },
+    { ...result, queries: queries.slice(1) },
+    {
+      ...result,
+      queries: [
+        { ...queries[0], productIds: ["gid://shopify/Product/999"] },
+        ...queries.slice(1),
+      ],
+    },
+    {
+      ...result,
+      queries: [
+        { ...queries[0], productIds: [products[0].id, products[0].id] },
+        ...queries.slice(1),
+      ],
+    },
+    {
+      ...result,
+      queries: [
+        { ...queries[0], status: "failed", error: "request_failed" },
+        ...queries.slice(1),
+      ],
+    },
+    {
+      ...result,
+      queries: [{ ...queries[0], error: "timeout" }, ...queries.slice(1)],
+    },
+    {
+      ...result,
+      queries: [{ ...queries[0], query: " roller " }, ...queries.slice(1)],
+    },
+    {
+      ...result,
+      queries: [{ ...queries[0], query: "roman" }, ...queries.slice(1)],
+    },
+  ])
+    assert.throws(
+      () => parseCatalogResult(changed, origin),
+      /invalid catalog response/,
+    );
+  for (const request of [
+    ["roller"],
+    ["roman", "roller", "venetian"],
+    ["roller", "roman", "other"],
+  ])
+    assert.throws(
+      () => assertCatalogQueryProvenance(result, request),
+      /exact ordered requested queries/,
+    );
+  assert.throws(
+    () =>
+      assertCatalogQueryProvenance({ products: [], messages: [] }, ["roller"]),
+    /exact ordered/,
+  );
+});
+
+test("empty and failed batch outcomes remain distinct and the serialized payload has a byte limit", () => {
+  const origin = "https://hd-dev-multi.myshopify.com";
+  const empty = {
+    products: [],
+    messages: [],
+    queries: [
+      { query: "empty", status: "succeeded", productIds: [] },
+      { query: "failed", status: "failed", productIds: [], error: "timeout" },
+    ],
+  };
+  assert.deepEqual(parseCatalogResult(empty, origin), empty);
+  const products = Array.from({ length: 30 }, (_, i) => ({
+    id: `gid://shopify/Product/${i + 1}`,
+    title: "Blind",
+    description: "織".repeat(2000),
+    url: `${origin}/products/blind-${i}`,
+  }));
+  const result = {
+    products,
+    messages: [],
+    queries: ["a", "b", "c"].map((query, i) => ({
+      query,
+      status: "succeeded",
+      productIds: products.slice(i * 10, i * 10 + 10).map((p) => p.id),
+    })),
+  };
+  assert.throws(() => parseCatalogResult(result, origin), /at most 120 KiB/);
+});
 
 const origin = "https://hd-dev-multi.myshopify.com";
 const id = "gid://shopify/Product/123";

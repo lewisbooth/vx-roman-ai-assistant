@@ -1,4 +1,54 @@
+import {
+  MAX_CATALOG_RESULT_BYTES,
+  normalizeCatalogResult,
+  parseCatalogResult,
+  type CatalogProduct,
+  type CatalogQueryOutcome,
+  type CatalogResult,
+} from "../../../shared/catalog";
+import { parseCatalogCall } from "../../../shared/catalog-tools";
+
 type CatalogTool = "search_catalog" | "get_product" | "lookup_catalog";
+
+const MAX_CATALOG_RESPONSE_BYTES = 1024 * 1024;
+
+async function readCatalogEnvelope(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Shopify returned an empty catalog response.");
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    signal.throwIfAborted();
+    const length = response.headers.get("content-length");
+    if (
+      length &&
+      (!/^\d+$/.test(length) || Number(length) > MAX_CATALOG_RESPONSE_BYTES)
+    )
+      throw new Error("Shopify catalog response exceeds the size limit.");
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let text = "",
+      bytes = 0;
+    for (;;) {
+      const chunk = await reader.read();
+      signal.throwIfAborted();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_CATALOG_RESPONSE_BYTES)
+        throw new Error("Shopify catalog response exceeds the size limit.");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return JSON.parse(text + decoder.decode());
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    cancel();
+    reader.releaseLock();
+  }
+}
 
 const productIdPattern = /^gid:\/\/shopify\/(?:Product|ProductVariant)\/\d+$/;
 
@@ -100,7 +150,7 @@ async function callCatalog(
   signal.throwIfAborted();
   let envelope: unknown;
   try {
-    envelope = await response.json();
+    envelope = await readCatalogEnvelope(response, signal);
   } catch {
     signal.throwIfAborted();
     if (!response.ok)
@@ -157,7 +207,7 @@ async function callCatalog(
   return data;
 }
 
-export async function searchProducts(
+async function searchQuery(
   query: string,
   signal: AbortSignal,
   agentProfileUrl: string | undefined,
@@ -179,6 +229,142 @@ export async function searchProducts(
     pagination: data.pagination,
     messages: data.messages,
   };
+}
+
+/** One public tool operation; independent read-only Shopify calls share a deadline. */
+export async function searchProducts(
+  input: readonly string[],
+  signal: AbortSignal,
+  agentProfileUrl: string | undefined,
+): Promise<CatalogResult> {
+  const queries = parseCatalogCall("search_products", { queries: input })
+    .arguments.queries as string[];
+  signal.throwIfAborted();
+  // Configuration errors are operation failures, not misleading empty searches.
+  profileUrl(agentProfileUrl);
+  const request = new AbortController();
+  const abort = () => request.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    request.abort(
+      new DOMException("Catalog search timed out.", "TimeoutError"),
+    );
+  }, 20000);
+  try {
+    const results = await Promise.all(
+      queries.map(
+        async (
+          query,
+        ): Promise<{
+          result?: CatalogResult;
+          outcome: CatalogQueryOutcome;
+        }> => {
+          try {
+            const raw = await searchQuery(
+              query,
+              request.signal,
+              agentProfileUrl,
+            );
+            let result: CatalogResult;
+            try {
+              result = normalizeCatalogResult(raw, window.location.origin);
+            } catch {
+              return {
+                outcome: {
+                  query,
+                  status: "failed",
+                  productIds: [],
+                  error: "invalid_response",
+                },
+              };
+            }
+            return {
+              result,
+              outcome: {
+                query,
+                status: "succeeded",
+                productIds: result.products.map(({ id }) => id),
+              },
+            };
+          } catch {
+            signal.throwIfAborted();
+            return {
+              outcome: {
+                query,
+                status: "failed",
+                productIds: [],
+                error: timedOut ? "timeout" : "request_failed",
+              },
+            };
+          }
+        },
+      ),
+    );
+    signal.throwIfAborted();
+    const products = new Map<string, CatalogProduct>();
+    const messages: CatalogResult["messages"] = [];
+    for (const { result } of results) {
+      for (const product of result?.products ?? [])
+        if (!products.has(product.id)) products.set(product.id, product);
+      messages.push(...(result?.messages ?? []));
+    }
+    const merged: CatalogResult = {
+      products: [...products.values()],
+      messages,
+      queries: results.map(({ outcome }) => outcome),
+    };
+    // Descriptions and URLs are independently bounded; the complete projection
+    // also has a byte budget so multibyte catalog content cannot inflate a turn.
+    const size = () =>
+      new TextEncoder().encode(JSON.stringify(merged)).byteLength;
+    if (size() > MAX_CATALOG_RESULT_BYTES) {
+      merged.messages = messages.slice(0, 29);
+      const warning = {
+        type: "warning",
+        code: "result_size_limit",
+        text: "Catalog descriptions, optional imagery or diagnostics were shortened or omitted to preserve every candidate within the result size limit.",
+      } as const;
+      merged.messages.push(warning);
+      const descriptions = merged.products.map(({ description }) =>
+        Array.from(description),
+      );
+      const applyDescriptionFraction = (fraction: number) => {
+        merged.products.forEach((product, index) => {
+          const description = descriptions[index];
+          product.description = description
+            .slice(0, Math.floor((description.length * fraction) / 1000))
+            .join("");
+        });
+      };
+      applyDescriptionFraction(0);
+      if (size() > MAX_CATALOG_RESULT_BYTES)
+        for (const product of merged.products) delete product.imageUrl;
+      if (size() > MAX_CATALOG_RESULT_BYTES) merged.messages = [warning];
+      if (size() > MAX_CATALOG_RESULT_BYTES)
+        throw new Error(
+          "Verified catalog product references exceed the result size limit.",
+        );
+      // Preserve all IDs, titles, paths and query provenance. Share the remaining
+      // description budget proportionally rather than dropping the last category.
+      // Code-point slices retain Unicode characters; the measured JSON byte size
+      // also accounts for escaping and leaves the complete HTTP envelope bounded.
+      let low = 0;
+      let high = 1000;
+      while (low < high) {
+        const fraction = Math.ceil((low + high) / 2);
+        applyDescriptionFraction(fraction);
+        if (size() <= MAX_CATALOG_RESULT_BYTES) low = fraction;
+        else high = fraction - 1;
+      }
+      applyDescriptionFraction(low);
+    }
+    return parseCatalogResult(merged, window.location.origin);
+  } finally {
+    window.clearTimeout(timeout);
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 export async function getProduct(

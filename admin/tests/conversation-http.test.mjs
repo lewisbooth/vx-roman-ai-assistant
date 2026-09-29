@@ -180,6 +180,7 @@ function setup() {
     }
   }
   runInNewContext(bundle.outputFiles[0].text, {
+    TextEncoder,
     module,
     exports: module.exports,
     mock,

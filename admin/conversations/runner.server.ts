@@ -1,3 +1,4 @@
+import type { GuideReuse } from "./guide-turn.server";
 import type {
   ConversationSnapshot,
   ConversationRead,
@@ -6,6 +7,7 @@ import type {
   SendMessageInput,
 } from "../../shared/conversation";
 import { ConversationError } from "./errors.server";
+import { TurnMetrics } from "./turn-metrics.server";
 import {
   assertServiceAvailable,
   isServiceSuspended,
@@ -17,7 +19,6 @@ import {
   providerFailureDiagnostics,
   TEXT_MODEL,
   type ModelReply,
-  type GuideReuse,
 } from "./model.server";
 import { recordModelUsage } from "../usage/repository.server";
 import { executeMeasurementTool } from "../measurements/service.server";
@@ -52,7 +53,6 @@ import {
 interface ActiveTurn {
   requestId: string;
   assistantId: string | null;
-  text: string;
   streamRevision: number;
   readingGuides?: ProductGuideKind[];
   ready: Promise<void>;
@@ -63,7 +63,7 @@ interface ActiveTurn {
 }
 
 // One process owns generation in the single-VM deployment. A durable pending row
-// survives disconnects; the bounded map only holds live partial text.
+// survives disconnects; the bounded map owns cancellation and transient activity.
 const active = new Map<string, ActiveTurn>();
 const ending = new Set<string>();
 const MAX_CONCURRENT_TURNS = 4;
@@ -98,18 +98,6 @@ export async function readConversation(
     projectedStreamRevision = turn.streamRevision;
     if (turn.readingGuides && !turn.controller.signal.aborted)
       snapshot.readingGuides = [...turn.readingGuides];
-    if (!turn.voiceId)
-      snapshot.messages = snapshot.messages.map((message) =>
-        message.id === turn.assistantId && message.status === "pending"
-          ? {
-              ...message,
-              parts: [
-                { type: "text", text: turn.text },
-                ...message.parts.filter((part) => part.type !== "text"),
-              ],
-            }
-          : message,
-      );
   }
   return { ...snapshot, streamRevision: projectedStreamRevision };
 }
@@ -145,7 +133,6 @@ export async function startTurn(
   const turn: ActiveTurn = {
     requestId: input.requestId,
     assistantId: null,
-    text: "",
     streamRevision: 0,
     controller: new AbortController(),
     ready: new Promise<void>((resolve) => {
@@ -187,6 +174,8 @@ async function completeTurn(
   turn: ActiveTurn,
   initial: ConversationSnapshot,
 ): Promise<ModelReply | undefined> {
+  const metrics = new TurnMetrics();
+  let outcome: "complete" | "failed" | "cancelled" = "failed";
   const signal = AbortSignal.any([
     turn.controller.signal,
     AbortSignal.timeout(90_000),
@@ -211,13 +200,9 @@ async function completeTurn(
   try {
     const reply = await generateReply(
       history,
-      (text) => {
-        if (turn.controller.signal.aborted || active.get(id) !== turn) return;
-        if (turn.text !== text) {
-          turn.text = text;
-          if (!turn.voiceId) turn.streamRevision++;
-        }
-      },
+      // The complete response becomes visible only after finishTurn commits its
+      // text, cards and question together. Provider completion is not publication.
+      () => {},
       signal,
       async (callId, name, input) => {
         await assertServiceAvailable();
@@ -226,7 +211,10 @@ async function completeTurn(
           : requestBrowserTool(id, assistantId, callId, name, input, signal);
       },
       turn.voiceId ? "voice" : "text",
-      (usage) => recordModelUsage(id, assistantId, usage),
+      async (usage) => {
+        metrics.usage(usage);
+        await recordModelUsage(id, assistantId, usage);
+      },
       origin,
       turn.resumeQuestion,
       (kinds) => {
@@ -278,7 +266,10 @@ async function completeTurn(
           return bindLibrarySource(id, origin, source, page);
         },
       },
-      turn.onToolActivity,
+      (name, active) => {
+        metrics.activity(name, active);
+        turn.onToolActivity?.(name, active);
+      },
     );
     signal.throwIfAborted();
     await assertServiceAvailable();
@@ -289,6 +280,8 @@ async function completeTurn(
       resumeQuestionId: turn.resumeQuestion?.invocationId,
     });
     if (finished) {
+      outcome = "complete";
+      metrics.ready(!!reply.presentation, !!turn.voiceId);
       libraryFinished = true;
       if (readGuides && !signal.aborted && active.get(id) === turn) {
         const current = await getSnapshot(id);
@@ -329,7 +322,7 @@ async function completeTurn(
     });
     try {
       await finishTurn(id, assistantId, {
-        text: turn.text,
+        text: "",
         status: "failed",
         error: isServiceSuspended()
           ? UNAVAILABLE_MESSAGE
@@ -344,6 +337,12 @@ async function completeTurn(
       });
     }
   } finally {
+    if (signal.aborted && outcome !== "complete") outcome = "cancelled";
+    console.info("[Roman] Advisor turn metrics.", {
+      mode: turn.voiceId ? "voice" : "text",
+      outcome,
+      ...metrics.snapshot(),
+    });
     if (!libraryFinished && active.get(id) === turn)
       discardLibraryTurn(id, assistantId);
     clearGuideReading();
@@ -379,7 +378,6 @@ export async function runVoiceDelegation(
   const turn: ActiveTurn = {
     requestId,
     assistantId: null,
-    text: "",
     streamRevision: 0,
     voiceId,
     ready: new Promise<void>((resolve) => {

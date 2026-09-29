@@ -1,16 +1,13 @@
-import assert from "node:assert/strict";
-import { cwd } from "node:process";
+﻿import assert from "node:assert/strict";
+import process from "node:process";
 import { test } from "node:test";
 import { build } from "esbuild";
 
-const bundle = await build({
+const result = await build({
   stdin: {
-    contents: `
-      export { ROMAN_TEXT_PROMPT } from './admin/prompts/text.server';
-      export { ROMAN_VOICE_BRIEFING_PROMPT } from './admin/prompts/voice.server';
-      export { ROMAN_UPSELL_GUIDANCE } from './admin/prompts/knowledge-base/upsell';
-    `,
-    resolveDir: cwd(),
+    contents:
+      "export { ROMAN_KNOWLEDGE_MODULES } from './admin/prompts/knowledge-base';",
+    resolveDir: process.cwd(),
   },
   bundle: true,
   write: false,
@@ -18,76 +15,63 @@ const bundle = await build({
   format: "cjs",
 });
 const module = { exports: {} };
-new Function("module", "exports", bundle.outputFiles[0].text)(
+new Function("module", "exports", result.outputFiles[0].text)(
   module,
   module.exports,
 );
-const {
-  ROMAN_TEXT_PROMPT,
-  ROMAN_VOICE_BRIEFING_PROMPT,
-  ROMAN_UPSELL_GUIDANCE,
-} = module.exports;
+const { configuration, upsell } = module.exports.ROMAN_KNOWLEDGE_MODULES;
 
-for (const [channel, prompt] of [
-  ["text", ROMAN_TEXT_PROMPT],
-  ["voice", ROMAN_VOICE_BRIEFING_PROMPT],
-]) {
-  test(`${channel} configuration completion offers concrete native choices through the shared upsell policy`, () => {
-    assert.equal(prompt.split(ROMAN_UPSELL_GUIDANCE).length - 1, 1);
-    assert.match(
-      prompt,
-      /from the fresh get_product_configuration result, choose one or two useful available options that are not already selected or decided/,
-    );
-    assert.match(
-      prompt,
-      /include their returned option\.priceLabel when known/,
-    );
-    assert.match(
-      prompt,
-      /prefer these useful examples to a generic "Keep configuring" answer/,
-    );
-    assert.match(prompt, /Keep at most four answers in total/);
-    assert.match(
-      prompt,
-      /"Add sample to cart" only when this fresh read returns actions\.sampleAvailable true/,
-    );
-    assert.match(
-      prompt,
-      /Omit Add product when required dimensions or choices are still missing/,
-    );
-    assert.doesNotMatch(prompt, /Use just these useful next actions/);
-  });
+test("configuration policy owns fresh-read nested option discovery and meaningful follow-ups", () => {
+  assert.match(
+    configuration,
+    /After every successful option change or dimension application, read configuration again/,
+  );
+  assert.match(configuration, /newly revealed\/enabled controls/);
+  assert.match(configuration, /meaningful decision/);
+  assert.match(configuration, /option.priceLabel/);
+  assert.match(configuration, /At most three.*one apply_measurements/);
+  assert.match(
+    configuration,
+    /Add product to cart only if required fields are valid and priced/,
+  );
+  assert.match(configuration, /actions.sampleAvailable/);
+  assert.match(
+    configuration,
+    /This invitation is not a required review before an explicit add request/,
+  );
+});
 
-  test(`${channel} suggestions preserve availability, brevity, declines and purchase consent`, () => {
-    assert.match(
-      prompt,
-      /only candidates when this blind's current controls actually offer them/,
-    );
-    assert.match(
-      prompt,
-      /Do not re-offer a selected upgrade, resolved preference or declined extra/,
-    );
-    assert.match(prompt, /Missing price is unknown, never free/);
-    assert.match(
-      prompt,
-      /An exploration answer does not authorize enabling a paid extra/,
-    );
-    assert.match(
-      prompt,
-      /requests that option: use configure_product under the normal fresh-read rules without another approval question/,
-    );
-    assert.match(prompt, /never authorizes adding the blind to the cart/);
-    assert.match(
-      prompt,
-      /rather than adding a second sales paragraph or a list of every option/,
-    );
-    assert.match(
-      prompt,
-      /Resolve a selected paid guarantee before adding; accepting it alone does not authorize adding the full product/,
-    );
-    assert.match(
-      prompt,
-      /a concrete option choice follows the normal configuration rules and useful completion follow-ups/,
-    );
-  });
-}
+test("upsell policy separates research leads, paid choice consent and guarantee consent", () => {
+  for (const lead of [
+    "TotalShade",
+    "BlockScreen",
+    "Complete Blackout",
+    "Electric Smartview",
+    "ClickFIT",
+    "Click2Shade",
+    "Twist2Go",
+    "Stick2Fit",
+    "Stick On",
+  ])
+    assert.ok(upsell.includes(lead));
+  assert.match(
+    upsell,
+    /not proof of stock, suitability, colour or category preference/,
+  );
+  assert.match(upsell, /Respect declines/);
+  assert.match(upsell, /exploration does not authorize enabling a paid extra/);
+  assert.match(
+    upsell,
+    /measurement_guarantee requires explicit consent even if preselected/,
+  );
+  assert.match(
+    upsell,
+    /Native preselection, confirmed dimensions and generic add agreement are not guarantee consent/,
+  );
+  assert.match(
+    upsell,
+    /new window, product, guarantee fee or material terms needs a new decision/,
+  );
+  assert.match(upsell, /configuredPrice excludes its separate cart charge/);
+  assert.match(upsell, /Guarantee acceptance alone is not purchase consent/);
+});

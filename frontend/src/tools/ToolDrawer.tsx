@@ -7,6 +7,10 @@ import {
 } from "react";
 import { toolDefinitions, type AssistantTools, type ToolName } from ".";
 
+const initialTool = toolDefinitions.find(
+  ({ name }) => name === "search_products",
+)!;
+
 export function ToolDrawer({
   id,
   tools,
@@ -22,9 +26,9 @@ export function ToolDrawer({
 }) {
   const panel = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const [name, setName] = useState<ToolName>("search_products");
+  const [name, setName] = useState<ToolName>(initialTool.name);
   const [input, setInput] = useState(
-    JSON.stringify(toolDefinitions[0].example, null, 2),
+    JSON.stringify(initialTool.example, null, 2),
   );
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<string>();

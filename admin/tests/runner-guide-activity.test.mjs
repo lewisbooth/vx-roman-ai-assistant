@@ -150,7 +150,7 @@ function setup() {
     AbortController,
     AbortSignal,
     URL,
-    console: { error: (...args) => logs.push(args) },
+    console: { error: (...args) => logs.push(args), info: () => {} },
   });
   const api = module.exports;
   const start = async (voice = false, id = "chat") => {

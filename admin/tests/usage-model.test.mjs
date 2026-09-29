@@ -68,6 +68,7 @@ const terminal = (
       name: "ask_question",
       call_id: "synthetic-question",
       arguments: JSON.stringify({
+        productIds: [],
         message: "Synthetic reply.",
         question: "Which room are you shopping for?",
         answers: ["Bedroom", "Kitchen"],
@@ -89,7 +90,7 @@ const toolRound = () =>
       type: "function_call",
       name: "search_products",
       call_id: "tool_call_1",
-      arguments: '{"query":"synthetic blackout"}',
+      arguments: '{"queries":["synthetic blackout"]}',
     },
   ]);
 function setup(scripts, initialAvailability = "healthy") {
@@ -544,6 +545,7 @@ test("a model-selected follow-up remains authoritative instead of becoming a gen
             name: "ask_question",
             call_id: "chosen-question",
             arguments: JSON.stringify({
+              productIds: [],
               message: "Let's start with your room.",
               ...question,
             }),
@@ -666,6 +668,7 @@ test("unreadable PDP guides preserve usage while the model chooses a supported n
           name: "ask_question",
           call_id: "supported-next-step",
           arguments: JSON.stringify({
+            productIds: [],
             message: "I couldn't read this product's measuring guide.",
             question: "Would you like another product?",
             answers: ["Explore products", "Find my style"],

@@ -1014,7 +1014,7 @@ const needsTool = {
     {
       id: invocationId,
       name: "search_products",
-      arguments: { query: "no drill" },
+      arguments: { queries: ["no drill"] },
       status: "pending",
     },
   ],
@@ -1692,7 +1692,7 @@ test("only a tab granted the tool claim executes the catalog command", async (t)
   assert.equal(executions[0][0], "first");
   assert.equal(executions[0][1], "search_products");
   assert.deepEqual(JSON.parse(JSON.stringify(executions[0][2])), {
-    query: "no drill",
+    queries: ["no drill"],
   });
   assert.equal(second.calls.length, 3);
   first.respond(3, complete);

@@ -5,6 +5,7 @@ import { selectStore } from "../navigation/themes";
 import { getCart } from "./cart";
 import { clearCart, removeFromCart, setCartQuantity } from "./cart-actions";
 import { getProduct, lookupCatalog, searchProducts } from "./catalog";
+import { parseCatalogCall } from "../../../shared/catalog-tools";
 import { addConfiguredProduct } from "./product";
 import { addProductSample } from "./product-sample";
 import { createProductConfigurationTools } from "./product-configuration";
@@ -50,8 +51,9 @@ export const toolDefinitions = [
   },
   {
     name: "search_products",
-    description: "Search this store's live product catalogue.",
-    example: { query: "blackout blinds" },
+    description:
+      "Search this store's live catalogue with 1–3 concurrent queries.",
+    example: { queries: ["blackout roller blinds", "blackout roman blinds"] },
   },
   {
     name: "get_product",
@@ -221,7 +223,7 @@ export function createAssistantTools(
       signal?.addEventListener("abort", abort, { once: true });
       // The navigator owns its request deadlines and cancellation.
       const timer =
-        name === "navigate"
+        name === "navigate" || name === "search_products"
           ? undefined
           : window.setTimeout(
               () =>
@@ -282,9 +284,9 @@ export function createAssistantTools(
               parseStoreSupportCall(input);
               return getStoreSupport(request.signal);
             case "search_products": {
-              const args = argumentsObject(input, ["query"]);
+              const { arguments: args } = parseCatalogCall(name, input);
               return searchProducts(
-                textArgument(args, "query"),
+                args.queries as string[],
                 request.signal,
                 host.dataset.agentProfileUrl,
               );

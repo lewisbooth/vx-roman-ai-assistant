@@ -40,6 +40,7 @@ function setup(t, execute, path = "/cart") {
       runScripts: "outside-only",
     },
   );
+  dom.window.TextEncoder = TextEncoder;
   dom.window.eval(
     `${bundle.outputFiles[0].text};window.RomanExecutor = RomanExecutor;`,
   );
@@ -207,11 +208,11 @@ test("add checks again after foreground queue wait and never leaks model product
     "add_to_cart",
     {},
   ]);
-  const searching = ctx.executor.execute("search_products", { query: "shade" });
+  const searching = ctx.executor.execute("search_products", { queries: ["shade"] });
   const adding = ctx.executor.execute(command.name, command.arguments);
   await setImmediate();
   ctx.window.history.pushState({}, "", "/products/different");
-  release({ products: [] });
+  release({ products: [], messages: [], queries: [{query:"shade",status:"succeeded",productIds:[]}] });
   await searching;
   await assert.rejects(adding, /requested product/);
   assert.equal(ctx.calls.filter((call) => call[0] === "add_to_cart").length, 1);
@@ -228,7 +229,7 @@ test("cancelled queued approval never reaches the theme mutation", async (t) => 
   );
   const command = tool("clear_cart");
   const approval = await ctx.executor.prepareApproval(command);
-  const searching = ctx.executor.execute("search_products", { query: "shade" });
+  const searching = ctx.executor.execute("search_products", { queries: ["shade"] });
   const controller = new ctx.window.AbortController();
   const action = ctx.executor.executeApproved(
     command,
@@ -239,7 +240,7 @@ test("cancelled queued approval never reaches the theme mutation", async (t) => 
   await setImmediate();
   controller.abort();
   await rejected;
-  release({ products: [] });
+  release({ products: [], messages: [], queries: [{query:"shade",status:"succeeded",productIds:[]}] });
   await searching;
   assert.equal(
     ctx.calls.some((call) => call[0] === "clear_cart"),

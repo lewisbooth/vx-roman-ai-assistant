@@ -33,7 +33,7 @@ export const showViewToolDefinition = {
   type: "function" as const,
   name: "show_view",
   description:
-    "Show Roman's Chat, Cart or Gallery tab when the customer asks to see it. Return to Chat once when resuming product work from a known Cart or Gallery view; do not repeat this on every step. This changes only Roman's interface; it never navigates the storefront or alters the cart or active blind. Cart is not shown automatically after adding products or reading its contents. Gallery is for customer photos and future visualizations; uploads and generation are not available yet. A shown result confirms the selected view, not loaded cart contents or a completed upload.",
+    "Select Roman Chat, Cart or Gallery. Changes only the visible Roman view, not background navigation, active product or cart contents. shown confirms the selected view, not loaded content or an upload.",
   strict: true,
   parameters: {
     type: "object",

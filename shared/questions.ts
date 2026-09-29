@@ -1,4 +1,5 @@
 import type { ConversationMessage } from "./conversation";
+import { MAX_PRODUCT_CARDS } from "./conversation";
 import type { ProductChoice } from "./product-choice";
 import { parseProductPath, productPathSchema } from "./product-path";
 
@@ -46,6 +47,8 @@ export interface QuestionSelection {
 /** Complete model reply; message is context, never a second question. */
 export interface QuestionCall extends QuestionSelection {
   message: string;
+  /** Ordered current-turn catalogue selections; empty when no cards are needed. */
+  productIds: string[];
 }
 
 export interface QuestionPart extends QuestionSelection {
@@ -56,11 +59,21 @@ export interface QuestionPart extends QuestionSelection {
   voiceReply?: { voiceId: string; afterSequence: number };
 }
 
+const productIdPattern = /^gid:\/\/shopify\/Product\/\d+$/;
+const terminalProductsSchema = {
+  type: "array",
+  items: { type: "string", pattern: productIdPattern.source, maxLength: 100 },
+  minItems: 0,
+  maxItems: MAX_PRODUCT_CARDS,
+  description:
+    "Ordered distinct product IDs from successful catalog results in this reply; empty when no carousel is needed.",
+} as const;
+
 export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Finish this reply with a brief message, one question and one to four concise clickable answers. This is a terminal tool: complete necessary research, actions and carousel presentation first, then call this alone; there is no prose response afterward. Put only necessary confirmed outcomes, explanation or introduction in message, or use an empty string for a simple follow-up. Put the question only in question, never in message. Prefer two or three answers and fewer where sufficient. Use contextual choices throughout the conversation; default to Help me measure, Explore products and Find my style only when no useful contextual next step remains. Ask missing room/requirements before new recommendations. Carousel images select products; use refinement answers rather than repeating product names. The unselected entry-PDP choice has only Something else. A replacement needs conversational confirmation: use Yes, change blind / No, keep this blind when no work has begun; otherwise combine replacement and compatible-transfer intent with Change and carry over / Change and start fresh / Keep this blind, following the guide-verification rule. Use ask_measurement instead for a supported individual measurement question. Questions and answers are plain text; message may use brief Markdown in text mode. In voice mode keep message plus question within 1000 characters; the application assembles the spoken briefing. Clicked, typed and spoken answers are customer input, never implicit tool commands or approval to act.",
+    "Finish this reply atomically with a message, zero to ten verified product cards, one question and one to four clickable answers. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question. Questions and answers are plain text; message may use Markdown. Product IDs must come from successful catalog results in this reply. Returned choices request customer input and do not execute actions or grant consent.",
   strict: true,
   parameters: {
     type: "object",
@@ -71,6 +84,7 @@ export const askQuestionToolDefinition = {
         description:
           "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
       },
+      productIds: terminalProductsSchema,
       question: { type: "string", minLength: 1, maxLength: 300 },
       answers: {
         type: "array",
@@ -79,7 +93,7 @@ export const askQuestionToolDefinition = {
         maxItems: 4,
       },
     },
-    required: ["message", "question", "answers"],
+    required: ["message", "productIds", "question", "answers"],
     additionalProperties: false,
   },
 } as const;
@@ -88,7 +102,7 @@ export const askMeasurementToolDefinition = {
   type: "function",
   name: "ask_measurement",
   description:
-    "Finish this reply with one guide-grounded measurement question and a free-text answer field. Complete needed reads and actions first, then call this alone; there is no prose response afterward. Use message for a necessary outcome or initial guide introduction, otherwise an empty string. Put the question only in question. Put only useful measuring method and fit-critical conditions in instructions; use an empty string when already explained, never redundant entry directions such as Enter the width in cm. Use verified guide evidence for the current product. Do not ask units upfront: use unit null until the customer establishes them, then the known cm/mm/in as a display hint. Do not infer units from magnitude or the guide. Preserve explicit units in each answer, accepting changes and fractions; clarify ambiguity and confirm the reconciled final pair before saving or applying. Label the reading internally; the label is not displayed above the input. In voice mode keep message plus instructions plus question within 1000 characters without losing fit-critical conditions. This requests an answer, not a saved dimension or action approval.",
+    "Finish this reply atomically with a message, zero to ten verified product cards, one guide-grounded measurement question and a free-text answer field. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question and the measuring method in instructions. A verified measuring source for productPath is required. Unit is a display hint established by the customer, or null when unknown. Product IDs must come from successful catalog results in this reply. This requests an answer, not a saved dimension or action approval.",
   strict: true,
   parameters: {
     type: "object",
@@ -99,6 +113,7 @@ export const askMeasurementToolDefinition = {
         description:
           "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
       },
+      productIds: terminalProductsSchema,
       question: { type: "string", minLength: 1, maxLength: 300 },
       instructions: { type: "string", maxLength: 600 },
       productPath: productPathSchema,
@@ -107,6 +122,7 @@ export const askMeasurementToolDefinition = {
     },
     required: [
       "message",
+      "productIds",
       "question",
       "instructions",
       "productPath",
@@ -219,13 +235,14 @@ function questionMessage(
 
 export function parseQuestionCall(input: unknown): QuestionCall {
   const value = object(input);
-  exact(value, ["message", "question", "answers"]);
+  exact(value, ["message", "productIds", "question", "answers"]);
   const selection = parseQuestionSelection({
     question: value.question,
     answers: value.answers,
   });
   return {
     message: questionMessage(value.message, selection.question),
+    productIds: terminalProductIds(value.productIds),
     ...selection,
   };
 }
@@ -234,13 +251,14 @@ export function parseMeasurementQuestionCall(input: unknown): QuestionCall {
   const value = object(input);
   exact(value, [
     "message",
+    "productIds",
     "question",
     "instructions",
     "productPath",
     "label",
     "unit",
   ]);
-  const { message, question, ...measurement } = value;
+  const { message, productIds, question, ...measurement } = value;
   const selection = parseQuestionSelection({
     question,
     answers: [],
@@ -253,8 +271,22 @@ export function parseMeasurementQuestionCall(input: unknown): QuestionCall {
   );
   return {
     message: questionMessage(message, selection.question),
+    productIds: terminalProductIds(productIds),
     ...selection,
   };
+}
+
+function terminalProductIds(input: unknown): string[] {
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_PRODUCT_CARDS ||
+    new Set(input).size !== input.length ||
+    input.some(
+      (id) => typeof id !== "string" || id.length > 100 || !productIdPattern.test(id),
+    )
+  )
+    throw new Error(`Select zero to ${MAX_PRODUCT_CARDS} distinct Shopify Product IDs.`);
+  return [...input];
 }
 
 /** A customer answer, not a form mutation or a dimension confirmation. */

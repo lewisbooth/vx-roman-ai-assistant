@@ -35,6 +35,7 @@ function setup(t) {
     },
   );
   const { window } = dom;
+  window.TextEncoder = TextEncoder;
   window.customElements.define(
     "dynamic-pricing-measurements",
     class extends window.HTMLElement {
@@ -306,7 +307,7 @@ test("ordinary measurement execution fills current controls after its queue wait
     },
   });
   t.after(() => executor.dispose());
-  const search = executor.execute("search_products", { query: "blind" });
+  const search = executor.execute("search_products", { queries: ["blind"] });
   const applying = executor.execute("apply_measurements", {
     productPath: draft.productPath,
     draft,
@@ -319,7 +320,7 @@ test("ordinary measurement execution fills current controls after its queue wait
   const current = previous.cloneNode(true);
   previous.replaceWith(current);
   current.value = "500";
-  release({ products: [] });
+  release({ products: [], messages: [], queries: [{query:"blind",status:"succeeded",productIds:[]}] });
   await search;
   assert.equal((await applying).status, "applied");
   assert.equal(current.value, "300");
@@ -345,7 +346,7 @@ test("queued measurement application validates the current page and cancellation
       });
       t.after(() => executor.dispose());
       const controller = new ctx.window.AbortController();
-      const search = executor.execute("search_products", { query: "blind" });
+      const search = executor.execute("search_products", { queries: ["blind"] });
       const applying = executor.execute(
         "apply_measurements",
         { productPath: draft.productPath, draft },
@@ -358,7 +359,7 @@ test("queued measurement application validates the current page and cancellation
       if (change === "disabled")
         ctx.form.querySelector("select").disabled = true;
       if (change === "abort") controller.abort();
-      release({ products: [] });
+      release({ products: [], messages: [], queries: [{query:"blind",status:"succeeded",productIds:[]}] });
       await search;
       await rejected;
       assert.deepEqual(ctx.events, []);

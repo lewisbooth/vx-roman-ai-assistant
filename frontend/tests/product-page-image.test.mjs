@@ -68,6 +68,7 @@ function setup(
     AbortController,
     DOMException,
     TextDecoder,
+    TextEncoder,
     Date: class extends Date {
       static now() {
         return clock.now;
@@ -292,7 +293,7 @@ test("image reads yield to both model tools and uncached card hydration, then re
       const executor = ctx.createStorefrontExecutor({
         execute: async () => {
           order.push(kind);
-          return { products: [] };
+          return { products: [], messages: [], queries: [{query:"shade",status:"succeeded",productIds:[]}] };
         },
       });
       t.after(() => executor.dispose());
@@ -303,7 +304,7 @@ test("image reads yield to both model tools and uncached card hydration, then re
       await until(() => ctx.calls.length === 1);
       const important =
         kind === "foreground"
-          ? executor.execute("search_products", { query: "shade" })
+          ? executor.execute("search_products", { queries: ["shade"] })
           : executor.loadProducts(["gid://shopify/Product/123"]);
       await important;
       assert.equal(ctx.calls[0][1].signal.aborted, true);
@@ -411,17 +412,18 @@ test("missing PDP imagery falls back only to the matching fresh normalized Shopi
           {
             id: "gid://shopify/Product/123",
             title: "Shopify blind",
-            handle: "shade",
-            description: { html: "" },
-            media: [{ type: "image", url: catalogImage }],
+            url: page,
+            description: "",
+            imageUrl: catalogImage,
           },
         ],
+        messages: [], queries: [{query:"shade",status:"succeeded",productIds:["gid://shopify/Product/123"]}],
       };
     },
   });
   t.after(() => executor.dispose());
   const signal = new AbortController().signal;
-  await executor.execute("search_products", { query: "shade" });
+  await executor.execute("search_products", { queries: ["shade"] });
   assert.equal(
     await executor.loadProductImage(page, signal, 1200),
     catalogImage,
@@ -456,15 +458,16 @@ test("PDP gallery imagery stays preferred over the listing image when both are a
         {
           id: "gid://shopify/Product/123",
           title: "Shopify blind",
-          handle: "shade",
-          description: { html: "" },
-          media: [{ type: "image", url: swatch }],
+          url: page,
+          description: "",
+          imageUrl: swatch,
         },
       ],
+      messages: [], queries: [{query:"shade",status:"succeeded",productIds:["gid://shopify/Product/123"]}],
     }),
   });
   t.after(() => executor.dispose());
-  await executor.execute("search_products", { query: "shade" });
+  await executor.execute("search_products", { queries: ["shade"] });
   assert.equal(
     await executor.loadProductImage(page, new AbortController().signal, 1200),
     `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,

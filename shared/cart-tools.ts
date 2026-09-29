@@ -78,17 +78,17 @@ const lineKeySchema = { type: "string", pattern: lineKeyPattern.source };
 const definitions = [
   [
     "get_cart",
-    "Read this shopper's current cart, including exact line keys, quantities and applied discounts. totalPriceMinorUnits is Shopify's final cart total; totalDiscountMinorUnits already includes lineDiscounts and cartDiscounts, so never subtract them again. linePriceMinorUnits is after line discounts but before cart-level discounts. Original prices, named allocations and percentages are included only when Shopify reports them; omitted metadata is unknown, not zero or no discount. Refresh before choosing a line to remove or change; historical cart contents may be stale. Reading does not request that Roman show the cart; display or navigate to it only when the shopper explicitly asks to view it.",
+    "Read the current cart with exact line keys, quantities, currency, totals and supplied discount allocations. Prices are minor units; linePriceMinorUnits is after line discounts, before basket discounts. totalPriceMinorUnits includes discounts. Omitted metadata is unknown. Does not display Cart.",
     {},
   ],
   [
     "add_to_cart",
-    "Add the configured product currently open on its verified productPath when the shopper explicitly requests the addition. Silently verify current supported native dimensions, selected options and a settled configuredPrice with get_product_configuration, then add when valid and priced without a conversational recap or reconfirmation. Product selection or dimension confirmation alone is not an add request. Resolve missing or invalid configuration and unconsented paid choices first. No additional on-screen approval is required. The theme owns measurements, options and validation. Do not infer configuration from a draft, catalog price or page visit. This does not purchase or check out.",
+    "Add the chosen configured product on its verified current productPath after an explicit add request and fresh valid, priced native configuration. Requires resolved paid-choice consent and separate reply from form changes. Theme validation is authoritative. No additional review panel, payment or checkout.",
     { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
   ],
   [
     "add_sample_to_cart",
-    "Add a sample for the product currently open on its verified productPath without query or hash when the shopper explicitly asks. No additional on-screen approval is required. A sample is not a full blind, does not purchase or check out, and must never fall back to adding the full product. The theme owns sample availability and validation.",
+    "Add only the explicitly requested sample from its verified current productPath, without query/hash. Theme verifies sample availability. No product configuration or extra approval needed; cannot fall back to adding the full product.",
     { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
   ],
   [

@@ -150,7 +150,8 @@ export async function createVoiceProvider(options: {
   // previous exchange with Roman.
   const resumedConversation = options.history.some(
     (message) =>
-      (message.role === "assistant" || message.source === "roman_question") &&
+      (message.role === "assistant" || message.source === "roman_question" ||
+        (message.source === "application_state" && message.pendingQuestion)) &&
       message.text.trim(),
   );
   const openingPrompt = options.resumePendingQuestion

@@ -53,7 +53,7 @@ const product = {
   imageUrl: "https://cdn.shopify.com/shade.jpg",
   priceLabel: "From USD 62.99",
 };
-const result = { products: [product], messages: [] };
+const result = { products: [product], messages: [], queries: [{query:"no drill",status:"succeeded",productIds:[product.id]}] };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -94,7 +94,7 @@ function setup() {
       return {
         origin,
         name: mock.toolName ?? "search_products",
-        arguments: mock.toolArguments ?? {},
+        arguments: mock.toolArguments ?? {queries:["no drill"]},
       };
     },
   };
@@ -105,6 +105,7 @@ function setup() {
     mock,
     URL,
     Intl,
+    TextEncoder,
     AbortSignal: {
       any: (signals) => AbortSignal.any(signals),
       timeout: (milliseconds) => {
@@ -123,7 +124,7 @@ function request(env, signal = new AbortController().signal) {
     "assistant-1",
     "provider-call-1",
     "search_products",
-    { query: " no drill " },
+    { queries: [" no drill "] },
     signal,
   );
 }
@@ -506,7 +507,7 @@ test("browser result reaches its waiter only after durable IDs-only completion",
     {
       providerCallId: "provider-call-1",
       name: "search_products",
-      arguments: { query: "no drill" },
+      arguments: { queries: ["no drill"] },
     },
   ]);
   const submission = env.api.submitBrowserToolResult(
@@ -521,7 +522,7 @@ test("browser result reaches its waiter only after durable IDs-only completion",
     "conversation-1",
     "invocation-1",
     claim,
-    { productIds: [product.id] },
+    { productIds: [product.id], catalogQueries: result.queries },
   ]);
   assert.doesNotMatch(
     JSON.stringify(env.calls.complete),
@@ -571,6 +572,114 @@ test("invalid projected data cannot complete a tool or release a waiting model",
     result,
   );
   assert.deepEqual(plain(await pending), result);
+});
+
+test("batch search retains thirty candidates and exact request provenance through durable completion", async () => {
+  const env = setup();
+  env.mock.toolArguments = { queries: ["roller", "roman", "venetian"] };
+  const pending = env.api.requestBrowserTool(
+    "conversation-1",
+    "assistant-1",
+    "batch-1",
+    "search_products",
+    env.mock.toolArguments,
+    new AbortController().signal,
+  );
+  await flush();
+  const products = Array.from({ length: 30 }, (_, i) => ({
+    ...product,
+    id: `gid://shopify/Product/${i + 1}`,
+    title: `Blind ${i + 1}`,
+  }));
+  const result = {
+    products,
+    messages: [],
+    queries: env.mock.toolArguments.queries.map((query, i) => ({
+      query,
+      status: "succeeded",
+      productIds: products.slice(i * 10, i * 10 + 10).map((p) => p.id),
+    })),
+  };
+  for (const invalid of [
+    { ...result, queries: undefined },
+    { ...result, queries: [...result.queries].reverse() },
+    {
+      ...result,
+      queries: [
+        { ...result.queries[0], query: "other" },
+        ...result.queries.slice(1),
+      ],
+    },
+    {
+      ...result,
+      queries: [
+        { ...result.queries[0], productIds: [] },
+        ...result.queries.slice(1),
+      ],
+    },
+    {
+      ...result,
+      queries: [
+        { ...result.queries[0], status: "failed", error: "timeout" },
+        ...result.queries.slice(1),
+      ],
+    },
+  ])
+    await assert.rejects(
+      env.api.submitBrowserToolResult(
+        "conversation-1",
+        "invocation-1",
+        claim,
+        invalid,
+      ),
+      { status: 400 },
+    );
+  assert.equal(env.calls.complete.length, 0);
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await pending), result);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: products.map((p) => p.id),
+    catalogQueries: result.queries,
+  });
+});
+
+test("partial search failures preserve successful candidates and are not a failed operation", async () => {
+  const env = setup();
+  env.mock.toolArguments = { queries: ["roller", "roman"] };
+  const pending = env.api.requestBrowserTool(
+    "conversation-1",
+    "assistant-1",
+    "batch-partial",
+    "search_products",
+    env.mock.toolArguments,
+    new AbortController().signal,
+  );
+  await flush();
+  const result = {
+    products: [product],
+    messages: [],
+    queries: [
+      { query: "roller", status: "succeeded", productIds: [product.id] },
+      { query: "roman", status: "failed", productIds: [], error: "timeout" },
+    ],
+  };
+  await env.api.submitBrowserToolResult(
+    "conversation-1",
+    "invocation-1",
+    claim,
+    result,
+  );
+  assert.deepEqual(plain(await pending), result);
+  assert.equal(env.calls.fail.length, 0);
+  assert.deepEqual(plain(env.calls.complete[0][3]), {
+    productIds: [product.id],
+    catalogQueries: result.queries,
+  });
 });
 
 test("a rejected claim or persistence failure does not release the waiter", async () => {
@@ -916,4 +1025,18 @@ test("a failed durable creation releases its reservation without failing an unre
     result,
   );
   assert.deepEqual(plain(await next), result);
+});
+
+test("product lookups reject search-only query provenance", async () => {
+  for (const name of ["get_product", "lookup_catalog"]) {
+    const env = setup();
+    env.mock.toolName = name;
+    env.mock.toolArguments = name === "get_product"
+      ? { id: "gid://shopify/Product/123" }
+      : { ids: ["gid://shopify/Product/123"] };
+    await assert.rejects(env.api.submitBrowserToolResult(
+      "conversation-1", "invocation-1", claim, result,
+    ), { status: 400 });
+    assert.equal(env.calls.complete.length, 0);
+  }
 });

@@ -34,7 +34,7 @@ export const checkoutToolDefinition = {
   type: "function" as const,
   name: "open_checkout",
   description:
-    "When the customer asks to proceed to checkout, show Roman's Cart and attempt to open this storefront's fixed /checkout in a new tab. This never places an order, submits payment, changes the cart or ends Roman. Complete any necessary cart checks first. Call once, never retry automatically. An opened result confirms only that a new tab was created and navigation requested, not that checkout loaded or payment completed. A blocked result means direct the customer to Continue to checkout in Roman's Cart; that visible link opens a new tab on their click. After a verified result, finish with a brief warm sign-off, not another answer widget.",
+    "For requested checkout, show Roman Cart and attempt this store's fixed /checkout in a new tab. opened confirms a tab/navigation request only; blocked leaves Continue to checkout in Cart for the customer to click. No cart mutation, payment, order or session closure.",
   strict: true,
   parameters: {
     type: "object",

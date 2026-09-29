@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 
 const bundle = await build({
-  entryPoints: ["frontend/src/session/storefront-executor.ts"],
+  stdin: { contents: "export * from './frontend/src/session/storefront-executor'; export {normalizeCatalogResult} from './shared/catalog';", resolveDir: process.cwd() },
   bundle: true,
   write: false,
   format: "cjs",
@@ -44,7 +44,7 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
-function setup(execute) {
+function setup(execute, projectedSearch = false) {
   const module = { exports: {} };
   const warnings = [];
   const location = { origin, href: `${origin}/` };
@@ -57,6 +57,7 @@ function setup(execute) {
     document,
     URL,
     Intl,
+    TextEncoder,
     AbortController,
     DOMException,
     Date: class extends Date {
@@ -68,9 +69,12 @@ function setup(execute) {
   });
   const calls = [];
   const executor = module.exports.createStorefrontExecutor({
-    execute: (...args) => {
+    execute: async (...args) => {
       calls.push(args.slice(0, 2));
-      return execute(...args);
+      const result = await execute(...args);
+      if (args[0] !== "search_products" || projectedSearch) return result;
+      const projected = module.exports.normalizeCatalogResult(result, location.origin);
+      return { ...projected, queries: args[1].queries.map(query => ({query, status:"succeeded", productIds:projected.products.map(p=>p.id)})) };
     },
   });
   return { executor, calls, warnings, location, clock, document };
@@ -78,10 +82,10 @@ function setup(execute) {
 
 test("rejected product data logs the failing field without dumping the catalog", async () => {
   const { executor, warnings } = setup(async () => ({
-    products: [{ ...product, url: "https://private.example/products/shade" }],
-  }));
+    products: [{ ...product, description: "", url: "https://private.example/products/shade" }], messages: [], queries: [{ query: "shade", status: "succeeded", productIds: [product.id] }],
+  }), true);
   await assert.rejects(
-    executor.execute("search_products", { query: "shade" }),
+    executor.execute("search_products", { queries: ["shade"] }),
     /products\[0\]\.url expected/,
   );
   assert.equal(warnings.length, 1);
@@ -99,10 +103,10 @@ test("model catalog tools share serial execution and always fetch fresh projecti
     if (count === 1) return gate.promise;
     return { products: [{ ...product, title: `Current shade ${count}` }] };
   });
-  const search = executor.execute("search_products", { query: " no drill " });
+  const search = executor.execute("search_products", { queries: [" no drill "] });
   const lookup = executor.execute("lookup_catalog", { ids: [product.id] });
   await flush();
-  assert.deepEqual(plain(calls), [["search_products", { query: "no drill" }]]);
+  assert.deepEqual(plain(calls), [["search_products", { queries: ["no drill"] }]]);
   gate.resolve({
     products: [product],
     ucp: { private: "NEGOTIATION_METADATA" },
@@ -117,6 +121,7 @@ test("model catalog tools share serial execution and always fetch fresh projecti
       },
     ],
     messages: [],
+    queries: [{query:"no drill",status:"succeeded",productIds:[product.id]}],
   });
   assert.equal((await lookup).products[0].title, "Current shade 2");
   assert.equal(
@@ -134,7 +139,7 @@ test("model catalog tools share serial execution and always fetch fresh projecti
 test("display hydration reuses a pending search and concurrent card lookups without exposing mutable cache data", async () => {
   const gate = deferred();
   const { executor, calls } = setup(() => gate.promise);
-  const search = executor.execute("search_products", { query: "shade" });
+  const search = executor.execute("search_products", { queries: ["shade"] });
   const first = executor.loadProducts([product.id]);
   const second = executor.loadProducts([product.id]);
   gate.resolve({
@@ -161,7 +166,7 @@ test("synchronous display previews expose only fresh requested products without 
   const ctx = setup(async () => ({ products: [product, other] }));
   assert.deepEqual(plain(ctx.executor.getCachedProducts([product.id])), []);
   assert.equal(ctx.calls.length, 0);
-  await ctx.executor.execute("search_products", { query: "shade" });
+  await ctx.executor.execute("search_products", { queries: ["shade"] });
   const selected = ctx.executor.getCachedProducts([
     other.id,
     product.id,
@@ -182,7 +187,7 @@ test("synchronous display previews expose only fresh requested products without 
     1,
     "Preview reads never fetch or renew a cached entry",
   );
-  await ctx.executor.execute("search_products", { query: "shade" });
+  await ctx.executor.execute("search_products", { queries: ["shade"] });
   ctx.executor.dispose();
   assert.deepEqual(plain(ctx.executor.getCachedProducts([product.id])), []);
 });
@@ -200,7 +205,7 @@ test("display hydration fetches only missing IDs and preserves requested order w
     products: ++count === 1 ? [product] : [unrelated, other, other],
     messages: [{ type: "warning", content: "Starting price only." }],
   }));
-  await executor.execute("search_products", { query: "shade" });
+  await executor.execute("search_products", { queries: ["shade"] });
   const cards = await executor.loadProducts([
     other.id,
     product.id,
@@ -227,9 +232,9 @@ test("cached cards render while unrelated network work is pending and expire wit
     if (++count === 2) return gate.promise;
     return { products: [{ ...product, title: `Shade ${count}` }] };
   });
-  await executor.execute("search_products", { query: "shade" });
+  await executor.execute("search_products", { queries: ["shade"] });
   clock.now += 59_999;
-  const working = executor.execute("search_products", { query: "other" });
+  const working = executor.execute("search_products", { queries: ["other"] });
   assert.equal(
     (await executor.loadProducts([product.id])).products[0].title,
     "Shade 1",
@@ -262,7 +267,7 @@ test("the display cache evicts older products after sixty entries", async () => 
         : [products[0]],
   }));
   for (let index = 0; index < 7; index++)
-    await executor.execute("search_products", { query: `page ${index}` });
+    await executor.execute("search_products", { queries: [`page ${index}`] });
   assert.equal(
     (await executor.loadProducts([products[10].id, products[69].id])).products
       .length,
@@ -280,7 +285,7 @@ test("fresh tool failures and missing products never fall back to older display 
     if (count === 2) throw new Error("Shopify unavailable");
     return { products: [] };
   });
-  await executor.execute("search_products", { query: "shade" });
+  await executor.execute("search_products", { queries: ["shade"] });
   await assert.rejects(
     executor.execute("get_product", { id: product.id }),
     /Shopify unavailable/,
@@ -298,7 +303,7 @@ test("fresh tool failures and missing products never fall back to older display 
 
 test("display data stays within one storefront runtime and disposal rejects late hydration", async () => {
   const ctx = setup(async () => ({ products: [product] }));
-  await ctx.executor.execute("search_products", { query: "shade" });
+  await ctx.executor.execute("search_products", { queries: ["shade"] });
   ctx.location.origin = "https://another-store.myshopify.com";
   await assert.rejects(
     ctx.executor.loadProducts([product.id]),
@@ -334,7 +339,7 @@ test("handle-based search and card hydration return same-store links without cat
     messages: [],
   }));
   const search = await executor.execute("search_products", {
-    query: "no drill",
+    queries: ["no drill"],
   });
   const cards = await executor.execute("lookup_catalog", {
     ids: search.products.map((item) => item.id),
@@ -356,17 +361,17 @@ test("the queue bounds accepted lookups and releases capacity after completion",
     return { products: [] };
   });
   const pending = Array.from({ length: 12 }, () =>
-    executor.execute("search_products", { query: "shade" }),
+    executor.execute("search_products", { queries: ["shade"] }),
   );
   await assert.rejects(
-    executor.execute("search_products", { query: "overflow" }),
+    executor.execute("search_products", { queries: ["overflow"] }),
     /wait for the current storefront tools/,
   );
   assert.equal(calls.length, 1);
   gate.resolve();
   await Promise.all(pending);
   assert.equal(calls.length, 12);
-  await executor.execute("search_products", { query: "after completion" });
+  await executor.execute("search_products", { queries: ["after completion"] });
   assert.equal(calls.length, 13);
 });
 
@@ -377,7 +382,7 @@ test("one failed lookup is not replayed and does not poison later queued work", 
     if (++count === 1) return gate.promise;
     return { product };
   });
-  const first = executor.execute("search_products", { query: "shade" });
+  const first = executor.execute("search_products", { queries: ["shade"] });
   const rejected = assert.rejects(first, /catalog unavailable/);
   const next = executor.execute("get_product", { id: product.id });
   gate.reject(new Error("catalog unavailable"));
@@ -556,7 +561,7 @@ test("only validated automatic tools reach the shared browser tool owner without
   const { executor, calls } = setup(async () => ({ products: [] }));
   assert.throws(() => executor.execute("clear_cart", {}), /confirmation/);
   for (const [name, args] of [
-    ["search_products", { query: "shade", shop: "other" }],
+    ["search_products", { queries: ["shade"], shop: "other" }],
     ["lookup_catalog", { ids: [] }],
   ]) {
     assert.throws(() => executor.execute(name, args), /not supported/);
@@ -568,7 +573,7 @@ test("only validated automatic tools reach the shared browser tool owner without
 test("disposal rejects late results and queued calls without dispatching more browser work", async () => {
   const gate = deferred();
   const { executor, calls } = setup(() => gate.promise);
-  const first = executor.execute("search_products", { query: "shade" });
+  const first = executor.execute("search_products", { queries: ["shade"] });
   const second = executor.execute("lookup_catalog", { ids: [product.id] });
   const rejectedFirst = assert.rejects(first, /removed/);
   const rejectedSecond = assert.rejects(second, /removed/);
@@ -733,7 +738,7 @@ test("twenty historical carousels cannot reject or delay a foreground tool behin
     executor.loadProducts([product.id]),
   );
   await flush();
-  const foreground = executor.execute("search_products", { query: "shade" });
+  const foreground = executor.execute("search_products", { queries: ["shade"] });
   assert.equal(firstSignal.aborted, true);
   assert.equal((await foreground).products[0].id, product.id);
   const results = await Promise.all(cards);
@@ -775,7 +780,7 @@ test("obsolete active and queued card requests cancel without blocking later wor
   queued.abort();
   active.abort();
   await Promise.all(rejected);
-  await executor.execute("search_products", { query: "shade" });
+  await executor.execute("search_products", { queries: ["shade"] });
   assert.equal(calls.length, 2);
 });
 

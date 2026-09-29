@@ -52,7 +52,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "set_measurements",
     description:
-      "Save width and height (drop) with one explicit display unit for a verified product path. Use kind window for customer-supplied notes in a known common unit, and order only for the final pair and display unit explicitly confirmed by the customer. Reconcile mixed units in conversation before that confirmation; this tool performs no conversion, rounding or allowances. Confirm width, drop and units together once; do not re-confirm an acknowledged pair or require a mounting answer. Preserve the established recess/exact intent, otherwise use unknown. For a configure/fill request, follow a successful save with apply_measurements; save-only requests stop here. Use configure_product separately for native choices established by the customer and measuring method. Never infer physical fitting suitability. Saving does not fill or submit the product form.",
+      "Save width and height (drop), common display unit and mount for a verified productPath. kind window is customer notes; kind order requires the customer-confirmed final pair and unit. unknown mount is supported. Values are stored unchanged: no conversion, rounding, allowances, form entry or fit validation.",
     strict: true,
     parameters: {
       type: "object",
@@ -72,7 +72,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "get_measurements",
     description:
-      "Read this conversation's saved dimensions for one verified product path. No saved draft means the dimensions are unknown. Saved window measurements are not order dimensions and do not establish fitting suitability.",
+      "Read this conversation's saved draft for one verified productPath. No draft means unknown dimensions. A window-kind draft is not confirmed order input or fit evidence.",
     strict: true,
     parameters: {
       type: "object",
@@ -87,7 +87,7 @@ export const applyMeasurementsToolDefinition = {
   type: "function",
   name: "apply_measurements",
   description:
-    "Fill the current product width and drop inputs after the customer has confirmed the pair and units in the conversation and chosen this product. Only an order-kind draft containing those confirmed input values can be applied. Use after set_measurements for configure/fill requests; there is no additional on-screen approval. It selects the confirmed mm/cm/in display unit, fills the dimensions, invokes the supported theme's native quote or Continue customizing step when required, and waits for pricing. It does not convert or round the customer's values, select mounting, validate fitting suitability, purchase or add to cart. Window measurements must never be applied as order dimensions.",
+    "Apply the chosen current product's saved order-kind draft after customer confirmation of its pair and units. Selects mm/cm/in and fills dimensions unchanged, invoking the supported native quote step when needed. No second on-screen approval, unit conversion, rounding, option selection, fit validation or cart addition. Returns applied only after field verification; native limits can reject the pair.",
   strict: true,
   parameters: {
     type: "object",

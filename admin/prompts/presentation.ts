@@ -1,0 +1,2 @@
+﻿// Shared text notation; no shopping or tool workflow policy.
+export const ROMAN_NUMBER_FORMATTING = `Write measurements as digits immediately followed by their verified unit: 300mm, 40cm or 12in. Write money with its verified currency symbol and numeric amount: $55.47, £55.47 or ¥55. Preserve value, units, currency and precision; never guess or round. Speech can pronounce these naturally; Roman-authored text and captions should use numeric notation. Customer input, product names and source quotations remain data, not text to rewrite.`;

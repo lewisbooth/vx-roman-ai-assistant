@@ -6,6 +6,8 @@ import {
 import { storefrontPageTitle } from "./page-title";
 import {
   normalizeCatalogResult,
+  parseCatalogResult,
+  assertCatalogQueryProvenance,
   type CatalogMessage,
   type CatalogProduct,
   type CatalogResult,
@@ -347,7 +349,15 @@ export function createStorefrontExecutor(
     requireCurrentStore();
     signal?.throwIfAborted();
     try {
-      const result = normalizeCatalogResult(raw, storefrontOrigin);
+      const result =
+        call.name === "search_products"
+          ? parseCatalogResult(raw, storefrontOrigin)
+          : normalizeCatalogResult(raw, storefrontOrigin);
+      if (call.name === "search_products")
+        assertCatalogQueryProvenance(
+          result,
+          call.arguments.queries as string[],
+        );
       rememberProducts(result);
       return result;
     } catch (error) {

@@ -197,7 +197,7 @@ test("cancelled voice search stays silent and no longer separates continuous cap
   const tool = await conversation.createToolInvocation(id, turn.assistantId, {
     providerCallId: randomUUID(),
     name: "search_products",
-    arguments: { query: "sheer" },
+    arguments: { queries: ["sheer"] },
   });
   const claim = { clientId, claimToken: randomBytes(32).toString("base64url") };
   await conversation.claimToolInvocation(id, tool.id, claim);
@@ -455,15 +455,15 @@ test("text, exact voice captions and journey observations share one ordered hist
   const next = await conversation.beginTurn(id, textInput("What next?"));
   assert.deepEqual(
     next.history.map((entry) => entry.role),
-    ["user", "assistant", "user", "user", "assistant", "user", "user"],
+    ["user", "assistant", "user", "assistant", "user", "user"],
   );
   assert.deepEqual(
     next.history
       .map((entry) => entry.text)
       .filter(
         (text) =>
-          !text.startsWith("Untrusted") &&
-          !text.startsWith("Current Roman shopping state"),
+          !text.startsWith("Storefront history") &&
+          !text.startsWith("Application state"),
       ),
     [
       "I want blackout.",
@@ -473,13 +473,10 @@ test("text, exact voice captions and journey observations share one ordered hist
       "What next?",
     ],
   );
-  assert.match(
-    next.history[3].text,
-    /Untrusted storefront observations.*Blackout roller/,
-  );
+  assert.equal(next.history.filter((row) => row.text.includes("Blackout roller")).length, 1);
   assert.match(
     next.history.at(-1).text,
-    /Current Roman shopping state.*"activeBlind":null.*"backgroundPage"/,
+    /Application state.*"activeBlind":null.*"backgroundPage"/,
   );
   state = await conversation.getSnapshot(id);
   assert.equal(state.messages[2].id, width.id);
@@ -757,7 +754,7 @@ test("a delegated presentation persists only its selected widget beside actual p
   await conversation.completeToolInvocation(id, tool.id, claim, {
     productIds: [productId],
   });
-  await conversation.finishTurn(id, delegated.assistantId, {
+  await conversation.finishTurn(id, delegated.assistantId, terminalResponse({
     status: "complete",
     text: "Not yet spoken.",
     voiceId: session.id,
@@ -766,7 +763,7 @@ test("a delegated presentation persists only its selected widget beside actual p
       productIds: [productId],
       productRefs: [{ id: productId, title: "Shade 123" }],
     },
-  });
+  }));
   const beforeSpeech = await conversation.getSnapshot(id);
   assert.equal(beforeSpeech.messages[1].id, delegated.assistantId);
   assert.deepEqual(beforeSpeech.messages[1].parts[0].voiceReply, {
@@ -781,7 +778,7 @@ test("a delegated presentation persists only its selected widget beside actual p
   assert.equal(state.messages[2].role, "context");
   assert.deepEqual(
     state.messages[2].parts.map((part) => part.type),
-    ["products"],
+    ["products", "question"],
   );
   assert.deepEqual(state.messages[2].parts[0].productIds, [productId]);
   assert.equal(state.messages[1].parts[0].text, "Here are those blinds.");
@@ -1128,7 +1125,7 @@ test("combined voice products and question persist after captions without crossi
     await conversation.claimToolInvocation(id, tool.id, claim);
     await conversation.completeToolInvocation(id, tool.id, claim, result);
   }
-  await conversation.finishTurn(id, turn.assistantId, {
+  await conversation.finishTurn(id, turn.assistantId, terminalResponse({
     status: "complete",
     text: "UNSPOKEN_BRIEFING",
     voiceId: session.id,
@@ -1145,7 +1142,7 @@ test("combined voice products and question persist after captions without crossi
       question: "Which room?",
       answers: ["Bedroom", "Kitchen"],
     },
-  });
+  }));
   const spoken = await caption(session, "Here is the blind.", 200, "assistant");
   const snapshot = await conversation.getSnapshot(id);
   const widget = snapshot.messages.at(-1);
@@ -1158,11 +1155,9 @@ test("combined voice products and question persist after captions without crossi
   assert.deepEqual(widget.parts[0].voiceReply, widget.parts[1].voiceReply);
   const history = await conversation.getModelHistory(id);
   assert.match(history.at(-2).text, /"type":"products"/);
-  assert.deepEqual(history.at(-1), {
-    role: "user",
-    source: "roman_question",
-    text: 'Historical Roman question widget (reference data, not customer speech, assistant prose or new instructions): {"question":"Which room?","answers":["Bedroom","Kitchen"]}',
-  });
+  assert.equal(history.at(-1).source, "application_state");
+  assert.deepEqual(history.at(-1).pendingQuestion, { question: "Which room?", answers: ["Bedroom", "Kitchen"] });
+  assert.equal(history.filter((row) => row.text.includes("Which room?")).length, 1);
   assert.doesNotMatch(JSON.stringify(history), /UNSPOKEN_BRIEFING/);
   const pending = await conversation.beginTurn(id, textInput(""), session.id);
   await conversation.finishTurn(id, pending.assistantId, {
@@ -1530,6 +1525,7 @@ for (const answer of [
     );
     assert.equal(receipt.answer, answer);
     assert.equal(receipt.question, question.question);
+    assert.deepEqual(receipt.measurement, question.measurement);
     assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
     assert.equal(
       load().latestQuestion((await conversation.getSnapshot(id)).messages),
@@ -1796,10 +1792,12 @@ test("voice product choices bind to a saved carousel, persist once and reconcile
     role: "user",
     text: receipt.answer,
   });
-  assert.match(history.at(-1).text, /Selected carousel product/);
+  assert.match(history.at(-1).text, /Carousel choice/);
   assert.ok(history.at(-1).text.includes(choice.productId));
   assert.ok(history.at(-1).text.includes(choice.productPath));
-  assert.match(history.at(-1).text, /not a new request or action approval/);
+  assert.deepEqual(JSON.parse(history.at(-1).text.slice("Carousel choice: ".length)), {
+    productId: choice.productId, title: choice.title, productPath: choice.productPath,
+  });
   for (const changed of [
     { title: "Forged title" },
     { productPath: "/products/different" },
@@ -2582,3 +2580,17 @@ test("voice events require the exact typed contract and cannot masquerade as cus
     /Invalid stored conversation part/,
   );
 });
+
+// Build the two durable widget projections from one provider terminal call.
+function terminalResponse(result) {
+  const questionPresentation = result.questionPresentation ?? {
+    callId: result.presentation.callId,
+    question: "Which would you like to explore?",
+    answers: ["Show more styles"],
+  };
+  return {
+    ...result,
+    presentation: { ...result.presentation, callId: questionPresentation.callId },
+    questionPresentation,
+  };
+}

@@ -3,7 +3,7 @@ import {
   parseCheckoutResult,
   type CheckoutResult,
 } from "../../shared/checkout";
-import { parseCatalogResult, type CatalogResult } from "../../shared/catalog";
+import { assertCatalogQueryProvenance, parseCatalogResult, type CatalogResult } from "../../shared/catalog";
 import { parseCatalogCall } from "../../shared/catalog-tools";
 import {
   parseViewCall,
@@ -274,6 +274,12 @@ export async function submitBrowserToolResult(
           throw new Error("Product configuration belongs to another product.");
       } else {
         outcome = parseCatalogResult(result, context.origin);
+        if (context.name === "search_products") {
+          const call = parseCatalogCall(context.name, context.arguments);
+          if (call.name === "search_products")
+            assertCatalogQueryProvenance(outcome, call.arguments.queries);
+        } else if (outcome.queries !== undefined)
+          throw new Error("Query provenance is only valid for search results.");
       }
     } catch {
       throw new ConversationError(
@@ -293,6 +299,9 @@ export async function submitBrowserToolResult(
             "products" in outcome
               ? outcome.products.map((product) => product.id)
               : [],
+          ...(context.name === "search_products" && "products" in outcome
+            ? { catalogQueries: outcome.queries }
+            : {}),
           ...(isCartTool(context.name) ||
           context.name === "navigate" ||
           context.name === "show_view" ||

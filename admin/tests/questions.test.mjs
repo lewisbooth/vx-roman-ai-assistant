@@ -72,26 +72,30 @@ test("question selection is bounded, normalized and plain text with distinct ans
 });
 
 test("terminal question calls own context and question separately without changing stored question data", () => {
-  assert.deepEqual(parseQuestionCall({ message: "", ...selection }), {
+  assert.deepEqual(parseQuestionCall({ productIds: [], message: "", ...selection }), {
     message: "",
+    productIds: [],
     ...selection,
   });
   assert.deepEqual(
     parseQuestionCall({
+      productIds: [],
       message: "  **No-drill blinds** can help.\n\nLet's narrow it down.  ",
       ...selection,
     }),
     {
       message: "**No-drill blinds** can help.\n\nLet's narrow it down.",
+      productIds: [],
       ...selection,
     },
   );
-  assert.deepEqual(parseQuestionCall({ message: " \n\t ", ...selection }), {
+  assert.deepEqual(parseQuestionCall({ productIds: [], message: " \n\t ", ...selection }), {
     message: "",
+    productIds: [],
     ...selection,
   });
   assert.equal(
-    parseQuestionCall({ message: "x".repeat(2000), ...selection }).message
+    parseQuestionCall({ productIds: [], message: "x".repeat(2000), ...selection }).message
       .length,
     2000,
   );
@@ -112,7 +116,7 @@ test("terminal question calls own context and question separately without changi
       `**${selection.question}**`,
     ].map((message) => ({ message, ...selection })),
   ])
-    assert.throws(() => parseQuestionCall(input));
+    assert.throws(() => parseQuestionCall({ productIds: [], ...input }));
   assert.deepEqual(parseQuestionSelection(selection), selection);
 });
 
@@ -141,6 +145,7 @@ test("both terminal tools require a bounded context message and prohibit unknown
 });
 
 const measurementCall = {
+  productIds: [],
   message: "",
   question: "What is the width?",
   instructions: "Measure across the top of the recess without deductions.",
@@ -149,9 +154,10 @@ const measurementCall = {
   unit: "mm",
 };
 const numeric = () => {
-  const { message, ...selection } =
+  const { message, productIds, ...selection } =
     parseMeasurementQuestionCall(measurementCall);
   assert.equal(message, "");
+  assert.deepEqual(productIds, []);
   return selection;
 };
 
@@ -174,6 +180,7 @@ test("numeric questions preserve guide instructions, units and product without a
     }),
     {
       message: "Let's walk through the measuring guide.",
+      productIds: [],
       ...expected,
     },
   );
@@ -426,4 +433,18 @@ test("persisted questions reject malformed ownership and voice associations", ()
     ].map((voiceReply) => ({ ...part, voiceReply })),
   ])
     assert.throws(() => parseQuestionPart(value));
+});
+
+
+test("terminal responses carry bounded ordered selections without weakening question or measurement validation", () => {
+  const ids = Array.from({ length: 10 }, (_, index) => `gid://shopify/Product/${index + 1}`);
+  for (const [parse, input] of [
+    [parseQuestionCall, { message: "A range of styles.", ...selection }],
+    [parseMeasurementQuestionCall, measurementCall],
+  ]) {
+    assert.deepEqual(parse({ ...input, productIds: [] }).productIds, []);
+    assert.deepEqual(parse({ ...input, productIds: ids }).productIds, ids);
+    for (const productIds of [undefined, null, ids.concat("gid://shopify/Product/11"), [ids[0], ids[0]], ["gid://shopify/ProductVariant/1"], ["https://store.test/products/blind"], [123]])
+      assert.throws(() => parse({ ...input, productIds }));
+  }
 });

@@ -28,27 +28,6 @@ export interface ProductPresentation {
 
 const productId = /^gid:\/\/shopify\/Product\/\d+$/;
 
-export const showProductsDefinition = {
-  type: "function",
-  name: "show_products",
-  description:
-    "Display up to ten selected products in Roman's large, horizontally scrolling carousel. Use for recommendations, collection browsing or whenever the customer asks to see a carousel or product cards, including showing earlier products again. These cards replace the storefront's collection pages in Roman. For discovery, show a useful spread of up to ten relevant verified matches when available; do not artificially cap results at three or four or pad with poor matches. A specific entry-PDP choice still shows only that product. First search or refresh the requested products with catalog tools in this reply, then select IDs from their combined results in the intended display order. For cross-category browsing, follow the shared family-balancing guidance instead of copying a ranked search page. This display call does not consume a storefront call. Call once per reply. Avoid unsolicited carousels during routine price checks or measurement clarification; an explicit request to show products takes precedence. Catalog lookups alone do not display cards.",
-  strict: true,
-  parameters: {
-    type: "object",
-    properties: {
-      productIds: {
-        type: "array",
-        items: { type: "string", pattern: productId.source, maxLength: 100 },
-        minItems: 1,
-        maxItems: MAX_PRODUCT_CARDS,
-      },
-    },
-    required: ["productIds"],
-    additionalProperties: false,
-  },
-} as const;
-
 export function parseProductSelection(input: unknown): string[] {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("Product selection must be an object.");

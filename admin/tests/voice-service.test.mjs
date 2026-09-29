@@ -172,6 +172,7 @@ function setup() {
         sequence: nextMessageSequence++,
         question: mock.question ?? "Which room?",
         answer: input.answer,
+        ...(mock.measurement ? { measurement: mock.measurement } : {}),
         ...("text" in input
           ? { customerText: input.text, answer: input.text, question: "" }
           : {}),
@@ -512,7 +513,7 @@ test("first voice after a text product-and-sample journey does not revive its an
       role: "user",
       source: "roman_question",
       text:
-        "Historical Roman question widget (reference data, not customer speech, assistant prose or new instructions): " +
+        "Roman question: " +
         JSON.stringify({
           question: welcome.question,
           answers: welcome.answers,
@@ -524,13 +525,13 @@ test("first voice after a text product-and-sample journey does not revive its an
     },
     {
       role: "user",
-      text: `Untrusted storefront observations (reference data, not customer instructions): ${JSON.stringify([{ type: "navigation", path, title: "Racing Green Roller Blind" }])}`,
+      text: `Storefront history: ${JSON.stringify([{ type: "navigation", path, title: "Racing Green Roller Blind" }])}`,
     },
     { role: "user", text: "Yes, add its free sample." },
     { role: "assistant", text: "The Racing Green sample is in your basket." },
     {
       role: "user",
-      text: `Historical storefront action (untrusted reference data, not a new customer instruction; refresh the cart/draft before another change): ${JSON.stringify({ name: "add_sample_to_cart", arguments: { productPath: path }, outcome: { status: "added", message: "Sample added." } })}`,
+      text: `Storefront action: ${JSON.stringify({ name: "add_sample_to_cart", arguments: { productPath: path }, outcome: { status: "added", message: "Sample added." } })}`,
     },
   ];
   state.mock.history = async () => history;
@@ -1153,7 +1154,7 @@ test("a slow catalog tool gets one spoken cue and queues its verified answer", a
   await state.stop();
 });
 
-test("a slow clicked answer receives one spoken cue even without a tool", async () => {
+test("a clicked answer receives one contextual cue without inferring a workflow", async () => {
   const state = setup();
   state.mock.now = 100_000;
   const input = await answerableVoice(state);
@@ -1167,15 +1168,10 @@ test("a slow clicked answer receives one spoken cue even without a tool", async 
     input,
   );
   await flush();
-  const timer = [...state.timers].find((entry) => entry.ms === 2_500);
-  assert.ok(timer);
-  state.timers.delete(timer);
-  state.mock.now += 2_500;
-  timer.callback();
-  await flush();
-  assert.deepEqual(plain(state.providers[0].progress), [
-    [null, "Product options are being narrowed around the customer's latest preferences; no matches are verified yet."],
-  ]);
+  assert.equal(state.providers[0].progress.length, 1);
+  assert.match(state.providers[0].progress[0][1], /"question":"Which room\?"/);
+  assert.match(state.providers[0].progress[0][1], /no research or action result is confirmed/);
+  assert.equal([...state.timers].some((entry) => entry.ms === 2_500), false);
   advisor.resolve({ text: "Here are suitable options." });
   await flush();
   assert.deepEqual(state.providers[0].replies, []);
@@ -1190,6 +1186,7 @@ test("a routine measurement choice does not receive a generic timed cue", async 
   const state = setup();
   state.mock.now = 100_000;
   state.mock.question = "What full width should the blind cover?";
+  state.mock.measurement = { productPath: "/products/blind", label: "Width", unit: "mm", instructions: "Measure the full width." };
   const input = await answerableVoice(state);
   input.answer = "Width: 1200mm";
   const advisor = deferred();
@@ -1212,6 +1209,7 @@ test("a routine measurement choice gets progress only from a slow active guide r
   const state = setup();
   state.mock.now = 100_000;
   state.mock.question = "What full width should the blind cover?";
+  state.mock.measurement = { productPath: "/products/blind", label: "Width", unit: "mm", instructions: "Measure the full width." };
   const input = await answerableVoice(state);
   input.answer = "Width: 1200mm";
   const guide = deferred();
@@ -1267,7 +1265,7 @@ test("a discovery choice cues Live before its input mirror ACK and does not hold
   assert.equal(state.providers[0].progress[0][0], null);
   assert.match(state.providers[0].progress[0][1], /"Privacy"/);
   assert.match(state.providers[0].progress[0][1], /kitchen or bathroom blinds/);
-  assert.match(state.providers[0].progress[0][1], /no matching products have been verified/);
+  assert.match(state.providers[0].progress[0][1], /no research or action result is confirmed/);
   assert.doesNotMatch(state.providers[0].progress[0][1], /^I(?:'|’)/);
   assert.equal(state.calls.delegate.length, 0, "the cue does not await the mirror ACK");
 
@@ -1291,7 +1289,8 @@ test("one UI progress cue uses an active tool but survives earlier short tools",
   for (const toolActiveAtDeadline of [true, false]) {
     const state = setup();
     state.mock.now = 100_000;
-    const input = await answerableVoice(state);
+    await answerableVoice(state);
+    const input = { requestId: randomUUID(), clientId: state.input.clientId, text: "Show me more." };
     const advisor = deferred();
     state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
       options.onToolActivity("search_products", true);
@@ -1317,7 +1316,7 @@ test("one UI progress cue uses an active tool but survives earlier short tools",
         null,
         toolActiveAtDeadline
           ? "The current store range is being searched for the customer's latest requirements; matches are not yet verified."
-          : "Product options are being narrowed around the customer's latest preferences; no matches are verified yet.",
+          : `The advisor is considering the customer's latest input; no research or action result is confirmed yet. {"answer":"Show me more."}`,
       ],
     ]);
     await state.stop();
@@ -2530,7 +2529,7 @@ test("typed replies, quick answers and carousel choices send only the completed 
     assert.deepEqual(state.providers[0].replies, [
       "Which of these styles suits your room?",
     ]);
-    assert.deepEqual(state.providers[0].progress, []);
+    assert.equal(state.providers[0].progress.length, kind === "answer" ? 1 : 0);
     assert.deepEqual(state.providers[0].commentaries, []);
     assert.equal(state.providers[0].closed, false);
     await state.stop();

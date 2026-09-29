@@ -13,9 +13,20 @@ export interface CatalogMessage {
   text: string;
 }
 
+export const MAX_CATALOG_CANDIDATES = 30;
+export const MAX_CATALOG_RESULT_BYTES = 120 * 1024;
+
+export interface CatalogQueryOutcome {
+  query: string;
+  status: "succeeded" | "failed";
+  productIds: string[];
+  error?: "request_failed" | "invalid_response" | "timeout";
+}
+
 export interface CatalogResult {
   products: CatalogProduct[];
   messages: CatalogMessage[];
+  queries?: CatalogQueryOutcome[];
 }
 
 const productId = /^gid:\/\/shopify\/Product\/\d+$/;
@@ -306,11 +317,12 @@ export function parseCatalogResult(
 ): CatalogResult {
   const store = origin(storefrontOrigin);
   if (!object(value)) invalid("$", "a catalog result object");
-  onlyKeys(value, ["products", "messages"], "$");
-  if (!Array.isArray(value.products) || value.products.length > 10)
-    invalid("products", "an array of at most 10 products");
-  if (!Array.isArray(value.messages) || value.messages.length > 10)
-    invalid("messages", "an array of at most 10 messages");
+  onlyKeys(value, ["products", "messages", "queries"], "$");
+  const limit = value.queries === undefined ? 10 : MAX_CATALOG_CANDIDATES;
+  if (!Array.isArray(value.products) || value.products.length > limit)
+    invalid("products", `an array of at most ${limit} products`);
+  if (!Array.isArray(value.messages) || value.messages.length > limit)
+    invalid("messages", `an array of at most ${limit} messages`);
   const seen = new Set<string>();
   const products = value.products.map((product, index): CatalogProduct => {
     const path = `products[${index}]`;
@@ -373,5 +385,89 @@ export function parseCatalogResult(
       ...(typeof message.code === "string" ? { code: message.code } : {}),
     };
   });
-  return { products, messages };
+  const queries =
+    value.queries === undefined
+      ? undefined
+      : parseCatalogQueryOutcomes(
+          value.queries,
+          products.map(({ id }) => id),
+        );
+  const result = { products, messages, ...(queries ? { queries } : {}) };
+  if (
+    new TextEncoder().encode(JSON.stringify(result)).byteLength >
+    MAX_CATALOG_RESULT_BYTES
+  )
+    invalid("$", "a catalog result of at most 120 KiB");
+  return result;
+}
+
+/** Validate only durable IDs and query provenance, without retaining catalog descriptions. */
+export function parseCatalogQueryOutcomes(
+  value: unknown,
+  productIds: readonly string[],
+): CatalogQueryOutcome[] {
+  const seen = new Set(productIds);
+  if (!Array.isArray(value) || value.length < 1 || value.length > 3)
+    invalid("queries", "an array of 1–3 query outcomes");
+  const queryTexts = new Set<string>();
+  const covered = new Set<string>();
+  const queries = value.map((outcome, index): CatalogQueryOutcome => {
+    const path = `queries[${index}]`;
+    if (!object(outcome)) invalid(path, "a query outcome");
+    onlyKeys(outcome, ["query", "status", "productIds", "error"], path);
+    const query = text(outcome.query, `${path}.query`, 500);
+    if (query !== query.trim() || queryTexts.has(query))
+      invalid(`${path}.query`, "a unique trimmed query");
+    queryTexts.add(query);
+    if (outcome.status !== "succeeded" && outcome.status !== "failed")
+      invalid(`${path}.status`, '"succeeded" or "failed"');
+    if (!Array.isArray(outcome.productIds) || outcome.productIds.length > 10)
+      invalid(`${path}.productIds`, "an array of at most 10 product IDs");
+    const ids = outcome.productIds;
+    if (
+      ids.some((id) => typeof id !== "string" || !seen.has(id)) ||
+      new Set(ids).size !== ids.length
+    )
+      invalid(`${path}.productIds`, "unique IDs present in products");
+    if (outcome.status === "failed") {
+      if (
+        ids.length ||
+        !["request_failed", "invalid_response", "timeout"].includes(
+          String(outcome.error),
+        )
+      )
+        invalid(
+          path,
+          "a failed outcome with no products and a supported error code",
+        );
+    } else {
+      if (outcome.error !== undefined)
+        invalid(`${path}.error`, "no error for a successful query");
+      ids.forEach((id) => covered.add(id));
+    }
+    return {
+      query,
+      status: outcome.status,
+      productIds: [...ids],
+      ...(outcome.error === undefined
+        ? {}
+        : { error: outcome.error as CatalogQueryOutcome["error"] }),
+    };
+  });
+  if (productIds.some((id) => !covered.has(id)))
+    invalid("products", "products returned by at least one successful query");
+  return queries;
+}
+
+/** Bind a browser search result to the exact ordered request at the server boundary. */
+export function assertCatalogQueryProvenance(
+  result: Pick<CatalogResult, "queries">,
+  queries: readonly string[],
+): void {
+  if (
+    !result.queries ||
+    result.queries.length !== queries.length ||
+    result.queries.some((outcome, index) => outcome.query !== queries[index])
+  )
+    invalid("queries", "outcomes for the exact ordered requested queries");
 }

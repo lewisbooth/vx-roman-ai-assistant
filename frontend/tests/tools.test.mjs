@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { catalogHttpResponse } from "./fixtures/catalog-http.mjs";
 
 const origin = "https://hd-dev-multi.myshopify.com";
 const productOne = "/products/traditional-room-darkening-zebra-shades";
-const productTwo = "/products/2-inch-levolor-classic-neutral-faux-wood-blinds";
 const bundle = await build({
   entryPoints: ["frontend/src/tools/index.ts"],
   bundle: true,
@@ -58,6 +58,8 @@ function setup(t, options = {}) {
     },
   );
   const { window } = dom;
+  window.TextEncoder = TextEncoder;
+  window.TextDecoder = TextDecoder;
   const host = window.document.querySelector("roman-ai-assistant");
   host.dataset.shop = options.shop ?? "hd-dev-multi.myshopify.com";
   host.dataset.agentProfileUrl =
@@ -69,7 +71,8 @@ function setup(t, options = {}) {
   let snapshot = { url: window.location.href, pending: false, error: null };
   window.fetch = (url, request) => {
     calls.push({ url: String(url), ...request });
-    return options.fetch?.(url, request) ?? Promise.resolve(cartResponse());
+    const response = options.fetch?.(url, request) ?? Promise.resolve(cartResponse());
+    return String(url).endsWith("/api/ucp/mcp") ? catalogHttpResponse(response) : response;
   };
   const originalSetTimeout = window.setTimeout.bind(window);
   const originalClearTimeout = window.clearTimeout.bind(window);
@@ -153,13 +156,13 @@ test("tool calls reject malformed arguments and unknown names before requesting 
     ["array arguments", "get_cart", [], /Expected an object/],
     ["primitive arguments", "get_cart", "{}", /Expected an object/],
     ["unexpected cart arguments", "get_cart", { token: "secret" }, /only/],
-    ["empty query", "search_products", { query: "  " }, /query must be/],
-    ["non-string query", "search_products", { query: 42 }, /query must be/],
+    ["empty query", "search_products", { queries: ["  "] }, /catalog tool or its arguments/],
+    ["non-string query", "search_products", { queries: [42] }, /catalog tool or its arguments/],
     [
       "oversized query",
       "search_products",
-      { query: "x".repeat(501) },
-      /query must be/,
+      { queries: ["x".repeat(501)] },
+      /catalog tool or its arguments/,
     ],
     ["missing product id", "get_product", {}, /id must be/],
     [
@@ -230,6 +233,57 @@ test("tool calls reject malformed arguments and unknown names before requesting 
   });
 });
 
+test("the single-operation guard encloses parallel catalog reads and keeps other tools serial", async (t) => {
+  const pending = [];
+  const { tools, calls } = setup(t, {
+    fetch: (url, request) =>
+      new Promise((resolve, reject) => {
+        pending.push({ request, resolve });
+        request.signal.addEventListener(
+          "abort",
+          () => reject(request.signal.reason),
+          { once: true },
+        );
+      }),
+  });
+  const searching = tools.execute("search_products", {
+    queries: ["roller", "roman", "venetian"],
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(new Set(calls.map(({ signal }) => signal)).size, 1);
+  await assert.rejects(
+    tools.execute("get_cart", {}),
+    /Another tool is still running/,
+  );
+  await assert.rejects(
+    tools.execute("search_products", { queries: ["more"] }),
+    /Another tool is still running/,
+  );
+  pending.forEach(({ request, resolve }) =>
+    resolve({
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: JSON.parse(request.body).id,
+        result: { structuredContent: { products: [] } },
+      }),
+    }),
+  );
+  const result = await searching;
+  assert.equal(result.queries.length, 3);
+  const next = tools.execute("search_products", { queries: ["next"] });
+  const last = pending.at(-1);
+  last.resolve({
+    ok: true,
+    json: async () => ({
+      jsonrpc: "2.0",
+      id: JSON.parse(last.request.body).id,
+      result: { structuredContent: { products: [] } },
+    }),
+  });
+  assert.equal((await next).queries[0].query, "next");
+});
+
 test("catalog lookup and cart mutation arguments are validated before any request", async (t) => {
   const { tools, calls, timers } = setup(t);
   for (const [name, tool, input, expected] of [
@@ -278,7 +332,7 @@ test("catalog lookup and cart mutation arguments are validated before any reques
     [
       "extra lookup argument",
       "lookup_catalog",
-      { ids: ["gid://shopify/Product/1"], query: "blind" },
+      { ids: ["gid://shopify/Product/1"], queries: ["blind"] },
       /only/,
     ],
     ["missing removal key", "remove_from_cart", {}, /lineKey must be/],
@@ -647,7 +701,7 @@ test("live Shopify tools are unavailable in the local preview and on unconfigure
         url: `http://${hostname}:5173${productOne}`,
       });
       for (const [name, input] of [
-        ["search_products", { query: "blind" }],
+        ["search_products", { queries: ["blind"] }],
         ["get_product", { id: "123" }],
         ["lookup_catalog", { ids: ["gid://shopify/Product/123"] }],
         ["get_cart", {}],

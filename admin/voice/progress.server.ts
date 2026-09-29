@@ -41,35 +41,17 @@ export function voiceInputProgress(
   input: VoiceQuestionAnswerReceipt,
 ): string | undefined {
   if (input.productChoice) return "The chosen blind's details are being checked; its selection is not yet confirmed.";
-  const answer = (input.answer || input.customerText || "").toLowerCase();
-  const context = `${input.question} ${answer}`.toLowerCase();
   // A quick measurement or fitting answer needs the verified next step, not a
   // generic spoken acknowledgement. A genuinely slow named tool can still
   // provide its own progress status.
-  if (input.question && /\b(measur\w*|width|drop|height|size|units?|recess|frame|handle|bead|fit|fitting)\b/i.test(input.question))
-    return;
-  if (/\b(show me more|more options|browse|explore|different (?:colou?rs?|styles?|blinds?|products?)|another (?:blind|product))\b/.test(answer))
-    return "More product options are being considered for the customer's current preferences; no new matches are verified yet.";
-  if (/\b(measur\w*|width|drop|height|size|units?)\b/.test(context))
-    return "The next step for this window's measurement is being checked against established guidance; no order dimensions are confirmed yet.";
-  if (/\b(recess|frame|handle|bead|fit|fitting)\b/.test(context))
-    return "The chosen blind's fit guidance is being checked for the customer's latest answer; suitability is not yet confirmed.";
-  if (/\b(cart|basket|sample|checkout|order|guarantee|insur\w*)\b/.test(context))
-    return "The customer's basket or order request is being checked with the store; no action is confirmed yet.";
-  if (/\b(blinds?|styles?|colou?r|rooms?|privacy|light|blackout)\b/.test(context))
-    return "Product options are being narrowed around the customer's latest preferences; no matches are verified yet.";
-  return "The customer's latest request is being worked through; no result is confirmed yet.";
+  if (input.measurement) return;
+  return `The advisor is considering the customer's latest input; no research or action result is confirmed yet. ${JSON.stringify({ question: input.question || undefined, answer: input.answer || input.customerText })}`;
 }
 
-/** Context for an immediate Live acknowledgement of a discovery choice. */
-export function voiceDiscoveryProgress(
+/** A clicked choice is explicit input; Live interprets its context without a keyword router. */
+export function voiceAnswerProgress(
   input: VoiceQuestionAnswerReceipt,
 ): string | undefined {
-  if (!input.question || input.productChoice || input.customerText) return;
-  const question = input.question.toLowerCase();
-  if (!/\b(?:what matters most|main priority|most important)\b/.test(question))
-    return;
-  if (!/\b(?:blinds?|shades?|windows?|room|kitchen|bathroom|bedroom)\b/.test(question))
-    return;
-  return `The customer selected ${JSON.stringify(input.answer)} in response to ${JSON.stringify(input.question)}. Product discovery is beginning; no matching products have been verified yet.`;
+  if (!input.question || input.productChoice || input.customerText || input.measurement) return;
+  return voiceInputProgress(input);
 }
