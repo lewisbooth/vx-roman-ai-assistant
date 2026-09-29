@@ -113,7 +113,12 @@ const displayed = (ctx) =>
   [...ctx.container.querySelectorAll(".roman-rich-text")]
     .map((node) => node.textContent)
     .join("");
-const choices = (ctx) => ctx.container.querySelector(".roman-question");
+const choices = (ctx) =>
+  [...ctx.container.querySelectorAll(".roman-question")].find(
+    (node) => !node.closest("[inert]"),
+  ) ?? null;
+const reservedChoices = (ctx) =>
+  ctx.container.querySelector("[data-question-reveal-pending] .roman-question");
 const products = (overrides = {}) => ({
   type: "products",
   version: 1,
@@ -160,6 +165,16 @@ test("carousels and receipts appear while quick answers wait for their text", as
   );
   assert.ok(ctx.container.querySelector(".roman-cart-added"));
   assert.equal(choices(ctx), null);
+  const reserved = reservedChoices(ctx);
+  assert.ok(reserved, "The actual panel reserves its wrapped size during reveal");
+  assert.equal(reserved.closest("li").getAttribute("aria-hidden"), "true");
+  assert.ok(reserved.closest("[inert]"));
+  assert.ok([...reserved.querySelectorAll("button")].every(button => button.disabled));
+  let answers = 0;
+  // Disabled controls must not accept a selection before their reply is readable.
+  reserved.addEventListener("click", () => answers++);
+  reserved.querySelector("button").click();
+  assert.equal(answers, 0);
   ctx.tick(1000);
   assert.equal(
     ctx.container.querySelector(".roman-products"),
@@ -167,6 +182,9 @@ test("carousels and receipts appear while quick answers wait for their text", as
     "The visible carousel keeps its loaded content",
   );
   assert.ok(choices(ctx));
+  assert.equal(choices(ctx), reserved, "Reveal keeps the same panel and layout");
+  assert.equal(choices(ctx).closest("[inert]"), null);
+  assert.equal(choices(ctx).closest("[aria-hidden=true]"), null);
 });
 
 test("an early carousel appears while quick answers wait for final text", async (t) => {
@@ -181,9 +199,12 @@ test("an early carousel appears while quick answers wait for final text", async 
   assert.equal(cards.closest("[hidden]"), null);
   assert.equal(ctx.window.catalogLoads.length, 1);
   assert.equal(choices(ctx), null);
+  const reserved = reservedChoices(ctx);
+  assert.ok(reserved);
   ctx.tick(1000);
   assert.equal(cards.closest("[hidden]"), null);
   assert.equal(choices(ctx), null, "Pending quick answers await final prose");
+  assert.equal(reservedChoices(ctx), reserved);
   ctx.render({
     messages: [
       user(),
@@ -384,6 +405,7 @@ test("a new customer message finishes prior reveal without reviving retired answ
   ctx.render({ messages: [user(), reply, user("next")] });
   assert.equal(displayed(ctx), reply.parts[0].text);
   assert.equal(choices(ctx), null);
+  assert.equal(reservedChoices(ctx), null, "Retired answers leave no reserved gap");
   assert.equal(ctx.timers.size, 0);
 });
 

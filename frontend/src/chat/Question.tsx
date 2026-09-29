@@ -12,6 +12,7 @@ export function Question({
   voice,
   onAnswer,
   currentTurn = false,
+  revealPending = false,
 }: {
   part: QuestionPart;
   active: boolean;
@@ -19,6 +20,8 @@ export function Question({
   voice: boolean;
   onAnswer: (part: QuestionPart, answer: string) => Promise<void>;
   currentTurn?: boolean;
+  /** Reserve the actual wrapped panel without exposing unanswered controls early. */
+  revealPending?: boolean;
 }) {
   const id = useId();
   const text = useRef<HTMLParagraphElement>(null);
@@ -28,6 +31,7 @@ export function Question({
   const [error, setError] = useState<string>();
   const [invalid, setInvalid] = useState(false);
   const [measurementValue, setMeasurementValue] = useState("");
+  const controlsDisabled = disabled || revealPending;
 
   useLayoutEffect(() => {
     if (!active && clicked.current) {
@@ -37,7 +41,7 @@ export function Question({
   }, [active]);
 
   async function answer(value: string) {
-    if (!active || disabled || sending.current) return;
+    if (!active || controlsDisabled || sending.current) return;
     sending.current = true;
     clicked.current = true;
     setPending(true);
@@ -95,7 +99,7 @@ export function Question({
             noValidate
             onSubmit={(event) => {
               event.preventDefault();
-              if (disabled || sending.current) return;
+              if (controlsDisabled || sending.current) return;
               try {
                 void answer(formatMeasurementAnswer(part, measurementValue));
               } catch (cause) {
@@ -119,7 +123,7 @@ export function Question({
                   }
                   required
                   value={measurementValue}
-                  disabled={disabled}
+                  disabled={controlsDisabled}
                   readOnly={pending}
                   aria-invalid={invalid}
                   aria-describedby={
@@ -140,7 +144,7 @@ export function Question({
                   <span aria-hidden="true">{measurement.unit}</span>
                 )}
               </div>
-              <button type="submit" disabled={disabled || pending}>
+              <button type="submit" disabled={controlsDisabled || pending}>
                 Submit
               </button>
             </div>
@@ -152,7 +156,7 @@ export function Question({
             <button
               key={value}
               type="button"
-              disabled={disabled || pending}
+              disabled={controlsDisabled || pending}
               onClick={() => void answer(value)}
             >
               {value}
@@ -179,6 +183,9 @@ export function Question({
       className="roman-message roman-message-assistant"
       data-current-turn={currentTurn ? "true" : undefined}
       data-active-question={active || undefined}
+      data-question-reveal-pending={revealPending || undefined}
+      aria-hidden={revealPending || undefined}
+      {...(revealPending ? { inert: "" } : {})}
     >
       <span className="sr-only">Roman:</span>
       <div className="roman-message-parts">

@@ -85,7 +85,7 @@ export function Timeline({
     >
       {rows.map((row, rowIndex) => {
         if (row.kind === "question") {
-          if (
+          const revealPending =
             row.part.invocationId === activeQuestionId &&
             !row.part.voiceReply &&
             !row.part.measurement &&
@@ -95,9 +95,7 @@ export function Timeline({
                 if (part.type !== "text") return false;
                 const text = reveal.parts.get(part);
                 return text && text.visible < text.prepared.length;
-              }))
-          )
-            return null;
+              }));
           return (
             <Question
               key={row.id}
@@ -107,6 +105,7 @@ export function Timeline({
               voice={voice}
               onAnswer={onAnswer!}
               currentTurn={rowIndex >= lastCustomer}
+              revealPending={revealPending}
             />
           );
         }

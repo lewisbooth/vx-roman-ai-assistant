@@ -866,6 +866,11 @@
     margin: 0 auto;
     text-align: center;
   }
+  /* Keep the real wrapped footprint so revealing answers never moves cards. */
+  [data-question-reveal-pending] {
+    visibility: hidden;
+    pointer-events: none;
+  }
   .roman-question .roman-action-buttons {
     justify-content: center;
   }

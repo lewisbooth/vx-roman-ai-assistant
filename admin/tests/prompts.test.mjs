@@ -244,6 +244,25 @@ test("guide and measurement owners preserve applicability, provenance and effici
   assert.match(kb.measuring, /invalid_measurements/);
 });
 
+test("measuring owns clearance timing and confirmation without losing safety conditions", () => {
+  assert.match(kb.measuring, /Establish any mounting position or upgrade choice that changes the requirement first/);
+  assert.match(kb.measuring, /source-defined threshold, endpoints, units and applicable upgrade condition at the actual clearance check/);
+  assert.match(kb.measuring, /not in an earlier guide introduction or mount-choice question/);
+  assert.match(kb.measuring, /Give each detail once in that reply/);
+  assert.match(kb.measuring, /yes\/no question, or in measurement instructions/);
+  assert.match(kb.measuring, /do not repeat it in message or another field/);
+  assert.match(kb.measuring, /After a clear confirmation.*without restating the threshold/);
+  assert.match(kb.measuring, /Retain the confirmed check for that product\/opening/);
+  assert.match(kb.measuring, /product, mount or option change affects it/);
+  assert.match(kb.measuring, /customer answer becomes uncertain.*customer asks to revisit/);
+  assert.match(kb.measuring, /Resolve insufficient\/unknown space before order dimensions/);
+  assert.match(kb.measuring, /necessary safety clarification takes priority/);
+  assert.doesNotMatch(kb.measuring, /75\s*mm/);
+  for (const channel of [ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION]) {
+    assert.doesNotMatch(channel, /actual clearance check|Retain the confirmed check/);
+  }
+});
+
 test("product replacement and sample continuation retain unfinished intent and consent boundaries", () => {
   assert.match(kb.replacement, /before navigation\/configuration/);
   assert.match(
