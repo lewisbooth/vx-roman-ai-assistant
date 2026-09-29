@@ -29,13 +29,15 @@ Keep new domain rules in the appropriate knowledge module. The stable prompt inc
 
 ### Discovery and complete responses
 
-Before recommending, discovery establishes room, opening/coverage, priorities and a broad colour or pattern preference, one decision per question, reusing supplied context and accepting uncertainty. The current-product entry card remains a separate choice. Category exploration does not select a product, even when only one matching card was shown.
+Before recommending, discovery establishes room, opening/coverage, priorities and a broad colour or pattern preference, one decision per question, reusing supplied context and accepting uncertainty. No-drill is a fitting requirement across construction families, so broad searches target distinct relevant families rather than fitting variants of rollers. The current-product entry card remains a separate choice. Category exploration does not select a product, even when only one matching card was shown.
 
 Normal discovery is two Luna completions: `search_products({queries: [...]})`, then one terminal answer. One to three targeted searches run concurrently **inside one claimed browser operation**, below its single-operation guard. They share a 20-second deadline; cancellation aborts all work, while a failed query retains successful siblings. Results contain query provenance and up to 30 deduplicated candidates. The projected result is limited to 120 KiB within the 128 KiB HTTP envelope; each raw MCP response is limited to 1 MiB. Navigation, configuration and cart changes remain serial.
 
 The terminal `ask_question` or `ask_measurement` carries `message`, `productIds` (zero to ten), and the question/answer or measuring fields. No separate product-presentation model call exists. Missing decision-relevant details may justify one batched lookup; ordinary browsing does not read guides. Final cards must use current-turn catalogue IDs and verified titles. Text, cards and question validate and commit together before publication. Separate persisted card/question records derive unique IDs from the same terminal call; older history remains readable. An invalid terminal response gets one terminal-only correction, never an action replay.
 
 Category examples live in the knowledge base as exploration directions, not claims of store availability. We do not pre-scrape or persist a second catalogue. The targeted batch supplies current store evidence in one round trip. Any future store taxonomy should be small, source-labelled and refreshed independently; it must not replace live product or compatibility evidence.
+
+Response policy keeps research narration private and gives each question one owner. Decisions and source failures use clickable answers; measurement fields request physical distances with an applicable verified method. A missing or mismatched product guide triggers relevant library research in the same reply, without asking the customer for permission. If that also fails, Roman offers supported alternatives instead of a measurement field.
 
 ### Authorization, actions and guide reuse
 

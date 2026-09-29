@@ -102,7 +102,7 @@ export const askMeasurementToolDefinition = {
   type: "function",
   name: "ask_measurement",
   description:
-    "Finish this reply atomically with a message, zero to ten verified product cards, one guide-grounded measurement question and a free-text answer field. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question and the measuring method in instructions. A verified measuring source for productPath is required. Unit is a display hint established by the customer, or null when unknown. Product IDs must come from successful catalog results in this reply. This requests an answer, not a saved dimension or action approval.",
+    "Finish this reply with one physical distance reading (width, drop, depth or clearance), a guide-grounded method and a free-text measurement field, plus message and zero to ten verified product cards. Only for an actual measurement: decisions, yes/no questions, research permission and source failures use ask_question. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question and the measuring method in instructions. An applicable verified measuring source for productPath is required. Unit is a display hint established by the customer, or null when unknown. Product IDs must come from successful catalog results in this reply. This requests an answer, not a saved dimension or action approval.",
   strict: true,
   parameters: {
     type: "object",

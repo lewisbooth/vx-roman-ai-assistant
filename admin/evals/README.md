@@ -15,6 +15,8 @@ The acceptance check requires two completions, one multi-query catalogue operati
 
 The 2026-09-29 flow sample passed all eight cases. Intake used one completion and no catalogue operations (1.05–3.39s); fully specified discovery used two completions and one batch (5.45–5.68s), and privacy-sheer category exploration searched without navigation (3.60–4.01s). These are single synthetic runs per case, not customer-visible latency guarantees or audible voice tests.
 
+Targeted no-drill cases are `--case=no-drill-family-choice` and `--case=no-drill-broad-discovery` with `--flow`. They check clickable family choices without preliminary research, followed by three-family discovery in one batch when broad browsing is requested. Synthetic descriptions explicitly establish a no-drill option; they do not prove frame compatibility. Saved voice output separates the assembled spoken question from the message for review.
+
 The initial 2026-09-29 latency sample, before the expanded discovery intake, produced:
 
 | Reasoning | Channel | Completions / catalogue operations | Server-ready time | Input / cached / reasoning tokens |

@@ -13,6 +13,7 @@ const bundle = await build({
       export * from './admin/prompts/voice.server';
       export { cartToolDefinitions } from './shared/cart-tools';
       export { productGuidesToolDefinition } from './shared/product-guides';
+      export { askMeasurementToolDefinition } from './shared/questions';
     `,
     resolveDir: cwd(),
   },
@@ -46,6 +47,7 @@ const {
   romanVoicePrompt,
   cartToolDefinitions,
   productGuidesToolDefinition,
+  askMeasurementToolDefinition,
 } = module.exports;
 const kb = ROMAN_KNOWLEDGE_MODULES;
 
@@ -167,6 +169,35 @@ test("questions and product selections share a single terminal response owner", 
   assert.match(kb.response, /numeric inputs require source grounding/);
   assert.match(kb.response, /Never offer Finish for now/);
   assert.match(kb.response, /max300.*max80/);
+});
+
+test("response owner distinguishes customer decisions from physical readings", () => {
+  assert.match(kb.response, /ask_question: decisions, yes\/no checks, preferences, pane counts/);
+  assert.match(kb.response, /ask_measurement: one physical distance/);
+  assert.match(kb.response, /permission to research.*guide failure/);
+  assert.match(askMeasurementToolDefinition.description, /physical distance reading/);
+  assert.match(askMeasurementToolDefinition.description, /research permission and source failures use ask_question/);
+  assert.match(kb.response, /do not paraphrase the same question in message/);
+  assert.match(kb.response, /research choices and evidence checks private/);
+  assert.match(kb.response, /Material suitability uncertainty/);
+});
+
+test("discovery distinguishes no-drill fitting from family diversity", () => {
+  assert.match(kb.discovery, /No-drill is a fitting requirement/);
+  for (const family of ["Roman", "pleated/cellular", "Venetian/wooden", "shutter"]) {
+    assert.ok(kb.discovery.includes(family));
+  }
+  assert.match(kb.discovery, /three distinct relevant families in the single batch/);
+  assert.match(kb.discovery, /menu category alone does not prove/);
+  assert.match(kb.discovery, /Omit products whose no-drill option is unverified/);
+});
+
+test("guide owner researches fallback without customer permission and preserves source limits", () => {
+  assert.match(kb.guides, /automatically use discover_guides/);
+  assert.match(kb.guides, /already authorizes this read-only research/);
+  assert.match(kb.guides, /Only after matching guidance is established/);
+  assert.match(kb.guides, /library also has no applicable guidance.*ask_question/);
+  assert.match(kb.guides, /Do not use ask_measurement for this limitation/);
 });
 
 test("guide and measurement owners preserve applicability, provenance and efficient reuse", () => {

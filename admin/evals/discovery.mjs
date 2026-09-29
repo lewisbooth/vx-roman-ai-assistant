@@ -84,6 +84,29 @@ const flowCases = [
     minQueries: 2,
   },
   {
+    name: "no-drill-family-choice",
+    history: [
+      { role: "user", text: "Help me find no-drill blinds for my kitchen. Standard rectangular window, light neutrals; no-drill fitting is the main requirement. I haven't decided what type of blind." },
+      { role: "assistant", text: "Would you prefer plain fabrics or patterns?" },
+      { role: "user", text: "Plain fabrics, please." },
+    ],
+    intake: /style|type|famil|explore|direction/i,
+    familyChoice: true,
+    quietIntake: true,
+    noDrill: true,
+  },
+  {
+    name: "no-drill-broad-discovery",
+    history: [
+      { role: "user", text: "Help me find no-drill blinds for my kitchen. Standard rectangular window, light neutrals; no-drill fitting is the main requirement. I'm open to different blind types." },
+      { role: "assistant", text: "Which blind type would you like to explore?" },
+      { role: "user", text: "Show me everything." },
+    ],
+    minQueries: 3,
+    noDrill: true,
+    query: /no[- ]drill|without drill/i,
+  },
+  {
     name: "category-is-not-a-product-choice",
     history: [
       { role: "user", text: "Kitchen bifold patio doors, one covering for the whole opening. I want privacy while letting daylight in, in soft light neutral colours. I'm open to different blind families." },
@@ -112,11 +135,12 @@ for (const sample of cases.filter(sample => !selectedCase || sample.name === sel
       if (name !== "search_products") throw new Error("Synthetic discovery permits only search_products.");
       await delay(100);
       const queries = input.queries.map((query, group) => {
-        const family = /sheer/i.test(query) ? "Sheer" : /roman/i.test(query) ? "Roman" : /venetian|wood|slats/i.test(query) ? "Venetian" : /pleat|cellular|honeycomb/i.test(query) ? "Cellular" : "Roller";
+        const family = /sheer/i.test(query) ? "Sheer" : /roman/i.test(query) ? "Roman" : /venetian|wood|slats/i.test(query) ? "Venetian" : /pleat|cellular|honeycomb/i.test(query) ? "Cellular" : /shutter/i.test(query) ? "Shutter" : "Roller";
         const productIds = Array.from({length:10}, (_, i) => {
           const id = `gid://shopify/Product/${1000 + group * 100 + i}`;
           const description = family === "Sheer" ? "Light neutral sheer fabric slats designed for patio bifold doors, covering the whole opening with adjustable privacy and daylight." : family === "Venetian" ? "Adjustable slats let customers balance privacy and daylight." : family === "Cellular" ? "Cellular light-filtering fabric softens daylight and provides daytime privacy." : family === "Roman" ? "Soft fabric folds with optional light-filtering or blackout lining for privacy and light control." : "Smooth roller fabric with optional light-filtering or blackout lining for privacy and light control.";
-          products.set(id, { id, title: `Synthetic ${family} Style ${i + 1}`, description: `${description} Available in soft natural textures and a mix of colours.`, url: `${origin}/products/${family.toLowerCase()}-${i}`, priceLabel: `From GBP ${20+i}.00` });
+          const fitting = sample.noDrill ? " A no-drill fitting option is available. Plain cream, white and light oatmeal finishes suit a light neutral kitchen. Frame or recess compatibility must be checked before fitting." : "";
+          products.set(id, { id, title: `Synthetic ${family} Style ${i + 1}`, description: `${description} Available in soft natural textures and a mix of colours.${fitting}`, url: `${origin}/products/${family.toLowerCase()}-${i}`, priceLabel: `From GBP ${20+i}.00` });
           return id;
         });
         return {query,status:"succeeded",productIds};
@@ -131,15 +155,22 @@ for (const sample of cases.filter(sample => !selectedCase || sample.name === sel
     const selected = reply.presentation?.productIds ?? [];
     const families = [...new Set(selected.map(id => products.get(id)?.title.split(" ")[1]))];
     const question = reply.questionPresentation;
+    // Voice text already includes the question once, assembled by the model owner.
+    const message = mode === "voice" && question && reply.text.endsWith(question.question)
+      ? reply.text.slice(0, -question.question.length).trim()
+      : reply.text;
     // Topic checks are deliberately broad; saved synthetic output also needs human review.
+    const familyAnswers = question?.answers.filter(answer => /roller|roman|pleat|cellular|venetian|wood|shutter/i.test(answer)) ?? [];
     const passed = !!question && !question.answers.some(answer => /\s[—–-]\s/.test(answer)) &&
+      (!sample.quietIntake || !message?.trim()) &&
+      (!sample.familyChoice || (familyAnswers.length >= 2 && question.answers.some(answer => /everything|all/i.test(answer)))) &&
       (!sample.notQuestion || !sample.notQuestion.test(question.question)) && (sample.intake
       ? attempts === 1 && operations.length === 0 && selected.length === 0 && sample.intake.test([question.question, ...question.answers].join(" "))
       : attempts === 2 && operations.length === 1 && operations[0].name === "search_products" &&
         operations[0].queries.length >= sample.minQueries && selected.length > 0 && selected.length <= 10 &&
         families.length >= sample.minQueries && (!sample.query || operations[0].queries.every(query => sample.query.test(query))));
     report.push({case:sample.name,effort,mode,passed,operations,cards:selected.length,families,
-      ...(flow ? {message:reply.text,question:question?.question,answers:question?.answers} : {}),metrics:metrics.snapshot()});
+      ...(flow ? {message,question:question?.question,answers:question?.answers} : {}),metrics:metrics.snapshot()});
   } catch (error) {
     report.push({case:sample.name,effort,mode,passed:false,operations,error:error.name,metrics:metrics.snapshot()});
   }
