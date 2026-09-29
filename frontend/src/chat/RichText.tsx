@@ -254,10 +254,28 @@ export const RichText = memo(function RichText({
     visibleCharacters === undefined
       ? content.length
       : Math.max(0, Math.floor(visibleCharacters));
+  const reserving = count < content.length;
+  // The full safe tree sizes the reply once per source update, not per tick.
+  // Keep the visible tree mounted so links retain focus as the reveal finishes.
+  const reserved = useMemo(
+    () => reserving ? revealNodes(content.nodes, content.length, navigation) : null,
+    [content, navigation, reserving],
+  );
 
   return (
-    <div className="roman-rich-text">
-      {revealNodes(content.nodes, count, navigation)}
+    <div className="roman-reply-layout">
+      <div className="roman-rich-text">
+        {revealNodes(content.nodes, count, navigation)}
+      </div>
+      {reserving && (
+        <div
+          className="roman-rich-text roman-reply-reservation"
+          aria-hidden="true"
+          {...{ inert: "" }}
+        >
+          {reserved}
+        </div>
+      )}
     </div>
   );
 });

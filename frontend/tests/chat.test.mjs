@@ -1398,6 +1398,209 @@ test("new messages preserve a reader's scroll position and resume following at t
   );
 });
 
+test("a fresh long text reply follows its beginning through reveal and keeps manual history control", async (t) => {
+  const geometry = { replyTop: 500, height: 1300 };
+  const customer = message("customer", "user", "Help me measure");
+  let rows = [customer];
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation(rows) },
+    beforeImport(window) {
+      const native = window.HTMLElement.prototype.getBoundingClientRect;
+      window.HTMLElement.prototype.getBoundingClientRect = function () {
+        if (this.classList.contains("roman-chat-scroll"))
+          return new window.DOMRect(0, 100, 390, 300);
+        if (this.classList.contains("roman-reply-layout"))
+          return new window.DOMRect(
+            0,
+            100 +
+              geometry.replyTop -
+              this.closest(".roman-chat-scroll").scrollTop,
+            354,
+            480,
+          );
+        return native.call(this);
+      };
+    },
+  });
+  const flow = ctx.container.querySelector(".roman-chat-scroll");
+  Object.defineProperties(flow, {
+    scrollHeight: { get: () => geometry.height },
+    clientHeight: { get: () => 300 },
+  });
+  const reply = message(
+    "reply",
+    "assistant",
+    "Measure the full recess width.",
+    "pending",
+  );
+  rows = [customer, reply];
+  ctx.update({ conversation: engagedConversation(rows) });
+  await until(
+    () => flow.scrollTop === 484,
+    "Fresh text was scrolled out of view",
+  );
+  await until(
+    () => !ctx.container.querySelector(".roman-reply-reservation"),
+    "Text reveal did not finish",
+  );
+  const layout = ctx.container.querySelector(".roman-reply-layout");
+  rows = [customer, { ...reply, status: "complete" }, questionMessage()];
+  geometry.height = 1600;
+  ctx.update({ conversation: engagedConversation(rows) });
+  await until(
+    () => ctx.container.querySelector(".roman-question"),
+    "Final question missing",
+  );
+  assert.equal(ctx.container.querySelector(".roman-reply-layout"), layout);
+  assert.equal(
+    flow.scrollTop,
+    484,
+    "Final controls must not jump past the reply",
+  );
+
+  flow.dispatchEvent(
+    new ctx.window.WheelEvent("wheel", { deltaY: -100, bubbles: true }),
+  );
+  flow.scrollTop = 100;
+  flow.dispatchEvent(new ctx.window.Event("scroll"));
+  ctx.update({ conversation: engagedConversation([...rows]) });
+  await delay(0);
+  assert.equal(flow.scrollTop, 100, "Manual history reading must not be moved");
+  ctx.container.querySelector(".roman-return-current").click();
+  await until(
+    () => flow.scrollTop === 1600,
+    "Return to conversation should resume bottom following after manual reading",
+  );
+
+  rows = [...rows, message("next-customer", "user", "I have measured it")];
+  ctx.update({ conversation: engagedConversation(rows) });
+  await until(
+    () => flow.scrollTop === 1600,
+    "A new customer turn retained the old anchor",
+  );
+  geometry.replyTop = 1400;
+  ctx.update({
+    conversation: engagedConversation([
+      ...rows,
+      message("short-reply", "assistant", "Thanks.", "pending"),
+    ]),
+  });
+  await until(
+    () => flow.scrollTop === 1300,
+    "A short final turn should fit at the bottom",
+  );
+});
+
+for (const compositorFirst of [false, true])
+test(`manual bottom scrolling releases a still-revealing reply anchor when movement is ${compositorFirst ? "before" : "after"} the wheel event`, async (t) => {
+  const customer = message("customer", "user", "Show me styles");
+  const reply = message("reply", "assistant", "Here are several styles to compare. ".repeat(8), "pending");
+  const ctx = await setup(t, {
+    state: { conversation: engagedConversation([customer]) },
+    beforeImport(window) {
+      const native = window.HTMLElement.prototype.getBoundingClientRect;
+      window.HTMLElement.prototype.getBoundingClientRect = function () {
+        if (this.classList.contains("roman-chat-scroll"))
+          return new window.DOMRect(0, 0, 390, 300);
+        if (this.classList.contains("roman-reply-layout"))
+          return new window.DOMRect(0, 500 - this.closest(".roman-chat-scroll").scrollTop, 354, 480);
+        return native.call(this);
+      };
+    },
+  });
+  const flow = ctx.container.querySelector(".roman-chat-scroll");
+  let scrollTop = 0;
+  Object.defineProperties(flow, {
+    scrollHeight: { get: () => 1300 },
+    clientHeight: { get: () => 300 },
+    scrollTop: {
+      get: () => scrollTop,
+      set: (value) => { scrollTop = Math.max(0, Math.min(1000, value)); },
+    },
+  });
+  ctx.update({ conversation: engagedConversation([customer, reply]) });
+  await until(() => flow.scrollTop === 484, "Initial text did not anchor");
+  if (compositorFirst) flow.scrollTop = 1000;
+  flow.dispatchEvent(new ctx.window.WheelEvent("wheel", { deltaY: 600, bubbles: true }));
+  if (!compositorFirst) flow.scrollTop = 1000;
+  flow.dispatchEvent(new ctx.window.Event("scroll"));
+  await delay(80);
+  assert.ok(ctx.container.querySelector(".roman-reply-reservation"));
+  assert.equal(flow.scrollTop, 1000, "A reveal tick must not override manual bottom scrolling");
+  ctx.update({ conversation: engagedConversation([customer, { ...reply }]) });
+  await delay(40);
+  assert.equal(flow.scrollTop, 1000, "A later content callback must not reacquire the released anchor");
+});
+
+for (const resumption of ["voice mode", "voice caption"])
+  test(`${resumption} restores bottom following after a reserved text reply`, async (t) => {
+    const customer = message("customer", "user", "Help me measure");
+    const reply = message(
+      "reply",
+      "assistant",
+      "Measure the full recess width.",
+      "pending",
+    );
+    const ctx = await setup(t, {
+      state: { conversation: engagedConversation([customer]) },
+      beforeImport(window) {
+        const native = window.HTMLElement.prototype.getBoundingClientRect;
+        window.HTMLElement.prototype.getBoundingClientRect = function () {
+          if (this.classList.contains("roman-chat-scroll"))
+            return new window.DOMRect(0, 0, 390, 300);
+          if (this.classList.contains("roman-reply-layout"))
+            return new window.DOMRect(
+              0,
+              500 - this.closest(".roman-chat-scroll").scrollTop,
+              354,
+              480,
+            );
+          return native.call(this);
+        };
+      },
+    });
+    const flow = ctx.container.querySelector(".roman-chat-scroll");
+    Object.defineProperties(flow, {
+      scrollHeight: { get: () => 1300 },
+      clientHeight: { get: () => 300 },
+    });
+    ctx.update({ conversation: engagedConversation([customer, reply]) });
+    await until(() => flow.scrollTop === 484, "Initial text did not anchor");
+    ctx.update(
+      resumption === "voice mode"
+        ? { voice: { status: "active", muted: false, error: null } }
+        : {
+            conversation: engagedConversation([
+              customer,
+              reply,
+              {
+                ...message("spoken", "assistant", ""),
+                parts: [
+                  {
+                    type: "voice",
+                    version: 1,
+                    voiceId: "voice",
+                    text: "Let's continue.",
+                    startMs: 0,
+                    endMs: 1000,
+                  },
+                ],
+              },
+            ]),
+          },
+    );
+    await until(
+      () => flow.scrollTop === 1300,
+      "Voice did not resume bottom following",
+    );
+    await delay(40);
+    assert.equal(
+      flow.scrollTop,
+      1300,
+      "A remaining text reveal must not reclaim voice scrolling",
+    );
+  });
+
 test("mobile manual vertical history scrolling dismisses the focused composer without changing its draft", async (t) => {
   for (const mobile of [true, false]) {
     for (const gesture of ["touch", "wheel"]) {
@@ -3278,7 +3481,7 @@ test("easy answers have one labelled panel below cards and the canonical questio
   );
 });
 
-test("clicking an easy answer submits ordinary customer text once and retires choices after acceptance", async (t) => {
+test("activating a focused easy answer submits ordinary customer text once and retires choices after acceptance", async (t) => {
   const row = questionMessage();
   let release;
   const accepted = new Promise((resolve) => {
@@ -3289,6 +3492,8 @@ test("clicking an easy answer submits ordinary customer text once and retires ch
     onSend: () => accepted,
   });
   const button = ctx.container.querySelector(".roman-question button");
+  button.focus();
+  assert.equal(ctx.container.getRootNode().activeElement, button);
   button.click();
   button.click();
   await until(
@@ -3318,6 +3523,8 @@ test("clicking an easy answer submits ordinary customer text once and retires ch
     ctx.container.getRootNode().activeElement === first.querySelector("p"),
     "Focus should stay on the retired question",
   );
+  assert.equal(first.querySelector("p").tabIndex, -1);
+  assert.equal(first.querySelector("p").style.outline, "none");
   assert.match(
     ctx.container.querySelector(".roman-message-user").textContent,
     /Full blackout/,

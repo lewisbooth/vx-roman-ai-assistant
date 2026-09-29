@@ -125,15 +125,27 @@ test("character reveal preserves rendered Markdown without parsing again on each
   assert.equal(window.romanMarkdownRenders, 1);
   assert.ok(prepared.length < text.length);
   render(text, false, 0, prepared);
-  assert.equal(container.textContent, "");
-  assert.equal(container.querySelector("a, strong, li"), null);
+  const visible = container.querySelector(".roman-rich-text");
+  const reservation = container.querySelector(".roman-reply-reservation");
+  assert.equal(visible.textContent, "");
+  assert.equal(visible.querySelector("a, strong, li"), null);
+  assert.equal(reservation.getAttribute("aria-hidden"), "true");
+  assert.ok(reservation.hasAttribute("inert"));
+  assert.equal(reservation.querySelector("a").textContent, "Store help");
+  assert.equal(reservation.querySelectorAll("li").length, 2);
   for (let count = 1; count <= prepared.length; count++) {
     render(text, false, count, prepared);
-    assert.doesNotMatch(container.textContent, /\*|\[|\/pages\/|`/);
+    assert.doesNotMatch(visible.textContent, /\*|\[|\/pages\/|`/);
     assert.ok(
-      [...container.querySelectorAll("li")].every((node) =>
+      [...visible.querySelectorAll("li")].every((node) =>
         node.textContent.trim(),
       ),
+    );
+    assert.equal(container.querySelector(".roman-rich-text"), visible);
+    assert.equal(
+      container.querySelector(".roman-reply-reservation"),
+      count < prepared.length ? reservation : null,
+      "The same full layout is reserved until reveal finishes",
     );
   }
   assert.equal(
@@ -167,7 +179,7 @@ test("reveal counts Unicode graphemes without splitting emoji modifiers or combi
     [5, "A👩🏽‍🔧e\u0301 Z"],
   ]) {
     render(text, false, count, prepared);
-    assert.equal(container.textContent, expected);
+    assert.equal(container.querySelector(".roman-rich-text").textContent, expected);
   }
   assert.equal(container.querySelector("strong").textContent, "👩🏽‍🔧e\u0301");
 });

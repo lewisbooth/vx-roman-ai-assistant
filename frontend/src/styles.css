@@ -422,7 +422,7 @@
   .roman-message-assistant {
     @apply w-full;
   }
-  .roman-message-assistant :is(.roman-rich-text, .roman-voice-caption),
+  .roman-message-assistant :is(.roman-reply-layout, .roman-voice-caption),
   .roman-message-assistant > .roman-message-parts > .roman-message-text {
     max-width: 780px;
     margin-left: auto;
@@ -443,6 +443,21 @@
 
   .roman-message-text + .roman-message-text {
     margin-top: 12px;
+  }
+
+  .roman-reply-layout {
+    display: grid;
+    min-width: 0;
+  }
+
+  .roman-reply-layout > .roman-rich-text {
+    grid-area: 1 / 1;
+  }
+
+  .roman-reply-reservation {
+    visibility: hidden;
+    pointer-events: none;
+    user-select: none;
   }
 
   .roman-rich-text {

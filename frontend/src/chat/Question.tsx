@@ -25,8 +25,9 @@ export function Question({
 }) {
   const id = useId();
   const text = useRef<HTMLParagraphElement>(null);
+  const panel = useRef<HTMLElement>(null);
   const sending = useRef(false);
-  const clicked = useRef(false);
+  const submittedFocus = useRef<Element | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [invalid, setInvalid] = useState(false);
@@ -34,23 +35,37 @@ export function Question({
   const controlsDisabled = disabled || revealPending;
 
   useLayoutEffect(() => {
-    if (!active && clicked.current) {
-      text.current?.focus({ preventScroll: true });
-      clicked.current = false;
+    if (!active && submittedFocus.current) {
+      const paragraph = text.current;
+      const root = paragraph?.getRootNode() as Document | ShadowRoot | undefined;
+      const focused = root?.activeElement;
+      // Keep a keyboard user's place when the submitted control disappears,
+      // without taking focus back from the composer or another control.
+      if (
+        paragraph &&
+        (!focused ||
+          focused === paragraph.ownerDocument.body ||
+          focused === submittedFocus.current)
+      )
+        paragraph.focus({ preventScroll: true });
+      submittedFocus.current = null;
     }
   }, [active]);
 
   async function answer(value: string) {
     if (!active || controlsDisabled || sending.current) return;
     sending.current = true;
-    clicked.current = true;
+    const root = panel.current?.getRootNode() as Document | ShadowRoot | undefined;
+    const focused = root?.activeElement;
+    submittedFocus.current =
+      focused && panel.current?.contains(focused) ? focused : null;
     setPending(true);
     setError(undefined);
     setInvalid(false);
     try {
       await onAnswer(part, value);
     } catch (cause) {
-      clicked.current = false;
+      submittedFocus.current = null;
       setError(
         cause instanceof Error
           ? cause.message
@@ -70,12 +85,19 @@ export function Question({
   // The active card owns its question. Once answered, leave one plain-text
   // history entry. Voice captions alone own spoken history.
   const transcript = !part.voiceReply && !active && (
-    <p ref={text} id={id} tabIndex={-1} className="roman-message-text">
+    <p
+      ref={text}
+      id={id}
+      tabIndex={-1}
+      className="roman-message-text"
+      style={{ outline: "none" }}
+    >
       {part.question}
     </p>
   );
   const controls = active && (
     <section
+      ref={panel}
       className="roman-action-panel roman-question"
       aria-labelledby={`${id}-prompt`}
       aria-busy={pending}

@@ -110,7 +110,7 @@ const question = (overrides = {}) => ({
   ...overrides,
 });
 const displayed = (ctx) =>
-  [...ctx.container.querySelectorAll(".roman-rich-text")]
+  [...ctx.container.querySelectorAll(".roman-rich-text:not([aria-hidden])")]
     .map((node) => node.textContent)
     .join("");
 const choices = (ctx) =>

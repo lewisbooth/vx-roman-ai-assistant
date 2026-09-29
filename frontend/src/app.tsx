@@ -88,6 +88,10 @@ function Assistant({
   const cart = useCart(navigation, session);
   const cartCount = !cart.error ? cart.cart?.itemCount : undefined;
   const viewport = useRef<HTMLDivElement>(null);
+  const textReplyAnchor = useRef<{
+    element: HTMLElement;
+    released: boolean;
+  } | null>(null);
   const scrollPositions = useRef({ chat: 0, cart: 0, gallery: 0 });
   const following = useRef(true);
   const manualScroll = useRef(false);
@@ -386,13 +390,71 @@ function Assistant({
     const scroll = viewport.current;
     if (view === "chat" && hasCustomerReply && following.current && scroll) {
       manualScroll.current = false;
-      scroll.scrollTop = scroll.scrollHeight;
+      let anchor = textReplyAnchor.current?.element ?? null;
+      if (
+        voiceMode ||
+        !anchor?.isConnected ||
+        !anchor.closest(".roman-message-assistant[data-current-turn]")
+      )
+        anchor = null;
+      if (!voiceMode && !anchor)
+        anchor =
+          scroll
+            .querySelector(
+              ".roman-message-assistant[data-current-turn] .roman-reply-reservation",
+            )
+            ?.closest<HTMLElement>(".roman-reply-layout") ?? null;
+      if (
+        anchor &&
+        [
+          ...scroll.querySelectorAll(
+            ".roman-message-assistant[data-current-turn] .roman-voice-caption",
+          ),
+        ].some(
+          (caption) =>
+            !!(
+              anchor!.compareDocumentPosition(caption) &
+              Node.DOCUMENT_POSITION_FOLLOWING
+            ),
+        )
+      )
+        anchor = null;
+      // Keep the start of a fresh text reply in view, even after its reserved
+      // space becomes visible. Voice captions and the next customer turn resume
+      // ordinary bottom following; manual history reading never enters here.
+      textReplyAnchor.current = anchor
+        ? textReplyAnchor.current?.element === anchor
+          ? textReplyAnchor.current
+          : { element: anchor, released: false }
+        : null;
+      const bounds = !textReplyAnchor.current?.released
+        ? anchor?.getBoundingClientRect()
+        : undefined;
+      scroll.scrollTop = bounds?.height
+        ? Math.min(
+            Math.max(0, scroll.scrollHeight - scroll.clientHeight),
+            Math.max(
+              0,
+              scroll.scrollTop +
+                bounds.top -
+                scroll.getBoundingClientRect().top -
+                16,
+            ),
+          )
+        : scroll.scrollHeight;
     }
-  }, [hasCustomerReply, view]);
+  }, [hasCustomerReply, view, voiceMode]);
 
-  function markManualScroll(scroll: HTMLDivElement) {
+  function markManualScroll(
+    scroll: HTMLDivElement,
+    releaseTextAnchor = false,
+  ) {
     manualScroll.current = true;
     manualScrollTop.current = scroll.scrollTop;
+    // Passive input can arrive after compositor scrolling. Release on explicit
+    // vertical intent; a later scroll-position comparison is not reliable here.
+    if (releaseTextAnchor && textReplyAnchor.current)
+      textReplyAnchor.current.released = true;
   }
 
   useLayoutEffect(() => {
@@ -469,7 +531,7 @@ function Assistant({
                 }
                 onWheel={(event) => {
                   if (Math.abs(event.deltaY) > Math.abs(event.deltaX))
-                    markManualScroll(event.currentTarget);
+                    markManualScroll(event.currentTarget, true);
                 }}
                 onTouchStart={(event) => {
                   const touch = event.touches.length === 1 && event.touches[0];
@@ -484,7 +546,7 @@ function Assistant({
                   if (!start || !touch || touch.identifier !== start.id) return;
                   const x = Math.abs(touch.clientX - start.x);
                   const y = Math.abs(touch.clientY - start.y);
-                  if (y >= 8 && y > x) markManualScroll(event.currentTarget);
+                  if (y >= 8 && y > x) markManualScroll(event.currentTarget, true);
                 }}
                 onTouchEnd={() => {
                   scrollTouch.current = undefined;
@@ -512,14 +574,18 @@ function Assistant({
                       " ",
                     ].includes(event.key)
                   )
-                    markManualScroll(event.currentTarget);
+                    markManualScroll(event.currentTarget, true);
                 }}
                 onScroll={(event) => {
                   const scroll = event.currentTarget;
-                  if (
+                  const movedManually =
                     event.target === scroll &&
                     manualScroll.current &&
-                    scroll.scrollTop !== manualScrollTop.current &&
+                    scroll.scrollTop !== manualScrollTop.current;
+                  if (movedManually && textReplyAnchor.current)
+                    textReplyAnchor.current.released = true;
+                  if (
+                    movedManually &&
                     window.matchMedia?.("(max-width: 1023px)").matches
                   ) {
                     const active = (scroll.getRootNode() as Document | ShadowRoot)

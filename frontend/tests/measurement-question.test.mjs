@@ -237,6 +237,69 @@ test("decimal submission uses the canonical answer and locks repeated submission
   assert.equal(ctx.calls.length, 1);
 });
 
+for (const measurement of [true, false])
+  test(`retiring a keyboard-submitted ${measurement ? "measurement" : "quick answer"} keeps focus in the transcript without outlining history`, async (t) => {
+    const ctx = setup(t, {
+      part: measurement
+        ? part
+        : { ...part, measurement: undefined, answers: ["Inside", "Outside"] },
+    });
+    const control = measurement
+      ? ctx.input()
+      : ctx.container.querySelector("button");
+    assert.equal(control.style.outline, "");
+    if (measurement) ctx.fill("20");
+    control.focus();
+    if (measurement) ctx.submit();
+    else ctx.flush(() => control.click());
+    ctx.render({ active: false });
+
+    const history = ctx.container.querySelector(".roman-message-text");
+    assert.equal(ctx.shadow.activeElement, history);
+    assert.equal(history.textContent, part.question);
+    assert.equal(history.tabIndex, -1);
+    assert.equal(history.style.outline, "none");
+    assert.equal(ctx.calls.length, 1);
+    await delay(0);
+  });
+
+for (const destination of ["composer", "another control"])
+  test(`retiring a submitted question does not steal focus back from ${destination}`, async (t) => {
+    let finish;
+    const ctx = setup(t, {
+      onAnswer: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const target =
+      destination === "composer"
+        ? ctx.window.document.createElement("textarea")
+        : ctx.elsewhere;
+    if (destination === "composer") {
+      target.dataset.romanComposer = "";
+      ctx.shadow.append(target);
+    }
+    ctx.fill("20");
+    ctx.input().focus();
+    ctx.submit();
+    target.focus();
+    ctx.render({ active: false });
+    assert.equal(ctx.shadow.activeElement, target);
+    finish();
+    await delay(0);
+    assert.equal(ctx.shadow.activeElement, target);
+  });
+
+test("retiring a question that did not own submission focus leaves focus alone", async (t) => {
+  const ctx = setup(t);
+  ctx.fill("20");
+  ctx.submit();
+  ctx.render({ active: false });
+  assert.equal(ctx.shadow.activeElement, ctx.elsewhere);
+  await delay(0);
+});
+
 test("empty or oversized answers stay editable with an associated error and zero remains valid", async (t) => {
   const ctx = setup(t);
   for (const value of ["", " ", "x".repeat(241)]) {
