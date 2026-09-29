@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import process from "node:process";
 import { test } from "node:test";
+import { setImmediate } from "node:timers";
 import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 
@@ -296,6 +298,8 @@ test("suspended service probes both models with capped backoff and resumes on fa
   assert.deepEqual(app.incidents, ["fallback", "outage", "fallback", "healthy"]);
   assert.equal(app.requests.slice(2).every(([request]) => request.input === "Reply with OK."), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.max_output_tokens === 256), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.reasoning.effort === "medium"), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.service_tier === "fast" && request.store === false), true);
 });
 
 test("a later provider round falls back using prior tool results without replaying the action", async () => {

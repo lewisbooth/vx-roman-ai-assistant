@@ -359,7 +359,7 @@ test("failed PDP read falls back to a discovered library, selected same-kind ori
   assert.match(serializedOutputs, /Angled bay guide/);
   for (const request of state.requests) {
     assert.equal(request.model, "gpt-6-luna");
-    assert.equal(request.reasoning.effort, "low");
+    assert.equal(request.reasoning.effort, "medium");
     assert.equal(request.service_tier, "fast");
     assert.equal(request.store, false);
   }

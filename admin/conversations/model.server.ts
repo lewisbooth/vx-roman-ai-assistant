@@ -272,7 +272,7 @@ export async function generateReply(
   guideReuse?: GuideReuse,
   libraryReuse?: LibraryReuse,
   onToolActivity?: (name: string, active: boolean) => void,
-  reasoningEffort: "low" | "medium" = "low",
+  reasoningEffort: "low" | "medium" = "medium",
 ): Promise<ModelReply> {
   const trackTool = async <T>(name: string, action: () => Promise<T>) => {
     onToolActivity?.(name, true);

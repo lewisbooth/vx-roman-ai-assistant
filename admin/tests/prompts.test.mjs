@@ -200,6 +200,21 @@ test("guide owner researches fallback without customer permission and preserves 
   assert.match(kb.guides, /Do not use ask_measurement for this limitation/);
 });
 
+test("discovery retains the goal through refinements and filters before balancing families", () => {
+  assert.match(kb.discovery, /category answer changes only the category/);
+  assert.match(kb.discovery, /room, opening\/coverage, required fitting, main needs and aesthetic/);
+  assert.match(kb.discovery, /Change a settled requirement only when the customer changes it/);
+  assert.match(kb.discovery, /both in each search query and when judging its results/);
+  assert.match(kb.discovery, /Exclude contradicted requirements and unresolved required features/);
+  assert.match(kb.discovery, /unless its evidence also supports that opening/);
+  assert.match(kb.discovery, /Cordless does not establish no-drill/);
+  assert.match(kb.discovery, /Recommend only eligible products in both prose and cards/);
+  assert.match(kb.discovery, /Eligibility comes before family variety or card count/);
+  assert.match(kb.discovery, /If none qualify, productIds must be empty/);
+  assert.match(kb.discovery, /without silently relaxing requirements/);
+  assert.match(kb.discovery, /do not show those alternative cards alongside the permission question/);
+});
+
 test("guide and measurement owners preserve applicability, provenance and efficient reuse", () => {
   assert.match(kb.guides, /valid server prior-read provenance/);
   assert.match(kb.guides, /positively applicable evidence/);

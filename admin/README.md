@@ -12,7 +12,7 @@ Prisma's `Session` model stores Shopify authentication. Separate `Conversation` 
 
 ## Text conversations
 
-The same backend advisor serves text and voice briefings through the Responses API: `gpt-6-luna`, Fast tier, low reasoning and `store: false`. The database owns conversation history; provider conversation IDs are not used. Keep `OPENAI_API_KEY` in the private root `.env`; recreate Docker after environment changes.
+The same backend advisor serves text and voice briefings through the Responses API: `gpt-6-luna`, Fast tier, medium reasoning and `store: false`. The database owns conversation history; provider conversation IDs are not used. Keep `OPENAI_API_KEY` in the private root `.env`; recreate Docker after environment changes.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -29,7 +29,7 @@ Keep new domain rules in the appropriate knowledge module. The stable prompt inc
 
 ### Discovery and complete responses
 
-Before recommending, discovery establishes room, opening/coverage, priorities and a broad colour or pattern preference, one decision per question, reusing supplied context and accepting uncertainty. No-drill is a fitting requirement across construction families, so broad searches target distinct relevant families rather than fitting variants of rollers. The current-product entry card remains a separate choice. Category exploration does not select a product, even when only one matching card was shown.
+Before recommending, discovery establishes room, opening/coverage, priorities and a broad colour or pattern preference, one decision per question, reusing supplied context and accepting uncertainty. Category refinements retain the goal's other requirements in both searches and recommendations until the customer changes them. Product eligibility takes priority over family variety or card count; unknown required features and contradictory opening restrictions exclude recommendations in prose as well as cards. No-drill is a fitting requirement across construction families, so broad searches target distinct relevant families rather than fitting variants of rollers. The current-product entry card remains a separate choice. Category exploration does not select a product, even when only one matching card was shown.
 
 Normal discovery is two Luna completions: `search_products({queries: [...]})`, then one terminal answer. One to three targeted searches run concurrently **inside one claimed browser operation**, below its single-operation guard. They share a 20-second deadline; cancellation aborts all work, while a failed query retains successful siblings. Results contain query provenance and up to 30 deduplicated candidates. The projected result is limited to 120 KiB within the 128 KiB HTTP envelope; each raw MCP response is limited to 1 MiB. Navigation, configuration and cart changes remain serial.
 
@@ -57,7 +57,7 @@ Provider availability failures retry that round on `gpt-5.6-luna` without replay
 
 ### Latency verification
 
-`[Roman] Advisor turn metrics.` logs completion count, provider time, prompt/cache/reasoning tokens, tool durations, and time until cards or a voice briefing are committed. These are server-ready times, not browser paint or audible speech. [The controlled evaluation](evals/README.md) compares medium and low reasoning using synthetic catalogue data and no storefront actions. Low is the current demo default for speed testing; continue checking judgment in real measuring and configuration flows.
+`[Roman] Advisor turn metrics.` logs completion count, provider time, prompt/cache/reasoning tokens, tool durations, and time until cards or a voice briefing are committed. These are server-ready times, not browser paint or audible speech. [The controlled evaluation](evals/README.md) compares medium and low reasoning using synthetic catalogue data and no storefront actions. Medium is the advisor default; low remains an explicit evaluation override for speed comparisons.
 
 ## Voice conversations
 
