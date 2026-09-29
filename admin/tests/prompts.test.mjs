@@ -306,6 +306,7 @@ test("Live shares identity and notation but delegates instead of copying the kno
   assert.match(live, /backend/i);
   assert.match(live, /verified briefing/);
   assert.match(live, /progress update/);
+  assert.match(live, /first person/);
   assert.match(live, /safety-critical/);
   assert.match(romanVoicePrompt("willow"), /Irish English/);
   assert.doesNotMatch(live, /Irish English/);

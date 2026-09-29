@@ -465,7 +465,7 @@ for (const sample of samples) {
     );
     if (currentProductFixture) {
       failures.push(
-        ...gradeCurrentProductReply(sample, currentProductFixture, reply),
+        ...gradeCurrentProductReply(sample, currentProductFixture, reply, mode),
       );
     } else if (sample.fixtureProducts) {
       check(attempts === 2, "Discovery must use two completions");

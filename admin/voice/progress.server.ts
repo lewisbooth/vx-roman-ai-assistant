@@ -45,7 +45,7 @@ export function voiceInputProgress(
   // generic spoken acknowledgement. A genuinely slow named tool can still
   // provide its own progress status.
   if (input.measurement) return;
-  return `The advisor is considering the customer's latest input; no research or action result is confirmed yet. ${JSON.stringify({ question: input.question || undefined, answer: input.answer || input.customerText })}`;
+  return `Pending customer request; no research or action result is confirmed yet. ${JSON.stringify({ question: input.question || undefined, answer: input.answer || input.customerText })}`;
 }
 
 /** A clicked choice is explicit input; Live interprets its context without a keyword router. */

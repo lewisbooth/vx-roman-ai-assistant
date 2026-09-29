@@ -42,7 +42,7 @@ function productActions() {
   return {
     text: "",
     questionPresentation: {
-      question: "What would you like to do with this blind?",
+      question: "Would you like help measuring, exploring options or ordering a sample?",
       answers: ["Help me measure", "Explore its options", "Add sample to cart"],
     },
   };
@@ -137,6 +137,19 @@ test("all acceptance forms require exact navigation even on the already loaded b
       gradeCurrentProductReply(sample, fixture, productActions()),
       [],
     );
+    const spoken = productActions();
+    spoken.text = spoken.questionPresentation.question;
+    assert.deepEqual(gradeCurrentProductReply(sample, fixture, spoken, "voice"), []);
+    spoken.text = `You can order a sample. ${spoken.text}`;
+    assert.ok(gradeCurrentProductReply(sample, fixture, spoken, "voice").some(
+      (failure) => /separate sample announcement/.test(failure),
+    ));
+    const sampleOnly = productActions();
+    sampleOnly.text = "You can order a sample.";
+    sampleOnly.questionPresentation.question = "What would you like to do next?";
+    const sampleOnlyFailures = gradeCurrentProductReply(sample, fixture, sampleOnly);
+    assert.ok(sampleOnlyFailures.some((failure) => /include measuring and options/.test(failure)));
+    assert.ok(sampleOnlyFailures.some((failure) => /separate sample announcement/.test(failure)));
     const restarted = productActions();
     restarted.questionPresentation.question = "Which room are the blinds for?";
     assert.ok(

@@ -1316,7 +1316,7 @@ test("one UI progress cue uses an active tool but survives earlier short tools",
         null,
         toolActiveAtDeadline
           ? "The current store range is being searched for the customer's latest requirements; matches are not yet verified."
-          : `The advisor is considering the customer's latest input; no research or action result is confirmed yet. {"answer":"Show me more."}`,
+          : `Pending customer request; no research or action result is confirmed yet. {"answer":"Show me more."}`,
       ],
     ]);
     await state.stop();

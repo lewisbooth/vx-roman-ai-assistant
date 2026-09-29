@@ -5,13 +5,16 @@
 ```powershell
 node admin/evals/configuration.mjs --live --max-requests=40
 node admin/evals/configuration.mjs --live --case=motorization-reveals-remote --max-requests=12
+node admin/evals/configuration.mjs --live --case=accepted-guarantee-motor-update,accepted-guarantee-no-remote-update,guide-continuation-after-mount --max-requests=24
 ```
 
 These billable Medium-reasoning samples use the current backend model in text and voice briefing modes, with synthetic history and native configuration. There is no browser, storefront mutation or database write. Each sample has a six-request/60-second limit plus the run-wide request cap. Without `--live`, no provider requests are made. Fixture and grader tests run in `npm test`.
 
-The four cases cover newly enabled remote hardware, an already owned compatible remote, a harmless nested default, and an explicitly requested remote at a disclosed surcharge. They require fresh configuration before and after changes, consent for paid choices, and a relevant next question. Read the saved replies as well as the assertions; these are behavioral samples, not a guarantee of future model output or real theme compatibility. Reports go to ignored `.agents/configuration-evaluation.json`.
+Cases cover newly enabled remote hardware, an already owned compatible remote, a harmless nested default, and an explicitly requested remote at a disclosed surcharge. Concise-update cases retain an accepted guarantee without repeating its settled fee or dimensions; an explicit matching No Remote answer permits verified retention without a redundant write. Guide continuation uses valid prior-read evidence to advance without another PDF attachment or introduction. Checks retain fresh configuration around changes, paid-choice consent and source provenance. Read saved replies as well as assertions; these are behavioral samples, not a guarantee of future output or real theme compatibility. Reports go to ignored `.agents/configuration-evaluation.json`.
 
 On 2026-09-29, all eight corrected text/voice samples passed with four completions each (32 requests): read, change, reread, complete. An earlier 32-request fixture run was inconclusive because it also requested a trim preference unavailable with electric controls; that conflicting instruction and missing prior measurement receipt were corrected before rerunning.
+
+The later concise-reply run initially repeated accepted guarantee details in four option samples. After narrowing the reply policy, all four passed on retest (12 requests): motor updates retained the remote decision; No Remote used one fresh read without a redundant write. Both cached-guide samples advanced in one completion without rereading a PDF. Those guide samples ran before the final option-only wording change; a singular/plural grader correction was checked against their saved output without another request. These are backend voice briefings, not audible Live tests.
 
 ## Discovery
 
@@ -33,6 +36,8 @@ The default suite compares Medium and Low reasoning in text and voice briefings.
 Normal discovery should use two completions and one catalogue operation, then return grounded cards and a useful question. Broad discovery checks category coverage. Intake asks one focused question with no catalogue call. Flow cases also cover missing room/opening/priority/aesthetic information, no-drill family choices and category exploration after an earlier suggestion. Synthetic product descriptions include enough evidence to make unnecessary detail or guide calls a failure.
 
 Current-product cases verify the entry card has **This blind / Something else**, acceptance by answer/card/name activates the exact offered product even when its page is already loaded, and decline continues discovery. Acceptance must offer product actions without restarting intake or searching alternatives. A known-ID refresh is permitted when details are needed. Fixture/grader tests run in `npm test`.
+
+Acceptance also checks that the spoken/displayed question names measuring and options rather than hiding them behind a generic question or promoting only a sample. The 2026-09-29 follow-up retest passed both This blind channels in two completions each after clarifying that handoff. Voice grading excludes the question appended by the backend; its saved output was regraded without another provider call. Other acceptance forms were not rerun for this wording-only change.
 
 The adversarial category cases preserve a living-room request for a standard window, no-drill fitting, daytime privacy and pattern/texture through the short follow-up "Pleated blind":
 

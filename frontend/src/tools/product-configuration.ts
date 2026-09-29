@@ -400,7 +400,7 @@ export function createProductConfigurationTools() {
           configuredPrice: current.configuredPrice,
           actions,
           message:
-            "These are supported native product choices. Unavailable choices need the theme's required steps. A measurement guarantee needs the customer's explicit yes or no; its charge is separate from configuredPrice. Measurements and purchases use separate tools.",
+            "These are supported native product choices, measurements and current configured price. Unavailable choices need the theme's required steps.",
         });
       } catch {
         snapshot = null;

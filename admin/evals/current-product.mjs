@@ -168,7 +168,7 @@ export function createCurrentProductFixture(sample) {
 }
 
 /** Semantic checks complement saved-output review; no exact generated question is required. */
-export function gradeCurrentProductReply(sample, fixture, reply) {
+export function gradeCurrentProductReply(sample, fixture, reply, mode = "text") {
   const failures = [...fixture.violations];
   const check = (condition, reason) => {
     if (!condition) failures.push(reason);
@@ -176,6 +176,10 @@ export function gradeCurrentProductReply(sample, fixture, reply) {
   const selected = reply.presentation?.productIds ?? [];
   const question = reply.questionPresentation;
   const answers = question?.answers ?? [];
+  // Voice briefings append the displayed question; it is not a separate message.
+  const message = mode === "voice" && question && reply.text.endsWith(question.question)
+    ? reply.text.slice(0, -question.question.length).trim()
+    : reply.text;
   const navigations = fixture.operations.filter(
     ({ name }) => name === "navigate",
   );
@@ -218,6 +222,15 @@ export function gradeCurrentProductReply(sample, fixture, reply) {
       answers.some((answer) => /measur/i.test(answer)) &&
         answers.some((answer) => /sample|configur|option/i.test(answer)),
       "Selection did not continue with useful actions for the chosen product.",
+    );
+    check(
+      /measur/i.test(question?.question ?? "") &&
+        /configur|option/i.test(question?.question ?? ""),
+      "The spoken/displayed question must include measuring and options, not only a generic next step.",
+    );
+    check(
+      !/sample/i.test(message ?? ""),
+      "Available samples belong with the other next actions, not a separate sample announcement.",
     );
     check(
       !/which room|what room|opening|priorit|colou?r|pattern|type of (?:blind|window)/i.test(

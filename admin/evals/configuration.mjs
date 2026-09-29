@@ -43,6 +43,46 @@ const electricOffer = {
   role: "assistant",
   text: "The configured blind is GBP 120.00. Electric Smartview is an available control option at an additional GBP 45.00. Would you like electric controls?",
 };
+const guaranteeTerms =
+  "One same-blind replacement is covered if this blind does not fit. Larger replacement dimensions can cost extra.";
+const acceptedGuaranteeHistory = [
+  {
+    role: "user",
+    text: "I have chosen the Synthetic Ivory Roman blind for my living-room window. My order size is 800 mm wide by 1200 mm drop, Exact fitting. Please enter that size and keep standard lining.",
+  },
+  ...baseHistory.slice(1),
+  {
+    role: "assistant",
+    text: `The configured blind is GBP 120.00. The separate measurement guarantee costs GBP 9.00. ${guaranteeTerms} Would you like that guarantee?`,
+  },
+  {
+    role: "user",
+    text: "Yes, select the measurement guarantee for the separate GBP 9.00 fee on those terms.",
+  },
+  {
+    role: "user",
+    text: `Storefront action: ${JSON.stringify({
+      name: "configure_product",
+      arguments: {
+        productPath,
+        configurationId: "00000000-0000-4000-8000-000000000040",
+        controlId: "c4",
+        optionId: "o1",
+      },
+      outcome: {
+        status: "applied",
+        productPath,
+        message:
+          "The requested measurement guarantee choice is selected and recorded.",
+      },
+      occurredAt: "2026-09-29T09:01:00.000Z",
+    })}`,
+  },
+  {
+    role: "assistant",
+    text: "The measurement guarantee is selected and verified at the separate GBP 9.00 fee. The blind's configured price remains GBP 120.00, excluding that guarantee.",
+  },
+];
 
 export const configurationCases = [
   {
@@ -105,6 +145,68 @@ export const configurationCases = [
     remoteDecision: "resolved",
     initialElectric: true,
   },
+  {
+    name: "accepted-guarantee-motor-update",
+    history: [
+      ...acceptedGuaranteeHistory,
+      electricOffer,
+      {
+        role: "user",
+        text: "Yes, choose Electric Smartview for the extra GBP 45.00.",
+      },
+    ],
+    expectedChange: "electric",
+    remoteDecision: "unresolved",
+    acceptedGuarantee: true,
+    conciseUpdate: true,
+  },
+  {
+    name: "accepted-guarantee-no-remote-update",
+    history: [
+      ...acceptedGuaranteeHistory,
+      electricOffer,
+      {
+        role: "user",
+        text: "Yes, choose Electric Smartview for the extra GBP 45.00.",
+      },
+      {
+        role: "user",
+        text: `Storefront action: ${JSON.stringify({
+          name: "configure_product",
+          arguments: {
+            productPath,
+            configurationId: "00000000-0000-4000-8000-000000000041",
+            controlId: "c0",
+            optionId: "o1",
+          },
+          outcome: {
+            status: "applied",
+            productPath,
+            message:
+              "Electric Smartview is selected and the theme has finished updating.",
+          },
+          occurredAt: "2026-09-29T09:02:00.000Z",
+        })}`,
+      },
+      {
+        role: "assistant",
+        text: "Electric Smartview is selected and verified at a configured price of GBP 165.00. No Remote is currently selected; a compatible 14 Channel Remote Control costs an additional GBP 18.00. Do you need a remote?",
+      },
+      {
+        role: "user",
+        text: "No Remote, please. I already own a compatible 14 Channel Remote Control for this system.",
+      },
+    ],
+    expectedChange: "no_remote",
+    remoteDecision: "resolved",
+    initialElectric: true,
+    acceptedGuarantee: true,
+    conciseUpdate: true,
+  },
+  {
+    name: "guide-continuation-after-mount",
+    guideContinuation: true,
+  },
 ];
 
 function applicationState() {
@@ -124,6 +226,7 @@ function applicationState() {
 
 /** Mutable fixture state models only the two explicit option writes under test. */
 export function createConfigurationFixture(sample) {
+  if (sample.guideContinuation) return createGuideContinuationFixture();
   let electric = !!sample.initialElectric;
   let remote = false;
   let snapshot;
@@ -222,6 +325,24 @@ export function createConfigurationFixture(sample) {
         ],
       },
     ];
+    if (sample.acceptedGuarantee)
+      controls.push({
+        id: "c4",
+        label: "Measurement guarantee",
+        kind: "radio",
+        purpose: "measurement_guarantee",
+        description: guaranteeTerms,
+        options: [
+          { id: "o0", label: "No guarantee", selected: false, available: true },
+          {
+            id: "o1",
+            label: "Add measurement guarantee",
+            selected: true,
+            available: true,
+            priceLabel: "+ GBP 9.00",
+          },
+        ],
+      });
     return {
       status: "available",
       productPath,
@@ -291,7 +412,8 @@ export function createConfigurationFixture(sample) {
       )
         remote = true;
       else if (
-        sample.name === "existing-compatible-remote" &&
+        (sample.name === "existing-compatible-remote" ||
+          sample.expectedChange === "no_remote") &&
         input.controlId === "c1" &&
         input.optionId === "o0" &&
         electric &&
@@ -314,6 +436,8 @@ export function createConfigurationFixture(sample) {
 
 /** Topic/choice checks use fixture meaning, never an exact generated sentence. */
 export function gradeConfigurationReply(sample, fixture, reply) {
+  if (sample.guideContinuation)
+    return gradeGuideContinuationReply(sample, fixture, reply);
   const failures = [...fixture.violations];
   const check = (condition, reason) => {
     if (!condition) failures.push(reason);
@@ -330,24 +454,29 @@ export function gradeConfigurationReply(sample, fixture, reply) {
     ({ name }) => name === "get_product_configuration",
   );
   const expectedControl =
-    sample.expectedChange === "remote"
+    sample.expectedChange === "remote" || sample.expectedChange === "no_remote"
       ? "14 Channel Remote Control"
       : "Control Options";
   const expectedOption =
     sample.expectedChange === "remote"
       ? "14 Channel Remote Control"
-      : "Electric Smartview";
+      : sample.expectedChange === "no_remote"
+        ? "No Remote"
+        : "Electric Smartview";
+  const matchingChanges = changes.filter(
+    (change) =>
+      change.selection?.control === expectedControl &&
+      change.selection?.option === expectedOption &&
+      change.result?.status === "applied",
+  );
+  const unchangedChoice =
+    sample.expectedChange === "no_remote" && changes.length === 0;
   check(
-    changes.filter(
-      (change) =>
-        change.selection?.control === expectedControl &&
-        change.selection?.option === expectedOption &&
-        change.result?.status === "applied",
-    ).length === 1,
+    unchangedChoice || matchingChanges.length === 1,
     "The authorized option was not applied exactly once.",
   );
   check(
-    reads.length >= 2 &&
+    reads.length >= (unchangedChoice ? 1 : 2) &&
       fixture.operations.at(-1)?.name === "get_product_configuration",
     "Missing fresh configuration read after the option change.",
   );
@@ -361,6 +490,47 @@ export function gradeConfigurationReply(sample, fixture, reply) {
   );
   const final = reads.at(-1)?.result;
   const dependent = final?.controls.find(({ id }) => id === "c1");
+  if (sample.conciseUpdate) {
+    check(
+      /\b165(?:\.00)?\b/.test(reply.text),
+      "The current base configured price is missing from the update.",
+    );
+    check(
+      sample.expectedChange === "electric"
+        ? /electric|smartview|motori[sz]/i.test(reply.text)
+        : /no remote|without (?:a |another )?remote|remote.*(?:omitted|removed|excluded|off)/i.test(
+            reply.text,
+          ),
+      "The reply does not identify the current option outcome.",
+    );
+    check(
+      !/\b(?:800|1[ ,]?200)(?:\s*mm)?\b/i.test(allText),
+      "The option update repeats unchanged measurements.",
+    );
+    check(
+      !/guarantee|insurance|replacement|\bcover(?:age)?\b|(?:GBP|£)\s*9(?:\.00)?\b/i.test(
+        allText,
+      ),
+      "The option update repeats or reopens the unchanged accepted guarantee.",
+    );
+    check(
+      !/\b174(?:\.00)?\b/.test(allText),
+      "The update incorrectly combines the base price and separate guarantee fee.",
+    );
+    if (unchangedChoice)
+      check(
+        !/(?:changed|switched|removed|applied|updated)\b.{0,35}\bremote|\bremote\b.{0,20}\b(?:removed|changed|switched)|\bprice\b.{0,20}\b(?:changed|increased|decreased|reduced)|\b(?:increased|decreased|reduced)\b.{0,20}\bprice/i.test(
+          reply.text,
+        ),
+        "The reply claims a configuration or price change although the matching choice was retained.",
+      );
+    check(
+      final?.controls
+        .find(({ purpose }) => purpose === "measurement_guarantee")
+        ?.options.find(({ selected }) => selected)?.priceLabel === "+ GBP 9.00",
+      "The previously accepted guarantee changed during an unrelated option update.",
+    );
+  }
   check(
     dependent?.parent?.controlId === "c0" &&
       dependent?.parent?.optionId === "o1" &&
@@ -423,6 +593,205 @@ export function gradeConfigurationReply(sample, fixture, reply) {
       );
     }
   }
+  return failures;
+}
+
+export function createGuideContinuationFixture() {
+  const title = "Synthetic Ivory Roman blind";
+  const operations = [],
+    violations = [];
+  const sourceCallId = "previous-verified-measuring-read";
+  const widthMethod =
+    "Measure horizontally across the recess at the top, middle and bottom. Use the smallest width without making deductions.";
+  const snapshot = {
+    status: "available",
+    productPath,
+    configurationId: "dd05642c-15ba-4734-b5aa-2677b61c2130",
+    controls: [
+      {
+        id: "c0",
+        label: "Fitting",
+        kind: "radio",
+        options: [
+          { id: "o0", label: "Recess", selected: true, available: true },
+          { id: "o1", label: "Exact", selected: false, available: true },
+        ],
+      },
+    ],
+    measurements: {
+      unit: "mm",
+      width: null,
+      height: null,
+      availableUnits: ["mm"],
+      entry: "single_pair",
+      constraints: [
+        {
+          unit: "mm",
+          width: { kind: "number", min: 300, max: 2000, step: 1, stepBase: 0 },
+          height: { kind: "number", min: 300, max: 2500, step: 1, stepBase: 0 },
+        },
+      ],
+    },
+    actions: { sampleAvailable: true },
+    configuredPrice: null,
+    message:
+      "Supported native configuration; dimensions have not been entered.",
+  };
+  const question = {
+    question: "Will this blind fit inside the recess or outside it?",
+    answers: ["Inside the recess", "Outside the recess"],
+  };
+  const reject = (reason) => {
+    violations.push(reason);
+    throw new Error(reason);
+  };
+  return {
+    operations,
+    violations,
+    sourceCallId,
+    widthMethod,
+    history: [
+      {
+        role: "user",
+        text: `I've chosen ${title}. Help me measure this single rectangular window in mm. It has no handles or other obstructions; I checked the clear recess depth and it is 100mm.`,
+      },
+      {
+        role: "user",
+        text: `Storefront action: ${JSON.stringify({
+          name: "get_product_configuration",
+          arguments: { productPath },
+          outcome: snapshot,
+          occurredAt: "2026-09-29T09:00:00.000Z",
+        })}`,
+      },
+      {
+        role: "assistant",
+        text: `Let's walk through the measuring guide. This product's original guide supports this unobstructed rectangular window. For recess fitting it requires at least 75mm clear depth, so your checked 100mm meets that requirement. ${widthMethod} Drop is measured vertically at the left, middle and right; use the smallest without deductions. We have not taken width or drop yet.`,
+      },
+      {
+        role: "user",
+        source: "roman_question",
+        text: `Roman question: ${JSON.stringify(question)}`,
+      },
+      { role: "user", text: "Inside the recess" },
+      {
+        role: "user",
+        source: "application_state",
+        text: `Application state: ${JSON.stringify({
+          activeBlind: { path: productPath, title },
+          backgroundPage: { path: productPath, title },
+          pendingQuestion: null,
+        })}`,
+      },
+    ],
+    guideReuse: {
+      // Same cached-receipt contract exercised by conversation-runner.test.mjs.
+      // Its synthetic bytes are intentionally NEVER sent to the provider. The
+      // demand-read guard below fails before createGuideContext/next request.
+      cached: {
+        origin,
+        productPath,
+        pageId: "22222222-2222-4222-8222-222222222222",
+        sourceAssistantId: "33333333-3333-4333-8333-333333333333",
+        sourceCallId,
+        expiresAt: Date.now() + 60_000,
+        kinds: ["measuring"],
+        sources: [
+          {
+            kind: "measuring",
+            url: `${origin}/cdn/shop/files/synthetic-measuring.pdf`,
+          },
+        ],
+        files: [
+          {
+            type: "input_file",
+            detail: "high",
+            filename: "measuring-guide.pdf",
+            file_data:
+              "data:application/pdf;base64,JVBERi0xLjcKc3ludGhldGljLWd1aWRlCiUlRU9G",
+          },
+        ],
+      },
+      read() {
+        reject(
+          "Guide continuation unexpectedly replaced its prior-read evidence.",
+        );
+      },
+      clear() {
+        reject(
+          "Guide continuation unexpectedly invalidated its current source.",
+        );
+      },
+    },
+    onGuideReading(kinds) {
+      // beforeOperation emits undefined for normal tools; only an actual PDF
+      // read emits kinds. Throw before any cached original can enter input.
+      if (kinds?.length)
+        reject(
+          "The established next step unnecessarily reread an original guide.",
+        );
+    },
+    async execute(_callId, name, input) {
+      operations.push({ name, input });
+      if (
+        name !== "get_product_configuration" ||
+        input.productPath !== productPath
+      )
+        reject(
+          "Guide continuation may only refresh the current native configuration.",
+        );
+      if (operations.length > 1)
+        reject("Guide continuation repeated its native configuration read.");
+      return snapshot;
+    },
+  };
+}
+
+export function gradeGuideContinuationReply(sample, fixture, reply) {
+  const failures = [...fixture.violations];
+  const check = (condition, reason) => {
+    if (!condition) failures.push(reason);
+  };
+  const question = reply.questionPresentation;
+  const measurement = question?.measurement;
+  const spokenSuffix = [measurement?.instructions, question?.question]
+    .filter(Boolean)
+    .join(" ");
+  const message =
+    sample.mode === "voice" && reply.text.endsWith(spokenSuffix)
+      ? reply.text.slice(0, -spokenSuffix.length).trim()
+      : reply.text.trim();
+  check(
+    !message,
+    "An established measurement step added another introduction, acknowledgement or recap.",
+  );
+  check(
+    !!measurement &&
+      measurement.productPath === productPath &&
+      /width/i.test(measurement.label),
+    "The mount answer did not continue to the first unresolved width reading.",
+  );
+  check(measurement?.unit === "mm", "The established unit was lost.");
+  const method = measurement?.instructions ?? "";
+  check(
+    /top/i.test(method) &&
+      /middle/i.test(method) &&
+      /bottom/i.test(method) &&
+      /smallest|narrowest|minimum/i.test(method) &&
+      /horizont|across|left.*right/i.test(method) &&
+      /no deductions?\b|without.*deduct|do not.*deduct|don.t.*deduct/i.test(
+        method,
+      ),
+    "The verified width method lost a required position, direction, result choice or allowance rule.",
+  );
+  check(
+    question?.sourceCallId === fixture.sourceCallId,
+    "The next measuring question did not retain its prior-read source.",
+  );
+  check(
+    !reply.presentation?.productIds.length,
+    "Guide continuation introduced product cards.",
+  );
   return failures;
 }
 
@@ -576,8 +945,8 @@ async function liveEvaluation(args) {
         },
         origin,
         undefined,
-        undefined,
-        undefined,
+        fixture.onGuideReading,
+        fixture.guideReuse,
         undefined,
         (name, active) => metrics.activity(name, active),
         "medium",

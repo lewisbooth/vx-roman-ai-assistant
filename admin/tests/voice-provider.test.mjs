@@ -1030,7 +1030,7 @@ test("customer input redirects unfinished speech alongside quiet context without
   );
   assert.match(
     socket.sent[2].content,
-    /backend is handling this customer UI request/,
+    /customer UI request is being handled by the backend/,
   );
   assert.equal(
     socket.sent.filter((event) => event.type === "session.commentary.append")
