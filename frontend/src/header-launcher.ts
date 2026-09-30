@@ -13,8 +13,10 @@ export function attachHeaderLauncher(
   button.ariaLabel = label;
   button.ariaExpanded = "false";
   button.className = "roman-header-button";
-  button.innerHTML = '<span class="roman-header-ask">Ask</span><img alt=Roman>';
-  (button.lastChild as HTMLImageElement).src = wordmarkUrl;
+  const image = document.createElement("img");
+  image.alt = "";
+  image.src = wordmarkUrl;
+  button.append(image);
   button.onclick = onClick;
   shadow.append(style.cloneNode(true), button);
   const sync = () => {

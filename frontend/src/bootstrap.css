@@ -42,9 +42,7 @@
   }
   .roman-header-button {
     --fill: #fff;
-    font-family: DMSansSite, "DM Sans", sans-serif;
     margin-left: 12px;
-    gap: 6px;
     padding: 0 12px 0 16px;
     color: #4e0e0e;
     background:
@@ -59,17 +57,12 @@
         )
         100% 0 / 300% 100% border-box;
     animation: roman-header-shine 3s linear infinite;
-    font-size: 16px;
-    line-height: 1;
     border: 2px solid transparent;
     border-radius: var(--button-radius);
   }
-  .roman-header-ask {
-    font-size: 17.5px;
-    transform: translateY(1px);
-  }
   .roman-header-button img {
-    width: 60px;
+    display: block;
+    width: 96px;
     margin-bottom: 3px;
   }
   .roman-header-button[aria-expanded="true"] {

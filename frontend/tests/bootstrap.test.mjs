@@ -990,9 +990,10 @@ test("the header launcher sits after the search field and controls Roman without
   assert.equal(button.type, "button");
   assert.equal(button.getAttribute("aria-label"), "Roman AI Assistant");
   assert.equal(button.getAttribute("aria-expanded"), "false");
-  assert.equal(button.firstChild.textContent.trim(), "Ask");
-  const logo = button.querySelector('img[alt="Roman"]');
-  assert.equal(logo.alt, "Roman");
+  assert.equal(button.children.length, 1);
+  assert.equal(button.textContent, "");
+  const logo = button.querySelector('img[alt=""]');
+  assert.equal(logo.alt, "");
   assert.match(logo.src, /roman-wordmark\.svg$/);
   assert.equal(ctx.host.shadowRoot.querySelector(".roman-launcher,[data-roman-launcher]"), null);
   button.click();
