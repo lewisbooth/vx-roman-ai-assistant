@@ -65,8 +65,8 @@
     border-radius: var(--button-radius);
   }
   .roman-header-ask {
-    font-size: 18px;
-    transform: translateY(-1px);
+    font-size: 17.5px;
+    transform: translateY(1px);
   }
   .roman-header-button img {
     width: 60px;
