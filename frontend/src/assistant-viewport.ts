@@ -31,20 +31,21 @@ export function createAssistantViewport(host: HTMLElement) {
     const focused = host.shadowRoot?.activeElement;
     const composerFocused =
       focused?.matches("textarea[data-roman-composer]") ?? false;
-    const bottom = height + Math.max(0, viewport?.offsetTop ?? 0);
     const resized = layoutWidth !== window.innerWidth;
     if (compact && composerFocused) editing = true;
     // Capture before Safari starts its keyboard animation. Keep this height
     // through blur until the visible area recovers, not just until focus leaves.
-    if (!compact || resized || !layoutHeight || !editing || bottom >= layoutHeight - 1)
-      layoutHeight = bottom;
-    if (!compact || (!composerFocused && (resized || bottom >= layoutHeight - 1)))
+    // The frame compensates visual-viewport panning separately. Including its
+    // offset here would lift the composer twice or resize the page during pan.
+    if (!compact || resized || !layoutHeight || !editing || height >= layoutHeight - 1)
+      layoutHeight = height;
+    if (!compact || (!composerFocused && (resized || height >= layoutHeight - 1)))
       editing = false;
     layoutWidth = window.innerWidth;
     host.style.setProperty("--roman-layout-height", `${layoutHeight}px`);
     host.style.setProperty(
       "--roman-keyboard-inset",
-      `${compact ? Math.max(0, layoutHeight - bottom) : 0}px`,
+      `${compact ? Math.max(0, layoutHeight - height) : 0}px`,
     );
   };
   const schedule = () => {

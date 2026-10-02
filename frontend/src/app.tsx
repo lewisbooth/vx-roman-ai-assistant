@@ -504,6 +504,8 @@ function Assistant({
           (!state.restoring && welcomeTheme) || undefined
         }
       >
+        <div className="roman-edge-fill roman-edge-fill-top" aria-hidden="true" />
+        <div className="roman-edge-fill roman-edge-fill-bottom" aria-hidden="true" />
         <AssistantHeader
           logoUrl={logoUrl}
           welcomeTheme={welcomeTheme}

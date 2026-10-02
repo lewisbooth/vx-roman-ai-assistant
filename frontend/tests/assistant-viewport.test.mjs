@@ -75,16 +75,16 @@ test("mobile composer keeps page height stable through keyboard resizing, pannin
   assert.equal(ctx.value("visible-height"), "390px", "Dialogs still receive the visible height");
   assert.equal(ctx.value("visible-top"), "72px");
   assert.equal(ctx.value("layout-height"), "844px", "The page does not reflow into the keyboard viewport");
-  assert.equal(ctx.value("keyboard-inset"), "382px");
+  assert.equal(ctx.value("keyboard-inset"), "454px");
   ctx.viewport.offsetTop = 100;
   ctx.event(ctx.viewport, "scroll");
   ctx.flush();
   assert.equal(ctx.value("layout-height"), "844px");
-  assert.equal(ctx.value("keyboard-inset"), "354px", "Composer movement follows the visible bottom, including Safari pan");
+  assert.equal(ctx.value("keyboard-inset"), "454px", "Safari pan repositions the frame without changing the composer's lift within it");
   ctx.composer.blur();
   ctx.flush();
   assert.equal(ctx.value("layout-height"), "844px", "Blur cannot shrink the page while the keyboard is still visible");
-  assert.equal(ctx.value("keyboard-inset"), "354px");
+  assert.equal(ctx.value("keyboard-inset"), "454px");
   ctx.viewport.height = 900;
   ctx.viewport.offsetTop = 0;
   ctx.event(ctx.viewport, "resize");
@@ -95,6 +95,43 @@ test("mobile composer keeps page height stable through keyboard resizing, pannin
   ctx.event(ctx.viewport, "resize");
   ctx.flush();
   assert.equal(ctx.value("layout-height"), "800px", "Ordinary browser resizing resumes once the keyboard has closed");
+});
+
+test("offset-only Safari panning never changes page height, composer lift or keyboard recovery state", (t) => {
+  const ctx = setup(t);
+  ctx.viewport.offsetTop = 72;
+  ctx.owner.setOpen(true);
+  assert.equal(ctx.value("visible-top"), "72px");
+  assert.equal(ctx.value("layout-height"), "844px", "A page pan is not part of its available height");
+  assert.equal(ctx.value("keyboard-inset"), "0px");
+  ctx.composer.focus();
+  ctx.viewport.height = 390;
+  ctx.event(ctx.viewport, "resize");
+  ctx.flush();
+  ctx.composer.blur();
+  ctx.flush();
+  // A large pan must not look like keyboard closure just because offset+height
+  // exceeds the old layout height. No resize event accompanies these changes.
+  for (const offset of [100, 600, 0, 72]) {
+    ctx.viewport.offsetTop = offset;
+    ctx.event(ctx.viewport, "scroll");
+    ctx.flush();
+    assert.equal(ctx.value("visible-top"), `${offset}px`);
+    assert.equal(ctx.value("visible-height"), "390px");
+    assert.equal(ctx.value("layout-height"), "844px");
+    assert.equal(ctx.value("keyboard-inset"), "454px");
+  }
+  ctx.viewport.height = 844;
+  ctx.event(ctx.viewport, "resize");
+  ctx.flush();
+  assert.equal(ctx.value("layout-height"), "844px");
+  assert.equal(ctx.value("keyboard-inset"), "0px");
+  ctx.viewport.offsetTop = 200;
+  ctx.event(ctx.viewport, "scroll");
+  ctx.flush();
+  assert.equal(ctx.value("visible-top"), "200px");
+  assert.equal(ctx.value("layout-height"), "844px", "Ordinary unfocused panning cannot inflate the page either");
+  assert.equal(ctx.value("keyboard-inset"), "0px");
 });
 
 test("focus preserves the last rendered height when an earlier viewport update is still queued", (t) => {
@@ -179,7 +216,7 @@ test("ordinary mobile resizing and non-composer input focus do not freeze page h
   ctx.viewport.offsetTop = 30;
   ctx.event(ctx.viewport, "resize");
   ctx.flush();
-  assert.equal(ctx.value("layout-height"), "420px");
+  assert.equal(ctx.value("layout-height"), "390px");
   assert.equal(ctx.value("keyboard-inset"), "0px");
 });
 
@@ -193,7 +230,7 @@ test("desktop keeps following the visible viewport and never lifts the composer"
   ctx.flush();
   assert.equal(ctx.value("visible-height"), "600px");
   assert.equal(ctx.value("visible-top"), "15px");
-  assert.equal(ctx.value("layout-height"), "615px");
+  assert.equal(ctx.value("layout-height"), "600px");
   assert.equal(ctx.value("keyboard-inset"), "0px");
 });
 

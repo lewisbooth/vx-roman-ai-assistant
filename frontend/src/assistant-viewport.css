@@ -10,14 +10,44 @@
 .roman-close {
   top: calc(var(--roman-visible-top, 0px) + 12px);
 }
+.roman-edge-fill {
+  display: none;
+}
 
 @media (max-width: 1023px) {
-  .roman-frame {
-    top: 0;
-    height: var(--roman-layout-height, 100%);
+  /* Safari caches colours for fullscreen fixed overlays. Short, opaque edge
+     surfaces let its chrome follow the current palette. Both dimensions must
+     exceed WebKit's 10px threshold for direct background-colour sampling. */
+  .roman-edge-fill {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    height: 12px;
+    z-index: 11;
+    background-color: #f7f5ef;
+    pointer-events: none;
   }
-  .roman-close {
-    top: 12px;
+  .roman-chat[data-welcome-theme] .roman-edge-fill {
+    background-color: #4e0e0e;
+  }
+  .roman-edge-fill-top {
+    /* Fill the empty 8px above navigation without covering its border. */
+    top: -4px;
+  }
+  .roman-edge-fill-bottom {
+    /* Leave the composer's keyboard-focus outline unobscured as well. */
+    bottom: -6px;
+  }
+  /* Hidden overflow is still scrollable by focus reveal. These are covers,
+     not scroll regions; only the conversation owns vertical scrolling. */
+  .roman-panel,
+  .roman-chat,
+  .roman-conversation {
+    overflow: clip;
+  }
+  .roman-frame {
+    height: var(--roman-layout-height, 100%);
   }
   .roman-composer {
     transform: translateY(calc(-1 * var(--roman-keyboard-inset, 0px)));
