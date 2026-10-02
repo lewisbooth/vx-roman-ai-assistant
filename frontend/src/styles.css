@@ -66,10 +66,6 @@
     background: #f7f5ef;
     box-shadow: 0 8px 24px #4e0e0e1c;
   }
-  .roman-header-menu img {
-    display: block;
-    margin: 0 auto 16px;
-  }
   .roman-header-menu button {
     display: flex;
     width: 100%;

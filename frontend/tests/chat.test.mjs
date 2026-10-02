@@ -662,6 +662,8 @@ test("the mobile menu retains End chat and dismisses within Shadow DOM without S
     await until(() => !dropdown.hidden, "Mobile menu did not open");
   }
   await openMenu();
+  assert.equal(menu().style.visibility, "visible");
+  assert.equal(dropdown.querySelector("img"), null);
   assert.equal(dropdown.querySelector(".roman-settings-trigger"), null);
   assert.equal(dropdown.querySelectorAll("button").length, 1);
   assert.equal(dropdown.querySelector("button").textContent, "End chat");
@@ -690,10 +692,28 @@ test("the mobile menu retains End chat and dismisses within Shadow DOM without S
   assert.equal(ctx.container.getRootNode().activeElement, menu());
 
   await openMenu();
+  ctx.update({ conversation: null });
+  await until(() => dropdown.hidden, "Clearing the chat did not dismiss its menu");
+  assert.equal(menu().style.visibility, "hidden");
+  assert.equal(menu().disabled, true);
+  // A greeting-only session still shows the empty home screen.
+  ctx.update({ conversation: {
+    ...engagedConversation([]),
+    id: "greeting-only",
+    messages: [message("greeting", "assistant", "Hi! I'm Roman.")],
+  } });
+  await delay(20);
+  assert.equal(menu().style.visibility, "hidden");
+  ctx.update({ conversation: engagedConversation([]) });
+  await until(() => !menu().disabled, "A customer turn did not restore the menu");
+  assert.equal(dropdown.hidden, true, "A fresh conversation reopened the old menu");
+  assert.equal(menu().style.visibility, "visible");
+  await openMenu();
   media.matches = false;
   changes.forEach((listener) => listener());
   await until(() => !menu(), "Desktop header did not replace mobile actions");
   assert.equal(ctx.container.querySelector(".roman-header-menu"), null);
+  assert.ok(ctx.container.querySelector(".roman-header-brand img"));
   assert.equal(ctx.container.querySelector(".roman-end-chat").textContent, "End chat");
   assert.equal(ctx.container.querySelector(".roman-settings-trigger"), null);
   assert.equal(escapedShell, 0);

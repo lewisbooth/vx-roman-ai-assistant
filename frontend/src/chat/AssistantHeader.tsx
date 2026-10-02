@@ -26,6 +26,8 @@ export function AssistantHeader({
     () => window.matchMedia?.("(max-width: 767px)").matches ?? false,
   );
   const [menuOpen, setMenuOpen] = useState(false);
+  const hasMobileActions = hasConversation && !welcomeTheme;
+  const menuVisible = menuOpen && hasMobileActions;
   const header = useRef<HTMLElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -42,15 +44,19 @@ export function AssistantHeader({
     return () => media.removeEventListener("change", update);
   }, []);
 
+  useEffect(() => {
+    if (!hasMobileActions) setMenuOpen(false);
+  }, [hasMobileActions]);
+
   useLayoutEffect(() => {
-    if (menuOpen)
+    if (menuVisible)
       menu.current
         ?.querySelector<HTMLButtonElement>("button:not(:disabled)")
         ?.focus();
-  }, [menuOpen]);
+  }, [menuVisible]);
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuVisible) return;
     const element = header.current!;
     const document = element.ownerDocument;
     const root = element.getRootNode();
@@ -76,10 +82,10 @@ export function AssistantHeader({
       if (root !== document) root.removeEventListener("focusin", outside, true);
       element.removeEventListener("keydown", dismiss);
     };
-  }, [menuOpen]);
+  }, [menuVisible]);
 
   const logo = (
-    <img src={brandLogoUrl(logoUrl, welcomeTheme && !mobile)} alt="Roman by SelectBlinds" width={121} height={50} />
+    <img src={brandLogoUrl(logoUrl, welcomeTheme)} alt="Roman by SelectBlinds" width={121} height={50} />
   );
   const endButton = hasConversation && (
     <button
@@ -111,8 +117,10 @@ export function AssistantHeader({
             ref={toggle}
             type="button"
             className="roman-menu-toggle"
+            style={{ visibility: hasMobileActions ? "visible" : "hidden" }}
+            disabled={!hasMobileActions}
             aria-label="Roman menu"
-            aria-expanded={menuOpen}
+            aria-expanded={menuVisible}
             aria-controls={id}
             onClick={() => setMenuOpen((value) => !value)}
             onKeyDown={(event) => {
@@ -141,9 +149,8 @@ export function AssistantHeader({
             className="roman-header-menu"
             role="group"
             aria-label="Roman actions"
-            hidden={!menuOpen}
+            hidden={!menuVisible}
           >
-            {logo}
             {endButton}
           </div>
         </>

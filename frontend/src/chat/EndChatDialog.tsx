@@ -18,6 +18,8 @@ export function EndChatDialog({
       pending={pending}
       error={error}
       onClose={onCancel}
+      // After clearing, the mobile menu is hidden. Cancel retains native focus restoration.
+      returnFocus='.roman-menu-toggle:disabled ~ .roman-view-nav a[href="/"]'
     >
       <button type="button" disabled={pending} onClick={onCancel}>
         Keep chatting
