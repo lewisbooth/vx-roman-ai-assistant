@@ -59,7 +59,9 @@
   .roman-composer:has(textarea[data-roman-composer]):is(:focus-within, :active) {
     transform: translateY(calc(-1 * var(--roman-keyboard-inset, 0px)));
   }
-  .roman-chat-scroll {
+  /* Mask content only while the bar is raised, not while Safari finishes
+     closing its keyboard. Unmasking is paint-only; scroll geometry stays put. */
+  .roman-dialogue:has(.roman-composer:is(:focus-within, :active) textarea[data-roman-composer]) .roman-chat-scroll {
     clip-path: inset(0 0 var(--roman-keyboard-inset, 0px));
   }
   /* Extend overflow from the content, not its stretched flex parent: short
