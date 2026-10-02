@@ -45,7 +45,7 @@ function setup(t, { visual = true, width = 390 } = {}) {
   const owner = window.AssistantViewport.createAssistantViewport(host);
   t.after(() => owner.dispose());
   return {
-    window, host, composer, measurement, viewport, owner, frames,
+    window, host, shadow, composer, measurement, viewport, owner, frames,
     value: (name) => host.style.getPropertyValue("--roman-" + name),
     event(target, name) {
       target.dispatchEvent(new window.Event(name));
@@ -59,6 +59,245 @@ function setup(t, { visual = true, width = 390 } = {}) {
 }
 
 const properties = ["visible-height", "visible-top", "layout-height", "keyboard-inset"];
+
+function focusSpy(element, onFocus) {
+  const calls = [];
+  const focus = element.focus.bind(element);
+  element.focus = (options) => {
+    calls.push(options);
+    if (onFocus) onFocus(options);
+    else focus(options);
+  };
+  return calls;
+}
+
+function touch(ctx, type, {
+  target = ctx.composer,
+  points = [{ identifier: 1, clientX: 20, clientY: 30 }],
+  remaining,
+  at,
+  cancelable = true,
+  handled = false,
+} = {}) {
+  const event = new ctx.window.Event(type, { bubbles: true, composed: true, cancelable });
+  Object.defineProperties(event, {
+    touches: { value: remaining ?? (type === "touchend" || type === "touchcancel" ? [] : points) },
+    changedTouches: { value: points },
+  });
+  if (at !== undefined) Object.defineProperty(event, "timeStamp", { value: at });
+  if (handled) event.preventDefault();
+  target.dispatchEvent(event);
+  return event;
+}
+
+function blurToward(ctx, target, relatedTarget) {
+  target.dispatchEvent(new ctx.window.FocusEvent("blur", { relatedTarget }));
+}
+
+test("internal shadow focus changes update viewport geometry without waiting for a host event", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  ctx.viewport.height = 800;
+  ctx.event(ctx.viewport, "resize");
+  assert.equal(ctx.frames.size, 1);
+  Object.defineProperty(ctx.shadow, "activeElement", { get: () => ctx.composer });
+  ctx.composer.dispatchEvent(new ctx.window.FocusEvent("focusin", {
+    bubbles: true,
+    composed: false,
+    relatedTarget: ctx.measurement,
+  }));
+  assert.equal(ctx.frames.size, 0, "Internal focus transitions do not escape Shadow DOM to the host");
+  assert.equal(ctx.value("visible-height"), "800px");
+  assert.equal(ctx.value("layout-height"), "844px");
+  assert.equal(ctx.value("keyboard-inset"), "44px");
+});
+
+test("mobile focus transition into the composer uses preventScroll and guards nested blur", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer, () => blurToward(ctx, ctx.measurement, ctx.composer));
+  blurToward(ctx, ctx.measurement, ctx.composer);
+  assert.equal(calls.length, 1, "Calling focus inside blur cannot recurse");
+  assert.equal(calls[0]?.preventScroll, true);
+});
+
+test("the blur guard ignores desktop, disabled, foreign and non-composer destinations", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const composerCalls = focusSpy(ctx.composer, () => {});
+  const measurementCalls = focusSpy(ctx.measurement, () => {});
+  const foreign = ctx.window.document.createElement("textarea");
+  foreign.setAttribute("data-roman-composer", "");
+  ctx.window.document.body.append(foreign);
+  const foreignCalls = focusSpy(foreign, () => {});
+  blurToward(ctx, ctx.composer, ctx.measurement);
+  blurToward(ctx, ctx.measurement, foreign);
+  blurToward(ctx, ctx.measurement, null);
+  ctx.composer.disabled = true;
+  blurToward(ctx, ctx.measurement, ctx.composer);
+  ctx.composer.disabled = false;
+  ctx.window.innerWidth = 1440;
+  blurToward(ctx, ctx.measurement, ctx.composer);
+  assert.equal(composerCalls.length, 0);
+  assert.equal(measurementCalls.length, 0);
+  assert.equal(foreignCalls.length, 0);
+});
+
+test("the first mobile tap focuses the composer without native page scroll, while later caret taps remain native", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer);
+  assert.equal(ctx.window.document.activeElement, ctx.window.document.body);
+  assert.equal(touch(ctx, "touchstart").defaultPrevented, false, "Touch start remains available to native gesture recognition");
+  const end = touch(ctx, "touchend");
+  assert.equal(end.defaultPrevented, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.preventScroll, true);
+  assert.equal(ctx.shadow.activeElement, ctx.composer);
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false, "Caret positioning must stay native once focused");
+  assert.equal(calls.length, 1);
+});
+
+test("a slight tap movement is allowed but scrolling, multitouch, cancellation and context menus cancel focus", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer);
+  const point = (x, y, identifier = 1) => ({ identifier, clientX: x, clientY: y });
+  touch(ctx, "touchstart");
+  touch(ctx, "touchmove", { points: [point(24, 33)] });
+  assert.equal(touch(ctx, "touchend", { points: [point(24, 33)] }).defaultPrevented, true);
+  assert.equal(calls.length, 1);
+  ctx.composer.blur();
+  for (const cancel of [
+    () => touch(ctx, "touchmove", { points: [point(29, 30)] }),
+    () => touch(ctx, "touchmove", { points: [point(20, 39)] }),
+    () => touch(ctx, "touchstart", { points: [point(20, 30), point(21, 31, 2)] }),
+    () => touch(ctx, "touchmove", { points: [point(20, 30), point(21, 31, 2)] }),
+    () => touch(ctx, "touchcancel"),
+    () => ctx.composer.dispatchEvent(new ctx.window.Event("contextmenu", { bubbles: true, composed: true })),
+  ]) {
+    touch(ctx, "touchstart");
+    cancel();
+    assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+    assert.equal(calls.length, 1, "An abandoned touch must not focus or summon the keyboard");
+  }
+});
+
+test("touch fallback requires an unhandled cancelable end on the same enabled mobile composer", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer);
+  const measurementCalls = focusSpy(ctx.measurement);
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false, "An orphaned end is not a tap");
+  touch(ctx, "touchstart");
+  touch(ctx, "touchend", { handled: true });
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend", { cancelable: false }).defaultPrevented, false);
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend", { remaining: [{ identifier: 2, clientX: 20, clientY: 30 }] }).defaultPrevented, false);
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend", { target: ctx.measurement }).defaultPrevented, false);
+  touch(ctx, "touchstart", { target: ctx.measurement });
+  assert.equal(touch(ctx, "touchend", { target: ctx.measurement }).defaultPrevented, false);
+  ctx.composer.disabled = true;
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  ctx.composer.disabled = false;
+  touch(ctx, "touchstart");
+  ctx.composer.disabled = true;
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  ctx.composer.disabled = false;
+  ctx.window.innerWidth = 1440;
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  assert.equal(calls.length, 0);
+  assert.equal(measurementCalls.length, 0);
+});
+
+test("native focus arriving between touchstart and touchend is never overridden", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer);
+  touch(ctx, "touchstart");
+  ctx.composer.focus();
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], undefined, "Only the original native focus request ran");
+});
+
+test("a tap from another Roman control uses the blur guard, without consuming the native touch end", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const button = ctx.shadow.querySelector("button");
+  button.focus();
+  const calls = focusSpy(ctx.composer);
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  assert.equal(calls.length, 0, "The body-only touch fallback must not replace ordinary control transitions");
+  blurToward(ctx, button, ctx.composer);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.preventScroll, true);
+  assert.equal(ctx.shadow.activeElement, ctx.composer);
+});
+
+test("long presses remain native even without a contextmenu event, while short taps can focus", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer);
+  for (const duration of [500, 1500]) {
+    touch(ctx, "touchstart", { at: 1000 });
+    assert.equal(touch(ctx, "touchend", { at: 1000 + duration }).defaultPrevented, false);
+    assert.equal(calls.length, 0);
+  }
+  touch(ctx, "touchstart", { at: 3000 });
+  assert.equal(touch(ctx, "touchend", { at: 3499 }).defaultPrevented, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.preventScroll, true);
+});
+
+test("pinch zoom leaves focus native at blur, touchstart and touchend", (t) => {
+  const ctx = setup(t);
+  ctx.owner.setOpen(true);
+  const calls = focusSpy(ctx.composer);
+  ctx.viewport.scale = 1.5;
+  blurToward(ctx, ctx.measurement, ctx.composer);
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  touch(ctx, "touchstart");
+  ctx.viewport.scale = 1;
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false, "A touch begun during zoom cannot become a guarded tap");
+  touch(ctx, "touchstart");
+  ctx.viewport.scale = 1.5;
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false, "Zoom beginning before release cancels the pending focus");
+  ctx.viewport.scale = 1;
+  touch(ctx, "touchstart");
+  ctx.window.innerWidth = 1440;
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false, "A gesture no longer in compact layout is left native");
+  assert.equal(calls.length, 0);
+});
+
+test("closing clears touch intent and removes focus guards until reopening", (t) => {
+  const ctx = setup(t);
+  const calls = focusSpy(ctx.composer);
+  ctx.owner.setOpen(true);
+  touch(ctx, "touchstart");
+  ctx.owner.setOpen(false);
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  blurToward(ctx, ctx.measurement, ctx.composer);
+  assert.equal(calls.length, 0);
+  ctx.owner.setOpen(true);
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false, "Reopening cannot finish a gesture from the previous opening");
+  touch(ctx, "touchstart");
+  assert.equal(touch(ctx, "touchend").defaultPrevented, true);
+  assert.equal(calls.length, 1);
+  ctx.composer.blur();
+  touch(ctx, "touchstart");
+  ctx.owner.dispose();
+  assert.equal(touch(ctx, "touchend").defaultPrevented, false);
+  blurToward(ctx, ctx.measurement, ctx.composer);
+  assert.equal(calls.length, 1);
+});
 
 test("mobile composer keeps page height stable through keyboard resizing, panning and blur", (t) => {
   const ctx = setup(t);

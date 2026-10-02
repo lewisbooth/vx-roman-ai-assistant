@@ -32,12 +32,12 @@
     background-color: #4e0e0e;
   }
   .roman-edge-fill-top {
-    /* Fill the empty 8px above navigation without covering its border. */
-    top: -4px;
+    /* Safari samples 4px in. Paint only 5px so the badge at 6px stays clear. */
+    top: -7px;
   }
   .roman-edge-fill-bottom {
-    /* Leave the composer's keyboard-focus outline unobscured as well. */
-    bottom: -6px;
+    /* The composer's focus outline reaches 5px from the visible bottom. */
+    bottom: -7px;
   }
   /* Hidden overflow is still scrollable by focus reveal. These are covers,
      not scroll regions; only the conversation owns vertical scrolling. */
