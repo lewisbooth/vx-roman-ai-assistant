@@ -108,7 +108,7 @@ test("closed mode delegates native scrolling and lock cleanup preserves newer th
   assert.equal(body.style.width, "90%", "Reopening snapshots current theme styles");
 });
 
-test("the locked document canvas is ivory and restores the theme background on close or disposal", (t) => {
+test("the locked document surfaces are ivory and restore theme backgrounds on close or disposal", (t) => {
   const { window, owner, body } = setup(t);
   const root = window.document.documentElement;
   root.style.backgroundImage = 'url("/theme-texture.png")';
@@ -116,6 +116,8 @@ test("the locked document canvas is ivory and restores the theme background on c
   root.style.backgroundPosition = "center";
   root.style.backgroundSize = "cover";
   root.style.setProperty("background-color", "navy", "important");
+  body.style.backgroundImage = 'url("/body-texture.png")';
+  body.style.setProperty("background-color", "pink");
   assert.match(root.style.backgroundImage, /theme-texture\.png/);
   assert.equal(root.style.backgroundColor, "navy");
   const properties = [
@@ -125,15 +127,16 @@ test("the locked document canvas is ivory and restores the theme background on c
     "background-position",
     "background-size",
   ];
-  const snapshot = () => properties.map((name) => [
+  const snapshot = () => [root, body].map((element) => properties.map((name) => [
     name,
-    root.style.getPropertyValue(name),
-    root.style.getPropertyPriority(name),
-  ]);
+    element.style.getPropertyValue(name),
+    element.style.getPropertyPriority(name),
+  ]));
   const original = snapshot();
   for (const close of [() => owner.setLocked(false), () => owner.dispose()]) {
     owner.setLocked(true);
     assert.equal(window.getComputedStyle(root).backgroundColor, "rgb(247, 245, 239)");
+    assert.equal(window.getComputedStyle(body).backgroundColor, "rgb(247, 245, 239)");
     assert.equal(root.style.backgroundImage, "none");
     assert.equal(root.style.getPropertyPriority("background-color"), "important");
     assert.equal(root.style.getPropertyPriority("background-image"), "important");
@@ -143,6 +146,63 @@ test("the locked document canvas is ivory and restores the theme background on c
     close();
     assert.deepEqual(snapshot(), original);
   }
+});
+
+test("welcome, shopping views and first replies update the canvas without unlocking the document", (t) => {
+  const { window, owner, body, calls } = setup(t);
+  const root = window.document.documentElement;
+  const head = window.document.head;
+  owner.setTheme(true);
+  assert.equal(root.style.backgroundColor, "", "Closed state does not repaint the storefront");
+  assert.equal(head.querySelector('meta[name="theme-color"]'), null);
+  owner.setLocked(true);
+  const originalPosition = [...owner.getPosition()];
+  const hint = head.querySelector('meta[name="theme-color"]');
+  assert(hint);
+
+  // Empty Chat -> Cart -> empty Chat -> customer reply -> End Chat.
+  for (const welcome of [true, false, true, false, true]) {
+    owner.setTheme(welcome);
+    const color = welcome ? "rgb(78, 14, 14)" : "rgb(247, 245, 239)";
+    assert.equal(window.getComputedStyle(root).backgroundColor, color);
+    assert.equal(window.getComputedStyle(body).backgroundColor, color);
+    assert.equal(root.style.backgroundImage, "none");
+    assert.equal(body.style.backgroundImage, "none");
+    assert.equal(hint.content, welcome ? "#4e0e0e" : "#f7f5ef");
+    assert.equal(head.querySelectorAll('meta[name="theme-color"]').length, 1);
+    assert.equal(body.style.position, "fixed");
+    assert.deepEqual([...owner.getPosition()], originalPosition);
+    assert.equal(calls.length, 0);
+  }
+  owner.setLocked(false);
+  assert.equal(root.style.backgroundColor, "");
+  assert.equal(body.style.backgroundColor, "");
+  assert.equal(hint.isConnected, false);
+  assert.deepEqual(calls, [originalPosition]);
+
+  owner.setTheme(false);
+  assert.equal(root.style.backgroundColor, "", "Closed updates stay private until reopening");
+  owner.setLocked(true);
+  assert.equal(window.getComputedStyle(body).backgroundColor, "rgb(247, 245, 239)");
+});
+
+test("browser chrome override preserves existing media-specific theme colours and later theme edits", (t) => {
+  const { window, owner } = setup(t);
+  const head = window.document.head;
+  head.innerHTML = '<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">';
+  const original = [...head.children];
+  const originalHtml = original.map((element) => element.outerHTML);
+  owner.setTheme(true);
+  owner.setLocked(true);
+  assert.equal(head.firstElementChild.content, "#4e0e0e");
+  assert.deepEqual(original.map((element) => element.outerHTML), originalHtml);
+  owner.setTheme(false);
+  assert.equal(head.firstElementChild.content, "#f7f5ef");
+  original[0].content = "#eeeeee";
+  owner.dispose();
+  assert.deepEqual([...head.children], original);
+  assert.equal(original[0].content, "#eeeeee");
+  assert.equal(original[1].outerHTML, originalHtml[1]);
 });
 
 test("canvas cleanup preserves newer theme edits and removes only owned inline overrides", (t) => {

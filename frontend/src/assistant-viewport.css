@@ -1,5 +1,5 @@
-/* The shell covers the layout viewport even when the OS keyboard resizes or
-   pans the visual viewport. Only the inner app follows its available height. */
+/* The opaque shell always covers the layout viewport. Dialogs use the visible
+   viewport; mobile typing keeps the page's geometry and moves only its bar. */
 .roman-panel {
   height: 100%;
 }
@@ -9,6 +9,51 @@
 }
 .roman-close {
   top: calc(var(--roman-visible-top, 0px) + 12px);
+}
+
+@media (max-width: 1023px) {
+  .roman-frame {
+    top: 0;
+    height: var(--roman-layout-height, 100%);
+  }
+  .roman-close {
+    top: 12px;
+  }
+  .roman-composer {
+    transform: translateY(calc(-1 * var(--roman-keyboard-inset, 0px)));
+    z-index: 2;
+  }
+  .roman-chat-scroll {
+    clip-path: inset(0 0 var(--roman-keyboard-inset, 0px));
+  }
+  /* Extend overflow from the content, not its stretched flex parent: short
+     conversations must not scroll into a blank gap above the raised bar. */
+  .roman-chat-scroll :is(
+    .roman-timeline,
+    .roman-welcome,
+    .roman-cart-stage,
+    .roman-gallery,
+    .roman-chat-restoring,
+    .roman-reply-activity
+  ) {
+    position: relative;
+  }
+  .roman-chat-scroll :is(
+    .roman-timeline,
+    .roman-welcome,
+    .roman-cart-stage,
+    .roman-gallery,
+    .roman-chat-restoring,
+    .roman-reply-activity
+  )::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    width: 1px;
+    height: var(--roman-keyboard-inset, 0px);
+    overflow-anchor: none;
+    pointer-events: none;
+  }
 }
 
 .roman-dialog {

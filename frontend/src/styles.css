@@ -1458,7 +1458,7 @@
     }
     .roman-dialogue:has(textarea[data-roman-composer]:focus)
       [data-active-question] {
-      display: none;
+      visibility: hidden;
     }
     .roman-action-panel {
       padding: 14px;

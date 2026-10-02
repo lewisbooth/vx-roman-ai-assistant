@@ -16,6 +16,8 @@ export const nativeStorefrontScroll: StorefrontScroll = {
 export function createStorefrontScroll() {
   let position: [number, number] | undefined;
   let body: HTMLElement | undefined;
+  let welcome = false;
+  let themeColor: HTMLMetaElement | undefined;
   const styles = new Map<
     CSSStyleDeclaration,
     Map<string, { value: string; priority: string; applied: string }>
@@ -50,6 +52,30 @@ export function createStorefrontScroll() {
     write(body, "top", `${-position[1]}px`);
   }
 
+  function paintCanvas() {
+    if (!position) return;
+    const color = welcome ? "#4e0e0e" : "#f7f5ef";
+    // Safari can expose either document surface when its keyboard or browser
+    // chrome changes size. Keep both in sync with Roman's current view.
+    for (const element of [document.documentElement, body]) {
+      write(element, "background-color", color);
+      write(element, "background-image", "none");
+    }
+    if (!themeColor) {
+      themeColor = document.createElement("meta");
+      themeColor.name = "theme-color";
+      // The first matching theme-color supplies the browser chrome hint.
+      // Own a temporary override instead of rewriting the store's metadata.
+      document.head.prepend(themeColor);
+    }
+    themeColor.content = color;
+  }
+
+  function setTheme(isWelcome: boolean) {
+    welcome = isWelcome;
+    paintCanvas();
+  }
+
   function setLocked(locked: boolean) {
     if (locked === !!position) return;
     if (locked) {
@@ -58,14 +84,13 @@ export function createStorefrontScroll() {
       // overflow:hidden alone lets iOS pan the document behind its keyboard.
       write(body, "position", "fixed");
       write(body, "width", "100%");
-      // Safari can expose the document canvas above its keyboard. Match the
-      // opaque assistant without hiding or changing the theme's controls.
-      write(document.documentElement, "background-color", "#f7f5ef");
-      write(document.documentElement, "background-image", "none");
+      paintCanvas();
       scrollTo(position);
     } else {
       const destination = position!;
       position = undefined;
+      themeColor?.remove();
+      themeColor = undefined;
       for (const [style, properties] of styles) {
         for (const [name, { value, priority, applied }] of properties) {
           if (
@@ -95,6 +120,7 @@ export function createStorefrontScroll() {
         element.getBoundingClientRect().top + position[1] - margin,
       ]);
     },
+    setTheme,
     setLocked,
     dispose: () => setLocked(false),
   };

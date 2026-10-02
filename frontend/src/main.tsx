@@ -38,6 +38,9 @@ export function mountAssistant(
   });
   let router: ReturnType<typeof createAssistantRouter> | undefined;
   const storefrontScroll = createStorefrontScroll();
+  storefrontScroll.setTheme(
+    container.closest("[data-roman-panel]")?.hasAttribute("data-welcome-theme") ?? false,
+  );
   const cartNotification = createStorefrontCartNotification();
   const navigation = createStorefrontNavigation(host, storefrontScroll);
   const tools = createAssistantTools(
@@ -64,6 +67,7 @@ export function mountAssistant(
 
   function onReady(welcome: boolean) {
     if (disposed) return;
+    storefrontScroll.setTheme(welcome);
     onThemeChange(welcome);
     if (readyTimer !== undefined) return;
     const remaining = deadline - window.performance.now();

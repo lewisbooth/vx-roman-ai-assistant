@@ -597,6 +597,9 @@ for (const failure of ["connection loss", "suspended service"]) {
 
 test("Cart and Gallery stay light while the empty Chat retains its welcome palette", async (t) => {
   const ctx = setup(t, 1500);
+  ctx.window.sessionStorage.setItem("roman:voice-autostart", "off");
+  const canvas = ctx.window.document.documentElement;
+  canvas.style.backgroundColor = "navy";
   ctx.window.fetch = async () => ({
     ok: true,
     status: 200,
@@ -606,6 +609,8 @@ test("Cart and Gallery stay light while the empty Chat retains its welcome palet
   const mounted = ctx.mount(0);
   await until(() => mounted.state === "ready", "empty Chat did not become ready");
   assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), true);
+  mounted.runtime.setOpen(true);
+  assert.equal(canvas.style.backgroundColor, "rgb(78, 14, 14)");
   for (const path of ["/cart", "/gallery"]) {
     ctx.container.querySelector(`.roman-view-nav a[href="${path}"]`).click();
     await until(
@@ -613,11 +618,80 @@ test("Cart and Gallery stay light while the empty Chat retains its welcome palet
       `${path} did not open`,
     );
     assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), false);
+    assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)", "The page canvas must match the active light view");
     mounted.runtime.setOpen(false);
+    assert.equal(canvas.style.backgroundColor, "navy", "Closing restores the storefront canvas");
     assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), false, "closing must not reset the active view appearance");
+    mounted.runtime.setOpen(true);
+    assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)");
   }
   ctx.container.querySelector('.roman-view-nav a[href="/"]').click();
   await until(() => ctx.panel.hasAttribute("data-welcome-theme"), "empty Chat did not recover its welcome palette");
+  assert.equal(canvas.style.backgroundColor, "rgb(78, 14, 14)");
+  mounted.runtime.dispose();
+  assert.equal(canvas.style.backgroundColor, "navy");
+});
+
+test("End chat restores the welcome canvas only after the server confirms clearing, and close restores the theme", async (t) => {
+  const ctx = setup(t, 1500);
+  const canvas = ctx.window.document.documentElement;
+  canvas.style.setProperty("background-color", "navy", "important");
+  canvas.style.backgroundImage = 'url("/original-theme.png")';
+  const originalBackground = canvas.style.cssText;
+  ctx.window.sessionStorage.setItem("roman:voice-autostart", "off");
+  const access = {
+    conversationId: "11111111-1111-4111-8111-111111111111",
+    token: "a".repeat(43),
+    expiresAt: "2099-10-02T10:00:00Z",
+    apiBaseUrl: "https://roman.example/api/conversations",
+  };
+  const conversation = {
+    id: access.conversationId,
+    status: "active", busy: false, revision: 0, tools: [],
+    current: { activeProduct: null, pendingQuestion: null, hasCustomerReply: true },
+    messages: [{
+      id: "customer-request", role: "user", status: "complete",
+      parts: [{ type: "text", text: "Help me find a kitchen blind." }],
+      createdAt: "2026-10-02T10:00:00Z",
+    }],
+  };
+  ctx.window.sessionStorage.setItem("roman:conversation", JSON.stringify(access));
+  const response = (value) => ({
+    ok: true, status: 200, headers: { get: () => "application/json" },
+    json: async () => wire(value),
+  });
+  let confirmEnd;
+  ctx.window.fetch = async (url) => {
+    const path = new URL(String(url), ctx.window.location.href).pathname;
+    if (path === "/apps/roman/availability") return response({ status: "available" });
+    if (path === "/apps/roman/bootstrap") return response({ ...access, conversation });
+    if (path.endsWith("/end")) return new Promise((resolve) => { confirmEnd = () => resolve(response({ ...conversation, status: "ended", revision: 1 })); });
+    if (path === `/api/conversations/${access.conversationId}`)
+      return response({ ...conversation, streamRevision: 0 });
+    if (path === "/cart.js") return response({ currency: "GBP", items: [], item_count: 0, total_price: 0 });
+    throw new Error("Unexpected runtime fixture request: " + path);
+  };
+  const mounted = ctx.mount(0);
+  await until(() => mounted.state === "ready", "saved conversation did not restore");
+  mounted.runtime.setOpen(true);
+  assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)");
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => !!ctx.container.querySelector(".roman-dialog-primary"), "End chat review did not open");
+  ctx.container.querySelector(".roman-dialog-primary").click();
+  await until(() => !!confirmEnd, "End chat was not requested");
+  assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), false);
+  assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)", "Pending clearing must keep the existing conversation appearance");
+  confirmEnd();
+  await until(() => !!ctx.container.querySelector(".roman-welcome"), "confirmed clearing did not restore the welcome");
+  assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), true);
+  assert.equal(canvas.style.backgroundColor, "rgb(78, 14, 14)", "End chat updates the shell and exposed page canvas together");
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+  mounted.runtime.setOpen(false);
+  assert.equal(canvas.style.cssText, originalBackground);
+  mounted.runtime.setOpen(true);
+  assert.equal(canvas.style.backgroundColor, "rgb(78, 14, 14)");
+  mounted.runtime.dispose();
+  assert.equal(canvas.style.cssText, originalBackground);
 });
 
 test("closing, reopening and remounting on the same document do not restart loading time", async (t) => {
