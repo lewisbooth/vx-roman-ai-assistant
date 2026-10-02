@@ -58,7 +58,7 @@ function setup(t, execute, path = "/cart") {
   return { executor, calls, window: dom.window };
 }
 
-test("cart reads project public data but mutation execution requires one locally owned review", async (t) => {
+test("positive quantity changes require one locally owned review", async (t) => {
   const ctx = setup(t, async (name) =>
     name === "get_cart"
       ? cart
@@ -68,7 +68,7 @@ test("cart reads project public data but mutation execution requires one locally
           cart: { ...cart, itemCount: 0, items: [], totalPriceMinorUnits: 0 },
         },
   );
-  const command = tool("remove_from_cart", { lineKey: "123:abc" });
+  const command = tool("set_cart_quantity", { lineKey: "123:abc", quantity: 4 });
   assert.throws(
     () => ctx.executor.execute(command.name, command.arguments),
     /confirmation/,
@@ -78,7 +78,7 @@ test("cart reads project public data but mutation execution requires one locally
     ctx.calls.map((call) => call[0]),
     ["get_cart"],
   );
-  assert.match(approval.details.join(" "), /Kitchen blind.*all 2/);
+  assert.match(approval.details.join(" "), /Kitchen blind.*from 2 to 4/);
   await assert.rejects(
     ctx.executor.executeApproved(command, { ...approval }),
     /fresh review/,
@@ -87,7 +87,7 @@ test("cart reads project public data but mutation execution requires one locally
   assert.equal(result.status, "updated");
   assert.deepEqual(
     ctx.calls.map((call) => call[0]),
-    ["get_cart", "get_cart", "remove_from_cart"],
+    ["get_cart", "get_cart", "set_cart_quantity"],
   );
   await assert.rejects(
     ctx.executor.executeApproved(command, approval),
@@ -130,7 +130,7 @@ test("missing cart lines and empty carts are unavailable to approve", async (t) 
   }));
   await assert.rejects(
     ctx.executor.prepareApproval(
-      tool("remove_from_cart", { lineKey: "123:abc" }),
+      tool("set_cart_quantity", { lineKey: "123:abc", quantity: 4 }),
     ),
     /no longer/,
   );
@@ -138,6 +138,20 @@ test("missing cart lines and empty carts are unavailable to approve", async (t) 
     ctx.executor.prepareApproval(tool("clear_cart")),
     /already empty/,
   );
+});
+
+test("requested removal delegates one complete batch without another review", async (t) => {
+  const result = {
+    status: "updated", message: "Removed.",
+    cart: { ...cart, itemCount: 0, items: [], totalPriceMinorUnits: 0 },
+  };
+  const ctx = setup(t, async () => result);
+  const command = tool("remove_from_cart", { lineKeys: ["123:abc", "456:def"] });
+  const outcome = await ctx.executor.execute(command.name, command.arguments);
+  assert.equal(outcome.status, "updated");
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [command.name, command.arguments]);
+  await assert.rejects(ctx.executor.prepareApproval(command), /does not need approval/);
+  assert.equal(ctx.calls.length, 1);
 });
 
 test("add executes the current product directly without another approval", async (t) => {

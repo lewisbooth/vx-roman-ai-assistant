@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setImmediate } from "node:timers";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { catalogHttpResponse } from "./fixtures/catalog-http.mjs";
@@ -335,24 +336,24 @@ test("catalog lookup and cart mutation arguments are validated before any reques
       { ids: ["gid://shopify/Product/1"], queries: ["blind"] },
       /only/,
     ],
-    ["missing removal key", "remove_from_cart", {}, /lineKey must be/],
+    ["missing removal key", "remove_from_cart", {}, /Unexpected cart fields/],
     [
       "blank removal key",
       "remove_from_cart",
-      { lineKey: "   " },
-      /lineKey must be/,
+      { lineKeys: ["   "] },
+      /current cart lineKeys/,
     ],
     [
       "numeric removal key",
       "remove_from_cart",
-      { lineKey: 123 },
-      /lineKey must be/,
+      { lineKeys: [123] },
+      /current cart lineKeys/,
     ],
     [
       "extra removal argument",
       "remove_from_cart",
-      { lineKey: "123:line", quantity: 0 },
-      /only/,
+      { lineKeys: ["123:line"], quantity: 0 },
+      /Unexpected cart fields/,
     ],
     [
       "missing quantity key",
@@ -706,7 +707,7 @@ test("live Shopify tools are unavailable in the local preview and on unconfigure
         ["lookup_catalog", { ids: ["gid://shopify/Product/123"] }],
         ["get_cart", {}],
         ["add_to_cart", {}],
-        ["remove_from_cart", { lineKey: "123:line" }],
+        ["remove_from_cart", { lineKeys: ["123:line"] }],
         ["set_cart_quantity", { lineKey: "123:line", quantity: 2 }],
         ["clear_cart", {}],
       ]) {
@@ -751,6 +752,58 @@ test("tool execution prevents overlapping actions and disposal aborts the owner 
   await assert.rejects(pending, (error) => error.name === "AbortError");
   assert.equal(timers.size, 0);
   await assert.rejects(tools.execute("get_measurements", {}), /disposed/);
+});
+
+test("a native removal batch owns its 35s deadline instead of inheriting the generic 20s timeout", async (t) => {
+  const first = cartData.items[0];
+  const second = {...first, key: "12345:second", quantity: 1, final_line_price: 12500};
+  const snapshot = (items) => ({...cartData, items, item_count: items.reduce((sum, item) => sum + item.quantity, 0), total_price: items.reduce((sum, item) => sum + item.final_line_price, 0)});
+  let current = snapshot([first, second]);
+  const ctx = setup(t, {fetch: async () => cartResponse(current)});
+  const {window} = ctx;
+  const ownerTimers = new Map();
+  let timerId = 100;
+  const setTimeout = window.setTimeout.bind(window);
+  const clearTimeout = window.clearTimeout.bind(window);
+  window.setTimeout = (callback, delay) => {
+    if (![15000, 35000].includes(delay)) return setTimeout(callback, delay);
+    ownerTimers.set(++timerId, {callback, delay});
+    return timerId;
+  };
+  window.clearTimeout = (id) => {
+    if (!ownerTimers.delete(id)) clearTimeout(id);
+  };
+  const submitted = [];
+  window.customElements.define("app-provider", class extends window.HTMLElement {});
+  window.customElements.define("cart-remove-toggle", class extends window.HTMLElement {
+    get key() {return this.getAttribute("key");}
+    connectedCallback() {
+      this.attachShadow({mode: "open"}).innerHTML = "<slot></slot>";
+      this.shadowRoot.querySelector("slot").addEventListener("click", () => submitted.push(this));
+    }
+  });
+  const provider = window.document.createElement("app-provider");
+  provider.innerHTML = `<main id="main"><cart-remove-toggle key="${first.key}"><button>Remove</button></cart-remove-toggle><cart-remove-toggle key="${second.key}"><button>Remove</button></cart-remove-toggle></main>`;
+  window.document.body.append(provider);
+  const owners = [...provider.querySelectorAll("cart-remove-toggle")];
+  for (const owner of owners) owner.cart = current;
+  const settle = (owner, items) => {
+    current = snapshot(items);
+    for (const candidate of owners) candidate.cart = current;
+    owner.dispatchEvent(new window.CustomEvent("cart:updated", {detail: current}));
+  };
+  const action = ctx.tools.execute("remove_from_cart", {lineKeys: [first.key, second.key]});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submitted.length, 1);
+  assert.equal(ctx.timers.size, 0, "no generic20s cancellation competes with the batch owner");
+  assert.ok([...ownerTimers.values()].some(({delay}) => delay === 35000));
+  settle(submitted[0], [second]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submitted.length, 2);
+  settle(submitted[1], []);
+  assert.equal((await action).status, "updated");
+  assert.equal(ownerTimers.size, 0);
+  assert.equal(ctx.calls.length, 2, "one fresh cart read per native removal");
 });
 
 test("tool timeout aborts the request and allows a later independent call", async (t) => {
@@ -849,7 +902,7 @@ test("navigation tools delegate to the storefront owner and surface its failures
   setPage(productOne, { pending: true, error: null });
   for (const [name, input] of [
     ["add_to_cart", {}],
-    ["remove_from_cart", { lineKey: "123:line" }],
+    ["remove_from_cart", { lineKeys: ["123:line"] }],
     ["set_cart_quantity", { lineKey: "123:line", quantity: 2 }],
     ["clear_cart", {}],
   ])

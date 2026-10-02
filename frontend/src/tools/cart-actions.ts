@@ -4,7 +4,7 @@ import {
   validateStoreCart,
   type StoreCart,
 } from "./cart";
-import type { CartSnapshot } from "../../../shared/cart-tools";
+import { parseCartCall, type CartSnapshot } from "../../../shared/cart-tools";
 
 type CartActionResult = {
   status: "updated" | "needs_cart_page" | "handed_off";
@@ -137,6 +137,7 @@ function observeAction(
 async function runAction(
   action: Action,
   signal: AbortSignal,
+  baseline?: StoreCart,
 ): Promise<CartActionResult> {
   signal.throwIfAborted();
   if (
@@ -151,148 +152,202 @@ async function runAction(
     throw new Error(
       "Provide a positive whole-number quantity. Use remove_from_cart to remove an item.",
     );
-  if (actionPending) throw new Error("Another cart action is still running.");
-  actionPending = true;
   const initialUrl = window.location.href;
+  let leftPage = false;
+  const onLeave = () => {
+    leftPage = true;
+  };
+  document.addEventListener("roman:navigation", onLeave, { once: true });
+  window.addEventListener("pagehide", onLeave, { once: true });
+  let cart: StoreCart;
   try {
-    let leftPage = false;
-    const onLeave = () => {
-      leftPage = true;
-    };
-    document.addEventListener("roman:navigation", onLeave, { once: true });
-    window.addEventListener("pagehide", onLeave, { once: true });
-    let cart: StoreCart;
-    try {
-      cart = await getStoreCart(signal);
-    } finally {
-      document.removeEventListener("roman:navigation", onLeave);
-      window.removeEventListener("pagehide", onLeave);
-    }
-    signal.throwIfAborted();
-    if (leftPage || window.location.href !== initialUrl) return needsCartPage;
-    if (action.kind !== "clear") {
-      const item = cart.items.find((entry) => entry.key === action.lineKey);
-      if (!item)
-        throw new Error(
-          "That cart line no longer exists. Read get_cart for its current lineKey.",
-        );
-      if (action.kind === "quantity" && item.quantity === action.quantity)
-        return {
-          status: "updated",
-          cart: summarizeCart(cart),
-          message:
-            "The cart line already has that quantity; no change was made.",
-        };
-    } else if (cart.items.length === 0 && cart.item_count === 0) {
+    cart = baseline ?? (await getStoreCart(signal));
+  } finally {
+    document.removeEventListener("roman:navigation", onLeave);
+    window.removeEventListener("pagehide", onLeave);
+  }
+  signal.throwIfAborted();
+  if (leftPage || window.location.href !== initialUrl) return needsCartPage;
+  if (action.kind !== "clear") {
+    const item = cart.items.find((entry) => entry.key === action.lineKey);
+    if (!item)
+      throw new Error(
+        "That cart line no longer exists. Read get_cart for its current lineKey.",
+      );
+    if (action.kind === "quantity" && item.quantity === action.quantity)
       return {
         status: "updated",
         cart: summarizeCart(cart),
-        message: "The cart is already empty; no change was made.",
+        message: "The cart line already has that quantity; no change was made.",
       };
-    }
+  } else if (cart.items.length === 0 && cart.item_count === 0) {
+    return {
+      status: "updated",
+      cart: summarizeCart(cart),
+      message: "The cart is already empty; no change was made.",
+    };
+  }
 
-    const providers = document.querySelectorAll("app-provider");
-    if (providers.length !== 1 || !registered(providers[0]))
+  const providers = document.querySelectorAll("app-provider");
+  if (providers.length !== 1 || !registered(providers[0])) return needsCartPage;
+  const provider = providers[0];
+  const selector =
+    action.kind === "clear"
+      ? "cart-sections"
+      : action.kind === "remove"
+        ? "cart-remove-toggle"
+        : "quantity-input";
+  const candidates = Array.from(provider.querySelectorAll(selector)).filter(
+    (element): element is CartElement =>
+      registered(element) &&
+      (action.kind === "clear"
+        ? typeof element.clearCart === "function"
+        : element.getAttribute("key") === action.lineKey &&
+          (action.kind === "remove"
+            ? element.key === action.lineKey
+            : element.lineItemKey === action.lineKey)),
+  );
+  // Cart page and drawer can both have controls. Both use the same context;
+  // prefer the page's control when present and invoke only one owner.
+  const owner =
+    candidates.find((element) => element.closest("main#main")) ?? candidates[0];
+  if (
+    !owner ||
+    owner.closest('[inert], [aria-disabled="true"]') ||
+    !matchingCart(owner.cart, cart)
+  )
+    return needsCartPage;
+  if (owner.shopifyCartLoading || owner.classList.contains("loading"))
+    throw new Error("Wait for the storefront's current cart update to finish.");
+
+  if (action.kind === "clear")
+    return await observeAction(owner, action, signal, () => owner.clearCart!());
+
+  if (action.kind === "remove") {
+    const controls = owner.querySelectorAll<
+      HTMLButtonElement | HTMLAnchorElement
+    >("button, a[href]");
+    if (
+      controls.length !== 1 ||
+      controls[0].matches(':disabled, [aria-disabled="true"]') ||
+      controls[0].closest("[inert]")
+    )
       return needsCartPage;
-    const provider = providers[0];
-    const selector =
-      action.kind === "clear"
-        ? "cart-sections"
-        : action.kind === "remove"
-          ? "cart-remove-toggle"
-          : "quantity-input";
-    const candidates = Array.from(provider.querySelectorAll(selector)).filter(
-      (element): element is CartElement =>
-        registered(element) &&
-        (action.kind === "clear"
-          ? typeof element.clearCart === "function"
-          : element.getAttribute("key") === action.lineKey &&
-            (action.kind === "remove"
-              ? element.key === action.lineKey
-              : element.lineItemKey === action.lineKey)),
+    const control = controls[0];
+    const slottedChild = Array.from(owner.children).find((child) =>
+      child.contains(control),
     );
-    // Cart page and drawer can both have controls. Both use the same context;
-    // prefer the page's control when present and invoke only one owner.
-    const owner =
-      candidates.find((element) => element.closest("main#main")) ??
-      candidates[0];
-    if (
-      !owner ||
-      owner.closest('[inert], [aria-disabled="true"]') ||
-      !matchingCart(owner.cart, cart)
-    )
-      return needsCartPage;
-    if (owner.shopifyCartLoading || owner.classList.contains("loading"))
-      throw new Error(
-        "Wait for the storefront's current cart update to finish.",
-      );
-
-    if (action.kind === "clear")
-      return await observeAction(owner, action, signal, () =>
-        owner.clearCart!(),
-      );
-
-    if (action.kind === "remove") {
-      const controls = owner.querySelectorAll<
-        HTMLButtonElement | HTMLAnchorElement
-      >("button, a[href]");
-      if (
-        controls.length !== 1 ||
-        controls[0].matches(':disabled, [aria-disabled="true"]') ||
-        controls[0].closest("[inert]")
-      )
-        return needsCartPage;
-      const control = controls[0];
-      const slottedChild = Array.from(owner.children).find((child) =>
-        child.contains(control),
-      );
-      if (!slottedChild?.assignedSlot) return needsCartPage;
-      return await observeAction(owner, action, signal, () => {
-        // The theme handles its slot's click. Block the native link/form default
-        // even if that handler stops working; Roman must not submit a raw form.
-        const preventNative = (event: Event) => event.preventDefault();
-        control.addEventListener("click", preventNative);
-        try {
-          control.click();
-        } finally {
-          control.removeEventListener("click", preventNative);
-        }
-      });
-    }
-
-    const inputs = owner.querySelectorAll<HTMLInputElement>(
-      'input[type="number"]',
-    );
-    if (
-      inputs.length !== 1 ||
-      inputs[0].matches(":disabled") ||
-      inputs[0].readOnly ||
-      inputs[0].closest('[inert], [aria-disabled="true"]')
-    )
-      return needsCartPage;
-    const input = inputs[0];
-    const validationInput = input.cloneNode() as HTMLInputElement;
-    validationInput.value = String(action.quantity);
-    if (
-      !validationInput.checkValidity() ||
-      (typeof owner.min === "number" && action.quantity < owner.min) ||
-      (typeof owner.max === "number" && action.quantity > owner.max)
-    )
-      throw new Error(
-        "That quantity is outside this cart line's allowed range.",
-      );
+    if (!slottedChild?.assignedSlot) return needsCartPage;
     return await observeAction(owner, action, signal, () => {
-      // quantity-input owns debouncing, bounds, pricing and grouped accessories.
-      input.value = String(action.quantity);
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+      // The theme handles its slot's click. Block the native link/form default
+      // even if that handler stops working; Roman must not submit a raw form.
+      const preventNative = (event: Event) => event.preventDefault();
+      control.addEventListener("click", preventNative);
+      try {
+        control.click();
+      } finally {
+        control.removeEventListener("click", preventNative);
+      }
     });
+  }
+
+  const inputs = owner.querySelectorAll<HTMLInputElement>(
+    'input[type="number"]',
+  );
+  if (
+    inputs.length !== 1 ||
+    inputs[0].matches(":disabled") ||
+    inputs[0].readOnly ||
+    inputs[0].closest('[inert], [aria-disabled="true"]')
+  )
+    return needsCartPage;
+  const input = inputs[0];
+  const validationInput = input.cloneNode() as HTMLInputElement;
+  validationInput.value = String(action.quantity);
+  if (
+    !validationInput.checkValidity() ||
+    (typeof owner.min === "number" && action.quantity < owner.min) ||
+    (typeof owner.max === "number" && action.quantity > owner.max)
+  )
+    throw new Error("That quantity is outside this cart line's allowed range.");
+  return await observeAction(owner, action, signal, () => {
+    // quantity-input owns debouncing, bounds, pricing and grouped accessories.
+    input.value = String(action.quantity);
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+async function exclusively(operation: () => Promise<CartActionResult>) {
+  if (actionPending) throw new Error("Another cart action is still running.");
+  actionPending = true;
+  try {
+    return await operation();
   } finally {
     actionPending = false;
   }
 }
 
-export function removeFromCart(lineKey: string, signal: AbortSignal) {
-  return runAction({ kind: "remove", lineKey }, signal);
+export async function removeFromCart(lineKeys: string[], signal: AbortSignal) {
+  const call = parseCartCall("remove_from_cart", { lineKeys });
+  const keys = call.arguments.lineKeys as string[];
+  return exclusively(async () => {
+    signal.throwIfAborted();
+    const initialUrl = window.location.href;
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    const deadline = window.setTimeout(stop, 35_000);
+    signal.addEventListener("abort", stop, { once: true });
+    window.addEventListener("pagehide", stop, { once: true });
+    document.addEventListener("roman:navigation", stop, { once: true });
+    let completed = 0;
+    let confirmedRemoved = 0;
+    const partial = (): CartActionResult => ({
+      ...handedOff,
+      message: `${confirmedRemoved} of ${keys.length} requested cart lines were confirmed removed before this operation stopped. Check the current cart before requesting another change; do not repeat the batch automatically.`,
+    });
+    try {
+      const baseline = await getStoreCart(controller.signal);
+      controller.signal.throwIfAborted();
+      if (window.location.href !== initialUrl) return needsCartPage;
+      // Validate the entire request before the first write: a stale entry must
+      // never silently turn a batch into a smaller, unintended cart change.
+      if (keys.some((key) => !baseline.items.some((item) => item.key === key)))
+        throw new Error(
+          "A requested cart line no longer exists. Read get_cart for current lineKeys.",
+        );
+      let result: CartActionResult | undefined;
+      for (const key of keys) {
+        controller.signal.throwIfAborted();
+        // The preceding native removal may already have removed this linked
+        // line. Only its confirmed result can justify skipping that write.
+        if (
+          result?.cart &&
+          !result.cart.items.some((item) => item.lineKey === key)
+        )
+          continue;
+        result = await runAction(
+          { kind: "remove", lineKey: key },
+          controller.signal,
+          completed === 0 ? baseline : undefined,
+        );
+        if (result.status !== "updated")
+          return completed > 0 ? partial() : result;
+        completed++;
+        confirmedRemoved = keys.filter(
+          (key) => !result!.cart!.items.some((item) => item.lineKey === key),
+        ).length;
+      }
+      return confirmedRemoved === keys.length ? result! : partial();
+    } catch (error) {
+      if (completed > 0) return partial();
+      throw error;
+    } finally {
+      window.clearTimeout(deadline);
+      signal.removeEventListener("abort", stop);
+      window.removeEventListener("pagehide", stop);
+      document.removeEventListener("roman:navigation", stop);
+    }
+  });
 }
 
 export function setCartQuantity(
@@ -300,9 +355,11 @@ export function setCartQuantity(
   quantity: number,
   signal: AbortSignal,
 ) {
-  return runAction({ kind: "quantity", lineKey, quantity }, signal);
+  return exclusively(() =>
+    runAction({ kind: "quantity", lineKey, quantity }, signal),
+  );
 }
 
 export function clearCart(signal: AbortSignal) {
-  return runAction({ kind: "clear" }, signal);
+  return exclusively(() => runAction({ kind: "clear" }, signal));
 }

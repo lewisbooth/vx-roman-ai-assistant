@@ -37,15 +37,10 @@ export function cartReview(
       "This item is no longer in your cart. Ask Roman to check the cart again.",
     );
   return {
-    title:
-      name === "remove_from_cart"
-        ? "Remove this item?"
-        : "Change this quantity?",
+    title: "Change this quantity?",
     details: [
       item.title,
-      name === "remove_from_cart"
-        ? `Remove all ${item.quantity} from this line. The store may also remove linked items.`
-        : `Change quantity from ${item.quantity} to ${args.quantity}. The store controls any linked items.`,
+      `Change quantity from ${item.quantity} to ${args.quantity}. The store controls any linked items.`,
     ],
   };
 }

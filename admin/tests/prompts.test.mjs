@@ -268,7 +268,7 @@ test("measurement entry and cart consent remain separate shared tool contracts",
     assert.equal(definition.parameters.additionalProperties, false);
     assert.equal(
       requiresCartConfirmation(definition.name),
-      ["remove_from_cart", "set_cart_quantity", "clear_cart"].includes(
+      ["set_cart_quantity", "clear_cart"].includes(
         definition.name,
       ),
     );
@@ -315,7 +315,8 @@ test("Live shares identity and notation but delegates instead of copying the kno
 });
 
 test("welcome and voice resumption use canonical UI copy without raw private-state scaffolding", () => {
-  assert.equal(ROMAN_PREAMBLE, "Hi! I'm Roman. Where would you like to begin?");
+  assert.equal(ROMAN_PREAMBLE, "Hi! I'm Roman.");
+  assert.equal(ROMAN_WELCOME_QUESTION.question, "How can I help?");
   assert.deepEqual(ROMAN_WELCOME_QUESTION.answers, [
     "Help me measure",
     "Explore products",

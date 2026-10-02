@@ -4162,17 +4162,17 @@ test("restoration, request errors, voice transitions and ended sessions suppress
 
 test("an outstanding cart approval does not claim the action is already executing", async (t) => {
   const tool = {
-    id: "remove",
-    name: "remove_from_cart",
+    id: "quantity",
+    name: "set_cart_quantity",
     status: "pending",
-    arguments: { lineKey: "line-one" },
+    arguments: { lineKey: "line-one", quantity: 2 },
   };
   const ctx = await setup(t, {
     state: {
       conversation: { ...engagedConversation([]), busy: true, tools: [tool] },
       approval: {
         invocationId: tool.id,
-        title: "Remove this blind?",
+        title: "Change this quantity?",
         details: ["Bedroom blind"],
       },
     },

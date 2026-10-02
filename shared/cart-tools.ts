@@ -26,6 +26,8 @@ export interface CartSnapshot {
     lineKey: string;
     title: string;
     variantId: number;
+    /** Store-supplied type; supports identifying samples and linked cover, not inferring parents. */
+    productType?: string;
     quantity: number;
     /** After line discounts, before any cart-level discounts. */
     linePriceMinorUnits: number;
@@ -80,7 +82,7 @@ const lineKeySchema = { type: "string", pattern: lineKeyPattern.source };
 const definitions = [
   [
     "get_cart",
-    "Read the current cart with exact line keys, quantities, currency, totals and supplied discount allocations. Prices are minor units; linePriceMinorUnits is after line discounts, before basket discounts. totalPriceMinorUnits includes discounts. Omitted metadata is unknown. Does not display Cart.",
+    "Read the current cart with exact line keys, store-supplied productType, quantities, currency, totals and supplied discount allocations. Insurance/Warranty types are linked extras, not independent blind selections; parent linkage is not inferred. Prices are minor units; linePriceMinorUnits is after line discounts, before basket discounts. totalPriceMinorUnits includes discounts. Omitted metadata is unknown. Does not display Cart.",
     {},
   ],
   [
@@ -95,8 +97,15 @@ const definitions = [
   ],
   [
     "remove_from_cart",
-    "Request shopper confirmation to remove the exact current cart lineKey returned by get_cart. Theme rules may also remove linked items. Never infer a line key from a variant ID.",
-    { lineKey: lineKeySchema },
+    "Remove the explicitly requested cart lines in one operation using exact current lineKeys from get_cart, without another confirmation. One line uses a one-element array. Removes whole lines; the theme owns linked items. Never infer line keys or linked insurance from variant IDs, titles or order.",
+    {
+      lineKeys: {
+        type: "array",
+        items: lineKeySchema,
+        minItems: 1,
+        maxItems: 100,
+      },
+    },
   ],
   [
     "set_cart_quantity",
@@ -135,11 +144,7 @@ export function isCartMutation(name: string): boolean {
   return isCartTool(name) && name !== "get_cart";
 }
 export function requiresCartConfirmation(name: string): boolean {
-  return (
-    isCartMutation(name) &&
-    name !== "add_to_cart" &&
-    name !== "add_sample_to_cart"
-  );
+  return name === "set_cart_quantity" || name === "clear_cart";
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -259,19 +264,30 @@ export function parseCartCall(
       },
     };
   }
-  exact(
-    args,
-    name === "set_cart_quantity" ? ["lineKey", "quantity"] : ["lineKey"],
-  );
+  if (name === "remove_from_cart") {
+    exact(args, ["lineKeys"]);
+    if (
+      !Array.isArray(args.lineKeys) ||
+      args.lineKeys.length < 1 ||
+      args.lineKeys.length > 100 ||
+      args.lineKeys.some(
+        (key) => typeof key !== "string" || !lineKeyPattern.test(key),
+      ) ||
+      new Set(args.lineKeys).size !== args.lineKeys.length
+    )
+      throw new Error("Provide 1–100 unique current cart lineKeys.");
+    return { name, arguments: { lineKeys: [...args.lineKeys] } };
+  }
+  exact(args, ["lineKey", "quantity"]);
   if (typeof args.lineKey !== "string" || !lineKeyPattern.test(args.lineKey))
     throw new Error("Use a current cart lineKey.");
-  if (name === "set_cart_quantity" && !integer(args.quantity, 1, 999))
+  if (!integer(args.quantity, 1, 999))
     throw new Error("Cart quantity must be a positive whole number up to 999.");
   return {
     name,
     arguments: {
       lineKey: args.lineKey,
-      ...(name === "set_cart_quantity" ? { quantity: args.quantity } : {}),
+      quantity: args.quantity,
     },
   };
 }
@@ -366,7 +382,7 @@ export function parseCartSnapshot(input: unknown): CartSnapshot {
       "variantId",
       "quantity",
       "linePriceMinorUnits",
-      ...["originalLinePriceMinorUnits", "lineDiscounts"].filter(
+      ...["originalLinePriceMinorUnits", "lineDiscounts", "productType"].filter(
         (field) => item[field] !== undefined,
       ),
     ]);
@@ -376,6 +392,7 @@ export function parseCartSnapshot(input: unknown): CartSnapshot {
       keys.has(item.lineKey) ||
       !text(item.title, 300) ||
       !integer(item.variantId, 1) ||
+      (item.productType !== undefined && !text(item.productType, 150)) ||
       !integer(item.quantity, 0, 999_999) ||
       !integer(item.linePriceMinorUnits)
     )
@@ -404,6 +421,9 @@ export function parseCartSnapshot(input: unknown): CartSnapshot {
       lineKey: item.lineKey,
       title: item.title,
       variantId: item.variantId,
+      ...(item.productType !== undefined
+        ? { productType: item.productType as string }
+        : {}),
       quantity: item.quantity,
       linePriceMinorUnits: item.linePriceMinorUnits,
       ...(originalLinePriceMinorUnits !== undefined

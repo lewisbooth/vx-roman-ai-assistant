@@ -52,7 +52,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "set_measurements",
     description:
-      "Save width and height (drop), common display unit and mount for a verified productPath. kind window is customer notes; kind order requires a clear customer-supplied pair and unit intended for this product's form, without a separate confirmation turn. unknown mount is supported. Values are stored unchanged: no conversion, rounding, allowances, form entry or fit validation.",
+      "Save width and height (drop), common display unit and mount for a verified productPath. kind window is customer notes; kind order requires a clear customer-supplied pair and unit intended for this product's form, without a separate confirmation turn. unknown mount is supported. Arguments must already express both distances in unit; their exact equivalents from mixed-unit readings are valid. Supplied values are stored unchanged; this tool performs no conversion, rounding, allowances, form entry or fit validation.",
     strict: true,
     parameters: {
       type: "object",

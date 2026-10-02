@@ -158,7 +158,7 @@ test("the burgundy welcome survives voice connection and greeting but never them
   await until(() => ctx.container.querySelector(".roman-voice-bar"), "Voice did not start");
   assert.equal(ctx.dark(), true);
   ctx.update({
-    conversation: conversation([message("assistant", "Hi! I'm Roman. Where would you like to begin?", true)]),
+    conversation: conversation([message("assistant", "Hi! I'm Roman.", true)]),
     voice: { status: "active", muted: false, error: null },
   });
   await until(() => ctx.container.querySelector(".roman-voice-waveform"), "Voice did not connect");

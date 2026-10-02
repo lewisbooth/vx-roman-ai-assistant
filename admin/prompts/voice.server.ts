@@ -42,7 +42,7 @@ const ROMAN_VOICE_OPENING_POLICY = `Wait for the application's opening cue befor
 
 export const ROMAN_VOICE_OPENING_PROMPTS = {
   newConversation: `${ROMAN_VOICE_OPENING_POLICY}
-This is your first spoken or written reply to this customer. Say this complete welcome exactly: "${ROMAN_PREAMBLE}" Do not add or replace its question. The application supplies its quick answers; do not delegate to create them or repeat the welcome for the widget. Earlier page observations are not an introduction.`,
+This is your first spoken or written reply to this customer. Say this complete welcome exactly: "${ROMAN_PREAMBLE}" Then listen without adding a question. The application supplies its quick answers; do not delegate to create them or repeat the welcome for the widget. Earlier page observations are not an introduction.`,
   resumedConversation: `${ROMAN_VOICE_OPENING_POLICY}
 Continue the existing conversation, even if this is its first voice connection. Pick up the latest topic, chosen product, preferences and confirmed outcome, without a greeting. Historical question records do not prove a question is still waiting. Follow the readiness instruction: ask the unanswered welcome question only when directed; otherwise give one concise relevant continuation. Other saved questions resume through a verified briefing. Do not delegate or recreate a question merely because voice started. Fresh customer input supersedes this opening.`,
 };

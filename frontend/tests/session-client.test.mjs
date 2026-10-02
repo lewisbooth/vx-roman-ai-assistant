@@ -1903,6 +1903,40 @@ test("sample additions execute directly with the verified PDP path", async (t) =
   ctx.respond(3, complete);
 });
 
+test("requested batch removals claim and execute directly once, with no approval or duplicate write on a lost receipt", async (t) => {
+  const result = { status: "updated", message: "Removed.", cart: {currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: []} };
+  const args = { lineKeys: ["123:first", "123:second"] };
+  const requested = { ...needsTool, tools: [{...needsTool.tools[0], name: "remove_from_cart", arguments: args}] };
+  let executions = 0;
+  const ctx = setup(t, { saved: access, executor: {
+    prepareApproval: () => assert.fail("Requested removals need no extra approval"),
+    executeApproved: () => assert.fail("Removal uses direct execution"),
+    execute: async (name, input) => {
+      executions++;
+      assert.equal(name, "remove_from_cart");
+      assert.deepEqual(JSON.parse(JSON.stringify(input)), args);
+      return result;
+    },
+  }});
+  await resume(ctx, requested);
+  await until(() => ctx.calls.length === 3, "Removal was not claimed");
+  assert.equal("confirmed" in ctx.calls[2].body, false);
+  assert.equal(ctx.client.getSnapshot().approval, null);
+  ctx.respond(2, {claimed: true});
+  await until(() => ctx.calls.length === 4, "Removal result not submitted");
+  const original = ctx.calls[3].body;
+  assert.deepEqual(original.result, result);
+  ctx.calls[3].reject(new TypeError("Lost receipt"));
+  await until(() => !!ctx.client.getSnapshot().error, "Lost receipt was not reported");
+  ctx.tick();
+  await until(() => ctx.calls.length === 5, "Poll not started");
+  ctx.respond(4, {...requested, revision: 2, tools: [{...requested.tools[0], status: "running"}]});
+  await until(() => ctx.calls.length === 6, "Receipt not retried");
+  assert.deepEqual(ctx.calls[5].body, original);
+  assert.equal(executions, 1);
+  ctx.respond(5, {...complete, revision: 3});
+});
+
 test("saved cart additions survive restoration and malformed later event data is rejected", async (t) => {
   const part = {
     type: "cart_added",
@@ -1952,14 +1986,14 @@ const needsCartApproval = {
   tools: [
     {
       ...needsTool.tools[0],
-      name: "remove_from_cart",
-      arguments: { lineKey: "123:abc" },
+      name: "set_cart_quantity",
+      arguments: { lineKey: "123:abc", quantity: 4 },
     },
   ],
 };
 const approvalReview = {
-  title: "Remove this item?",
-  details: ["Kitchen blind", "Quantity 2"],
+  title: "Change this quantity?",
+  details: ["Kitchen blind", "Change quantity from 2 to 4"],
 };
 const removedResult = {
   status: "updated",
@@ -2005,6 +2039,7 @@ test("cart review waits for the exact shopper approval before claim and never se
   assert.equal(executions[0][1], approvalReview);
   assert.deepEqual(JSON.parse(JSON.stringify(executions[0][0].arguments)), {
     lineKey: "123:abc",
+    quantity: 4,
   });
   assert.equal("confirmed" in ctx.calls[3].body, false);
   assert.deepEqual(ctx.calls[3].body.result, removedResult);

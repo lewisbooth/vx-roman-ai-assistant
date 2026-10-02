@@ -22,7 +22,7 @@ const entryQuestion = {
   answers: ["This blind", "Something else"],
 };
 const beginning = [
-  { role: "assistant", text: "Hi! I'm Roman. Where would you like to begin?" },
+  { role: "assistant", text: "Hi! I'm Roman." },
   { role: "user", text: "Help me find blinds that suit my room and style." },
 ];
 const offered = [

@@ -878,7 +878,7 @@ function voiceOpening() {
           voiceId,
           startMs: 0,
           endMs: 1_000,
-          text: "Hi! I'm Roman. Where would you like to begin?",
+          text: "Hi! I'm Roman.",
         },
       ]),
       id: "voice-greeting",

@@ -1246,7 +1246,8 @@ export function createConversationClient(
                     ? await executor!.execute(tool.name, tool.arguments, signal)
                     : tool.name === "get_cart" ||
                         tool.name === "add_to_cart" ||
-                        tool.name === "add_sample_to_cart"
+                        tool.name === "add_sample_to_cart" ||
+                        tool.name === "remove_from_cart"
                       ? await executor!.execute(
                           tool.name,
                           tool.arguments,

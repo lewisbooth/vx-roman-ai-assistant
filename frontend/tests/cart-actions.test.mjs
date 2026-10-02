@@ -154,15 +154,14 @@ function setup(
     assert.equal(options.credentials, "same-origin");
     return { ok: true, json: async () => structuredClone(initial) };
   };
-  let deadline;
+  const deadlines = new Map();
+  let timerId = 0;
   window.setTimeout = (callback, delay) => {
-    assert.equal(delay, 15000);
-    deadline = callback;
-    return 1;
+    assert.ok([15000, 35000].includes(delay));
+    deadlines.set(++timerId, {callback, delay});
+    return timerId;
   };
-  window.clearTimeout = () => {
-    deadline = undefined;
-  };
+  window.clearTimeout = (id) => deadlines.delete(id);
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanCartActions = RomanCartActions;`,
   );
@@ -188,12 +187,17 @@ function setup(
           detail: value,
         }),
       ),
-    timeout: () => deadline(),
-    hasDeadline: () => deadline !== undefined,
+    timeout: (delay = 15000) => [...deadlines.values()].find((entry) => entry.delay === delay).callback(),
+    hasDeadline: () => deadlines.size > 0,
     requests: () => requests,
     nativeSubmissions: () => nativeSubmissions,
     setInitial: (value) => {
       initial = value;
+    },
+    settle: (owner, value) => {
+      initial = value;
+      for (const element of owners) element.cart = structuredClone(value);
+      owner.dispatchEvent(new window.CustomEvent("cart:updated", { bubbles: true, composed: true, detail: value }));
     },
     setClearPromise: (value) => {
       clearPromise = value;
@@ -207,7 +211,7 @@ test("removal delegates to the matching theme control and confirms the exact con
     properties: { _insurance_group: "group-a" },
   });
   const env = setup(t, { items: [line("123:a"), line("123:b", 2), linked] });
-  const action = env.actions.removeFromCart("123:a", env.controller.signal);
+  const action = env.actions.removeFromCart(["123:a"], env.controller.signal);
   await flush();
   assert.equal(env.calls.length, 1);
   assert.equal(env.calls[0].kind, "remove");
@@ -268,6 +272,93 @@ test("quantity uses the configured line's change workflow with the full linked-i
   );
   assert.equal((await action).status, "updated");
   assert.equal(env.listeners.size, 0);
+});
+
+test("batch removal serializes native controls, keeps unrelated cover, and reports only its final confirmed cart", async (t) => {
+  const cover = line("cover:retained", 1, {product_type: "Insurance", properties: {_insurance_group: "retained"}});
+  const retained = line("retained:blind");
+  const env = setup(t, {items: [line("123:a"), line("123:b"), retained, cover]});
+  const action = env.actions.removeFromCart(["123:a", "123:b"], env.controller.signal);
+  await flush();
+  assert.equal(env.calls.length, 1, "second removal waits for the first theme result");
+  assert.equal(env.calls[0].key, "123:a");
+  env.settle(env.calls[0].owner, cart([line("123:b"), retained, cover]));
+  await flush();
+  assert.equal(env.calls.length, 2);
+  assert.equal(env.requests(), 2, "fresh cart before each native action");
+  assert.equal(env.calls[1].key, "123:b");
+  env.settle(env.calls[1].owner, cart([retained, cover]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.deepEqual(Array.from(result.cart.items, (item) => item.lineKey), [retained.key, cover.key]);
+  assert.equal(result.cart.items[1].productType, "Insurance");
+  assert.equal(env.hasDeadline(), false);
+  assert.equal(env.listeners.size, 0);
+});
+
+test("a stale second requested key fails preflight before any mutation", async (t) => {
+  const env = setup(t);
+  await assert.rejects(env.actions.removeFromCart(["123:a", "missing:key"], env.controller.signal), /no longer exists/);
+  assert.equal(env.calls.length, 0);
+  assert.equal(env.requests(), 1);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("native removal may confirm a requested dependent gone without another write", async (t) => {
+  const linked = line("insurance:1", 1, {product_type: "Insurance"});
+  const env = setup(t, {items: [line("123:a"), line("123:b"), linked]});
+  const action = env.actions.removeFromCart(["123:a", linked.key], env.controller.signal);
+  await flush();
+  env.settle(env.calls[0].owner, cart([line("123:b")]));
+  assert.equal((await action).status, "updated");
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.requests(), 1);
+});
+
+test("a target disappearing between native actions stops the batch without guessing or retrying", async (t) => {
+  const env = setup(t);
+  const action = env.actions.removeFromCart(["123:a", "123:b"], env.controller.signal);
+  await flush();
+  env.settle(env.calls[0].owner, cart([line("123:b", 2)]));
+  env.setInitial(cart([line("123:changed", 2)]));
+  const result = await action;
+  assert.equal(result.status, "handed_off");
+  assert.match(result.message, /1 of 2.*confirmed removed/);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("a final snapshot with an earlier requested line reintroduced cannot confirm the complete batch", async (t) => {
+  const env = setup(t);
+  const action = env.actions.removeFromCart(["123:a", "123:b"], env.controller.signal);
+  await flush();
+  env.settle(env.calls[0].owner, cart([line("123:b", 2)]));
+  await flush();
+  env.settle(env.calls[1].owner, cart([line("123:a")]));
+  const result = await action;
+  assert.equal(result.status, "handed_off");
+  assert.match(result.message, /1 of 2/);
+  assert.equal(env.calls.length, 2);
+});
+
+test("abort, navigation and shared deadline stop remaining removals after the first submission", async (t) => {
+  for (const reason of ["abort", "navigation", "deadline"]) {
+    await t.test(reason, async (t) => {
+      const env = setup(t);
+      const action = env.actions.removeFromCart(["123:a", "123:b"], env.controller.signal);
+      await flush();
+      env.settle(env.calls[0].owner, cart([line("123:b", 2)]));
+      if (reason === "abort") env.controller.abort();
+      if (reason === "navigation") env.document.dispatchEvent(new env.window.Event("roman:navigation"));
+      if (reason === "deadline") env.timeout(35000);
+      const result = await action;
+      assert.equal(result.status, "handed_off");
+      assert.match(result.message, /1 of 2/);
+      assert.equal(env.calls.length, 1);
+      assert.equal(env.hasDeadline(), false);
+      assert.equal(env.listeners.size, 0);
+    });
+  }
 });
 
 test("clear invokes the public theme method once and requires a confirmed empty cart", async (t) => {
@@ -354,7 +445,7 @@ test("theme loading and concurrent actions prevent another submission", async (t
     /current cart update/,
   );
   env.owner("quantity-input").shopifyCartLoading = false;
-  const action = env.actions.removeFromCart("123:a", env.controller.signal);
+  const action = env.actions.removeFromCart(["123:a"], env.controller.signal);
   await assert.rejects(
     env.actions.clearCart(env.controller.signal),
     /Another cart action/,
@@ -377,7 +468,7 @@ test("clearing respects inert cart owners and removal respects disabled native c
   owner.removeAttribute("inert");
   env.owner("cart-remove-toggle").querySelector("button").disabled = true;
   assert.equal(
-    (await env.actions.removeFromCart("123:a", env.controller.signal)).status,
+    (await env.actions.removeFromCart(["123:a"], env.controller.signal)).status,
     "needs_cart_page",
   );
   assert.equal(env.calls.length, 0);
@@ -534,12 +625,12 @@ test("invalid quantities and stale line keys are rejected before mutation", asyn
       /positive whole-number/,
     );
   await assert.rejects(
-    env.actions.removeFromCart("", env.controller.signal),
-    /current lineKey/,
+    env.actions.removeFromCart([""], env.controller.signal),
+    /current cart lineKeys/,
   );
   assert.equal(env.requests(), 0);
   await assert.rejects(
-    env.actions.removeFromCart("123:missing", env.controller.signal),
+    env.actions.removeFromCart(["123:missing"], env.controller.signal),
     /no longer exists/,
   );
   assert.equal(env.calls.length, 0);

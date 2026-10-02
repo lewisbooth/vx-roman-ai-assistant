@@ -113,10 +113,6 @@
   color: #4e0e0e;
 }
 
-.roman-chat[data-welcome-theme] .roman-welcome-question {
-  color: #e1cebf;
-}
-
 .roman-chat[data-welcome-theme] .roman-welcome-tile {
   background: #f7f5ef;
   border-color: #f7f5ef80;

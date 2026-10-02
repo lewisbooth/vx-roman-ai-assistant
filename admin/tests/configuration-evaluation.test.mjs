@@ -30,7 +30,7 @@ const { parseProductConfigurationResult, parseApplyMeasurementsResult } =
   module.exports;
 const productPath = "/products/synthetic-ivory-roman";
 const optionCases = configurationCases.filter(
-  ({ guideContinuation }) => !guideContinuation,
+  ({ expectedChange }) => !!expectedChange,
 );
 
 async function applyRequestedChange(sample) {
@@ -79,8 +79,8 @@ function replyFor(sample) {
 
 test("evaluation selects both channels by default and rejects invalid or unbounded requests", () => {
   const defaults = parseEvaluationOptions([]);
-  assert.equal(defaults.samples.length, 14);
-  assert.equal(defaults.maxRequests, 84);
+  assert.equal(defaults.samples.length, configurationCases.length * 2);
+  assert.equal(defaults.maxRequests, defaults.samples.length * 6);
   const selected = parseEvaluationOptions([
     "--case=explicit-paid-remote",
     "--mode=voice",
@@ -93,7 +93,7 @@ test("evaluation selects both channels by default and rejects invalid or unbound
     ["--case=unknown"],
     ["--mode=other"],
     ["--max-requests=0"],
-    ["--max-requests=85"],
+    [`--max-requests=${defaults.maxRequests + 1}`],
     ["--max-requests=Infinity"],
     ["--effort=low"],
   ])

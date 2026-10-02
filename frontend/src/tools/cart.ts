@@ -179,6 +179,9 @@ export function summarizeCart(cart: StoreCart): CartSnapshot {
       lineKey: item.key,
       title: item.title,
       variantId: item.variant_id,
+      ...(typeof item.product_type === "string" && item.product_type.trim()
+        ? { productType: item.product_type }
+        : {}),
       quantity: item.quantity,
       linePriceMinorUnits: item.final_line_price,
       ...(item.original_line_price !== undefined

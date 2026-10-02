@@ -6,6 +6,11 @@ import { resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import {
+  measurementUnitCases,
+  createMeasurementUnitFixture,
+  gradeMeasurementUnitReply,
+} from "./measurement-units.mjs";
 
 const origin = "https://synthetic.example";
 const productPath = "/products/synthetic-ivory-roman";
@@ -207,6 +212,7 @@ export const configurationCases = [
     name: "guide-continuation-after-mount",
     guideContinuation: true,
   },
+  ...measurementUnitCases,
 ];
 
 function applicationState() {
@@ -226,6 +232,7 @@ function applicationState() {
 
 /** Mutable fixture state models only the two explicit option writes under test. */
 export function createConfigurationFixture(sample) {
+  if (sample.measurementUnits) return createMeasurementUnitFixture(sample);
   if (sample.guideContinuation) return createGuideContinuationFixture();
   let electric = !!sample.initialElectric;
   let remote = false;
@@ -436,6 +443,8 @@ export function createConfigurationFixture(sample) {
 
 /** Topic/choice checks use fixture meaning, never an exact generated sentence. */
 export function gradeConfigurationReply(sample, fixture, reply) {
+  if (sample.measurementUnits)
+    return gradeMeasurementUnitReply(sample, fixture, reply);
   if (sample.guideContinuation)
     return gradeGuideContinuationReply(sample, fixture, reply);
   const failures = [...fixture.violations];

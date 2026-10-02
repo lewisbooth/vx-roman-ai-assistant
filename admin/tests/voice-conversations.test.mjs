@@ -2339,7 +2339,7 @@ test("a ready new voice conversation persists one welcome question behind speech
   const question = load().latestQuestion(
     (await conversation.getSnapshot(id)).messages,
   );
-  assert.equal(question.question, "Where would you like to begin?");
+  assert.equal(question.question, "How can I help?");
   assert.deepEqual(question.answers, [
     "Help me measure",
     "Explore products",
@@ -2351,7 +2351,7 @@ test("a ready new voice conversation persists one welcome question behind speech
   );
   await caption(
     session,
-    "Hi! I'm Roman. Where would you like to begin?",
+    "Hi! I'm Roman.",
     0,
     "assistant",
   );
@@ -2396,7 +2396,7 @@ test("unanswered welcome choices stay clickable through a new voice connection",
   await voice.markVoiceStarted(id, first.id, clientId, true);
   await caption(
     first,
-    "Hi! I'm Roman. Where would you like to begin?",
+    "Hi! I'm Roman.",
     0,
     "assistant",
   );
@@ -2409,7 +2409,7 @@ test("unanswered welcome choices stay clickable through a new voice connection",
   await voice.markVoiceStarted(id, second.id, clientId, true);
   await caption(
     second,
-    "Hi, it's Roman again. Where would you like to begin?",
+    "How can I help?",
     0,
     "assistant",
   );

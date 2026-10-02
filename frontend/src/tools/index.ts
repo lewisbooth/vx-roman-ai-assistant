@@ -1,4 +1,5 @@
 import { parseCheckoutCall } from "../../../shared/checkout";
+import { parseCartCall } from "../../../shared/cart-tools";
 import { openCheckout } from "./checkout";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { selectStore } from "../navigation/themes";
@@ -96,9 +97,10 @@ export function createAssistantTools(
       active = request;
       const abort = () => request.abort(signal?.reason);
       signal?.addEventListener("abort", abort, { once: true });
-      // The navigator owns its request deadlines and cancellation.
+      // These operations own their shared deadlines below the single-operation
+      // guard. A shorter outer timer must not cut a serialized cart batch short.
       const timer =
-        name === "navigate" || name === "search_products"
+        name === "navigate" || name === "search_products" || name === "remove_from_cart"
           ? undefined
           : window.setTimeout(
               () =>
@@ -262,13 +264,15 @@ export function createAssistantTools(
                   );
             }
             case "remove_from_cart": {
-              const args = argumentsObject(input, ["lineKey"]);
-              const lineKey = textArgument(args, "lineKey");
+              const call = parseCartCall(name, input);
               if (navigation.getSnapshot().pending)
                 throw new Error(
                   "Wait for storefront navigation to finish before changing the cart.",
                 );
-              return removeFromCart(lineKey, request.signal);
+              return removeFromCart(
+                call.arguments.lineKeys as string[],
+                request.signal,
+              );
             }
             case "set_cart_quantity": {
               const args = argumentsObject(input, ["lineKey", "quantity"]);

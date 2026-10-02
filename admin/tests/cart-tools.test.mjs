@@ -45,9 +45,7 @@ test("cart schemas have exact operation arguments and never accept model-supplie
     assert.ok(!("confirmed" in definition.parameters.properties));
     assert.equal(
       requiresCartConfirmation(definition.name),
-      !["get_cart", "add_to_cart", "add_sample_to_cart"].includes(
-        definition.name,
-      ),
+      ["set_cart_quantity", "clear_cart"].includes(definition.name),
     );
     assert.equal(
       isCartMutation(definition.name),
@@ -59,7 +57,7 @@ test("cart schemas have exact operation arguments and never accept model-supplie
     ["clear_cart", {}],
     ["add_to_cart", { productPath: "/en-gb/products/shade/" }],
     ["add_sample_to_cart", { productPath: "/en-gb/products/shade/" }],
-    ["remove_from_cart", { lineKey: "123:abc" }],
+    ["remove_from_cart", { lineKeys: ["123:abc"] }],
     ["set_cart_quantity", { lineKey: "123:abc", quantity: 2 }],
   ]) {
     assert.equal(parseCartCall(name, input).name, name);
@@ -93,6 +91,19 @@ test("cart schemas have exact operation arguments and never accept model-supplie
     assert.throws(() =>
       parseCartCall("set_cart_quantity", { lineKey: "123:abc", quantity }),
     );
+});
+
+test("removal accepts one bounded, unique set of current line keys and never a variant or legacy singular key", () => {
+  const lineKeys = ["123:first", "456:second"];
+  const parsed = parseCartCall("remove_from_cart", { lineKeys });
+  assert.deepEqual(parsed.arguments, { lineKeys });
+  assert.notEqual(parsed.arguments.lineKeys, lineKeys);
+  for (const input of [
+    { lineKey: "123:first" }, {}, { lineKeys: [] }, { lineKeys: "123:first" },
+    { lineKeys: [123] }, { lineKeys: [" "] }, { lineKeys: ["123:first", "123:first"] },
+    { lineKeys: ["123:first", "bad key"] }, { lineKeys: Array.from({ length: 101 }, (_, i) => `123:${i}`) },
+    { lineKeys, confirmed: true },
+  ]) assert.throws(() => parseCartCall("remove_from_cart", input));
 });
 
 test("confirmed additions carry only actual bounded public product facts", () => {
@@ -277,6 +288,14 @@ test("cart results contain only bounded public fields and preserve uncertainty",
       quantityAdded: 0,
     }),
   );
+});
+
+test("cart projects supplied product types without guessing relationships or permitting private fields", () => {
+  const typed = {...cart, items: [{...cart.items[0], productType: "Insurance"}]};
+  assert.deepEqual(parseCartResult("get_cart", typed), typed);
+  for (const productType of ["", " ", "x".repeat(151), "Insurance\nprivate", 123, null])
+    assert.throws(() => parseCartResult("get_cart", {...cart, items: [{...cart.items[0], productType}]}));
+  assert.throws(() => parseCartResult("get_cart", {...cart, items: [{...typed.items[0], properties: {_insurance_group: "private"}}]}));
 });
 
 test("cart discount metadata preserves reported rounding and allocation scopes without repricing", () => {

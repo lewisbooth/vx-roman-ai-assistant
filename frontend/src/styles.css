@@ -1299,10 +1299,6 @@
     font-size: clamp(40px, 5.5vw, 78px);
   }
 
-  .roman-welcome-question {
-    @apply mt-[32px] mb-0 text-[20px] leading-[1.4] tracking-[-0.02em];
-  }
-
   .roman-welcome-tiles {
     @apply mt-[28px] grid w-full max-w-[1000px] grid-cols-4 gap-[18px];
   }
@@ -1356,10 +1352,6 @@
     .roman-chat[data-welcome-theme] .roman-welcome-title {
       grid-row: 2;
       text-align: center;
-    }
-
-    .roman-chat[data-welcome-theme] .roman-welcome-question {
-      display: none;
     }
 
     .roman-chat[data-welcome-theme] .roman-composer {
@@ -1501,10 +1493,6 @@
 
     .roman-welcome-title {
       @apply mt-[12px] min-h-0 text-[40px] leading-[1.06];
-    }
-
-    .roman-welcome-question {
-      @apply mt-[18px] text-[17px];
     }
 
     .roman-welcome-tiles {

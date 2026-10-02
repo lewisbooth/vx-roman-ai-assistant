@@ -504,7 +504,7 @@ for (const hasCustomerReply of [false, true]) {
         id: "opening-greeting",
         role: "assistant",
         status: "complete",
-        parts: [{ type: "text", text: "Hi! I'm Roman. Where would you like to begin?" }],
+        parts: [{ type: "text", text: "Hi! I'm Roman." }],
         createdAt: "2026-10-02T10:00:00Z",
       }],
     };

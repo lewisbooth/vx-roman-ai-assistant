@@ -1247,7 +1247,7 @@ test("fresh resumed opening references the latest task without speaking applicat
   for (const pendingQuestion of [
     undefined,
     {
-      question: "Where would you like to begin?",
+      question: "How can I help?",
       answers: ["Help me measure", "Explore products", "Find my style"],
     },
   ]) {
@@ -1285,7 +1285,7 @@ test("fresh resumed opening references the latest task without speaking applicat
     );
     if (pendingQuestion) {
       assert.match(instruction, /unanswered welcome question/);
-      assert.match(instruction, /Where would you like to begin\?/);
+      assert.match(instruction, /How can I help\?/);
       assert.match(
         instruction,
         /Do not delegate, replay actions or advance the workflow/,
@@ -1527,7 +1527,7 @@ test("resumed voice retains the chosen product and confirmed sample around an ov
   const app = setup();
   const history = [
     questionReference({
-      question: "Where would you like to begin?",
+      question: "How can I help?",
       answers: ["Help me measure", "Explore products"],
     }),
     {

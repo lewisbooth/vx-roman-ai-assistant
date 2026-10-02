@@ -313,9 +313,8 @@ test("cart reads persist only sanitized results and remain available to future t
   assert.equal(stored.confirmedAt, null);
 });
 
-test("cart removal, quantity and clearing require an invocation-specific shopper decision and decline is durable", async () => {
+test("positive quantity changes and clearing require an invocation-specific shopper decision and decline is durable", async () => {
   for (const [name, args] of [
-    ["remove_from_cart", { lineKey: "123:abc" }],
     ["set_cart_quantity", { lineKey: "123:abc", quantity: 2 }],
     ["clear_cart", {}],
   ]) {
@@ -363,6 +362,24 @@ test("cart removal, quantity and clearing require an invocation-specific shopper
         .confirmedAt,
       null,
     );
+  }
+});
+
+test("requested removals need no second approval and remain bound to the claimed executor in text and voice", async () => {
+  for (const voice of [false, true]) {
+    const {id, tool} = await cartInvocation("remove_from_cart", { lineKeys: ["123:abc", "456:def"] }, voice);
+    const claim = executor();
+    for (const confirmed of [true, false])
+      await assert.rejects(repository.claimToolInvocation(id, tool.id, {...claim, confirmed}), {status: 400});
+    assert.equal((await repository.claimToolInvocation(id, tool.id, claim)).claimed, true);
+    assert.equal((await database.toolInvocation.findUnique({where: {id: tool.id}})).confirmedAt, null);
+    const result = {productIds: [], outcome: {status: "updated", message: "Removed.", cart: {currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: []}}};
+    await assert.rejects(repository.completeToolInvocation(id, tool.id, executor(), result), {status: 401});
+    await repository.completeToolInvocation(id, tool.id, claim, result);
+    const before = await repository.getSnapshot(id);
+    await repository.completeToolInvocation(id, tool.id, claim, result);
+    assert.deepEqual(await repository.getSnapshot(id), before);
+    assert.equal((await repository.claimToolInvocation(id, tool.id, claim)).claimed, false);
   }
 });
 
@@ -3090,6 +3107,76 @@ test("migration retains legacy messages, metadata and credentials and advances o
   } finally {
     await legacy.$disconnect();
   }
+});
+
+test("cart removal migration keeps completed history and pending actions readable without rewriting receipts", async () => {
+  const completed = await cartInvocation("remove_from_cart", { lineKeys: ["123:abc"] });
+  const claim = executor();
+  await repository.claimToolInvocation(completed.id, completed.tool.id, claim);
+  await repository.completeToolInvocation(completed.id, completed.tool.id, claim, {
+    productIds: [],
+    outcome: {
+      status: "updated",
+      message: "The shade was removed.",
+      cart: { currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: [] },
+    },
+  });
+  await repository.finishTurn(completed.id, completed.turn.assistantId, {
+    text: "The shade was removed.", status: "complete",
+  });
+  const pending = await cartInvocation("remove_from_cart", { lineKeys: ["456:def"] });
+  const batch = await cartInvocation("remove_from_cart", { lineKeys: ["123:abc", "456:def"] });
+  const quantity = await cartInvocation("set_cart_quantity", { lineKey: "123:abc", quantity: 2 });
+  // Recreate the stored shape before batch removal was introduced, including
+  // the completed action's old approval evidence. No storefront action runs.
+  await database.toolInvocation.update({
+    where: { id: completed.tool.id },
+    data: { argumentsJson: JSON.stringify({ lineKey: "123:abc" }), confirmedAt: new Date() },
+  });
+  await database.toolInvocation.update({
+    where: { id: pending.tool.id },
+    data: { argumentsJson: JSON.stringify({ lineKey: "456:def" }) },
+  });
+  const readRows = () => database.toolInvocation.findMany({ orderBy: { id: "asc" } });
+  const originalRows = await readRows();
+  const originalSnapshot = await repository.getSnapshot(completed.id);
+  const conversation = await database.conversation.findUniqueOrThrow({ where: { id: completed.id } });
+  const originalHistory = await repository.getHistoryPage(completed.id, conversation.nextSequence);
+  await assert.rejects(repository.getModelHistory(completed.id));
+  await assert.rejects(repository.getSnapshot(pending.id));
+
+  const sql = await readFile("prisma/migrations/20261002170000_cart_removal_batches/migration.sql", "utf8");
+  const migrate = async () => {
+    for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean))
+      await database.$executeRawUnsafe(statement);
+  };
+  await migrate();
+  const expectedRows = originalRows.map((row) => {
+    const lineKey = row.id === completed.tool.id ? "123:abc" : row.id === pending.tool.id ? "456:def" : undefined;
+    return lineKey ? { ...row, argumentsJson: JSON.stringify({ lineKeys: [lineKey] }) } : row;
+  });
+  assert.deepEqual(await readRows(), expectedRows, "Only the two old argument representations change in place");
+  for (const untouched of [batch.tool, quantity.tool])
+    assert.deepEqual(
+      await database.toolInvocation.findUniqueOrThrow({ where: { id: untouched.id } }),
+      originalRows.find((row) => row.id === untouched.id),
+    );
+  await migrate();
+  assert.deepEqual(await readRows(), expectedRows, "Reapplying the data conversion cannot alter migrated records");
+  assert.deepEqual(await repository.getSnapshot(completed.id), originalSnapshot);
+  assert.deepEqual(await repository.getHistoryPage(completed.id, conversation.nextSequence), originalHistory);
+  assert.deepEqual((await repository.getSnapshot(pending.id)).tools[0].arguments, { lineKeys: ["456:def"] });
+  assert.deepEqual((await repository.getBrowserToolContext(completed.id, completed.tool.id)).arguments, { lineKeys: ["123:abc"] });
+  const restored = loadRepository();
+  const history = await restored.getModelHistory(completed.id);
+  const action = history.find((entry) => entry.text.startsWith("Storefront action:"));
+  assert.ok(action, "The completed removal remains available to later model turns");
+  assert.deepEqual(JSON.parse(action.text.slice("Storefront action: ".length)).arguments, { lineKeys: ["123:abc"] });
+  await restored.getVoiceStartupContext(completed.id);
+  const resumed = await restored.beginTurn(completed.id, { requestId: randomUUID(), text: "Show my cart now." });
+  assert.ok(resumed.assistantId);
+  assert.ok(resumed.history.some((entry) => entry.text === action.text));
+  assert.deepEqual(await database.$queryRawUnsafe('PRAGMA foreign_key_check'), []);
 });
 
 const libraryResult = () => ({

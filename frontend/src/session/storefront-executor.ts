@@ -392,7 +392,7 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<ViewResult>;
   function execute(
-    name: "get_cart" | "add_to_cart" | "add_sample_to_cart",
+    name: "get_cart" | "add_to_cart" | "add_sample_to_cart" | "remove_from_cart",
     input: unknown,
     signal?: AbortSignal,
   ): Promise<CartToolResult>;
@@ -531,12 +531,14 @@ export function createStorefrontExecutor(
         signal,
       );
     }
-    if (name === "add_sample_to_cart") {
+    if (name === "add_sample_to_cart" || name === "remove_from_cart") {
       const call = parseCartCall(name, input);
       return enqueue(
         "foreground",
         async (signal) => {
           signal.throwIfAborted();
+          // Removal's owner validates the full key set, then serializes native
+          // theme actions with fresh cart/control checks inside this operation.
           return parseCartResult(
             call.name,
             await tools.execute(call.name, call.arguments, signal),

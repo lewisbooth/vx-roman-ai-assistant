@@ -55,7 +55,6 @@ export function Welcome({
       <h1 id="roman-welcome-title" className="roman-welcome-title">
         A brighter home <em>starts</em> with a conversation.
       </h1>
-      <p className="roman-welcome-question">Where would you like to begin?</p>
       <div className="roman-welcome-tiles">
         {tiles.map((tile) => (
           <button
