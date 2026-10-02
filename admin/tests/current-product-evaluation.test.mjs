@@ -37,19 +37,23 @@ const accepted = currentProductCases.filter(
 const decline = currentProductCases.find(
   ({ currentProductFlow }) => currentProductFlow === "decline",
 );
+const discovery = currentProductCases.filter(
+  ({ currentProductFlow }) => currentProductFlow === "discovery",
+);
 
 function productActions() {
   return {
     text: "",
     questionPresentation: {
-      question: "Would you like help measuring, exploring options or ordering a sample?",
+      question:
+        "Would you like help measuring, exploring options or ordering a sample?",
       answers: ["Help me measure", "Explore its options", "Add sample to cart"],
     },
   };
 }
 
 test("current-product histories preserve actual card/question/selection provenance without an active blind", () => {
-  assert.equal(currentProductCases.length, 5);
+  assert.equal(currentProductCases.length, 9);
   assert.equal(accepted.length, 3);
   for (const sample of currentProductCases) {
     const fixture = createCurrentProductFixture(sample);
@@ -59,7 +63,7 @@ test("current-product histories preserve actual card/question/selection provenan
     assert.equal(state.activeBlind, null);
     assert.equal(state.backgroundPage.path, currentProductPath);
     assert.equal(state.pendingQuestion, null);
-    if (sample.currentProductFlow !== "offer") {
+    if (["accept", "decline"].includes(sample.currentProductFlow)) {
       const card = JSON.parse(
         fixture.history
           .find(({ text }) => text.startsWith("Storefront history: "))
@@ -84,6 +88,7 @@ test("current-product histories preserve actual card/question/selection provenan
 });
 
 test("offering grades exact identity and both quick answers against a similar decoy", async () => {
+  assert.match(offer.history.at(-1).text, /measur/i);
   const fixture = createCurrentProductFixture(offer);
   const result = await fixture.execute("lookup", "search_products", {
     queries: [currentProduct.title],
@@ -115,6 +120,116 @@ test("offering grades exact identity and both quick answers against a similar de
   );
 });
 
+test("style, find, explore and no-drill starts ignore an open product and ask missing discovery context", async () => {
+  assert.equal(discovery.length, 4);
+  for (const sample of discovery) {
+    const fixture = createCurrentProductFixture(sample);
+    const reply = {
+      text: "",
+      questionPresentation: sample.knownRoom
+        ? {
+            question: "What kind of opening are you covering?",
+            answers: ["Standard window", "French doors", "Bifold doors"],
+          }
+        : {
+            question: "Which room are the blinds for?",
+            answers: ["Living room", "Bedroom", "Kitchen"],
+          },
+    };
+    assert.deepEqual(
+      gradeCurrentProductReply(sample, fixture, reply),
+      [],
+      sample.name,
+    );
+    const voice = { ...reply, text: reply.questionPresentation.question };
+    assert.deepEqual(
+      gradeCurrentProductReply(sample, fixture, voice, "voice"),
+      [],
+      sample.name + " voice",
+    );
+    const opening = {
+      text: "",
+      questionPresentation: {
+        question: "What kind of opening are you looking to cover?",
+        answers: [
+          "Standard window",
+          "Large window or patio door",
+          "Individual glass panes",
+          "Something else",
+        ],
+      },
+    };
+    assert.deepEqual(gradeCurrentProductReply(sample, fixture, opening), []);
+    opening.text = opening.questionPresentation.question;
+    assert.deepEqual(
+      gradeCurrentProductReply(sample, fixture, opening, "voice"),
+      [],
+    );
+    if (sample.knownRoom) {
+      const restarted = {
+        ...reply,
+        questionPresentation: {
+          question: "Which room is this for?",
+          answers: ["Bedroom", "Living room"],
+        },
+      };
+      assert.ok(
+        gradeCurrentProductReply(sample, fixture, restarted).some((failure) =>
+          /missing relevant fact/.test(failure),
+        ),
+      );
+    }
+
+    const offeredReply = {
+      text: "",
+      presentation: { productIds: [currentProduct.id] },
+      questionPresentation: {
+        question: "Would you like to start with this blind?",
+        answers: ["This blind", "Something else"],
+      },
+    };
+    assert.ok(
+      gradeCurrentProductReply(sample, fixture, offeredReply).some((failure) =>
+        /background-product lookup, offer or selection/.test(failure),
+      ),
+    );
+    const narratedBackground = {
+      ...reply,
+      text: "The current blind on the page may suit you.",
+    };
+    assert.ok(
+      gradeCurrentProductReply(sample, fixture, narratedBackground).some(
+        (failure) => /ignore the background page/.test(failure),
+      ),
+    );
+    const backgroundQuestion = {
+      ...opening,
+      questionPresentation: {
+        question: "Would you like this blind for your room?",
+        answers: ["Yes", "Something else"],
+      },
+    };
+    assert.ok(
+      gradeCurrentProductReply(sample, fixture, backgroundQuestion).some(
+        (failure) => /ignore the background page/.test(failure),
+      ),
+    );
+    for (const [name, input] of [
+      ["search_products", { queries: [currentProduct.title] }],
+      ["get_product", { id: currentProduct.id }],
+      ["navigate", { path: currentProductPath }],
+    ]) {
+      const forbidden = createCurrentProductFixture(sample);
+      await assert.rejects(forbidden.execute("background", name, input));
+      assert.ok(
+        gradeCurrentProductReply(sample, forbidden, reply).includes(
+          forbidden.violations[0],
+        ),
+      );
+    }
+  }
+});
+
 test("all acceptance forms require exact navigation even on the already loaded background page", async () => {
   for (const sample of accepted) {
     const fixture = createCurrentProductFixture(sample);
@@ -139,17 +254,35 @@ test("all acceptance forms require exact navigation even on the already loaded b
     );
     const spoken = productActions();
     spoken.text = spoken.questionPresentation.question;
-    assert.deepEqual(gradeCurrentProductReply(sample, fixture, spoken, "voice"), []);
+    assert.deepEqual(
+      gradeCurrentProductReply(sample, fixture, spoken, "voice"),
+      [],
+    );
     spoken.text = `You can order a sample. ${spoken.text}`;
-    assert.ok(gradeCurrentProductReply(sample, fixture, spoken, "voice").some(
-      (failure) => /separate sample announcement/.test(failure),
-    ));
+    assert.ok(
+      gradeCurrentProductReply(sample, fixture, spoken, "voice").some(
+        (failure) => /separate sample announcement/.test(failure),
+      ),
+    );
     const sampleOnly = productActions();
     sampleOnly.text = "You can order a sample.";
-    sampleOnly.questionPresentation.question = "What would you like to do next?";
-    const sampleOnlyFailures = gradeCurrentProductReply(sample, fixture, sampleOnly);
-    assert.ok(sampleOnlyFailures.some((failure) => /include measuring and options/.test(failure)));
-    assert.ok(sampleOnlyFailures.some((failure) => /separate sample announcement/.test(failure)));
+    sampleOnly.questionPresentation.question =
+      "What would you like to do next?";
+    const sampleOnlyFailures = gradeCurrentProductReply(
+      sample,
+      fixture,
+      sampleOnly,
+    );
+    assert.ok(
+      sampleOnlyFailures.some((failure) =>
+        /include measuring and options/.test(failure),
+      ),
+    );
+    assert.ok(
+      sampleOnlyFailures.some((failure) =>
+        /separate sample announcement/.test(failure),
+      ),
+    );
     const restarted = productActions();
     restarted.questionPresentation.question = "Which room are the blinds for?";
     assert.ok(

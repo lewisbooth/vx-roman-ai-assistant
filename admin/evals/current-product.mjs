@@ -50,7 +50,10 @@ export const currentProductCases = [
   {
     name: "current-product-offer",
     currentProductFlow: "offer",
-    history: beginning,
+    history: [
+      beginning[0],
+      { role: "user", text: "Help me measure my windows for blinds." },
+    ],
   },
   {
     name: "current-product-accept-answer",
@@ -82,6 +85,27 @@ export const currentProductCases = [
     currentProductFlow: "decline",
     history: [...offered, { role: "user", text: "Something else" }],
   },
+  ...[
+    [
+      "current-product-style-start",
+      "Help me find blinds that suit my room and style.",
+    ],
+    [
+      "current-product-find-start",
+      "Help me find new blinds for my bedroom.",
+      true,
+    ],
+    ["current-product-explore-start", "Explore products"],
+    [
+      "current-product-no-drill-start",
+      "Help me find no-drill blinds for my home.",
+    ],
+  ].map(([name, text, knownRoom]) => ({
+    name,
+    currentProductFlow: "discovery",
+    knownRoom,
+    history: [beginning[0], { role: "user", text }],
+  })),
 ];
 
 export function createCurrentProductFixture(sample) {
@@ -168,7 +192,12 @@ export function createCurrentProductFixture(sample) {
 }
 
 /** Semantic checks complement saved-output review; no exact generated question is required. */
-export function gradeCurrentProductReply(sample, fixture, reply, mode = "text") {
+export function gradeCurrentProductReply(
+  sample,
+  fixture,
+  reply,
+  mode = "text",
+) {
   const failures = [...fixture.violations];
   const check = (condition, reason) => {
     if (!condition) failures.push(reason);
@@ -177,9 +206,10 @@ export function gradeCurrentProductReply(sample, fixture, reply, mode = "text") 
   const question = reply.questionPresentation;
   const answers = question?.answers ?? [];
   // Voice briefings append the displayed question; it is not a separate message.
-  const message = mode === "voice" && question && reply.text.endsWith(question.question)
-    ? reply.text.slice(0, -question.question.length).trim()
-    : reply.text;
+  const message =
+    mode === "voice" && question && reply.text.endsWith(question.question)
+      ? reply.text.slice(0, -question.question.length).trim()
+      : reply.text;
   const navigations = fixture.operations.filter(
     ({ name }) => name === "navigate",
   );
@@ -246,18 +276,36 @@ export function gradeCurrentProductReply(sample, fixture, reply, mode = "text") 
   } else {
     check(
       fixture.operations.length === 0 && selected.length === 0,
-      "Declining the current product must continue intake before any catalogue or product action.",
+      "Discovery must continue missing context without any background-product lookup, offer or selection.",
     );
     check(
-      /room|space/i.test(question?.question ?? ""),
-      "Declining must ask the first missing discovery fact.",
+      (sample.currentProductFlow === "discovery"
+        ? /room|space|window|opening|door|priorit|matter|light|privacy|blackout|fitting|drill|colou?r|pattern|look/i
+        : /room|space/i
+      ).test(question?.question ?? "") &&
+        (!sample.knownRoom ||
+          !/which room|what room|which space|what space/i.test(
+            question?.question ?? "",
+          )),
+      "Discovery must ask a missing relevant fact.",
     );
     check(
       !answers.some((answer) =>
-        /^(?:this blind|something else)$/i.test(answer),
+        (sample.currentProductFlow === "discovery"
+          ? /^this blind$/i
+          : /^(?:this blind|something else)$/i
+        ).test(answer),
       ),
-      "The declined product was offered again.",
+      "The background product was offered again instead of continuing discovery.",
     );
+    if (sample.currentProductFlow === "discovery") {
+      check(
+        !/synthetic woven ivory roman|\b(?:this|that|current|background|open)\s+(?:blind|product|page)\b/i.test(
+          [message, question?.question, ...answers].join(" "),
+        ),
+        "A style/find/explore start should ignore the background page in its reply.",
+      );
+    }
   }
   return failures;
 }
