@@ -796,7 +796,7 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   assert.deepEqual(plain(input.reasoning), { effort: "medium" });
   assert.equal(input.store, false);
   assert.equal(input.stream, true);
-  assert.equal(input.max_output_tokens, 1600);
+  assert.equal(input.max_output_tokens, 8192);
   assert.deepEqual(
     allowedTools(input).map((tool) => tool.name),
     ["ask_question"],
@@ -971,7 +971,7 @@ test("provider failure, incomplete output, empty output and premature stream end
 
 test("a failed follow-up after showing Cart logs only provider categories without replaying work", async (t) => {
   const cases = [
-    ...["max_output_tokens", "content_filter", "steered"].map(
+    ...["content_filter", "steered"].map(
       (reason) => ({
         name: reason,
         event: "response.incomplete",
@@ -1101,12 +1101,66 @@ test("a failed follow-up after showing Cart logs only provider categories withou
   }
 });
 
-function incompleteAnswer() {
+test("a truncated answer after catalogue search publishes only the completed retry and preserves all usage", async () => {
+  const env = setup();
+  const product = {
+    id: "gid://shopify/Product/123",
+    title: "Verified catalogue shade",
+    description: "",
+    url: "https://hd-dev-single.myshopify.com/products/shade",
+  };
+  env.mock.executeTool = async (_id, _assistant, _call, name) => {
+    assert.equal(name, "search_products");
+    return { products: [product], messages: [] };
+  };
+  const usage = {
+    input_tokens: 20,
+    output_tokens: 10,
+    total_tokens: 30,
+    output_tokens_details: { reasoning_tokens: 5 },
+  };
+  env.streams.push(
+    events(completed("", { output: [catalogCall("completed-search")], usage })),
+    events(
+      { type: "response.output_text.delta", delta: "PRIVATE_INCOMPLETE_TEXT" },
+      incompleteAnswer("max_output_tokens"),
+    ),
+    events(completed("", {
+      output: [catalogCall("verified-answer", "ask_question", {
+        message: "Here is a matching shade.",
+        productIds: [product.id],
+        question: "Which room is this for?",
+        answers: ["Bedroom", "Kitchen"],
+      })],
+      usage,
+    })),
+  );
+  await env.api.startTurn("catalogue-retry", firstInput);
+  await flush();
+  const snapshot = await env.api.readConversation("catalogue-retry");
+  assert.equal(snapshot.busy, false);
+  assert.equal(snapshot.messages[1].status, "complete");
+  assert.equal(snapshot.messages[1].parts[0].text, "Here is a matching shade.");
+  assert.equal(env.calls.finishes.length, 1);
+  assert.deepEqual(plain(env.calls.finishes[0].result.presentation.productRefs), [
+    { id: product.id, title: product.title },
+  ]);
+  assert.equal(env.calls.browserTools.length, 1);
+  assert.deepEqual(env.calls.requests.map(({ input }) => input.max_output_tokens), [8192, 8192, 16384]);
+  assert.deepEqual(env.calls.usage.map((entry) => entry[2].status), [
+    "pending", "completed", "pending", "incomplete", "pending", "completed",
+  ]);
+  assert.deepEqual(env.calls.usage.filter((entry) => entry[2].status !== "pending").map((entry) => entry[2].totalTokens), [30, 150, 30]);
+  assert.doesNotMatch(JSON.stringify([snapshot, env.calls.finishes, env.logs, env.calls.requests]), /PRIVATE_INCOMPLETE/);
+  assert.equal(env.logs.some(([message]) => message === "[Roman] Text reply failed."), false);
+});
+
+function incompleteAnswer(reason = "max_messages") {
   return {
     type: "response.incomplete",
     response: {
       model: "gpt-5.6-luna",
-      incomplete_details: { reason: "max_messages" },
+      incomplete_details: { reason },
       output: [
         catalogCall("unconfirmed-mutation", "clear_cart", {
           private: "PRIVATE_INCOMPLETE_OUTPUT",
@@ -1463,6 +1517,50 @@ test("text and voice publish only the final structured outcome after tools", asy
         else assert.deepEqual(partials, [final]);
       });
     }
+  }
+});
+
+test("an output-budget retry preserves a confirmed cart mutation without replaying it", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    await t.test(mode, async () => {
+      const env = setup(), executions = [], visible = [];
+      const confirmed = { status: "updated", message: "The cart is now empty." };
+      env.streams.push(
+        events(completed("", { output: [catalogCall("cart-read", "get_cart", {})] })),
+        events(completed("", { output: [catalogCall("cart-clear", "clear_cart", {})] })),
+        events(incompleteAnswer("max_output_tokens")),
+        events(completed(confirmed.message)),
+      );
+      const reply = await env.api.generateReply(
+        [{ role: "user", text: "Empty my cart." }],
+        (text) => visible.push(text),
+        new AbortController().signal,
+        async (callId, name) => {
+          executions.push([callId, name]);
+          return name === "get_cart"
+            ? {
+                currency: "GBP", itemCount: 1, totalPriceMinorUnits: 1000,
+                items: [{ lineKey: "123:shade", title: "Synthetic shade", variantId: 123, quantity: 1, linePriceMinorUnits: 1000 }],
+              }
+            : confirmed;
+        },
+        mode,
+      );
+      assert.deepEqual(executions, [["cart-read", "get_cart"], ["cart-clear", "clear_cart"]]);
+      assert.deepEqual(visible, [reply.text]);
+      assert.match(reply.text, /^The cart is now empty\./);
+      assertNextActions(reply);
+      assert.deepEqual(env.calls.requests.map(({ input }) => input.max_output_tokens), [8192, 8192, 8192, 16384]);
+      const previous = env.calls.requests[2].input;
+      const retry = env.calls.requests[3].input;
+      assert.deepEqual(retry, { ...previous, max_output_tokens: 16384 });
+      const results = retry.input.filter((item) => item.type === "function_call_output" && item.call_id === "cart-clear");
+      assert.equal(results.length, 1);
+      assert.deepEqual(JSON.parse(results[0].output), confirmed);
+      assert.equal(allowedToolNames(retry).includes("clear_cart"), false);
+      assert.equal(allowedToolNames(retry).includes("add_to_cart"), false);
+      assert.doesNotMatch(JSON.stringify([retry, reply, visible]), /unconfirmed-mutation|PRIVATE_INCOMPLETE_OUTPUT/);
+    });
   }
 });
 
@@ -6359,6 +6457,57 @@ test("matching saved compaction uses only subsequent history plus current privat
   assert.match(JSON.stringify(input), /Actually 102 cm|Width corrected to 102 cm/);
   assert.equal(input.at(-1).content, "CURRENT_PRODUCT_CONFIGURATION");
   assert.doesNotMatch(JSON.stringify(input), /OLD_WIDTH_100|STALE_PRIVATE_NOTE/);
+});
+
+test("an output-budget retry discards incomplete compaction and memory patches while retaining the saved checkpoint", async () => {
+  const env = setup(), visible = [];
+  const compact = { type: "compaction", encrypted_content: "SAVED_COMPLETE_CHECKPOINT" };
+  const memory = {
+    memo: { "kitchen/blind": "Width corrected to 102 cm. Source 11." },
+    throughSequence: 12,
+    checkpoints: [{ model: "gpt-6-luna", throughSequence: 10, input: [compact] }],
+  };
+  const originalMemory = plain(memory);
+  const incomplete = incompleteAnswer("max_output_tokens");
+  incomplete.response.output = [
+    { type: "compaction", id: "PRIVATE_INCOMPLETE_COMPACTION", encrypted_content: "PRIVATE_INCOMPLETE_CHECKPOINT" },
+    { type: "reasoning", id: "PRIVATE_INCOMPLETE_REASONING", summary: [], encrypted_content: "PRIVATE_INCOMPLETE_STATE" },
+    questionCall({
+      ...questionSelection,
+      message: "PRIVATE_INCOMPLETE_ANSWER",
+      memoryUpdate: {
+        set: [{ key: "kitchen/curtain", text: "PRIVATE_INCOMPLETE_NOTE" }],
+        forget: ["kitchen/blind"],
+      },
+    }, "PRIVATE_INCOMPLETE_QUESTION"),
+  ];
+  env.streams.push(
+    events(incomplete),
+    events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null }, "complete-answer")] })),
+  );
+  const reply = await memoryReply(env, {
+    memory,
+    history: [
+      { role: "user", text: "Actually 102 cm.", sequence: 11, endSequence: 11 },
+      { role: "user", text: "Long durable conversation. ".repeat(1000), sequence: 12, endSequence: 12 },
+    ],
+    onText: (text) => visible.push(text),
+    execute: async () => assert.fail("Incomplete output must not execute tools"),
+  });
+  assert.equal(env.calls.requests.length, 2);
+  const initial = env.calls.requests[0].input;
+  const retry = env.calls.requests[1].input;
+  assert.equal(initial.max_output_tokens, 8192);
+  assert.deepEqual(initial.context_management, [{ type: "compaction", compact_threshold: 24000 }]);
+  assert.deepEqual(retry, { ...initial, max_output_tokens: 16384 });
+  assert.deepEqual(retry.input.filter((item) => item.type === "compaction"), [compact]);
+  assert.match(JSON.stringify(retry.input), /Actually 102 cm|Width corrected to 102 cm/);
+  assert.deepEqual(memory, originalMemory);
+  assert.equal(reply.contextCheckpoint, undefined);
+  assert.equal(reply.memoryUpdate, undefined);
+  assert.equal(reply.questionPresentation.callId, "complete-answer");
+  assert.deepEqual(visible, [reply.text]);
+  assert.doesNotMatch(JSON.stringify([retry, reply, visible]), /PRIVATE_INCOMPLETE/);
 });
 
 test("fallback preserves calls before a compaction item without foreign encrypted context or repeated execution", async () => {

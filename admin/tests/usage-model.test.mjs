@@ -95,6 +95,11 @@ const toolRound = () =>
       arguments: '{"queries":["synthetic blackout"]}',
     },
   ]);
+const outputLimit = (usage = tokens(30, 8192, 10, 8000), output = []) => {
+  const event = terminal("incomplete", usage, output);
+  event.response.incomplete_details = { reason: "max_output_tokens" };
+  return event;
+};
 function setup(scripts, initialAvailability = "healthy") {
   const records = [];
   const requests = [];
@@ -149,7 +154,7 @@ function setup(scripts, initialAvailability = "healthy") {
     run: (onUsage = record, options = {}) =>
       module.exports.generateReply(
         [{ role: "user", text: "Private synthetic test request." }],
-        () => {},
+        options.onText ?? (() => {}),
         controller.signal,
         options.execute ?? (async () => ({ products: [], messages: [] })),
         options.mode ?? "text",
@@ -386,6 +391,189 @@ test("every tool round records a durable attempt and its own provider-reported u
   );
 });
 
+test("output exhaustion before a tool decision retries once without retaining or executing partial output", async () => {
+  const incomplete = outputLimit(undefined, [
+    {
+      type: "reasoning",
+      id: "PRIVATE_INCOMPLETE_REASONING",
+      encrypted_content: "PRIVATE_INCOMPLETE_STATE",
+    },
+    {
+      type: "function_call",
+      name: "clear_cart",
+      call_id: "PRIVATE_INCOMPLETE_MUTATION",
+      arguments: "{}",
+    },
+    {
+      ...terminal().response.output[0],
+      call_id: "PRIVATE_INCOMPLETE_QUESTION",
+    },
+    {
+      type: "function_call",
+      name: "search_products",
+      call_id: "PRIVATE_INCOMPLETE_JSON",
+      arguments: '{"queries":[',
+    },
+  ]);
+  const app = setup([
+    events(
+      { type: "response.output_text.delta", delta: "PRIVATE_INCOMPLETE_TEXT" },
+      incomplete,
+    ),
+    events(toolRound()),
+    events(terminal()),
+  ]);
+  const executions = [], visible = [];
+  const reply = await app.run(undefined, {
+    onText: (text) => visible.push(text),
+    execute: async (callId, name) => {
+      executions.push([callId, name]);
+      return { products: [], messages: [] };
+    },
+  });
+  assert.deepEqual(executions, [["tool_call_1", "search_products"]]);
+  assert.deepEqual(visible, [reply.text]);
+  assert.equal(reply.questionPresentation.callId, "synthetic-question");
+  assert.equal(app.requests.length, 3);
+  assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 16384, 16384]);
+  const [initial, retry] = app.requests.map(([request]) => plain(request));
+  assert.equal(initial.max_output_tokens, 8192);
+  assert.equal(retry.max_output_tokens, 16384);
+  assert.deepEqual(retry, { ...initial, max_output_tokens: 16384 });
+  assert.doesNotMatch(JSON.stringify({ requests: app.requests, reply, visible }), /PRIVATE_INCOMPLETE/);
+  assert.deepEqual(app.incidents, []);
+  assert.equal(await app.status(), "available");
+});
+
+test("output exhaustion after a successful search retains catalogue evidence and every usage attempt", async () => {
+  const product = {
+    id: "gid://shopify/Product/123",
+    title: "Verified catalogue shade",
+    description: "",
+    url: "https://shop.example/products/shade",
+  };
+  const search = toolRound();
+  search.response.output.unshift({
+    type: "reasoning",
+    id: "completed-reasoning",
+    encrypted_content: "completed-model-state",
+  });
+  const final = terminal("completed", tokens(40, 12, 25, 3));
+  final.response.output[0].arguments = JSON.stringify({
+    ...JSON.parse(final.response.output[0].arguments),
+    productIds: [product.id],
+  });
+  const app = setup([
+    events(search),
+    events(outputLimit()),
+    events(final),
+  ]);
+  const executions = [];
+  const reply = await app.run(undefined, {
+    execute: async (callId, name) => {
+      executions.push([callId, name]);
+      return { products: [product], messages: [] };
+    },
+  });
+  assert.deepEqual(executions, [["tool_call_1", "search_products"]]);
+  assert.deepEqual(plain(reply.presentation.productRefs), [{ id: product.id, title: product.title }]);
+  assert.deepEqual(app.requests.map(([request]) => request.model), ["gpt-6-luna", "gpt-6-luna", "gpt-6-luna"]);
+  assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 8192, 16384]);
+  const previous = plain(app.requests[1][0]);
+  const retry = plain(app.requests[2][0]);
+  assert.deepEqual(retry, { ...previous, max_output_tokens: 16384 });
+  const result = retry.input.find((item) => item.type === "function_call_output");
+  assert.equal(result.call_id, "tool_call_1");
+  assert.deepEqual(JSON.parse(result.output), { products: [product], messages: [] });
+  assert.equal(retry.input.some((item) => item.encrypted_content === "completed-model-state"), true);
+  assert.deepEqual(app.records.map((entry) => entry.status), [
+    "pending", "completed", "pending", "incomplete", "pending", "completed",
+  ]);
+  const attempts = app.records.filter((entry) => entry.status === "pending");
+  const reported = app.records.filter((entry) => entry.status !== "pending");
+  assert.equal(new Set(attempts.map((entry) => entry.id)).size, 3);
+  assert.deepEqual(attempts.map((entry) => entry.id), reported.map((entry) => entry.id));
+  assert.deepEqual(reported.map((entry) => [entry.totalTokens, entry.reasoningTokens]), [
+    [25, 2], [8222, 8000], [52, 3],
+  ]);
+  assert.deepEqual(app.incidents, []);
+  assert.equal(await app.status(), "available");
+});
+
+test("a second exhausted output budget fails without fallback or another retry", async () => {
+  const app = setup([
+    events(outputLimit()),
+    events(outputLimit(tokens(30, 16384, 10, 16000))),
+    events(terminal()),
+  ]);
+  await assert.rejects(app.run(undefined, {
+    onText: () => assert.fail("Incomplete output must not be published"),
+    execute: async () => assert.fail("Incomplete output must not execute tools"),
+  }), (error) => {
+    assert.deepEqual(plain(app.diagnostics(error)), {
+      providerStatus: "incomplete", incompleteReason: "max_output_tokens",
+    });
+    return true;
+  });
+  assert.equal(app.requests.length, 2);
+  assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 16384]);
+  assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "incomplete", "pending", "incomplete"]);
+  assert.deepEqual(app.records.filter((entry) => entry.status === "incomplete").map((entry) => entry.outputTokens), [8192, 16384]);
+  assert.deepEqual(app.incidents, []);
+  assert.equal(await app.status(), "available");
+});
+
+test("a completed tool round cannot replenish the turn's exhausted output retry budget", async () => {
+  const app = setup([
+    events(outputLimit()),
+    events(toolRound()),
+    events(outputLimit(tokens(30, 16384, 10, 16000))),
+    events(terminal()),
+  ]);
+  let executions = 0;
+  await assert.rejects(app.run(undefined, {
+    onText: () => assert.fail("Incomplete output must not be published"),
+    execute: async () => {
+      executions++;
+      return { products: [], messages: [] };
+    },
+  }), /did not complete/);
+  assert.equal(executions, 1);
+  assert.equal(app.requests.length, 3);
+  assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 16384, 16384]);
+  assert.deepEqual(app.records.map((entry) => entry.status), [
+    "pending", "incomplete", "pending", "completed", "pending", "incomplete",
+  ]);
+  assert.deepEqual(app.incidents, []);
+});
+
+test("cancellation after exhausted-output usage is saved prevents a retry and keeps its counts", async () => {
+  const app = setup([events(outputLimit()), events(terminal())]);
+  await assert.rejects(app.run(async (usage) => {
+    app.records.push(plain(usage));
+    if (usage.status === "incomplete") app.controller.abort();
+  }, {
+    onText: () => assert.fail("Cancelled output must not be published"),
+    execute: async () => assert.fail("Cancelled output must not execute tools"),
+  }), { name: "AbortError" });
+  assert.equal(app.requests.length, 1);
+  assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "incomplete"]);
+  assert.equal(app.records[1].totalTokens, 8222);
+  assert.equal(app.records[1].reasoningTokens, 8000);
+  assert.deepEqual(app.incidents, []);
+});
+
+test("each new turn starts with its normal output limit and one available retry", async () => {
+  const app = setup([
+    events(outputLimit()), events(terminal()),
+    events(outputLimit()), events(terminal()),
+  ]);
+  await app.run();
+  await app.run();
+  assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 16384, 8192, 16384]);
+  assert.deepEqual(app.incidents, []);
+});
+
 for (const status of ["failed", "incomplete"]) {
   test(`a ${status} terminal event preserves its usage and earlier successful tool rounds`, async () => {
     const app = setup([
@@ -506,6 +694,7 @@ test("terminal text and voice replies preserve authored questions and usage with
     const app = setup([events(terminal())]);
     const reply = plain(await app.run(undefined, { mode }));
     assert.equal(app.requests.length, 1);
+    assert.equal(app.requests[0][0].max_output_tokens, 8192);
     assert.deepEqual(
       app.records.map((usage) => usage.status),
       ["pending", "completed"],

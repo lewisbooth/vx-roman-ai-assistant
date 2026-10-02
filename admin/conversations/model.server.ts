@@ -74,6 +74,10 @@ import {
 export const TEXT_MODEL = PRIMARY_TEXT_MODEL;
 export const TEXT_SERVICE_TIER = "fast";
 
+// The provider counts reasoning and structured tool arguments as output too.
+const OUTPUT_TOKEN_BUDGET = 8192;
+const EXPANDED_OUTPUT_TOKEN_BUDGET = 16384;
+
 const incompleteReasons = [
   "max_output_tokens",
   "max_messages",
@@ -338,6 +342,7 @@ export async function generateReply(
       isConfigurationStep(name) &&
       browserCalls < MAX_TURN_TOOL_CALLS);
   let answerRepair = false;
+  let outputTokenBudget = OUTPUT_TOKEN_BUDGET;
   const availableProducts = new Map<string, string>();
   const guides = createGuideTurn({
     execute,
@@ -487,7 +492,7 @@ export async function generateReply(
                     : ("none" as const),
                 }
               : {}),
-            max_output_tokens: 1600,
+            max_output_tokens: outputTokenBudget,
             store: false,
             stream: true,
           },
@@ -551,6 +556,23 @@ export async function generateReply(
         if (!completed && !repairIncompleteAnswer)
           throw new ModelResponseError("stream_ended");
       } catch (error) {
+        if (
+          error instanceof ModelResponseError &&
+          error.diagnostics.incompleteReason === "max_output_tokens" &&
+          outputTokenBudget === OUTPUT_TOKEN_BUDGET
+        ) {
+          signal.throwIfAborted();
+          await assertServiceAvailable();
+          // Retry this provider round once per turn, with its unchanged validated
+          // input. No partial text, tool calls or checkpoints have been retained.
+          outputTokenBudget = EXPANDED_OUTPUT_TOKEN_BUDGET;
+          console.warn("[Roman] Retrying truncated model response.", {
+            providerStatus: "incomplete",
+            incompleteReason: "max_output_tokens",
+            maxOutputTokens: outputTokenBudget,
+          });
+          continue;
+        }
         if (!signal.aborted && isProviderAvailabilityFailure(error)) {
           if (model === PRIMARY_TEXT_MODEL) {
             await reportPrimaryUnavailable();
