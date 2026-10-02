@@ -1170,9 +1170,9 @@ test("the actual React runtime keeps its rendered content and storefront state a
   );
   const content = host.shadowRoot.querySelector("[data-roman-content]");
   const heading = content.querySelector("h1");
-  const drawer = content.querySelector(".roman-tools");
+  const conversation = content.querySelector(".roman-conversation");
   assert.ok(heading);
-  assert.ok(drawer);
+  assert.ok(conversation);
   assert.equal(window.location.href, `${origin}/`);
   close().click();
   launcher().click();
@@ -1180,7 +1180,7 @@ test("the actual React runtime keeps its rendered content and storefront state a
   assert.equal(mounts, 1);
   assert.equal(disposals, 0);
   assert.equal(content.querySelector("h1"), heading);
-  assert.equal(content.querySelector(".roman-tools"), drawer);
+  assert.equal(content.querySelector(".roman-conversation"), conversation);
   assert.equal(requests.length, 1);
   host.remove();
   await delay(0);

@@ -10,11 +10,6 @@ export function AssistantHeader({
   endDisabled,
   ending,
   onEnd,
-  showSettings,
-  settingsOpen,
-  settingsId,
-  onSettings,
-  onNavigate,
 }: {
   logoUrl: string;
   cartCount?: number;
@@ -23,11 +18,6 @@ export function AssistantHeader({
   endDisabled: boolean;
   ending: boolean;
   onEnd: () => void;
-  showSettings: boolean;
-  settingsOpen: boolean;
-  settingsId: string;
-  onSettings: (trigger: HTMLButtonElement) => void;
-  onNavigate: () => void;
 }) {
   const [mobile, setMobile] = useState(
     () => window.matchMedia?.("(max-width: 767px)").matches ?? false,
@@ -106,26 +96,8 @@ export function AssistantHeader({
       {ending ? "Ending…" : "End chat"}
     </button>
   );
-  const settingsButton = showSettings && (
-    <button
-      type="button"
-      className="roman-settings-trigger"
-      aria-label="Settings"
-      aria-expanded={settingsOpen}
-      aria-controls={settingsId}
-      onClick={(event) => {
-        const trigger = mobile ? toggle.current! : event.currentTarget;
-        trigger.focus({ preventScroll: true });
-        setMenuOpen(false);
-        onSettings(trigger);
-      }}
-    >
-      Settings
-    </button>
-  );
   function navigate() {
     setMenuOpen(false);
-    onNavigate();
   }
 
   return (
@@ -170,7 +142,6 @@ export function AssistantHeader({
           >
             {logo}
             {endButton}
-            {settingsButton}
           </div>
         </>
       ) : (
@@ -201,7 +172,6 @@ export function AssistantHeader({
       {!mobile && (
         <div className="roman-header-actions">
           {endButton}
-          {settingsButton}
         </div>
       )}
     </header>

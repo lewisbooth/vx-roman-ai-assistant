@@ -105,7 +105,7 @@ function ProductCardsView({
       ancestors.push(parent);
       parent = parent.parentElement;
     }
-    // Hidden Chat, Settings or the assistant shell still cancel optional work.
+    // Hidden Chat or the assistant shell still cancel optional work.
     const update = () =>
       setVisible(
         !document.hidden &&

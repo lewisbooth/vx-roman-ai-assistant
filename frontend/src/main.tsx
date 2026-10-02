@@ -77,11 +77,7 @@ export function mountAssistant(
     router = createAssistantRouter({
       logoUrl,
       navigation,
-      tools,
       session,
-      showTools:
-        host.dataset.shop === "hd-dev-multi.myshopify.com" ||
-        host.dataset.shop === "hd-dev-single.myshopify.com",
       onReady,
       onError,
     });

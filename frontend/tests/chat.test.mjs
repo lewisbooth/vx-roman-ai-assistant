@@ -186,9 +186,7 @@ async function setup(t, options = {}) {
         navigationCalls.push(path);
       },
     },
-    tools: { execute: async () => ({}) },
     session,
-    showTools: options.showTools ?? false,
     onReady: () => {
       ready = true;
     },
@@ -539,8 +537,8 @@ test("cart approvals use one in-app question panel without changing shopper deci
     });
 });
 
-test("welcome uses original asset paths, actionable tiles and one hidden developer tools panel", async (t) => {
-  const { container } = await setup(t, { showTools: true });
+test("welcome uses original assets and actionable tiles without Settings or developer controls", async (t) => {
+  const { container } = await setup(t);
   const tiles = [...container.querySelectorAll(".roman-welcome-tile")];
   assert.equal(tiles.length, 4);
   assert.ok(tiles.every((tile) => !tile.disabled && tile.type === "button"));
@@ -558,18 +556,10 @@ test("welcome uses original asset paths, actionable tiles and one hidden develop
       image.src,
       /^https:\/\/cdn\.shopify\.com\/extensions\/version\/assets\/roman-tile-.+\.png$/,
     );
-  const drawer = container.querySelector(".roman-tools");
-  assert.equal(drawer.hidden, true);
-  assert.equal(container.querySelectorAll(".roman-settings-trigger").length, 1);
-  assert.equal(
-    container
-      .querySelector(".roman-settings-trigger")
-      .getAttribute("aria-controls"),
-    drawer.id,
-  );
+  assert.equal(container.querySelector(".roman-tools"), null);
+  assert.equal(container.querySelector(".roman-settings-trigger"), null);
+  assert.equal(container.querySelector(".roman-voice-choice"), null);
   assert.equal(container.querySelectorAll("details").length, 0);
-  assert.ok(drawer.querySelector(".roman-voice-choice select"));
-  assert.ok(drawer.querySelector("form"));
   assert.equal(container.querySelector('nav[aria-label="Browse store"]'), null);
 });
 
@@ -655,7 +645,7 @@ test("typed and tile sends show their local row before a session exists without 
     });
 });
 
-test("the mobile menu dismisses within Shadow DOM and Settings restores the current responsive trigger", async (t) => {
+test("the mobile menu retains End chat and dismisses within Shadow DOM without Settings", async (t) => {
   const changes = new Set();
   const media = {
     matches: true,
@@ -663,7 +653,6 @@ test("the mobile menu dismisses within Shadow DOM and Settings restores the curr
     removeEventListener: (_name, listener) => changes.delete(listener),
   };
   const ctx = await setup(t, {
-    showTools: true,
     state: { conversation: engagedConversation([]) },
     beforeImport: (window) => {
       window.matchMedia = () => media;
@@ -676,6 +665,9 @@ test("the mobile menu dismisses within Shadow DOM and Settings restores the curr
     await until(() => !dropdown.hidden, "Mobile menu did not open");
   }
   await openMenu();
+  assert.equal(dropdown.querySelector(".roman-settings-trigger"), null);
+  assert.equal(dropdown.querySelectorAll("button").length, 1);
+  assert.equal(dropdown.querySelector("button").textContent, "End chat");
   const gallery = ctx.container.querySelector(
     '.roman-view-nav a[href="/gallery"]',
   );
@@ -701,28 +693,12 @@ test("the mobile menu dismisses within Shadow DOM and Settings restores the curr
   assert.equal(ctx.container.getRootNode().activeElement, menu());
 
   await openMenu();
-  dropdown.querySelector(".roman-settings-trigger").click();
-  const panel = ctx.container.querySelector(".roman-tools");
-  await until(() => !panel.hidden, "Mobile Settings did not open");
-  assert.equal(
-    ctx.container.getRootNode().activeElement,
-    panel.querySelector("h2"),
-  );
   media.matches = false;
   changes.forEach((listener) => listener());
   await until(() => !menu(), "Desktop header did not replace mobile actions");
-  panel.querySelector("h2").dispatchEvent(
-    new ctx.window.KeyboardEvent("keydown", {
-      key: "Escape",
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
-  await until(() => panel.hidden, "Settings did not close");
-  assert.equal(
-    ctx.container.getRootNode().activeElement,
-    ctx.container.querySelector(".roman-settings-trigger"),
-  );
+  assert.equal(ctx.container.querySelector(".roman-header-menu"), null);
+  assert.equal(ctx.container.querySelector(".roman-end-chat").textContent, "End chat");
+  assert.equal(ctx.container.querySelector(".roman-settings-trigger"), null);
   assert.equal(escapedShell, 0);
 });
 
@@ -3050,81 +3026,7 @@ test("restored remote voice can be ended explicitly without activating the micro
   assert.deepEqual(ctx.startVoiceCalls, []);
 });
 
-test("voice selector offers all Live voices, defaults to Marin and changes only a stopped connection", async (t) => {
-  const ctx = await setup(t, { showTools: true });
-  const selector = ctx.container.querySelector(".roman-voice-choice select");
-  assert.ok(selector.closest(".roman-tools"));
-  assert.equal(
-    ctx.container.querySelectorAll(".roman-settings-trigger").length,
-    1,
-  );
-  assert.equal(ctx.container.querySelectorAll("details").length, 0);
-  assert.equal(
-    ctx.container.querySelector(".roman-composer select"),
-    null,
-  );
-  assert.equal(selector.value, "marin");
-  assert.equal(selector.options.length, 22);
-  assert.ok([...selector.options].some((option) => option.value === "gleam"));
-  assert.equal(
-    ctx.container.querySelector(`label[for="${selector.id}"]`).textContent,
-    "Voice",
-  );
-  selector.value = "gleam";
-  selector.dispatchEvent(new ctx.window.Event("change", { bubbles: true }));
-  await until(
-    () => selector.value === "gleam",
-    "Voice selection did not update",
-  );
-  const button = (text) =>
-    [...ctx.container.querySelectorAll("button")].find(
-      (node) =>
-        node.getAttribute("aria-label") === text || node.textContent === text,
-    );
-  button("Start voice").click();
-  await until(() => selector.disabled, "Active voice selector stayed enabled");
-  assert.match(
-    ctx.container.querySelector(".roman-voice-choice-hint").textContent,
-    /End voice/,
-  );
-  assert.equal(
-    ctx.container.querySelectorAll(".roman-voice-choice select").length,
-    1,
-  );
-  button("End voice").click();
-  await until(
-    () => !selector.disabled,
-    "Stopped voice selector stayed disabled",
-  );
-  assert.equal(selector.value, "gleam");
-});
-
-test("starting, stopping and restored remote voice disable changing the voice", async (t) => {
-  for (const state of [
-    { voice: { status: "starting", muted: false, error: null } },
-    { voice: { status: "stopping", muted: true, error: null } },
-    {
-      conversation: {
-        id: "restored",
-        messages: [],
-        tools: [],
-        voice: { id: "voice", clientId: "old", status: "active" },
-      },
-    },
-  ]) {
-    const ctx = await setup(t, { state, showTools: true });
-    assert.equal(
-      ctx.container.querySelector(".roman-voice-choice select").disabled,
-      true,
-    );
-    assert.match(
-      ctx.container.querySelector(".roman-voice-choice-hint").textContent,
-      /End voice/,
-    );
-  }
-});
-
-test("voice selection stays out of the customer controls when developer tools are hidden", async (t) => {
+test("the customer composer retains Start voice without a voice picker", async (t) => {
   const ctx = await setup(t);
   assert.equal(ctx.container.querySelector(".roman-voice-choice"), null);
   assert.ok(

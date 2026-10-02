@@ -2,9 +2,9 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @import "./chat/product-stage.css";
+@import "./chat/welcome-theme.css";
 @source "./app.tsx";
 @source "./chat";
-@source "./tools/ToolDrawer.tsx";
 
 @theme {
   --spacing: 4px;
@@ -44,7 +44,6 @@
     gap: 8px;
   }
   .roman-end-chat,
-  .roman-settings-trigger,
   .roman-menu-toggle {
     @apply inline-flex h-[44px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent px-[10px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
     font-family: inherit;
@@ -77,7 +76,6 @@
     font-size: 15px;
   }
   .roman-header-menu button:hover,
-  .roman-settings-trigger[aria-expanded="true"],
   .roman-menu-toggle[aria-expanded="true"] {
     background: #4e0e0e0d;
   }
@@ -1066,17 +1064,6 @@
     }
   }
 
-  .roman-tools {
-    @apply h-full min-h-0 overflow-y-auto overscroll-contain px-[20px] pt-[12px] pb-[24px] text-[13px] text-[#545046];
-    width: min(100%, 960px);
-    margin: 0 auto;
-    padding-bottom: max(24px, env(safe-area-inset-bottom));
-  }
-
-  .roman-tools-heading {
-    @apply m-0 flex min-h-[44px] items-center pr-[84px] font-normal text-[18px] text-[#4e0e0e];
-  }
-
   .roman-composer {
     @apply z-10 shrink-0 px-[26px] pt-[8px] pb-[16px];
     width: min(100%, 840px);
@@ -1137,24 +1124,6 @@
   .roman-voice-idle-warning {
     @apply mx-auto mb-[4px] mt-0 rounded-[12px] border border-solid border-[#bb4545] bg-[#fff0ee] px-[16px] py-[10px] text-center text-[13px] leading-[1.4] text-[#8a1c28];
     width: min(calc(100% - 32px), 788px);
-  }
-
-  .roman-voice-choice select {
-    @apply min-h-[36px] cursor-pointer rounded-full border border-solid border-[#d1cbc0] bg-[#f7f5ef] px-[12px] text-[13px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
-    font-family: inherit;
-  }
-
-  .roman-voice-choice select:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 3px;
-  }
-
-  .roman-voice-choice {
-    @apply my-[12px] flex w-full flex-wrap items-center gap-x-[8px] gap-y-[4px];
-  }
-
-  .roman-voice-choice-hint {
-    @apply w-full text-[11px] text-[#797366];
   }
 
   .roman-voice-label {
@@ -1545,13 +1514,4 @@
       @apply px-[16px];
     }
   }
-}
-
-.roman-tools :is(select, button) {
-  font: inherit;
-}
-
-.roman-tools :is(summary, select, textarea, button):focus-visible {
-  outline: 2px solid #4e0e0e;
-  outline-offset: 2px;
 }

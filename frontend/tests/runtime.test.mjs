@@ -463,7 +463,7 @@ test("a fast cached runtime waits until one second from loading start and React 
     () => ctx.timers.size === 1,
     "committed React content did not schedule the remaining loading time",
   );
-  assert.ok(ctx.container.querySelector(".roman-tools"));
+  assert.ok(ctx.container.querySelector(".roman-welcome"));
   await ctx.advance(799);
   assert.equal(mount.state, "pending");
   await ctx.advance(1);
@@ -478,7 +478,7 @@ test("a slow download adds no further loading delay after React commits", async 
     () => mount.state === "ready",
     "already elapsed loading time should not add another second",
   );
-  assert.ok(ctx.container.querySelector(".roman-tools"));
+  assert.ok(ctx.container.querySelector(".roman-welcome"));
   assert.equal(ctx.timers.size, 0);
 });
 

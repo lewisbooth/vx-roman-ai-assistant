@@ -152,8 +152,6 @@ function setup(t, { open = true, restored = false, endExpected = false, brokenSn
     logoUrl: "/logo.svg",
     navigation,
     session,
-    tools: { execute: async () => {} },
-    showTools: false,
     onReady: () => {},
     onError: (error) => errors.push(error),
   });

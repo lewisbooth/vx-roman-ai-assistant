@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -41,9 +40,6 @@ import {
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
 import { liveSnapshotMessages } from "./session/live-messages";
-import type { AssistantTools } from "./tools";
-import { ToolDrawer } from "./tools/ToolDrawer";
-import { VoiceChoice } from "./tools/VoiceChoice";
 import {
   isQuestionAnswer,
   currentQuestion,
@@ -53,9 +49,7 @@ import {
 type AssistantProps = {
   logoUrl: string;
   navigation: StorefrontNavigation;
-  tools: AssistantTools;
   session: ConversationClient;
-  showTools: boolean;
   onReady: () => void;
   onError: (error: unknown) => void;
 };
@@ -63,9 +57,7 @@ type AssistantProps = {
 function Assistant({
   logoUrl,
   navigation,
-  tools,
   session,
-  showTools,
   onReady,
 }: AssistantProps) {
   const location = useLocation();
@@ -110,14 +102,28 @@ function Assistant({
   );
   // Voice lifecycle events and Roman's opening are still the welcome state.
   // An optimistic text/tile reply counts immediately, as does customer speech.
-  const hasCustomerReply = state.conversation?.current?.hasCustomerReply || !!messages?.some(
-    (message) =>
-      message.role === "user" &&
-      message.parts.some(
-        (part) =>
-          (part.type === "text" || part.type === "voice") && !!part.text.trim(),
-      ),
-  );
+  const observedCustomerReply =
+    state.conversation?.current?.hasCustomerReply ||
+    !!messages?.some(
+      (message) =>
+        message.role === "user" &&
+        message.parts.some(
+          (part) =>
+            (part.type === "text" || part.type === "voice") && !!part.text.trim(),
+        ),
+    );
+  // Once a customer begins, keep the conversation surface light through
+  // pending sends, errors and history pagination. Only clearing chat resets it.
+  const [customerTurnStarted, setCustomerTurnStarted] = useState(false);
+  const hasCustomerReply = customerTurnStarted || observedCustomerReply;
+  const conversationId = state.conversation?.id;
+  const previousConversationId = useRef(conversationId);
+  useLayoutEffect(() => {
+    const cleared = previousConversationId.current && !conversationId;
+    previousConversationId.current = conversationId;
+    if (observedCustomerReply) setCustomerTurnStarted(true);
+    else if (cleared) setCustomerTurnStarted(false);
+  }, [observedCustomerReply, conversationId]);
   const selectedProduct = activeProduct(state.conversation);
   const displayedWidgets = useRef<{
     conversationId?: string;
@@ -152,24 +158,6 @@ function Assistant({
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
   const [chatVersion, setChatVersion] = useState(0);
-  const [toolsOpen, setToolsOpen] = useState(false);
-  const toolsId = useId();
-  const settingsReturn = useRef<HTMLButtonElement | null>(null);
-  const wasToolsOpen = useRef(false);
-  useLayoutEffect(() => {
-    if (wasToolsOpen.current && !toolsOpen && settingsReturn.current) {
-      const trigger = settingsReturn.current.isConnected
-        ? settingsReturn.current
-        : viewport.current
-            ?.closest(".roman-content")
-            ?.querySelector<HTMLButtonElement>(
-              ".roman-menu-toggle, .roman-settings-trigger",
-            );
-      trigger?.focus({ preventScroll: true });
-      settingsReturn.current = null;
-    }
-    wasToolsOpen.current = toolsOpen;
-  }, [toolsOpen]);
   const [answering, setAnswering] = useState(false);
   const answeringRef = useRef(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -214,7 +202,6 @@ function Assistant({
     if (suspended) {
       setConfirmEnd(false);
       setMicrophoneDenied(false);
-      setToolsOpen(false);
       setStartError(null);
       setEndError(null);
     }
@@ -239,6 +226,7 @@ function Assistant({
     showView("chat");
     following.current = true;
     messageQueue.enqueue(text);
+    setCustomerTurnStarted(true);
   }
 
   async function startVoice() {
@@ -337,9 +325,8 @@ function Assistant({
     try {
       await session.end();
       messageQueue.clear();
+      setCustomerTurnStarted(false);
       setConfirmEnd(false);
-      settingsReturn.current = null;
-      setToolsOpen(false);
       scrollPositions.current.chat = 0;
       showView("chat");
       setStartError(null);
@@ -368,7 +355,6 @@ function Assistant({
       confirmEnd ||
       current.approval ||
       microphoneDenied ||
-      toolsOpen ||
       current.conversation?.status !== "active"
     )
       throw new Error("Wait until your conversation is ready.");
@@ -385,6 +371,7 @@ function Assistant({
     showView("chat");
     following.current = true;
     messageQueue.enqueue(productChoiceText(choice), choice);
+    setCustomerTurnStarted(true);
   }
 
   useEffect(() => { onReady(); }, [onReady]);
@@ -491,14 +478,18 @@ function Assistant({
 
   useLayoutEffect(followConversation, [
     messages,
-    toolsOpen,
     view,
     followConversation,
   ]);
 
   return (
     <RomanViewContext.Provider value={showView}>
-      <div className="roman-content roman-chat">
+      <div
+        className="roman-content roman-chat"
+        data-welcome-theme={
+          (view === "chat" && !state.restoring && !hasCustomerReply) || undefined
+        }
+      >
         <AssistantHeader
           logoUrl={logoUrl}
           cartCount={cartCount}
@@ -511,8 +502,7 @@ function Assistant({
                 ending ||
                 suspended ||
                 microphoneDenied ||
-                !!state.approval ||
-                toolsOpen
+                !!state.approval
               }
             />
           }
@@ -526,19 +516,8 @@ function Assistant({
             setEndError(null);
             setConfirmEnd(true);
           }}
-          showSettings={showTools}
-          settingsOpen={toolsOpen}
-          settingsId={toolsId}
-          onSettings={(trigger) => {
-            settingsReturn.current = trigger;
-            setToolsOpen((open) => !open);
-          }}
-          onNavigate={() => {
-            settingsReturn.current = null;
-            setToolsOpen(false);
-          }}
         />
-        <div className="roman-conversation" hidden={toolsOpen}>
+        <div className="roman-conversation">
           <div className="roman-workspace">
             {selectedProduct && (
               <ProductStage
@@ -547,7 +526,7 @@ function Assistant({
                 navigation={navigation}
                 selectedPath={selectedProduct.path}
                 selectedTitle={selectedProduct.title}
-                hidden={view !== "chat" || toolsOpen}
+                hidden={view !== "chat"}
                 onMessage={sendMessage}
                 disabled={suspended || ending || state.restoring || confirmEnd}
               />
@@ -690,7 +669,6 @@ function Assistant({
                         confirmEnd ||
                         !!state.approval ||
                         microphoneDenied ||
-                        toolsOpen ||
                         state.conversation?.status !== "active"
                       }
                       questionDisabled={
@@ -818,16 +796,6 @@ function Assistant({
               Got it
             </button>
           </BrandedDialog>
-        )}
-        {showTools && (
-          <ToolDrawer
-            id={toolsId}
-            tools={tools}
-            open={toolsOpen}
-            onClose={() => setToolsOpen(false)}
-          >
-            <VoiceChoice session={session} disabled={ending || suspended} />
-          </ToolDrawer>
         )}
       </div>
     </RomanViewContext.Provider>

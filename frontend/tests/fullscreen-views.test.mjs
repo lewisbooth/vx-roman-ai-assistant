@@ -178,14 +178,12 @@ async function setup(t, initial = {}, options = {}) {
     loadProducts: async () => ({ products: [], messages: [] }),
   };
   const navigationCalls = [];
-  const toolCalls = [];
   let page = { url: window.location.href, pending: false, error: null };
   const navigationListeners = new Set();
   let ready = false;
   const dispose = window.ViewsTest.mount(container, {
     logoUrl: "/roman-logo.svg",
     session,
-    showTools: false,
     navigation: {
       getSnapshot: () => page,
       subscribe(listener) {
@@ -193,12 +191,6 @@ async function setup(t, initial = {}, options = {}) {
         return () => navigationListeners.delete(listener);
       },
       navigate: async (path) => navigationCalls.push(path),
-    },
-    tools: {
-      execute: async (...args) => {
-        toolCalls.push(args);
-        return {};
-      },
     },
     onReady: () => {
       ready = true;
@@ -237,7 +229,6 @@ async function setup(t, initial = {}, options = {}) {
     calls,
     session,
     navigationCalls,
-    toolCalls,
     fetches,
     select,
     unmount,
@@ -633,7 +624,6 @@ test("selected-product actions share the message queue while busy and preserve c
     "Sample intent uses the same queue",
   );
   assert.deepEqual(ctx.calls, []);
-  assert.deepEqual(ctx.toolCalls, []);
   assert.deepEqual(ctx.navigationCalls, []);
   const queued = [
     ...ctx.container.querySelectorAll(".roman-queued-message p"),
@@ -764,7 +754,6 @@ test("mobile product action closes only after queue acceptance and preserves its
   );
   assert.equal(ctx.state().voice.status, "active");
   assert.deepEqual(ctx.calls, []);
-  assert.deepEqual(ctx.toolCalls, []);
   assert.deepEqual(ctx.navigationCalls, []);
 });
 
@@ -1216,7 +1205,6 @@ test("Cart notice lasts five seconds without stealing focus, and a new receipt r
     [],
     "Notifications must not submit continuation prompts",
   );
-  assert.deepEqual(ctx.toolCalls, []);
 });
 
 test("sample notice leaves quick answers and text input usable without a Keep Shopping step", async (t) => {
@@ -1259,7 +1247,6 @@ for (const mobile of [false, true]) {
     assert.equal(cartNotice(ctx), notice);
     assert.equal(ctx.container.querySelector("dialog[open]"), null);
     assert.deepEqual(ctx.calls, []);
-    assert.deepEqual(ctx.toolCalls, []);
     assert.deepEqual(ctx.navigationCalls, []);
     assert.equal(ctx.window.location.href, url);
     assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);

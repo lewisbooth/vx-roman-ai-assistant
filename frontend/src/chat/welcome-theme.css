@@ -1,0 +1,149 @@
+/* Empty Chat only. The app owns the lifecycle; the shell also covers the
+   keyboard gap. Cart, Gallery and all shared dialogs retain the light palette. */
+.roman-panel:has(.roman-chat[data-welcome-theme]) {
+  isolation: isolate;
+  background:
+    radial-gradient(ellipse at 82% 18%, #a9654924, transparent 64%),
+    radial-gradient(ellipse at 6% 100%, #19030370, transparent 75%),
+    var(--color-roman-burgundy, #4e0e0e);
+}
+
+/* Feathered shafts of window light, rendered at the screen's resolution.
+   Only transform/opacity animate; no bitmap download or animated blur. */
+.roman-panel:has(.roman-chat[data-welcome-theme])::before {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  pointer-events: none;
+  background:
+    linear-gradient(126deg, transparent 22%, #f7dbb604 28%, #f7dbb612 30%, #f7dbb60b 34%, transparent 39%),
+    linear-gradient(126deg, transparent 40%, #f7dbb604 43%, #f7dbb610 46%, #f7dbb607 51%, transparent 55%),
+    linear-gradient(126deg, transparent 57%, #f7dbb604 60%, #f7dbb60c 63%, transparent 69%);
+  mask-image: linear-gradient(#000b, #000 30%, transparent 96%);
+  animation: roman-welcome-light 24s ease-in-out infinite alternate;
+}
+
+/* Static, tiny tiled grain dithers the gradients to avoid the demo's banding.
+   The concentric outlines echo its subtle bottom-right architectural motif. */
+.roman-panel:has(.roman-chat[data-welcome-theme])::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23fff' opacity='.045' filter='url(%23n)' d='M0 0h160v160H0z'/%3E%3C/svg%3E") repeat,
+    radial-gradient(circle at calc(100% + 130px) calc(100% + 220px),
+      transparent 419px, #f7f5ef1a 420px, transparent 421px,
+      transparent 539px, #f7f5ef0e 540px, transparent 541px,
+      transparent 659px, #f7f5ef09 660px, transparent 661px);
+}
+
+.roman-panel:has(.roman-chat[data-welcome-theme]) .roman-frame {
+  z-index: 1;
+}
+
+.roman-chat[data-welcome-theme] {
+  color: var(--color-roman-ivory, #f7f5ef);
+}
+
+.roman-chat[data-welcome-theme] .roman-conversation {
+  color: inherit;
+}
+
+.roman-chat[data-welcome-theme] :is(.roman-header-brand, .roman-welcome) > img {
+  filter: brightness(0) invert(1);
+  opacity: 0.96;
+}
+
+.roman-panel:has(.roman-chat[data-welcome-theme]) .roman-close,
+.roman-chat[data-welcome-theme] .roman-menu-toggle,
+.roman-chat[data-welcome-theme] .roman-header-actions .roman-end-chat {
+  color: var(--color-roman-ivory, #f7f5ef);
+}
+
+.roman-panel:has(.roman-chat[data-welcome-theme]) .roman-close:hover,
+.roman-chat[data-welcome-theme] .roman-menu-toggle[aria-expanded="true"] {
+  background: #f7f5ef14;
+}
+
+.roman-chat[data-welcome-theme] .roman-view-nav {
+  border-color: #f7f5ef33;
+  background: #21070726;
+}
+
+.roman-chat[data-welcome-theme] .roman-view-nav a {
+  color: #f7f5ef;
+}
+
+.roman-chat[data-welcome-theme] .roman-view-nav a:hover {
+  background: #f7f5ef14;
+}
+
+.roman-chat[data-welcome-theme] .roman-view-nav a[aria-current] {
+  background: #f7f5ef;
+  color: #4e0e0e;
+}
+
+.roman-chat[data-welcome-theme] .roman-welcome-question {
+  color: #e1cebf;
+}
+
+.roman-chat[data-welcome-theme] .roman-welcome-tile {
+  background: #f7f5ef;
+  border-color: #f7f5ef80;
+  box-shadow: 0 6px 30px #19030320;
+}
+
+.roman-chat[data-welcome-theme] .roman-tile-art {
+  mix-blend-mode: multiply;
+}
+
+.roman-chat[data-welcome-theme] .roman-welcome-tile:not(:disabled):is(:hover, :focus-visible) {
+  border-color: #e0b88d;
+  background: #fffdf8;
+  box-shadow: 0 6px 30px #19030330, 0 0 0 1px #e0b88d;
+}
+
+.roman-chat[data-welcome-theme] .roman-composer {
+  background: transparent;
+}
+
+.roman-chat[data-welcome-theme] .roman-composer form:not([data-unavailable]) {
+  background: #f7f5ef;
+  border-color: #f7f5ef80;
+  box-shadow: 0 6px 30px #19030320;
+}
+
+.roman-chat[data-welcome-theme] .roman-composer > .roman-chat-error,
+.roman-chat[data-welcome-theme] .roman-composer .roman-chat-retry {
+  color: #ffd6c9;
+  border-color: currentColor;
+}
+
+.roman-panel:has(.roman-chat[data-welcome-theme]) .roman-close:focus-visible,
+.roman-chat[data-welcome-theme] :is(.roman-menu-toggle, .roman-header-actions button, .roman-view-nav a, .roman-welcome-tile):focus-visible,
+.roman-chat[data-welcome-theme] .roman-composer form:has(textarea:focus-visible) {
+  outline-color: #f7f5ef;
+}
+
+@keyframes roman-welcome-light {
+  from { transform: translate(-1%, -1%); opacity: 0.7; }
+  to { transform: translate(1%, 1%); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .roman-panel:has(.roman-chat[data-welcome-theme])::before {
+    animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .roman-panel:has(.roman-chat[data-welcome-theme])::before,
+  .roman-panel:has(.roman-chat[data-welcome-theme])::after {
+    display: none;
+  }
+  .roman-chat[data-welcome-theme] :is(.roman-header-brand, .roman-welcome) > img {
+    filter: none;
+  }
+}
