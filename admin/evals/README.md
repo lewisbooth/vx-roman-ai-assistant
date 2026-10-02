@@ -20,14 +20,13 @@ The later concise-reply run initially repeated accepted guarantee details in fou
 
 Synthetic advisor evaluations include the same private `memoryUpdate` terminal schema as live turns, without writing notes or checkpoints to the customer database. The long-conversation checks also cover model-specific compaction, private memo persistence, historical recall, task switching and caption/page boundaries in the regular test suite.
 
-Synthetic advisor evaluations include the same private `memoryUpdate` terminal schema as live turns, without writing notes or checkpoints to the customer database. The long-conversation checks also cover model-specific compaction, private memo persistence, historical recall, task switching and caption/page boundaries in the regular test suite.
-
 Run from the repository root:
 
 ```powershell
 node admin/evals/discovery.mjs --live
 node admin/evals/discovery.mjs --live --flow
 node admin/evals/discovery.mjs --live --flow --case=pleated-category-refinement,pleated-no-eligible,explicit-bifold-switch --max-requests=12
+node admin/evals/discovery.mjs --live --flow --case=nursery-ready-for-cards,pleated-cellular-refinement,wood-frame-recess,wood-frame-glass-fit --max-requests=16
 node admin/evals/discovery.mjs --live --flow --case=current-product-offer,current-product-accept-answer,current-product-accept-card,current-product-accept-name,current-product-decline --max-requests=24
 ```
 
@@ -37,7 +36,7 @@ The default suite compares Medium and Low reasoning in text and voice briefings.
 
 ## Behaviour checks
 
-Normal discovery should use two completions and one catalogue operation, then return grounded cards and a useful question. Broad discovery checks category coverage. Intake asks one focused question with no catalogue call. Flow cases also cover missing room/opening/priority/aesthetic information, no-drill family choices and category exploration after an earlier suggestion. Synthetic product descriptions include enough evidence to make unnecessary detail or guide calls a failure.
+Normal discovery should use two completions and one catalogue operation, then return grounded cards and a useful question. Broad discovery checks category coverage. Intake asks one focused question with no catalogue call when relevant context is missing. Flow cases also cover missing room/opening/priority/aesthetic information and category exploration after an earlier suggestion. An undecided family does not block search when the existing context is enough: `no-drill-family-choice` now requires varied cards and a category question together. Synthetic product descriptions include enough evidence to make unnecessary detail or guide calls a failure.
 
 Current-product cases verify the entry card has **This blind / Something else**, acceptance by answer/card/name activates the exact offered product even when its page is already loaded, and decline continues discovery. Acceptance must offer product actions without restarting intake or searching alternatives. A known-ID refresh is permitted when details are needed. Fixture/grader tests run in `npm test`.
 
@@ -49,9 +48,20 @@ The adversarial category cases preserve a living-room request for a standard win
 - `pleated-no-eligible`: every result contradicts the requested category or fitting/opening requirements. Expect no cards and useful alternatives, without silently relaxing a requirement.
 - `explicit-bifold-switch`: the customer explicitly replaces the standard window with individual bifold door panels. The search and selected products must follow that correction while preserving the other requirements.
 
+The nursery and mounting regressions use a mixed catalog with verified recess tension products and incompatible or unverified alternatives:
+
+- `nursery-ready-for-cards`: standard recess, blackout, no-drill and open colour preferences are enough for one batched search. Expect grounded roller and cellular cards with a category exploration question in the same response.
+- `pleated-cellular-refinement`: the short follow-up "Pleated blind" retains the nursery's blackout, no-drill and opening constraints. Two suitable products use cellular/honeycomb titles and folded-construction evidence without the literal word "pleated"; both remain eligible.
+- `wood-frame-recess`: wooden window frames do not exclude verified wall-to-wall recess tension fittings or trigger another frame/glazing question.
+- `wood-frame-glass-fit`: an explicit direct glass-fitting request still requires actual frame compatibility. None of the catalog's products fits this wooden-frame request; expect no cards and alternatives before changing the mounting requirement.
+
+All these cases retain exclusions for wrong opening, drilling, wrong opacity, unsupported fitting or construction family. Fixture/grader checks accept varied wording and inspect selected IDs, batched operation counts, query constraints and question topics. Run them without provider access with `node --test admin/tests/discovery-evaluation.test.mjs`; the importable fixtures and grader live in `discovery-suitability.mjs` and are also included in `npm test`.
+
 Read the saved outputs as well as the assertions. These tests exercise advisor orchestration and synthetic suitability judgment; they do not prove real Shopify relevance, fitting compatibility, image loading or audible GPT-Live delivery. Runtime tests separately cover execution, partial failure, cancellation, persistence and mutation safeguards.
 
 ## Recorded samples
+
+The 2026-10-02 nursery/mounting retest passed ten text/voice samples across the four new cases and `pleated-no-eligible`. Every sample used two completions and one catalogue operation (20 provider requests), with server-ready times of 4.74–8.45s. Eligible cellular/honeycomb products stayed in pleated results, broad cards covered roller and cellular families, and true direct-frame incompatibility still returned no cards. An initial 21-request run exposed an extra synonym search and unnecessary alternatives despite eligible products; the prompt now combines those terms in the first query and refines within the retained goal. One final voice briefing still called the folded construction “close to” pleated, but accepted both products without asking to change category or fitting. These are synthetic catalogue tests and backend briefings, not audible Live or real-storefront checks.
 
 The 2026-09-29 current-product run passed nine of ten text/voice samples. The named-selection text sample reached the right product/actions but made an unnecessary exact-title search first. After clarifying identity reuse, both named-selection channels passed without that search. The other eight cases passed against the immediately preceding prompt; they were not rerun after this narrow clarification.
 

@@ -12,6 +12,11 @@ import {
   gradeCurrentProductReply,
 } from "./current-product.mjs";
 
+import {
+  suitabilityCases,
+  gradeSuitabilityReply,
+} from "./discovery-suitability.mjs";
+
 if (!process.argv.includes("--live")) {
   console.log(
     "Run node admin/evals/discovery.mjs --live to make bounded billable OpenAI requests with synthetic data.",
@@ -86,97 +91,6 @@ const kitchenHistory = [
   { role: "assistant", text: "What matters most for the kitchen?" },
   { role: "user", text: "Privacy" },
 ];
-function catalogProduct(id, title, description) {
-  return {
-    id: "gid://shopify/Product/" + id,
-    title,
-    description,
-    url: origin + "/products/synthetic-" + id,
-    priceLabel: "From GBP 30.00",
-  };
-}
-const suitabilityCatalog = [
-  catalogProduct(
-    7100,
-    "Synthetic Woven Linen Pleated Blind",
-    "A no-drill tension-fit pleated blind for standard rectangular recessed windows. Woven natural texture gives living rooms daytime privacy while filtering light. Not designed for bifold doors or roof windows.",
-  ),
-  catalogProduct(
-    7101,
-    "Synthetic Chevron Pleated Blind",
-    "A subtly patterned pleated blind for standard rectangular recessed windows, with included no-drill tension fittings. Provides daytime privacy and filtered light in a living room. Not suitable for bifold doors or skylights.",
-  ),
-  catalogProduct(
-    7102,
-    "Synthetic BiFold Pearl Textured Pleated Blind",
-    "No-drill pleated blind with woven texture, designed exclusively for individual uPVC bifold glazed door panels with rubber beading. Provides daytime privacy and filtered light. Not compatible with standard recessed windows or roof windows.",
-  ),
-  catalogProduct(
-    7103,
-    "Synthetic Roof Window Textured Pleated Blind",
-    "A textured no-drill pleated blind for matching roof-window model codes only. Provides filtered light and privacy. Cannot fit ordinary rectangular recessed windows or bifold door panels.",
-  ),
-  catalogProduct(
-    7104,
-    "Synthetic Screw-Fit Patterned Pleated Blind",
-    "Patterned pleated blind providing living-room daytime privacy for standard rectangular recessed windows. Installation requires drilling and screw-fixed brackets; no no-drill option is offered.",
-  ),
-  catalogProduct(
-    7105,
-    "Synthetic Oatmeal Pleated Blind",
-    "Textured pleated fabric with daytime privacy and filtered light, for standard rectangular recessed windows. The catalog does not specify how it mounts or whether a no-drill fitting is available.",
-  ),
-  catalogProduct(
-    7106,
-    "Synthetic Botanical Roller Blind",
-    "A patterned roller blind with verified no-drill tension fittings for standard rectangular recessed windows, giving a living room filtered light and daytime privacy. This is roller fabric, not pleated or cellular fabric.",
-  ),
-];
-const pleatedHistory = [
-  {
-    role: "user",
-    text: "I want no-drill blinds for my living room. It is a standard rectangular recessed window. I want daytime privacy with natural light, and a pattern or texture. I have not chosen a blind category yet.",
-  },
-  { role: "assistant", text: "Which style would you like to explore?" },
-  { role: "user", text: "Pleated blind" },
-];
-const suitabilityCases = [
-  {
-    name: "pleated-category-refinement",
-    history: pleatedHistory,
-    fixtureProducts: suitabilityCatalog,
-    eligibleIds: ["gid://shopify/Product/7100", "gid://shopify/Product/7101"],
-    opening: /standard|rectangular|recess|window/i,
-    wrongOpening: /bifold|bi-fold|roof|skylight/i,
-  },
-  {
-    name: "pleated-no-eligible",
-    history: pleatedHistory,
-    fixtureProducts: suitabilityCatalog.filter((product) =>
-      [7102, 7103, 7104, 7106].some((id) => product.id.endsWith("/" + id)),
-    ),
-    eligibleIds: [],
-    opening: /standard|rectangular|recess|window/i,
-    wrongOpening: /bifold|bi-fold|roof|skylight/i,
-  },
-  {
-    name: "explicit-bifold-switch",
-    history: [
-      ...pleatedHistory,
-      {
-        role: "assistant",
-        text: "I will look for patterned or textured pleated blinds for your standard window.",
-      },
-      {
-        role: "user",
-        text: "Actually, these are for bifold glazed door panels instead of the standard window. Each panel is uPVC with rubber beading; I want a separate blind on each panel. Keep the no-drill fitting, daytime privacy and patterned or textured look. Please show me pleated blinds for these bifold panels.",
-      },
-    ],
-    fixtureProducts: suitabilityCatalog,
-    eligibleIds: ["gid://shopify/Product/7102"],
-    opening: /bifold|bi-fold/i,
-  },
-];
 const flowCases = [
   ...currentProductCases,
   ...suitabilityCases,
@@ -238,24 +152,6 @@ const flowCases = [
       },
     ],
     minQueries: 2,
-  },
-  {
-    name: "no-drill-family-choice",
-    history: [
-      {
-        role: "user",
-        text: "Help me find no-drill blinds for my kitchen. Standard rectangular window, light neutrals; no-drill fitting is the main requirement. I haven't decided what type of blind.",
-      },
-      {
-        role: "assistant",
-        text: "Would you prefer plain fabrics or patterns?",
-      },
-      { role: "user", text: "Plain fabrics, please." },
-    ],
-    intake: /style|type|famil|explore|direction/i,
-    familyChoice: true,
-    quietIntake: true,
-    noDrill: true,
   },
   {
     name: "no-drill-broad-discovery",
@@ -442,7 +338,13 @@ for (const sample of samples) {
     metrics.ready(!!reply.presentation, mode === "voice");
     const selected = reply.presentation?.productIds ?? [];
     const families = [
-      ...new Set(selected.map((id) => products.get(id)?.title.split(" ")[1])),
+      ...new Set(
+        selected.map(
+          (id) =>
+            sample.productFamilies?.[id] ??
+            products.get(id)?.title.split(" ")[1],
+        ),
+      ),
     ];
     const question = reply.questionPresentation;
     // Voice text already includes the question once, assembled by the model owner.
@@ -450,11 +352,6 @@ for (const sample of samples) {
       mode === "voice" && question && reply.text.endsWith(question.question)
         ? reply.text.slice(0, -question.question.length).trim()
         : reply.text;
-    // Topic checks are deliberately broad; saved synthetic output also needs human review.
-    const familyAnswers =
-      question?.answers.filter((answer) =>
-        /roller|roman|pleat|cellular|venetian|wood|shutter/i.test(answer),
-      ) ?? [];
     const failures = [];
     const check = (passed, reason) => {
       if (!passed) failures.push(reason);
@@ -469,70 +366,10 @@ for (const sample of samples) {
         ...gradeCurrentProductReply(sample, currentProductFixture, reply, mode),
       );
     } else if (sample.fixtureProducts) {
-      check(attempts === 2, "Discovery must use two completions");
-      check(
-        operations.length === 1 && operations[0].name === "search_products",
-        "Discovery must use one catalogue operation without guides or navigation",
+      failures.push(
+        ...gradeSuitabilityReply(sample, { attempts, operations }, reply, mode),
       );
-      const queries = operations
-        .filter((operation) => operation.name === "search_products")
-        .flatMap((operation) => operation.queries);
-      check(queries.length === 1, "A chosen family needs one targeted query");
-      check(
-        queries.every((query) => /pleat|cellular|honeycomb/i.test(query)),
-        "Query lost the chosen pleated family",
-      );
-      check(
-        queries.every((query) =>
-          /no[- ]drill|without drill|drill[- ]free/i.test(query),
-        ),
-        "Query lost the no-drill requirement",
-      );
-      check(
-        queries.every((query) => /pattern|textur|woven/i.test(query)),
-        "Query lost the pattern/texture preference",
-      );
-      check(
-        queries.every(
-          (query) =>
-            sample.opening.test(query) && !sample.wrongOpening?.test(query),
-        ),
-        "Query lost or contradicted the current opening",
-      );
-      check(
-        selected.every((id) => sample.eligibleIds.includes(id)),
-        "Cards included an ineligible or unverified product",
-      );
-      check(
-        sample.eligibleIds.length
-          ? selected.length > 0 && selected.length <= 10
-          : selected.length === 0,
-        "Incorrect card presence for eligible results",
-      );
-      if (!sample.eligibleIds.length) {
-        check(
-          /no |not |cannot|can.t|couldn.t|haven.t found|none|unable/i.test(message ?? ""),
-          "Missing clear explanation that no result meets the request",
-        );
-        check(
-          question?.answers.length >= 2 &&
-            /other|different|no[- ]drill|style|pattern|texture|fit|broaden|roller|pleat/i.test(
-              question.answers.join(" "),
-            ),
-          "No useful alternatives after unsuitable results",
-        );
-      }
     } else {
-      check(
-        !sample.quietIntake || !message?.trim(),
-        "Intake included redundant message text",
-      );
-      check(
-        !sample.familyChoice ||
-          (familyAnswers.length >= 2 &&
-            question?.answers.some((answer) => /everything|all/i.test(answer))),
-        "Missing family choices and broad-discovery answer",
-      );
       check(
         !sample.notQuestion ||
           !sample.notQuestion.test(question?.question ?? ""),
