@@ -120,7 +120,7 @@ export function Composer({
                 }}
                 rows={1}
                 maxLength={MAX_MESSAGE_LENGTH}
-                placeholder="Ask Roman…"
+                placeholder="Ask Roman anything..."
                 disabled={disabled}
               />
               {message.trim() ? (

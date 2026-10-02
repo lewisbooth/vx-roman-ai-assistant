@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
+import { ivoryLogo } from "./brand-assets";
 
 const previewPages = [
   { label: "Home", path: "/" },
@@ -24,7 +25,20 @@ export default defineConfig(({ mode }) => ({
     tailwindcss(),
     {
       name: "roman-design-assets",
-      apply: "build",
+      configureServer(server) {
+        server.middlewares.use((request, response, next) => {
+          const match = request.url?.match(
+            /^\/src\/assets\/(roman-(?:logo|wordmark))-ivory\.svg(?:\?|$)/,
+          );
+          if (!match) return next();
+          const source = readFileSync(
+            new URL(`./src/assets/${match[1]}.svg`, import.meta.url),
+            "utf8",
+          );
+          response.setHeader("Content-Type", "image/svg+xml");
+          response.end(ivoryLogo(source));
+        });
+      },
       buildStart() {
         if (mode !== "bootstrap") return;
         for (const fileName of [
@@ -40,11 +54,19 @@ export default defineConfig(({ mode }) => ({
             new URL(`./src/assets/${fileName}`, import.meta.url),
           );
           this.addWatchFile(path);
+          const source = readFileSync(path);
           this.emitFile({
             type: "asset",
             fileName,
-            source: readFileSync(path),
+            source,
           });
+          if (fileName.endsWith(".svg")) {
+            this.emitFile({
+              type: "asset",
+              fileName: fileName.replace(".svg", "-ivory.svg"),
+              source: ivoryLogo(source.toString("utf8")),
+            });
+          }
         }
       },
       generateBundle(_options, bundle) {

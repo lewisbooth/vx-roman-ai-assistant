@@ -68,6 +68,7 @@ import type {
 import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
 import { createConversationHistory } from "./history";
+import { persistWelcomeState } from "../welcome-state";
 import {
   createVoiceConnection,
   MicrophonePermissionError,
@@ -683,7 +684,10 @@ export function createConversationClient(
     try {
       if (access)
         window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(access));
-      else window.sessionStorage.removeItem(STORAGE_KEY);
+      else {
+        window.sessionStorage.removeItem(STORAGE_KEY);
+        persistWelcomeState(true);
+      }
     } catch {
       console.warn(
         "[Roman] Conversation storage is unavailable; this conversation cannot resume after a page reload.",

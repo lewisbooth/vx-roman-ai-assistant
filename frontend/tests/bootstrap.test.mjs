@@ -122,6 +122,7 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
       host,
       container,
       loadingStartedAt,
+      onThemeChange,
     ) {
       const content = window.document.createElement("p");
       content.textContent = "Runtime content";
@@ -132,6 +133,7 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
         container,
         content,
         loadingStartedAt,
+        onThemeChange,
         open: [],
         disposed: 0,
       };
@@ -160,6 +162,118 @@ function loadingScript(document) {
 
 function hidden(element) {
   return !element || !!element.closest("[hidden]");
+}
+
+const presentationConversationId = "11111111-1111-4111-8111-111111111111";
+const presentationCredential = JSON.stringify({
+  conversationId: presentationConversationId,
+  token: "a".repeat(43),
+  expiresAt: "2099-10-02T10:00:00Z",
+  apiBaseUrl: "https://roman.example/api/conversations",
+});
+
+for (const scenario of [
+  { name: "fresh chat", storage: {}, welcome: true },
+  {
+    name: "saved opening greeting",
+    storage: {
+      "roman:conversation": presentationCredential,
+      "roman:welcome-state": JSON.stringify({ conversationId: presentationConversationId, welcome: true }),
+    },
+    welcome: true,
+  },
+  {
+    name: "saved customer conversation",
+    storage: {
+      "roman:conversation": presentationCredential,
+      "roman:welcome-state": JSON.stringify({ conversationId: presentationConversationId, welcome: false }),
+    },
+    welcome: false,
+  },
+  {
+    name: "unknown saved conversation",
+    storage: { "roman:conversation": presentationCredential },
+    welcome: undefined,
+  },
+  {
+    name: "saved conversation with a malformed welcome hint",
+    storage: { "roman:conversation": presentationCredential, "roman:welcome-state": "{" },
+    welcome: undefined,
+  },
+  {
+    name: "stale welcome hint from another conversation",
+    storage: {
+      "roman:conversation": presentationCredential,
+      "roman:welcome-state": JSON.stringify({ conversationId: "22222222-2222-4222-8222-222222222222", welcome: true }),
+    },
+    welcome: undefined,
+  },
+  {
+    name: "cleared chat with an orphaned light hint",
+    storage: {
+      "roman:welcome-state": JSON.stringify({ conversationId: presentationConversationId, welcome: false }),
+    },
+    welcome: true,
+  },
+]) {
+  test(`the loader resolves initial appearance for ${scenario.name}`, async (t) => {
+    const ctx = setup(t, undefined, { storage: scenario.storage });
+    ctx.launcher().click();
+    assert.equal(ctx.panel().hasAttribute("data-welcome-theme"), scenario.welcome === true);
+    assert.equal(hidden(ctx.panel()), scenario.welcome === undefined);
+    assert.equal(hidden(ctx.progress()), scenario.welcome === undefined);
+    assert.equal(ctx.window.RomanAssistant, undefined, "palette must not wait for the runtime download");
+    if (scenario.welcome === undefined) {
+      assert.equal(ctx.document.documentElement.hasAttribute("data-roman-open"), false,
+        "an unresolved palette must not hide or block the storefront");
+      const ready = deferred();
+      const mounts = installRuntime(ctx.window, () => ready.promise);
+      loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+      await until(() => mounts.length === 1, "runtime did not mount");
+      assert.equal(hidden(ctx.panel()), true);
+      mounts[0].onThemeChange(true);
+      assert.equal(hidden(ctx.panel()), false);
+      assert.equal(ctx.panel().hasAttribute("data-welcome-theme"), true);
+      ready.resolve();
+      await until(() => hidden(ctx.progress()), "resolved theme did not reveal content");
+    }
+  });
+}
+
+test("an unknown saved appearance exposes a retry when the runtime download fails", async (t) => {
+  const ctx = setup(t, undefined, { storage: { "roman:conversation": presentationCredential } });
+  ctx.launcher().click();
+  assert.equal(hidden(ctx.panel()), true);
+  loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("error"));
+  await until(() => !hidden(ctx.retry()), "unknown appearance must not conceal errors");
+  assert.equal(hidden(ctx.panel()), false);
+  assert.equal(ctx.panel().hasAttribute("data-welcome-theme"), false);
+});
+
+for (const welcome of [true, false]) {
+  test(`download errors and retry keep the ${welcome ? "burgundy" : "light"} loader palette`, async (t) => {
+    const ctx = setup(t, undefined, {
+      storage: {
+        "roman:conversation": presentationCredential,
+        "roman:welcome-state": JSON.stringify({ conversationId: presentationConversationId, welcome }),
+      },
+    });
+    ctx.launcher().click();
+    const logo = ctx.panel().querySelector(".roman-brand");
+    const originalLogo = logo.src;
+    loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("error"));
+    await until(() => !hidden(ctx.retry()), "loader did not expose the retry action");
+    assert.equal(ctx.panel().hasAttribute("data-welcome-theme"), welcome);
+    assert.equal(logo.src, originalLogo);
+    ctx.retry().click();
+    assert.equal(ctx.panel().hasAttribute("data-welcome-theme"), welcome);
+    assert.equal(logo.src, originalLogo);
+    assert.equal(hidden(ctx.progress()), false);
+    installRuntime(ctx.window);
+    loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("load"));
+    await until(() => hidden(ctx.progress()), "retried runtime did not become ready");
+    assert.equal(ctx.panel().hasAttribute("data-welcome-theme"), welcome);
+  });
 }
 
 function addRuntimeComposer(mount, disabled = false) {

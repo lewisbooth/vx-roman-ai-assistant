@@ -4,12 +4,15 @@ import styles from "./bootstrap.css?inline";
 import layoutCss from "./storefront.css?inline";
 import { attachHeaderLauncher } from "./header-launcher";
 import type { AssistantRuntime } from "./runtime";
+import { readWelcomeState } from "./welcome-state";
+import { brandLogoUrl } from "./brand-logo";
 
 type RuntimeModule = {
   mountAssistant: (
     host: HTMLElement,
     container: HTMLElement,
     loadingStartedAt: number,
+    onThemeChange: (welcome: boolean) => void,
   ) => AssistantRuntime;
 };
 declare global {
@@ -104,12 +107,14 @@ class RomanAssistant extends HTMLElement {
   #closeButton?: HTMLButtonElement;
   #content?: HTMLDivElement;
   #loading?: HTMLDivElement;
+  #logo?: HTMLImageElement;
   #progress?: HTMLDivElement;
   #error?: HTMLParagraphElement;
   #retryButton?: HTMLButtonElement;
   #layout?: HTMLStyleElement;
   #runtime?: AssistantRuntime;
   #open = false;
+  #themeKnown = false;
   #state: "idle" | "loading" | "ready" | "error" = "idle";
   #generation = 0;
   #onPageShow = (event: PageTransitionEvent) => {
@@ -169,8 +174,7 @@ class RomanAssistant extends HTMLElement {
 </div>
 <button class=roman-close type=button aria-label="Close assistant"><span aria-hidden=true>×</span></button>`;
     const query = panel.querySelector.bind(panel);
-    const logo = query<HTMLImageElement>(".roman-brand")!;
-    if (this.dataset.logoUrl) logo.src = this.dataset.logoUrl;
+    this.#logo = query<HTMLImageElement>(".roman-brand")!;
     this.#panel = panel;
     this.#closeButton = query<HTMLButtonElement>(".roman-close")!;
     this.#content = query<HTMLDivElement>("[data-roman-content]")!;
@@ -203,16 +207,21 @@ class RomanAssistant extends HTMLElement {
     layout.dataset.romanLayout = "";
     layout.textContent = layoutCss;
     this.#layout = layout;
+    const welcome = readWelcomeState();
+    if (welcome !== undefined) this.#setTheme(welcome);
+    else panel.hidden = true;
   }
 
-  #setOpen(open: boolean, focus = true) {
-    if (!this.isConnected || this.#open === open) return;
-    focus ||= !open && !!this.#panel?.contains(this.shadowRoot!.activeElement);
-    this.#open = open;
-    savedState(open ? "1" : "0");
-    if (open && !this.#panel) this.#createPanel();
+  #setTheme(welcome: boolean) {
+    this.#themeKnown = true;
+    this.#panel!.toggleAttribute("data-welcome-theme", welcome);
+    if (this.dataset.logoUrl) this.#logo!.src = brandLogoUrl(this.dataset.logoUrl, welcome);
+    this.#showPanel();
+  }
+
+  #showPanel() {
+    const open = this.#open && this.#themeKnown;
     this.#panel!.hidden = !open;
-    this.#headerLauncher?.setOpen(open);
     document.documentElement.toggleAttribute("data-roman-open", open);
     if (open) {
       document.head.append(this.#layout!);
@@ -221,6 +230,16 @@ class RomanAssistant extends HTMLElement {
       this.#layout?.remove();
       document.removeEventListener("focusin", this.#onFocus);
     }
+  }
+
+  #setOpen(open: boolean, focus = true) {
+    if (!this.isConnected || this.#open === open) return;
+    focus ||= !open && !!this.#panel?.contains(this.shadowRoot!.activeElement);
+    this.#open = open;
+    savedState(open ? "1" : "0");
+    if (open && !this.#panel) this.#createPanel();
+    this.#showPanel();
+    this.#headerLauncher?.setOpen(open);
     this.#runtime?.setOpen(open);
     if (open) {
       this.#closeButton?.focus({ preventScroll: true });
@@ -254,6 +273,7 @@ class RomanAssistant extends HTMLElement {
         this,
         this.#content!,
         loadingStartedAt,
+        (welcome) => this.#setTheme(welcome),
       );
       this.#runtime = runtime;
       runtime.setOpen(this.#open);
@@ -270,6 +290,7 @@ class RomanAssistant extends HTMLElement {
       this.#runtime = undefined;
       this.#content!.replaceChildren();
       this.#state = "error";
+      if (!this.#themeKnown) this.#setTheme(false);
       this.#panel!.ariaBusy = "false";
       this.#progress!.hidden = true;
       this.#error!.textContent =
@@ -293,6 +314,7 @@ class RomanAssistant extends HTMLElement {
       document.documentElement.removeAttribute("data-roman-open");
       this.shadowRoot?.replaceChildren();
       this.#panel = undefined;
+      this.#themeKnown = false;
       this.#open = false;
       this.#state = "idle";
     });

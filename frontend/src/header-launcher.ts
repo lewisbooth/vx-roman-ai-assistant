@@ -1,3 +1,5 @@
+import { brandLogoUrl } from "./brand-logo";
+
 /** The theme owns its header; this trigger never owns the assistant or runtime. */
 export function attachHeaderLauncher(
   style: HTMLStyleElement,
@@ -46,6 +48,7 @@ export function attachHeaderLauncher(
   return {
     setOpen(open: boolean) {
       button.ariaExpanded = String(open);
+      image.src = brandLogoUrl(wordmarkUrl, open);
       sync();
     },
     focus() {

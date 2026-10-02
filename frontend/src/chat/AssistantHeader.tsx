@@ -1,9 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { NavLink } from "react-router";
 import type { ReactNode } from "react";
+import { brandLogoUrl } from "../brand-logo";
 
 export function AssistantHeader({
   logoUrl,
+  welcomeTheme,
   cartCount,
   cartNotice,
   hasConversation,
@@ -12,6 +14,7 @@ export function AssistantHeader({
   onEnd,
 }: {
   logoUrl: string;
+  welcomeTheme: boolean;
   cartCount?: number;
   cartNotice?: ReactNode;
   hasConversation: boolean;
@@ -76,7 +79,7 @@ export function AssistantHeader({
   }, [menuOpen]);
 
   const logo = (
-    <img src={logoUrl} alt="Roman by SelectBlinds" width={121} height={50} />
+    <img src={brandLogoUrl(logoUrl, welcomeTheme && !mobile)} alt="Roman by SelectBlinds" width={121} height={50} />
   );
   const endButton = hasConversation && (
     <button

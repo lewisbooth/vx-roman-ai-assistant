@@ -24,6 +24,7 @@ export function mountAssistant(
   host: HTMLElement,
   container: HTMLElement,
   loadingStartedAt: number,
+  onThemeChange: (welcome: boolean) => void,
 ): AssistantRuntime {
   const deadline = (firstLoadingDeadline ??= loadingStartedAt + 1000);
   const logoUrl = host.dataset.logoUrl;
@@ -61,8 +62,10 @@ export function mountAssistant(
   const composerFocus = createComposerFocus(container);
   const viewport = createAssistantViewport(host);
 
-  function onReady() {
-    if (disposed || readyTimer !== undefined) return;
+  function onReady(welcome: boolean) {
+    if (disposed) return;
+    onThemeChange(welcome);
+    if (readyTimer !== undefined) return;
     const remaining = deadline - window.performance.now();
     if (remaining <= 0) resolveReady();
     else readyTimer = window.setTimeout(resolveReady, remaining);

@@ -180,7 +180,6 @@ async function setup(t, initial = {}, options = {}) {
   const navigationCalls = [];
   let page = { url: window.location.href, pending: false, error: null };
   const navigationListeners = new Set();
-  let ready = false;
   const dispose = window.ViewsTest.mount(container, {
     logoUrl: "/roman-logo.svg",
     session,
@@ -192,9 +191,7 @@ async function setup(t, initial = {}, options = {}) {
       },
       navigate: async (path) => navigationCalls.push(path),
     },
-    onReady: () => {
-      ready = true;
-    },
+    onReady: () => {},
     onError: (error) => errors.push(error),
   });
   let disposed = false;
@@ -208,7 +205,7 @@ async function setup(t, initial = {}, options = {}) {
     window.close();
     assert.deepEqual(errors, []);
   });
-  await until(() => ready || errors.length, "Assistant did not mount");
+  await until(() => container.querySelector(".roman-chat") || errors.length, "Assistant did not mount");
   assert.deepEqual(errors, []);
   const tab = (name) =>
     [...container.querySelectorAll(".roman-view-nav a")].find(

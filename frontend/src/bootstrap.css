@@ -35,6 +35,7 @@
   .roman-close,
   .roman-retry {
     @apply inline-flex cursor-pointer items-center justify-center rounded-[999px];
+    color: inherit;
   }
   :host([data-roman-header-launcher]) {
     display: inline-flex;
@@ -68,9 +69,6 @@
   .roman-header-button[aria-expanded="true"] {
     --fill: #4e0e0e;
     color: #f7f5ef;
-    img {
-      filter: brightness(0) invert(1);
-    }
   }
   @keyframes roman-header-shine {
     to {
@@ -83,15 +81,27 @@
     @apply fixed inset-0 z-[2147483647] h-dvh w-full overflow-hidden bg-roman-ivory text-roman-burgundy;
     pointer-events: auto;
   }
+  /* Chosen before the shell is appended; shared by loading and empty Chat. */
+  .roman-panel[data-welcome-theme] {
+    isolation: isolate;
+    color: #f7f5ef;
+    background:
+      radial-gradient(ellipse at 82% 18%, #a9654924, transparent 64%),
+      radial-gradient(ellipse at 6% 100%, #19030370, transparent 75%),
+      #4e0e0e;
+  }
+  .roman-panel[data-welcome-theme] .roman-track {
+    background: #f7f5ef33;
+  }
   .roman-close {
-    @apply absolute top-[12px] right-[8px] z-10 size-[44px] bg-transparent text-[30px] text-roman-burgundy;
+    @apply absolute top-[12px] right-[8px] z-10 size-[44px] bg-transparent text-[30px];
     border: 0;
   }
   .roman-frame {
     @apply relative h-full overflow-clip;
   }
   .roman-loading {
-    @apply absolute inset-0 flex flex-col items-center justify-center px-[24px] pb-[56px];
+    @apply absolute inset-0 z-[1] flex flex-col items-center justify-center px-[24px] pb-[56px];
   }
   .roman-brand {
     @apply h-[75px] w-[178px] object-contain;
@@ -100,7 +110,8 @@
     @apply mt-[38px] h-[4px] w-[159px] overflow-hidden rounded-[999px] bg-roman-border;
   }
   .roman-progress {
-    @apply h-full w-2/3 rounded-[999px] bg-roman-burgundy;
+    @apply h-full w-2/3 rounded-[999px];
+    background: currentColor;
     animation: roman-loading 1.2s ease-in-out infinite alternate;
   }
   .roman-error {
@@ -108,14 +119,14 @@
     line-height: 1.4;
   }
   .roman-retry {
-    @apply mt-[16px] min-h-[44px] bg-transparent px-[24px] text-[16px] text-roman-burgundy;
+    @apply mt-[16px] min-h-[44px] bg-transparent px-[24px] text-[16px];
   }
   /* Explicit borders and outlines avoid @property dependencies in Shadow DOM. */
   .roman-retry {
-    border: 1px solid #4e0e0e;
+    border: 1px solid currentColor;
   }
   button:focus-visible {
-    outline: 2px solid #4e0e0e;
+    outline: 2px solid currentColor;
     outline-offset: 2px;
   }
   @media (hover: hover) {

@@ -172,7 +172,6 @@ async function setup(t, options = {}) {
     navigationState = { ...navigationState, ...changes };
     for (const listener of navigationListeners) listener();
   };
-  let ready = false;
   const dispose = window.RomanChatTest.mount(container, {
     logoUrl:
       "https://cdn.shopify.com/extensions/version/assets/roman-logo.svg?v=1",
@@ -187,16 +186,14 @@ async function setup(t, options = {}) {
       },
     },
     session,
-    onReady: () => {
-      ready = true;
-    },
+    onReady: () => {},
     onError: (error) => errors.push(error),
   });
   t.after(() => {
     dispose();
     window.close();
   });
-  await until(() => ready || errors.length, "Chat did not mount");
+  await until(() => container.querySelector(".roman-chat") || errors.length, "Chat did not mount");
   assert.deepEqual(errors, []);
   const input = () => container.querySelector(".roman-composer textarea");
   async function type(text) {

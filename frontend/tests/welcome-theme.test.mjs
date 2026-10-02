@@ -124,16 +124,15 @@ async function setup(t, initial = {}, options = {}) {
     },
   };
   const page = { url: window.location.href, pending: false, error: null };
-  let ready = false;
   const dispose = window.WelcomeThemeTest.mount(container, {
     logoUrl: "/roman-logo.svg",
     session,
     navigation: { getSnapshot: () => page, subscribe: () => () => {}, navigate: async () => {} },
-    onReady: () => { ready = true; },
+    onReady: () => {},
     onError: (error) => errors.push(error),
   });
   t.after(() => { dispose(); window.close(); assert.deepEqual(errors, []); });
-  await until(() => ready || errors.length, "Assistant did not mount");
+  await until(() => container.querySelector(".roman-chat") || errors.length, "Assistant did not mount");
   assert.deepEqual(errors, []);
   const tab = (name) => [...container.querySelectorAll(".roman-view-nav a")].find((a) => a.textContent === name);
   return {

@@ -40,6 +40,8 @@ import {
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
 import { liveSnapshotMessages } from "./session/live-messages";
+import { persistWelcomeState } from "./welcome-state";
+import { brandLogoUrl } from "./brand-logo";
 import {
   isQuestionAnswer,
   currentQuestion,
@@ -50,7 +52,7 @@ type AssistantProps = {
   logoUrl: string;
   navigation: StorefrontNavigation;
   session: ConversationClient;
-  onReady: () => void;
+  onReady: (welcome: boolean) => void;
   onError: (error: unknown) => void;
 };
 
@@ -59,6 +61,7 @@ function Assistant({
   navigation,
   session,
   onReady,
+  onError,
 }: AssistantProps) {
   const location = useLocation();
   const navigateView = useNavigate();
@@ -75,6 +78,7 @@ function Assistant({
     [navigateView],
   );
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const initialRestoring = useRef(state.restoring);
   const storefront = useSyncExternalStore(
     navigation.subscribe,
     navigation.getSnapshot,
@@ -116,6 +120,7 @@ function Assistant({
   // pending sends, errors and history pagination. Only clearing chat resets it.
   const [customerTurnStarted, setCustomerTurnStarted] = useState(false);
   const hasCustomerReply = customerTurnStarted || observedCustomerReply;
+  const welcomeTheme = view === "chat" && !hasCustomerReply;
   const conversationId = state.conversation?.id;
   const previousConversationId = useRef(conversationId);
   useLayoutEffect(() => {
@@ -374,7 +379,16 @@ function Assistant({
     setCustomerTurnStarted(true);
   }
 
-  useEffect(() => { onReady(); }, [onReady]);
+  useLayoutEffect(() => {
+    if (state.restoring) return;
+    if (initialRestoring.current && (state.error || !conversationId)) {
+      onError(new Error(state.error ?? "Roman could not restore this conversation. Retry."));
+      return;
+    }
+    initialRestoring.current = false;
+    persistWelcomeState(!hasCustomerReply, conversationId);
+    onReady(welcomeTheme);
+  }, [onReady, onError, state.restoring, state.error, welcomeTheme, hasCustomerReply, conversationId]);
 
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
@@ -487,11 +501,12 @@ function Assistant({
       <div
         className="roman-content roman-chat"
         data-welcome-theme={
-          (view === "chat" && !state.restoring && !hasCustomerReply) || undefined
+          (!state.restoring && welcomeTheme) || undefined
         }
       >
         <AssistantHeader
           logoUrl={logoUrl}
+          welcomeTheme={welcomeTheme}
           cartCount={cartCount}
           cartNotice={
             <CartAddedNotice
@@ -690,7 +705,7 @@ function Assistant({
                     />
                   ) : (
                     <Welcome
-                      logoUrl={logoUrl}
+                      logoUrl={brandLogoUrl(logoUrl, true)}
                       busy={suspended || ending || state.restoring || confirmEnd}
                       onStart={(text) => void startTopic(text)}
                     />

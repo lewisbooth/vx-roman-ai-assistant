@@ -9,7 +9,7 @@ import { historySnapshot } from "./helpers/history-snapshot.mjs";
 function wire(body) {
   if (body?.conversation) return { ...body, conversation: wire(body.conversation) };
   return Array.isArray(body?.messages)
-    ? { ...historySnapshot(body), current: { activeProduct: null, pendingQuestion: null, hasCustomerReply: true } }
+    ? { ...historySnapshot(body), current: body.current ?? { activeProduct: null, pendingQuestion: null, hasCustomerReply: true } }
     : body;
 }
 
@@ -83,22 +83,34 @@ function setup(t, initialTime = 0) {
     `${bundle.outputFiles[0].text}\nwindow.RomanAssistant = RomanAssistant;`,
   );
   const host = window.document.querySelector("roman-ai-assistant");
+  const panel = window.document.createElement("section");
+  panel.className = "roman-panel";
+  panel.dataset.romanPanel = "";
   const container = window.document.createElement("div");
-  host.attachShadow({ mode: "open" }).append(container);
+  container.dataset.romanContent = "";
+  panel.append(container);
+  host.attachShadow({ mode: "open" }).append(panel);
   const runtimes = [];
+  const themes = [];
   t.after(() => {
     for (const runtime of runtimes) runtime.dispose();
     window.close();
   });
   return {
     window,
+    panel,
     container,
+    themes,
     timers,
     mount(loadingStartedAt) {
       const runtime = window.RomanAssistant.mountAssistant(
         host,
         container,
         loadingStartedAt,
+        (welcome) => {
+          themes.push(welcome);
+          panel.toggleAttribute("data-welcome-theme", welcome);
+        },
       );
       const result = { runtime, state: "pending", error: undefined };
       runtime.ready.then(
@@ -464,12 +476,77 @@ test("a fast cached runtime waits until one second from loading start and React 
     "committed React content did not schedule the remaining loading time",
   );
   assert.ok(ctx.container.querySelector(".roman-welcome"));
+  assert.deepEqual(ctx.themes, [true], "fresh welcome appearance must be ready before the loader is revealed");
   await ctx.advance(799);
   assert.equal(mount.state, "pending");
   await ctx.advance(1);
   assert.equal(mount.state, "ready");
   assert.equal(ctx.timers.size, 0);
 });
+
+for (const hasCustomerReply of [false, true]) {
+  test(`the loader waits for restored ${hasCustomerReply ? "customer history" : "voice greeting"} before publishing its final appearance`, async (t) => {
+    const ctx = setup(t, 1500);
+    const access = {
+      conversationId: "11111111-1111-4111-8111-111111111111",
+      token: "a".repeat(43),
+      expiresAt: "2099-10-02T10:00:00Z",
+      apiBaseUrl: "https://roman.example/api/conversations",
+    };
+    const conversation = {
+      id: access.conversationId,
+      status: "active",
+      busy: false,
+      revision: 0,
+      tools: [],
+      current: { activeProduct: null, pendingQuestion: null, hasCustomerReply },
+      messages: [{
+        id: "opening-greeting",
+        role: "assistant",
+        status: "complete",
+        parts: [{ type: "text", text: "Hi! I'm Roman. Where would you like to begin?" }],
+        createdAt: "2026-10-02T10:00:00Z",
+      }],
+    };
+    ctx.window.sessionStorage.setItem("roman:conversation", JSON.stringify(access));
+    // The hint is deliberately stale: restored application state must win.
+    ctx.window.sessionStorage.setItem("roman:welcome-state", JSON.stringify({ conversationId: access.conversationId, welcome: hasCustomerReply }));
+    let finishBootstrap;
+    let finishRead;
+    const response = (value) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => wire(value),
+    });
+    ctx.window.fetch = async (url) => {
+      if (String(url).includes("/apps/roman/bootstrap"))
+        return new Promise((resolve) => {
+          finishBootstrap = () => resolve(response({ ...access, conversation }));
+        });
+      return new Promise((resolve) => {
+        finishRead = () => resolve(response({ ...conversation, streamRevision: 0 }));
+      });
+    };
+    const mounted = ctx.mount(0);
+    await until(() => !!finishBootstrap && !!ctx.container.querySelector(".roman-chat"), "restoration did not begin");
+    assert.equal(mounted.state, "pending", "elapsed minimum delay must not reveal an unresolved session");
+    assert.deepEqual(ctx.themes, [], "restoration must not publish a guessed welcome state");
+    finishBootstrap();
+    await until(() => !!finishRead, "restoration did not read the current conversation");
+    assert.equal(mounted.state, "pending");
+    assert.deepEqual(ctx.themes, []);
+    finishRead();
+    await until(() => mounted.state === "ready", "restored runtime never became ready");
+    assert.deepEqual(ctx.themes, [!hasCustomerReply]);
+    assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), !hasCustomerReply);
+    assert.deepEqual(JSON.parse(ctx.window.sessionStorage.getItem("roman:welcome-state")), {
+      conversationId: access.conversationId,
+      welcome: !hasCustomerReply,
+    });
+    assert.equal(!!ctx.container.querySelector(".roman-welcome"), !hasCustomerReply);
+  });
+}
 
 test("a slow download adds no further loading delay after React commits", async (t) => {
   const ctx = setup(t, 1600);
@@ -480,6 +557,67 @@ test("a slow download adds no further loading delay after React commits", async 
   );
   assert.ok(ctx.container.querySelector(".roman-welcome"));
   assert.equal(ctx.timers.size, 0);
+});
+
+for (const failure of ["connection loss", "suspended service"]) {
+  test(`initial restoration ${failure} retains the saved loader appearance and rejects readiness`, async (t) => {
+    const ctx = setup(t, 1500);
+    const access = {
+      conversationId: "11111111-1111-4111-8111-111111111111",
+      token: "a".repeat(43),
+      expiresAt: "2099-10-02T10:00:00Z",
+      apiBaseUrl: "https://roman.example/api/conversations",
+    };
+    const appearance = JSON.stringify({ conversationId: access.conversationId, welcome: false });
+    ctx.window.sessionStorage.setItem("roman:conversation", JSON.stringify(access));
+    ctx.window.sessionStorage.setItem("roman:welcome-state", appearance);
+    let failBootstrap;
+    ctx.window.fetch = async () => new Promise((resolve, reject) => {
+      failBootstrap = () => {
+        if (failure === "connection loss") reject(new TypeError("Connection lost"));
+        else resolve({
+          ok: false,
+          status: 503,
+          headers: { get: () => "application/json" },
+          json: async () => ({ error: { code: "SERVICE_UNAVAILABLE", message: "Roman is currently unavailable" } }),
+        });
+      };
+    });
+    const mounted = ctx.mount(0);
+    await until(() => !!failBootstrap && !!ctx.container.querySelector(".roman-chat"), "restoration did not begin");
+    assert.equal(mounted.state, "pending");
+    failBootstrap();
+    await until(() => mounted.state === "rejected", "an unresolved saved session was incorrectly shown as a fresh chat");
+    assert.match(String(mounted.error), failure === "connection loss" ? /could not connect/i : /could not restore/i);
+    assert.deepEqual(ctx.themes, [], "failed restoration must not switch the loader to a guessed fresh palette");
+    assert.equal(ctx.window.sessionStorage.getItem("roman:welcome-state"), appearance);
+    assert.equal(JSON.parse(ctx.window.sessionStorage.getItem("roman:conversation")).conversationId, access.conversationId);
+  });
+}
+
+test("Cart and Gallery stay light while the empty Chat retains its welcome palette", async (t) => {
+  const ctx = setup(t, 1500);
+  ctx.window.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "application/json" },
+    json: async () => ({ items: [], item_count: 0, total_price: 0, currency: "GBP" }),
+  });
+  const mounted = ctx.mount(0);
+  await until(() => mounted.state === "ready", "empty Chat did not become ready");
+  assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), true);
+  for (const path of ["/cart", "/gallery"]) {
+    ctx.container.querySelector(`.roman-view-nav a[href="${path}"]`).click();
+    await until(
+      () => !!ctx.container.querySelector(`.roman-view-nav a[href="${path}"][aria-current="page"]`),
+      `${path} did not open`,
+    );
+    assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), false);
+    mounted.runtime.setOpen(false);
+    assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), false, "closing must not reset the active view appearance");
+  }
+  ctx.container.querySelector('.roman-view-nav a[href="/"]').click();
+  await until(() => ctx.panel.hasAttribute("data-welcome-theme"), "empty Chat did not recover its welcome palette");
 });
 
 test("closing, reopening and remounting on the same document do not restart loading time", async (t) => {

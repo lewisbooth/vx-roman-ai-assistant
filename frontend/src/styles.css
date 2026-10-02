@@ -1334,6 +1334,51 @@
     @apply block text-[13px] leading-[20px] text-[#545046];
   }
 
+  /* Reposition the same mounted composer rather than replacing it when the
+     welcome ends or the viewport changes: drafts, focus and voice stay live. */
+  @media (min-width: 1024px) {
+    .roman-chat[data-welcome-theme] .roman-dialogue {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(24px, 1fr) max-content max-content max-content minmax(24px, 1fr);
+      justify-items: center;
+      padding: 0 32px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .roman-chat[data-welcome-theme] :is(.roman-chat-scroll, .roman-chat-history, .roman-welcome) {
+      display: contents;
+    }
+
+    .roman-chat[data-welcome-theme] .roman-welcome-title {
+      grid-row: 2;
+      text-align: center;
+    }
+
+    .roman-chat[data-welcome-theme] .roman-welcome-question {
+      display: none;
+    }
+
+    .roman-chat[data-welcome-theme] .roman-composer {
+      grid-row: 3;
+      width: min(100%, 788px);
+      margin: 50px auto;
+      padding: 0;
+    }
+
+    .roman-chat[data-welcome-theme] .roman-welcome-tiles {
+      grid-row: 4;
+      margin: 0;
+    }
+
+    .roman-chat[data-welcome-theme] .roman-voice-idle-warning {
+      grid-row: 5;
+      align-self: start;
+      margin-top: 20px;
+    }
+  }
+
   @media (max-width: 1023px) {
     .roman-workspace {
       flex-direction: column;
