@@ -26,7 +26,7 @@ import { ProductStage } from "./chat/ProductStage";
 import { CartStage } from "./chat/CartStage";
 import { EndChatDialog } from "./chat/EndChatDialog";
 import { BrandedDialog } from "./chat/BrandedDialog";
-import { CartAddedDialog } from "./chat/CartAddedDialog";
+import { CartAddedNotice } from "./chat/CartAddedNotice";
 import { useCart } from "./chat/useCart";
 import { useMessageQueue } from "./chat/useMessageQueue";
 import { MessageQueue } from "./chat/MessageQueue";
@@ -502,6 +502,20 @@ function Assistant({
         <AssistantHeader
           logoUrl={logoUrl}
           cartCount={cartCount}
+          cartNotice={
+            <CartAddedNotice
+              conversation={state.conversation}
+              restoring={state.restoring}
+              blocked={
+                confirmEnd ||
+                ending ||
+                suspended ||
+                microphoneDenied ||
+                !!state.approval ||
+                toolsOpen
+              }
+            />
+          }
           hasConversation={state.conversation?.status === "active"}
           endDisabled={
             ending ||
@@ -781,20 +795,6 @@ function Assistant({
             </div>
           </div>
         </div>
-        <CartAddedDialog
-          conversation={state.conversation}
-          restoring={state.restoring}
-          blocked={
-            confirmEnd ||
-            ending ||
-            suspended ||
-            microphoneDenied ||
-            !!state.approval ||
-            toolsOpen
-          }
-          onViewCart={() => showView("cart")}
-          onKeepShopping={sendMessage}
-        />
         {confirmEnd && (
           <EndChatDialog
             pending={ending}

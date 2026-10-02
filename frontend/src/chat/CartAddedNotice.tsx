@@ -1,21 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationSnapshot } from "../../../shared/conversation";
-import { BrandedDialog } from "./BrandedDialog";
 import { liveSnapshotMessages } from "../session/live-messages";
 
 /** Confirmed additions only: native events and optimistic requests are not receipts. */
-export function CartAddedDialog({
+export function CartAddedNotice({
   conversation,
   restoring,
   blocked,
-  onViewCart,
-  onKeepShopping,
 }: {
   conversation: ConversationSnapshot | null;
   restoring: boolean;
   blocked: boolean;
-  onViewCart: () => void;
-  onKeepShopping: (message: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(() =>
     document.documentElement.hasAttribute("data-roman-open"),
@@ -30,7 +25,6 @@ export function CartAddedDialog({
     conversationId: string;
     id: string;
     title: string;
-    continuation: string;
   } | null>(null);
 
   useEffect(() => {
@@ -54,7 +48,6 @@ export function CartAddedDialog({
               {
                 id: part.invocationId,
                 title: `${part.product.title} added to cart`,
-                continuation: `I'd like to keep shopping after adding the ${part.product.title} to my cart.`,
               },
             ]
           : part.type === "cart_sample_added"
@@ -62,7 +55,6 @@ export function CartAddedDialog({
                 {
                   id: part.invocationId,
                   title: `${part.sample.title} sample added to cart`,
-                  continuation: `I'd like to continue where we left off with the ${part.sample.title} after adding its sample to my cart.`,
                 },
               ]
             : [],
@@ -71,7 +63,10 @@ export function CartAddedDialog({
     const previous = seen.current;
     seen.current = {
       conversationId: conversation?.id,
-      ids: new Set([...(previous.conversationId === conversation?.id ? previous.ids : []), ...additions.map((addition) => addition.id)]),
+      ids: new Set([
+        ...(previous.conversationId === conversation?.id ? previous.ids : []),
+        ...additions.map((addition) => addition.id),
+      ]),
     };
     // First/restored snapshots establish the baseline. Additions received while
     // closed or another approval is active stay in history without later replay.
@@ -92,6 +87,12 @@ export function CartAddedDialog({
     if (latest) setNotice({ ...latest, conversationId: conversation.id });
   }, [conversation, restoring, blocked, open]);
 
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   if (
     !notice ||
     !open ||
@@ -103,77 +104,26 @@ export function CartAddedDialog({
     return null;
 
   return (
-    <CartAddedNotice
+    <div
       key={notice.id}
-      title={notice.title}
-      onClose={() =>
-        setNotice((current) => (current?.id === notice.id ? null : current))
-      }
-      onViewCart={onViewCart}
-      onKeepShopping={() => onKeepShopping(notice.continuation)}
-    />
-  );
-}
-
-function CartAddedNotice({
-  title,
-  onClose,
-  onViewCart,
-  onKeepShopping,
-}: {
-  title: string;
-  onClose: () => void;
-  onViewCart: () => void;
-  onKeepShopping: () => Promise<void>;
-}) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const sending = useRef(false);
-  async function keepShopping() {
-    if (sending.current) return;
-    sending.current = true;
-    setPending(true);
-    setError(null);
-    try {
-      await onKeepShopping();
-      onClose();
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Your message could not be sent. Please try again.",
-      );
-    } finally {
-      sending.current = false;
-      setPending(false);
-    }
-  }
-  return (
-    <BrandedDialog
-      title={title}
-      pending={pending}
-      error={error}
-      onClose={onClose}
+      className="roman-cart-notice"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
     >
-      <button
-        type="button"
-        disabled={pending}
-        className="roman-dialog-primary"
-        onClick={() => {
-          onClose();
-          onViewCart();
-        }}
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        aria-hidden="true"
       >
-        View Cart
-      </button>
-      <button
-        type="button"
-        disabled={pending}
-        className="roman-dialog-secondary"
-        onClick={() => void keepShopping()}
-      >
-        Keep Shopping
-      </button>
-    </BrandedDialog>
+        <circle cx="12" cy="12" r="9" />
+        <path d="m8 12 3 3 5-6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <span>{notice.title}</span>
+    </div>
   );
 }

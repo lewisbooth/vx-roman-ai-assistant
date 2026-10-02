@@ -1,9 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { NavLink } from "react-router";
+import type { ReactNode } from "react";
 
 export function AssistantHeader({
   logoUrl,
   cartCount,
+  cartNotice,
   hasConversation,
   endDisabled,
   ending,
@@ -16,6 +18,7 @@ export function AssistantHeader({
 }: {
   logoUrl: string;
   cartCount?: number;
+  cartNotice?: ReactNode;
   hasConversation: boolean;
   endDisabled: boolean;
   ending: boolean;
@@ -177,17 +180,20 @@ export function AssistantHeader({
         <NavLink to="/" end onClick={navigate}>
           Chat
         </NavLink>
-        <NavLink to="/cart" onClick={navigate}>
-          Cart
-          {!!cartCount && (
-            <span
-              className="roman-cart-count"
-              aria-label={`${cartCount} ${cartCount === 1 ? "item" : "items"}`}
-            >
-              {cartCount}
-            </span>
-          )}
-        </NavLink>
+        <div className="roman-cart-nav-item">
+          <NavLink to="/cart" onClick={navigate}>
+            Cart
+            {!!cartCount && (
+              <span
+                className="roman-cart-count"
+                aria-label={`${cartCount} ${cartCount === 1 ? "item" : "items"}`}
+              >
+                {cartCount}
+              </span>
+            )}
+          </NavLink>
+          {cartNotice}
+        </div>
         <NavLink to="/gallery" onClick={navigate}>
           Gallery
         </NavLink>

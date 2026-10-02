@@ -139,6 +139,45 @@
       600 11px/1 system-ui,
       sans-serif;
   }
+  .roman-cart-nav-item {
+    position: relative;
+    display: flex;
+  }
+  .roman-cart-notice {
+    position: absolute;
+    top: calc(100% + 16px);
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: min(320px, calc(100vw - 32px));
+    padding: 16px;
+    border: 1px solid #d8c6b8;
+    border-radius: 16px;
+    background: #f7f5ef;
+    color: #4e0e0e;
+    box-shadow: 0 6px 20px #4e0e0e1f;
+    font-size: 15px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+  }
+  .roman-cart-notice::before {
+    content: "";
+    position: absolute;
+    left: calc(50% - 5px);
+    top: -6px;
+    width: 10px;
+    height: 10px;
+    transform: rotate(45deg);
+    border-top: 1px solid #d8c6b8;
+    border-left: 1px solid #d8c6b8;
+    background: #f7f5ef;
+  }
+  .roman-cart-notice svg {
+    flex-shrink: 0;
+  }
   .roman-view-nav a:focus-visible,
   .roman-choose-blind:focus-visible {
     outline: 2px solid #4e0e0e;
@@ -1376,6 +1415,8 @@
       height: 40px;
     }
     .roman-view-nav {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       width: min(280px, calc(100% - 120px));
       gap: 2px;
       padding: 3px;
@@ -1386,6 +1427,10 @@
       justify-content: center;
       min-height: 44px;
       padding: 0 8px;
+    }
+    .roman-cart-nav-item {
+      flex: 1 1 0;
+      min-width: 0;
     }
     .roman-workspace {
       flex-direction: column;

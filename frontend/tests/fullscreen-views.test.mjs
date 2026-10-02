@@ -205,8 +205,14 @@ async function setup(t, initial = {}, options = {}) {
     },
     onError: (error) => errors.push(error),
   });
-  t.after(() => {
+  let disposed = false;
+  function unmount() {
+    if (disposed) return;
+    disposed = true;
     dispose();
+  }
+  t.after(() => {
+    unmount();
     window.close();
     assert.deepEqual(errors, []);
   });
@@ -234,6 +240,7 @@ async function setup(t, initial = {}, options = {}) {
     toolCalls,
     fetches,
     select,
+    unmount,
     nativeCart() {
       window.history.pushState({}, "", "/cart");
       window.document.body.className = "template-cart";
@@ -307,7 +314,7 @@ test("upward scrolling requests history and preserves its visible row after prep
   assert.equal(ctx.container.querySelector(".roman-history-status"), null);
 });
 
-test("historical widgets and cart receipts loaded in a page never reopen Chat or a modal", async (t) => {
+test("historical widgets and cart receipts loaded in a page never reopen Chat or show a notice", async (t) => {
   const ctx = await setup(t, { historyVersion: 0 });
   await ctx.select("Cart");
   const older = { ...message([
@@ -318,6 +325,7 @@ test("historical widgets and cart receipts loaded in a page never reopen Chat or
   await delay(0);
   assert.equal(ctx.container.querySelector(".roman-chat-history").hidden, true);
   assert.equal(ctx.container.querySelector(".roman-dialog[open]"), null);
+  assert.equal(ctx.container.querySelector(".roman-cart-notice"), null);
 });
 
 test("fresh results remain visible when a live poll and older history finish together", async (t) => {
@@ -330,8 +338,14 @@ test("fresh results remain visible when a live poll and older history finish tog
   const snapshot = historySnapshot({ ...ctx.state().conversation, messages: [...ctx.state().conversation.messages, live] });
   ctx.update({ historyVersion: 1, conversation: { ...snapshot, messages: [{ ...customerMessage("Earlier request"), id: "old", sequence: 2 }, ...snapshot.messages] } });
   await until(() => !ctx.container.querySelector(".roman-chat-history").hidden, "Fresh carousel was suppressed by older page completion");
-  await until(() => ctx.container.querySelector(".roman-dialog[open]"), "Fresh cart receipt was suppressed by older page completion");
-  assert.match(ctx.container.querySelector(".roman-dialog h2").textContent, /New blind added to cart/);
+  await until(
+    () => ctx.container.querySelector(".roman-cart-notice"),
+    "Fresh cart receipt was suppressed by older page completion",
+  );
+  assert.match(
+    ctx.container.querySelector(".roman-cart-notice").textContent,
+    /New blind added to cart/,
+  );
 });
 
 test("active voice remains connected and retains its controls through every Roman tab", async (t) => {
@@ -1111,109 +1125,162 @@ function receiveCart(ctx, id, sample = false) {
   });
 }
 
-const addedDialog = (ctx) =>
-  [...ctx.container.querySelectorAll("dialog[open]")].find((dialog) =>
-    dialog.querySelector("h2")?.textContent.includes("added to cart"),
-  );
+const cartNotice = (ctx) => ctx.container.querySelector(".roman-cart-notice");
 
-async function waitForAdded(ctx) {
-  await until(
-    () => addedDialog(ctx),
-    "Confirmed addition opens Roman's shared modal",
-  );
-  return addedDialog(ctx);
+async function waitForNotice(ctx) {
+  await until(() => cartNotice(ctx), "Confirmed addition shows a Cart notice");
+  return cartNotice(ctx);
 }
 
-test("cart confirmation persists until a customer action and Keep Shopping sends receipt context without replay", async (t) => {
+// Advance only the notice deadline; leave React scheduling and other UI timers real.
+function noticeClock(window) {
+  const setTimeout = window.setTimeout.bind(window);
+  const clearTimeout = window.clearTimeout.bind(window);
+  const timers = new Map();
+  let nextId = -1;
+  let now = 0;
+  window.setTimeout = (callback, delay, ...args) => {
+    if (delay !== 5000) return setTimeout(callback, delay, ...args);
+    const id = nextId--;
+    timers.set(id, { deadline: now + delay, run: () => callback(...args) });
+    return id;
+  };
+  window.clearTimeout = (id) => {
+    if (id < 0) timers.delete(id);
+    else clearTimeout(id);
+  };
+  return {
+    pending: () => timers.size,
+    async advance(milliseconds) {
+      now += milliseconds;
+      for (const [id, timer] of timers) {
+        if (timer.deadline > now) continue;
+        timers.delete(id);
+        timer.run();
+      }
+      await delay(0);
+    },
+  };
+}
+
+test("Cart notice lasts five seconds without stealing focus, and a new receipt replaces its deadline", async (t) => {
   const ctx = await setup(t, {
     conversation: engagedConversation([cartReceipt("restored")]),
   });
-  assert.equal(addedDialog(ctx), undefined);
+  const clock = noticeClock(ctx.window);
+  const input = ctx.container.querySelector("textarea");
+  input.focus();
+  assert.equal(cartNotice(ctx), null);
   receiveCart(ctx, "fresh");
-  const dialog = await waitForAdded(ctx);
-  assert.equal(
-    dialog.querySelector("h2").textContent,
-    "Linen blind added to cart",
-  );
+  const notice = await waitForNotice(ctx);
+  await until(() => clock.pending() === 1, "Notice deadline was not scheduled");
+  assert.equal(notice.textContent, "Linen blind added to cart");
+  assert.equal(notice.getAttribute("role"), "status");
+  assert.equal(notice.getAttribute("aria-live"), "polite");
+  assert.equal(notice.getAttribute("aria-atomic"), "true");
+  assert.equal(notice.querySelector("button, a, input, [tabindex]"), null);
+  assert.ok(notice.parentElement.matches(".roman-cart-nav-item"));
+  assert.equal(notice.parentElement.querySelector("a").textContent.trim(), "Cart");
+  assert.equal(ctx.container.querySelector("dialog[open]"), null);
+  assert.equal(ctx.container.activeElement, input);
+  await clock.advance(4000);
   ctx.update({ conversation: structuredClone(ctx.state().conversation) });
-  await delay(2100);
-  assert.equal(
-    addedDialog(ctx),
-    dialog,
-    "Confirmation remains open beyond the retired two-second timer",
-  );
-  dialog.querySelector(".roman-dialog-secondary").click();
-  await until(
-    () => !addedDialog(ctx),
-    "Keep Shopping accepts the continuation and dismisses",
-  );
-  assert.deepEqual(ctx.calls, [
-    [
-      "text",
-      "I'd like to keep shopping after adding the Linen blind to my cart.",
-    ],
-  ]);
+  await delay(0);
+  await clock.advance(999);
+  assert.equal(cartNotice(ctx), notice, "Polling must not reset the deadline");
+  await clock.advance(1);
+  await until(() => !cartNotice(ctx), "Notice should expire at five seconds");
+  assert.equal(clock.pending(), 0);
   ctx.update({ conversation: structuredClone(ctx.state().conversation) });
-  await delay(10);
-  assert.equal(addedDialog(ctx), undefined);
+  await delay(0);
+  assert.equal(cartNotice(ctx), null, "An expired receipt must not replay");
+
   receiveCart(ctx, "sample", true);
-  const sample = await waitForAdded(ctx);
-  assert.equal(
-    sample.querySelector("h2").textContent,
-    "Linen blind sample added to cart",
-  );
-  sample.querySelector(".roman-dialog-secondary").click();
+  await waitForNotice(ctx);
+  await until(() => clock.pending() === 1, "Sample deadline missing");
+  assert.equal(cartNotice(ctx).textContent, "Linen blind sample added to cart");
+  await clock.advance(2000);
+  receiveCart(ctx, "another-product");
   await until(
-    () => !addedDialog(ctx),
-    "Keep Shopping submits sample context and closes",
+    () => cartNotice(ctx)?.textContent === "Linen blind added to cart",
+    "New receipt did not replace notice",
   );
-  assert.deepEqual(ctx.calls[1], [
-    "text",
-    "I'd like to continue where we left off with the Linen blind after adding its sample to my cart.",
-  ]);
-  assert.equal(
-    ctx.container.querySelector('[aria-current="page"]').textContent,
-    "Chat",
+  await delay(0);
+  assert.equal(clock.pending(), 1, "Replacement must cancel the earlier timer");
+  await clock.advance(4999);
+  assert.ok(cartNotice(ctx), "Replacement gets its own five-second deadline");
+  await clock.advance(1);
+  await until(() => !cartNotice(ctx), "Replacement notice did not expire");
+  assert.deepEqual(
+    ctx.calls,
+    [],
+    "Notifications must not submit continuation prompts",
   );
-});
-
-test("View Cart is immediate memory navigation with no message, tool or voice interruption", async (t) => {
-  const ctx = await setup(t, {
-    voice: { status: "active", muted: false, error: null },
-  });
-  const voice = ctx.container.querySelector(".roman-voice-bar");
-  const url = ctx.window.location.href;
-  receiveCart(ctx, "added");
-  const dialog = await waitForAdded(ctx);
-  dialog.querySelector(".roman-dialog-primary").click();
-  await until(
-    () =>
-      ctx.container.querySelector('[aria-current="page"]').textContent ===
-      "Cart",
-    "Cart tab opens",
-  );
-  assert.equal(addedDialog(ctx), undefined);
-  assert.deepEqual(ctx.calls, []);
   assert.deepEqual(ctx.toolCalls, []);
-  assert.deepEqual(ctx.navigationCalls, []);
-  assert.equal(ctx.window.location.href, url);
-  assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
 });
 
-test("closed, restored and blocked cart receipts are consumed without later flashes", async (t) => {
+test("sample notice leaves quick answers and text input usable without a Keep Shopping step", async (t) => {
+  const question = {
+    type: "question",
+    version: 1,
+    invocationId: "11111111-1111-4111-8111-111111111111",
+    question: "Would you like help measuring or exploring this blind's options?",
+    answers: ["Help me measure", "Explore options"],
+  };
+  const ctx = await setup(t, {
+    conversation: engagedConversation([message([question])]),
+  });
+  const card = ctx.container.querySelector(".roman-question");
+  const input = ctx.container.querySelector("textarea");
+  receiveCart(ctx, "sample", true);
+  await waitForNotice(ctx);
+  assert.equal(ctx.container.querySelector(".roman-question"), card);
+  assert.equal(card.closest("[hidden]"), null);
+  assert.ok(card.querySelectorAll("button:not(:disabled)").length >= 2);
+  assert.equal(ctx.container.querySelector("textarea"), input);
+  assert.equal(input.disabled, false);
+  assert.equal(ctx.container.querySelector("dialog[open]"), null);
+  assert.deepEqual(ctx.calls, []);
+});
+
+for (const mobile of [false, true]) {
+  test(`Cart remains immediately usable during a notice without interrupting voice (${mobile ? "mobile" : "desktop"})`, async (t) => {
+    const ctx = await setup(
+      t,
+      { voice: { status: "active", muted: false, error: null } },
+      { mobile },
+    );
+    const voice = ctx.container.querySelector(".roman-voice-bar");
+    const url = ctx.window.location.href;
+    receiveCart(ctx, "added");
+    const notice = await waitForNotice(ctx);
+    assert.ok(notice.closest(".roman-cart-nav-item"));
+    await ctx.select("Cart");
+    assert.equal(cartNotice(ctx), notice);
+    assert.equal(ctx.container.querySelector("dialog[open]"), null);
+    assert.deepEqual(ctx.calls, []);
+    assert.deepEqual(ctx.toolCalls, []);
+    assert.deepEqual(ctx.navigationCalls, []);
+    assert.equal(ctx.window.location.href, url);
+    assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
+  });
+}
+
+test("closed, restored, blocked and changed-session cart receipts are consumed without later flashes", async (t) => {
   const ctx = await setup(t);
+  const clock = noticeClock(ctx.window);
   ctx.window.document.documentElement.removeAttribute("data-roman-open");
   receiveCart(ctx, "while-closed");
   await delay(10);
   ctx.window.document.documentElement.setAttribute("data-roman-open", "");
   await delay(10);
-  assert.equal(addedDialog(ctx), undefined);
+  assert.equal(cartNotice(ctx), null);
   ctx.update({ restoring: true });
   receiveCart(ctx, "restoring");
   await delay(10);
   ctx.update({ restoring: false });
   await delay(10);
-  assert.equal(addedDialog(ctx), undefined);
+  assert.equal(cartNotice(ctx), null);
   ctx.update({
     approval: { invocationId: "clear", title: "Empty your cart?", details: [] },
   });
@@ -1221,72 +1288,48 @@ test("closed, restored and blocked cart receipts are consumed without later flas
   await delay(10);
   ctx.update({ approval: null });
   await delay(10);
-  assert.equal(addedDialog(ctx), undefined);
+  assert.equal(cartNotice(ctx), null);
+  assert.equal(clock.pending(), 0);
+
   receiveCart(ctx, "visible");
-  await waitForAdded(ctx);
+  await waitForNotice(ctx);
+  await until(() => clock.pending() === 1, "Visible notice deadline missing");
   ctx.window.document.documentElement.removeAttribute("data-roman-open");
-  await until(() => !addedDialog(ctx), "Closing Roman closes its native modal");
+  await until(() => !cartNotice(ctx), "Closing Roman clears the notice");
+  await until(
+    () => clock.pending() === 0,
+    "Closing Roman must cancel its notice timer",
+  );
   ctx.window.document.documentElement.setAttribute("data-roman-open", "");
   await delay(10);
-  assert.equal(addedDialog(ctx), undefined);
+  assert.equal(cartNotice(ctx), null);
   receiveCart(ctx, "new-visible");
-  await waitForAdded(ctx);
+  await waitForNotice(ctx);
   ctx.update({
     conversation: {
       ...engagedConversation([cartReceipt("another-session")]),
       id: "another",
     },
   });
+  await until(() => !cartNotice(ctx), "New session cannot inherit a notification");
   await until(
-    () => !addedDialog(ctx),
-    "New session cannot inherit a notification",
+    () => clock.pending() === 0,
+    "Session change must cancel the notice timer",
   );
+  ctx.update({ conversation: structuredClone(ctx.state().conversation) });
+  await delay(10);
+  assert.equal(cartNotice(ctx), null);
+  assert.deepEqual(ctx.calls, []);
 });
 
-test("Keep Shopping uses the busy voice queue and retains a failed continuation for retry", async (t) => {
-  const ctx = await setup(t, {
-    conversation: { ...selectedConversation(), busy: true },
-    voice: { status: "active", muted: false, error: null },
-  });
-  const voice = ctx.container.querySelector(".roman-voice-bar");
-  const sample = ctx.container.querySelector(".roman-product-sample");
-  for (let i = 1; i <= 5; i++) {
-    sample.click();
-    await until(
-      () =>
-        ctx.container.querySelectorAll(".roman-queued-message").length === i,
-      "Fill bounded message queue",
-    );
-    await until(() => !sample.disabled, "Action enqueue accepted");
-  }
-  receiveCart(ctx, "confirmed-sample", true);
-  const dialog = await waitForAdded(ctx);
-  const keep = dialog.querySelector(".roman-dialog-secondary");
-  keep.click();
-  await until(
-    () => dialog.querySelector('[role="alert"]'),
-    "Full queue error is actionable inside modal",
-  );
-  assert.equal(addedDialog(ctx), dialog);
-  assert.deepEqual(ctx.calls, []);
-  assert.equal(keep.disabled, false);
-  ctx.update({ conversation: { ...ctx.state().conversation, busy: false } });
-  await until(
-    () => ctx.calls.length === 5,
-    "Existing messages drain when voice work completes",
-  );
-  keep.click();
-  keep.click();
-  await until(
-    () => !addedDialog(ctx),
-    "Successful continuation retry closes the modal",
-  );
-  await until(() => ctx.calls.length === 6, "Continuation sent exactly once");
-  assert.match(
-    ctx.calls[5][1],
-    /continue where we left off with the Linen blind after adding its sample/,
-  );
-  assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
-  assert.deepEqual(ctx.toolCalls, []);
-  assert.deepEqual(ctx.navigationCalls, []);
+test("unmounting Roman cancels the active Cart notice deadline", async (t) => {
+  const ctx = await setup(t);
+  const clock = noticeClock(ctx.window);
+  receiveCart(ctx, "before-unmount");
+  await waitForNotice(ctx);
+  await until(() => clock.pending() === 1, "Notice deadline missing");
+  ctx.unmount();
+  assert.equal(clock.pending(), 0);
+  await clock.advance(5000);
+  assert.equal(ctx.container.childElementCount, 0);
 });
