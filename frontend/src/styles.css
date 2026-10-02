@@ -9,6 +9,7 @@
 @theme {
   --spacing: 4px;
   --font-serif: GelicaSite, Georgia, serif;
+  --font-sans: DMSansSite, "DM Sans", sans-serif;
 }
 
 /* The vanilla shell is already visible when this stylesheet arrives. Keep its
@@ -929,6 +930,7 @@
     pointer-events: none;
   }
   .roman-question .roman-action-buttons {
+    @apply font-sans;
     justify-content: center;
   }
 
@@ -1198,7 +1200,7 @@
   }
 
   .roman-composer form {
-    @apply flex items-center gap-[6px] rounded-[26px] border border-solid border-[#e3e0d8] bg-white p-[3px];
+    @apply flex items-center gap-[6px] rounded-[26px] border border-solid border-[#e3e0d8] bg-white p-[3px] font-sans;
   }
 
   .roman-composer form[data-unavailable] {
@@ -1331,7 +1333,7 @@
   }
 
   .roman-tile-description {
-    @apply block text-[13px] leading-[20px] text-[#545046];
+    @apply block font-sans text-[13px] leading-[20px] text-[#545046];
   }
 
   /* Reposition the same mounted composer rather than replacing it when the
@@ -1363,7 +1365,7 @@
     .roman-chat[data-welcome-theme] .roman-composer {
       grid-row: 3;
       width: min(100%, 788px);
-      margin: 50px auto;
+      margin: 50px auto 80px;
       padding: 0;
     }
 

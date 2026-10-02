@@ -1,7 +1,7 @@
 /* Empty Chat only. The app owns the lifecycle; the shell also covers the
    keyboard gap. Cart, Gallery and all shared dialogs retain the light palette. */
-/* Feathered shafts of window light, rendered at the screen's resolution.
-   Only transform/opacity animate; no bitmap download or animated blur. */
+/* Two feathered light fields drift and brighten at different rates, like
+   sunlight moving through leaves. Only transform/opacity animate. */
 .roman-panel[data-welcome-theme]::before {
   content: "";
   position: absolute;
@@ -15,11 +15,28 @@
   animation: roman-welcome-light 24s ease-in-out infinite alternate;
 }
 
-/* Static, tiny tiled grain dithers the gradients to avoid the demo's banding.
-   The concentric outlines echo its subtle bottom-right architectural motif. */
 .roman-panel[data-welcome-theme]::after {
   content: "";
   position: absolute;
+  inset: -10%;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 24% 16% at 20% 18%, #ffe1b52b, transparent 75%),
+    radial-gradient(ellipse 19% 29% at 58% 28%, #ffe1b523, transparent 74%),
+    radial-gradient(ellipse 29% 18% at 75% 61%, #ffd7a52b, transparent 78%),
+    radial-gradient(ellipse 17% 25% at 35% 73%, #ffe1b51c, transparent 76%);
+  mask-image: linear-gradient(126deg,
+    transparent 16%, #0009 27%, #000 33%, transparent 41%,
+    #000a 48%, transparent 57%, #000b 64%, transparent 77%);
+  animation: roman-welcome-dapple 31s ease-in-out infinite alternate;
+}
+
+/* Static, tiny tiled grain dithers the gradients to avoid the demo's banding.
+   The concentric outlines echo its subtle bottom-right architectural motif. */
+.roman-panel[data-welcome-theme] .roman-frame::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
   inset: 0;
   pointer-events: none;
   opacity: 0.55;
@@ -87,9 +104,9 @@
 }
 
 .roman-chat[data-welcome-theme] .roman-welcome-tile:not(:disabled):is(:hover, :focus-visible) {
-  border-color: #e0b88d;
+  border-color: #ea9a49;
   background: #fffdf8;
-  box-shadow: 0 6px 30px #19030330, 0 0 0 1px #e0b88d;
+  box-shadow: 0 10px 28px #19030366, 0 0 0 3px #ea9a49;
 }
 
 .roman-chat[data-welcome-theme] .roman-composer {
@@ -109,25 +126,41 @@
 }
 
 .roman-panel[data-welcome-theme] .roman-close:focus-visible,
-.roman-chat[data-welcome-theme] :is(.roman-menu-toggle, .roman-header-actions button, .roman-view-nav a, .roman-welcome-tile):focus-visible,
+.roman-chat[data-welcome-theme] :is(.roman-menu-toggle, .roman-header-actions button, .roman-view-nav a):focus-visible,
 .roman-chat[data-welcome-theme] .roman-composer form:has(textarea:focus-visible) {
   outline-color: #f7f5ef;
 }
 
+.roman-chat[data-welcome-theme] .roman-welcome-tile:focus-visible {
+  outline-color: #ea9a49;
+}
+
 @keyframes roman-welcome-light {
-  from { transform: translate(-1%, -1%); opacity: 0.7; }
-  to { transform: translate(1%, 1%); opacity: 1; }
+  0% { transform: translate(-1.2%, -0.8%) rotate(-0.4deg); opacity: 0.55; }
+  35% { transform: translate(0.4%, -0.2%) rotate(0.2deg); opacity: 0.9; }
+  70% { transform: translate(-0.3%, 1%) rotate(0.4deg); opacity: 0.65; }
+  100% { transform: translate(1%, 0.4%) rotate(-0.2deg); opacity: 0.8; }
+}
+
+@keyframes roman-welcome-dapple {
+  0% { transform: translate(1.5%, -1%) scale(1.02); opacity: 0.25; }
+  28% { transform: translate(-0.5%, 0.7%) scale(1.05); opacity: 0.65; }
+  64% { transform: translate(0.6%, 1.3%) scale(0.99); opacity: 0.35; }
+  100% { transform: translate(-1.2%, -0.4%) scale(1.03); opacity: 0.75; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .roman-panel[data-welcome-theme]::before {
+  .roman-panel[data-welcome-theme]::before,
+  .roman-panel[data-welcome-theme]::after {
     animation: none;
+    opacity: 0.65;
   }
 }
 
 @media (forced-colors: active) {
   .roman-panel[data-welcome-theme]::before,
-  .roman-panel[data-welcome-theme]::after {
+  .roman-panel[data-welcome-theme]::after,
+  .roman-panel[data-welcome-theme] .roman-frame::before {
     display: none;
   }
 }
