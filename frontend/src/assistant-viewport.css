@@ -50,8 +50,14 @@
     height: var(--roman-layout-height, 100%);
   }
   .roman-composer {
-    transform: translateY(calc(-1 * var(--roman-keyboard-inset, 0px)));
+    transform: translateY(0);
     z-index: 2;
+  }
+  /* Reset when focus leaves, without waiting for Safari's closing resize.
+     Hold pressed buttons in place even if Safari blurs the field before click.
+     The page keeps its frozen geometry throughout. */
+  .roman-composer:has(textarea[data-roman-composer]):is(:focus-within, :active) {
+    transform: translateY(calc(-1 * var(--roman-keyboard-inset, 0px)));
   }
   .roman-chat-scroll {
     clip-path: inset(0 0 var(--roman-keyboard-inset, 0px));
