@@ -30,6 +30,7 @@ import { CartAddedDialog } from "./chat/CartAddedDialog";
 import { useCart } from "./chat/useCart";
 import { useMessageQueue } from "./chat/useMessageQueue";
 import { MessageQueue } from "./chat/MessageQueue";
+import { captureHistoryAnchor, restoreHistoryAnchor } from "./chat/history-scroll";
 import { RomanViewContext } from "./chat/views";
 import { activeProduct } from "../../shared/active-product";
 import type { CatalogProduct } from "../../shared/catalog";
@@ -39,12 +40,13 @@ import {
 } from "../../shared/product-choice";
 import type { StorefrontNavigation } from "./navigation/shared";
 import type { ConversationClient } from "./session/types";
+import { liveSnapshotMessages } from "./session/live-messages";
 import type { AssistantTools } from "./tools";
 import { ToolDrawer } from "./tools/ToolDrawer";
 import { VoiceChoice } from "./tools/VoiceChoice";
 import {
   isQuestionAnswer,
-  latestQuestion,
+  currentQuestion,
   type QuestionPart,
 } from "../../shared/questions";
 
@@ -98,6 +100,7 @@ function Assistant({
   const manualScrollTop = useRef(0);
   const scrollTouch = useRef<{ id: number; x: number; y: number }>();
   const [readingHistory, setReadingHistory] = useState(false);
+  const historyAnchor = useRef<ReturnType<typeof captureHistoryAnchor> | null>(null);
   const messages = useMemo(
     () =>
       state.optimisticMessage
@@ -107,7 +110,7 @@ function Assistant({
   );
   // Voice lifecycle events and Roman's opening are still the welcome state.
   // An optimistic text/tile reply counts immediately, as does customer speech.
-  const hasCustomerReply = !!messages?.some(
+  const hasCustomerReply = state.conversation?.current?.hasCustomerReply || !!messages?.some(
     (message) =>
       message.role === "user" &&
       message.parts.some(
@@ -123,7 +126,7 @@ function Assistant({
   useEffect(() => {
     const conversationId = state.conversation?.id;
     const ids = new Set(
-      (state.conversation?.messages ?? []).flatMap((message) =>
+      liveSnapshotMessages(state.conversation).flatMap((message) =>
         message.parts.flatMap((part) =>
           part.type === "products" ||
           (part.type === "question" && part.measurement)
@@ -133,7 +136,7 @@ function Assistant({
       ),
     );
     const previous = displayedWidgets.current;
-    displayedWidgets.current = { conversationId, ids };
+    displayedWidgets.current = { conversationId, ids: previous.conversationId === conversationId ? new Set([...previous.ids, ...ids]) : ids };
     // A new visual result must be visible even when voice continues from Cart
     // or Gallery. Restoring old widgets or changing tabs never steals focus.
     if (
@@ -223,8 +226,8 @@ function Assistant({
   const textBusy = ending || answering || messageQueue.busy;
   const chatError = state.error || startError || endError;
   const activeQuestion =
-    state.conversation?.status === "active"
-      ? latestQuestion(messages ?? [], storefront.url)
+    state.conversation?.status === "active" && !state.optimisticMessage
+      ? currentQuestion(state.conversation, storefront.url)
       : undefined;
 
   async function sendMessage(text: string) {
@@ -285,8 +288,8 @@ function Assistant({
     if (current.availability === "suspended")
       throw new Error("Roman is currently unavailable");
     const page = navigation.getSnapshot();
-    const question = latestQuestion(
-      current.conversation?.messages ?? [],
+    const question = currentQuestion(
+      current.conversation,
       page.url,
     );
     if (
@@ -384,7 +387,7 @@ function Assistant({
     messageQueue.enqueue(productChoiceText(choice), choice);
   }
 
-  useEffect(() => onReady(), [onReady]);
+  useEffect(() => { onReady(); }, [onReady]);
 
   const followConversation = useCallback(() => {
     const scroll = viewport.current;
@@ -456,6 +459,21 @@ function Assistant({
     if (releaseTextAnchor && textReplyAnchor.current)
       textReplyAnchor.current.released = true;
   }
+
+  function loadEarlierMessages(scroll: HTMLDivElement) {
+    if (view !== "chat" || scroll.scrollTop > 160 || !state.historyBefore || state.loadingHistory || state.restoring) return;
+    historyAnchor.current = captureHistoryAnchor(scroll);
+    following.current = false;
+    setReadingHistory(true);
+    void session.loadOlderHistory();
+  }
+
+  useLayoutEffect(() => {
+    if (!viewport.current || !historyAnchor.current) return;
+    restoreHistoryAnchor(viewport.current, historyAnchor.current);
+    scrollPositions.current.chat = viewport.current.scrollTop;
+    historyAnchor.current = null;
+  }, [state.historyVersion]);
 
   useLayoutEffect(() => {
     const scroll = viewport.current;
@@ -530,8 +548,10 @@ function Assistant({
                   view === "chat" ? "Conversation history" : `Roman ${view}`
                 }
                 onWheel={(event) => {
-                  if (Math.abs(event.deltaY) > Math.abs(event.deltaX))
+                  if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
                     markManualScroll(event.currentTarget, true);
+                    if (event.deltaY < 0) loadEarlierMessages(event.currentTarget);
+                  }
                 }}
                 onTouchStart={(event) => {
                   const touch = event.touches.length === 1 && event.touches[0];
@@ -546,7 +566,10 @@ function Assistant({
                   if (!start || !touch || touch.identifier !== start.id) return;
                   const x = Math.abs(touch.clientX - start.x);
                   const y = Math.abs(touch.clientY - start.y);
-                  if (y >= 8 && y > x) markManualScroll(event.currentTarget, true);
+                  if (y >= 8 && y > x) {
+                    markManualScroll(event.currentTarget, true);
+                    if (touch.clientY > start.y) loadEarlierMessages(event.currentTarget);
+                  }
                 }}
                 onTouchEnd={() => {
                   scrollTouch.current = undefined;
@@ -610,6 +633,7 @@ function Assistant({
                   else if (manualScroll.current) following.current = false;
                   manualScroll.current = false;
                   setReadingHistory(!following.current);
+                  if (movedManually || !following.current) loadEarlierMessages(scroll);
                 }}
               >
                 {view !== "chat" && (
@@ -630,6 +654,11 @@ function Assistant({
                   </div>
                 )}
                 <div className="roman-chat-history" hidden={view !== "chat"}>
+                  {(state.loadingHistory || state.historyError) && (
+                    <p className="roman-history-status" role="status">
+                      {state.loadingHistory ? "Loading earlier messages…" : "Earlier messages could not load. Scroll up to retry."}
+                    </p>
+                  )}
                   {state.restoring ? (
                     <p className="roman-chat-restoring" role="status">
                       Restoring your conversation…
@@ -807,7 +836,7 @@ function Assistant({
 
 function AssistantError({ onError }: Pick<AssistantProps, "onError">) {
   const error = useRouteError();
-  useEffect(() => onError(error), [error, onError]);
+  useEffect(() => { onError(error); }, [error, onError]);
   return null;
 }
 

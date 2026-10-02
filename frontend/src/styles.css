@@ -388,9 +388,14 @@
   }
 
   .roman-chat-history {
+    position: relative;
     display: flex;
     flex: 1 0 auto;
     flex-direction: column;
+  }
+
+  .roman-history-status {
+    @apply absolute inset-x-0 top-0 m-0 text-center text-[14px];
   }
 
   .roman-chat-restoring {

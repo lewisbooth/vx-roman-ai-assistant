@@ -91,7 +91,7 @@ export type PreparedToolApproval = ToolApprovalReview;
 const DISPLAY_CACHE_MS = 60_000;
 const MAX_DISPLAY_PRODUCTS = 60;
 const MAX_FOREGROUND_JOBS = 12;
-// A conversation permits 40 turns. Visibility normally keeps this much lower.
+// Bound queued image work; visibility normally keeps this much lower.
 const MAX_DISPLAY_JOBS = 40;
 const MAX_IMAGE_JOBS = 12;
 

@@ -1,10 +1,13 @@
 import { parseCheckoutCall } from "../../../shared/checkout";
 import {
   MAX_MESSAGE_LENGTH,
-  MAX_CONVERSATION_MESSAGES,
+  CONVERSATION_HISTORY_PAGE_SIZE,
+  MAX_HISTORY_UPDATES,
   MAX_PRODUCT_CARDS,
   CONVERSATION_STORAGE_KEY,
   type ConversationBootstrap,
+  type ConversationHistoryEntry,
+  type ConversationHistoryPage,
   type ConversationCredential,
   type ConversationSnapshot,
   type ConversationMessage,
@@ -42,8 +45,8 @@ import {
   parseNavigationPart,
 } from "../../../shared/navigation-tool";
 import {
+  currentQuestion,
   isQuestionAnswer,
-  latestQuestion,
   parseQuestionAnswerReference,
   parseVoiceInputReference,
   parseQuestionPart,
@@ -64,6 +67,7 @@ import type {
 } from "./storefront-executor";
 import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
+import { createConversationHistory } from "./history";
 import {
   createVoiceConnection,
   MicrophonePermissionError,
@@ -71,11 +75,15 @@ import {
 import { setVoiceAutostartPreference } from "./voice-preference";
 import {
   DEFAULT_LIVE_VOICE,
+  canRecoverVoice,
   isLiveVoice,
   parseVoiceEventPart,
+  isVoiceCloseReason,
   VOICE_IDLE_WARNING_MS,
   type LiveVoice,
   type VoiceClientState,
+  type VoiceCloseReason,
+  type VoiceSessionSnapshot,
 } from "../../../shared/voice";
 
 const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
@@ -123,7 +131,8 @@ function voiceSnapshot(value: unknown) {
       ["starting", "active", "closed", "failed"].includes(
         String(value.status),
       ) &&
-      (value.error === undefined || typeof value.error === "string"))
+      (value.error === undefined || typeof value.error === "string") &&
+      (value.closeReason === undefined || isVoiceCloseReason(value.closeReason)))
   );
 }
 
@@ -258,8 +267,9 @@ function credential(value: unknown): value is ConversationCredential {
 }
 
 function snapshot(value: unknown): value is ConversationSnapshot {
+  if (!record(value) || !validHistoryPage(value.history)) return false;
+  const historyStart = value.history.start;
   return (
-    record(value) &&
     typeof value.id === "string" &&
     UUID.test(value.id) &&
     typeof value.busy === "boolean" &&
@@ -278,7 +288,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
         ))) &&
     voiceSnapshot(value.voice) &&
     Array.isArray(value.tools) &&
-    value.tools.length <= 4 &&
+    value.tools.length <= 12 &&
     value.tools.every((tool) => {
       if (
         !record(tool) ||
@@ -311,10 +321,22 @@ function snapshot(value: unknown): value is ConversationSnapshot {
       }
     }) &&
     Array.isArray(value.messages) &&
-    value.messages.length <= MAX_CONVERSATION_MESSAGES &&
-    value.messages.every(
-      (message) =>
-        record(message) &&
+    value.messages.length <= CONVERSATION_HISTORY_PAGE_SIZE + MAX_HISTORY_UPDATES &&
+    value.messages.every(validMessage) &&
+    Array.isArray(value.historyUpdates) && value.historyUpdates.length <= MAX_HISTORY_UPDATES &&
+    value.historyUpdates.every(entry => validHistoryEntry(entry) && "message" in entry && entry.sequence < historyStart) &&
+    new Set(value.historyUpdates.map(entry => entry.sequence)).size === value.historyUpdates.length &&
+    record(value.current) &&
+    typeof value.current.hasCustomerReply === "boolean" &&
+    (value.current.pendingQuestion === null || validQuestionPart(value.current.pendingQuestion)) &&
+    (value.current.activeProduct === null || (record(value.current.activeProduct) &&
+      typeof value.current.activeProduct.path === "string" && /^\/products\/[a-z0-9][a-z0-9-]*$/i.test(value.current.activeProduct.path) &&
+      typeof value.current.activeProduct.title === "string"))
+  );
+}
+
+function validMessage(message: unknown): message is ConversationMessage {
+  return record(message) &&
         typeof message.id === "string" &&
         (message.role === "user" ||
           message.role === "assistant" ||
@@ -358,7 +380,7 @@ function snapshot(value: unknown): value is ConversationSnapshot {
                 typeof part.voiceId === "string" &&
                 UUID.test(part.voiceId) &&
                 typeof part.text === "string" &&
-                part.text.length <= 60_000 &&
+                part.text.length <= 2000 * CONVERSATION_HISTORY_PAGE_SIZE &&
                 typeof part.startMs === "number" &&
                 Number.isFinite(part.startMs) &&
                 Number(part.startMs) >= 0 &&
@@ -382,9 +404,29 @@ function snapshot(value: unknown): value is ConversationSnapshot {
                 typeof part.path === "string" &&
                 /^\/(?!\/)[^?#]*$/.test(part.path) &&
                 typeof part.occurredAt === "string")),
-        ),
-    )
-  );
+        );
+}
+
+function validHistoryEntry(entry: unknown): entry is ConversationHistoryEntry {
+  if (!record(entry) || !Number.isSafeInteger(entry.sequence) || Number(entry.sequence) < 0) return false;
+  if ("message" in entry) return validMessage(entry.message);
+  if (!record(entry.caption)) return false;
+  const caption = entry.caption;
+  return typeof caption.id === "string" && typeof caption.voiceId === "string" && UUID.test(caption.voiceId) &&
+    caption.sequence === entry.sequence && (caption.role === "user" || caption.role === "assistant") &&
+    typeof caption.text === "string" && caption.text.length <= 2000 && typeof caption.createdAt === "string" &&
+    typeof caption.startMs === "number" && Number.isFinite(caption.startMs) && caption.startMs >= 0 &&
+    typeof caption.endMs === "number" && Number.isFinite(caption.endMs) && caption.endMs >= caption.startMs;
+}
+
+function validHistoryPage(value: unknown): value is ConversationHistoryPage {
+  return record(value) && Number.isSafeInteger(value.start) && Number(value.start) >= 0 &&
+    Number.isSafeInteger(value.end) && Number(value.end) >= Number(value.start) &&
+    Number(value.end) - Number(value.start) <= CONVERSATION_HISTORY_PAGE_SIZE &&
+    value.before === (value.start || null) && Array.isArray(value.entries) &&
+    value.entries.length <= CONVERSATION_HISTORY_PAGE_SIZE &&
+    value.entries.every(entry => validHistoryEntry(entry) && entry.sequence >= Number(value.start) && entry.sequence < Number(value.end)) &&
+    new Set(value.entries.map(entry => entry.sequence)).size === value.entries.length;
 }
 
 class SessionRequestError extends Error {
@@ -437,6 +479,10 @@ export function createConversationClient(
     optimisticMessage: null,
     pending: false,
     restoring: false,
+    loadingHistory: false,
+    historyBefore: null,
+    historyError: null,
+    historyVersion: 0,
     error: null,
     voice: idleVoice,
     voiceIdleWarningAt: null,
@@ -459,6 +505,7 @@ export function createConversationClient(
   let apiSequence = 0;
   let appliedSequence = 0;
   let readVersion: ConversationReadVersion | undefined;
+  let history = createConversationHistory();
   let epoch = 0;
   let ending = false;
   let voiceEpoch = 0;
@@ -466,7 +513,13 @@ export function createConversationClient(
   let voiceId: string | undefined;
   let voiceConnection: ReturnType<typeof createVoiceConnection> | undefined;
   let heartbeatTimer: number | undefined;
-  let voiceLimitTimer: number | undefined;
+  let voiceRecoveryEnabled = false;
+  let voiceRecoveryAttempts = 0;
+  let voiceRecoveryEpoch = 0;
+  let voiceRecoveryTimer: number | undefined;
+  let voiceStableTimer: number | undefined;
+  let wakeVoiceRecovery: (() => void) | undefined;
+  let recoveringVoice = false;
   let voiceStop: Promise<void> | undefined;
   let voiceStart: Promise<void> | undefined;
   let queuedVoiceInput:
@@ -564,6 +617,7 @@ export function createConversationClient(
     if (state.availability === availability && state.availabilityChecked) return;
     const wasSuspended = state.availability === "suspended";
     if (availability === "suspended" && !wasSuspended) {
+      cancelVoiceRecovery();
       recoveryRefreshPending = false;
       const id = voiceId;
       closeVoiceLocally(false);
@@ -778,14 +832,16 @@ export function createConversationClient(
     resumeAccess = null;
     readVersion = undefined;
     persist();
-    update({ conversation: boot.conversation });
+    history = createConversationHistory();
+    history.merge(boot.conversation.history, { revision: boot.conversation.revision, streamRevision: 0 }, boot.conversation.historyUpdates);
+    update({ conversation: { ...boot.conversation, messages: history.messages() }, historyBefore: history.before, historyError: null });
   }
 
   async function rawApi(path = "", body?: unknown, signal?: AbortSignal) {
     const credential = access;
     const requestedEpoch = epoch;
     const cleanup =
-      (body === undefined && (path === "" || path.startsWith("?"))) ||
+      (body === undefined && (path === "" || path.startsWith("?") || path.startsWith("/history?"))) ||
       path === "/end" ||
       /^\/voice\/[^/]+\/stop$/.test(path) ||
       /^\/tools\/[^/]+\/result$/.test(path);
@@ -892,8 +948,10 @@ export function createConversationClient(
           latestVoiceCaption(state.conversation?.messages ?? []) ||
           result.busy !== state.conversation?.busy);
       if (voiceActivity) voiceActivityVersion++;
+      history.merge(result.history, version ?? { revision: result.revision, streamRevision: 0 }, result.historyUpdates);
       update({
-        conversation: result,
+        conversation: { ...result, messages: history.messages() },
+        historyBefore: history.before,
         ...(voiceActivity ? { voiceIdleWarningAt: null } : {}),
         ...(acknowledged ? { optimisticMessage: null } : {}),
       });
@@ -906,22 +964,10 @@ export function createConversationClient(
             result.voice.status === "failed") &&
           state.voice.status !== "stopping"
         ) {
-          closeVoiceLocally();
-          voiceId = undefined;
-          update({
-            voice:
-              result.voice.status === "failed"
-                ? {
-                    status: "error",
-                    muted: false,
-                    error:
-                      result.voice.error ||
-                      "Voice ended. You can continue in text.",
-                  }
-                : idleVoice,
-          });
+          handleVoiceEnded(result.voice);
         }
         void executePendingTool();
+        if (history.hasGap) void loadOlderHistory();
       }
     } else {
       if (acknowledged) update({ optimisticMessage: null });
@@ -931,7 +977,34 @@ export function createConversationClient(
     }
   }
 
+  async function loadOlderHistory() {
+    const before = history.before;
+    if (before === null || state.loadingHistory || !access || disposed) return;
+    const requestedEpoch = epoch;
+    update({ loadingHistory: true, historyError: null });
+    try {
+      const result = await rawApi(`/history?before=${before}`, undefined, lifetime.signal);
+      if (requestedEpoch !== epoch || disposed) return;
+      if (!record(result) || result.id !== access?.conversationId ||
+        !Number.isSafeInteger(result.revision) || Number(result.revision) < 0 ||
+        !validHistoryPage(result.history) || result.history.end !== before)
+        throw new SessionRequestError("Roman received an invalid history page.");
+      history.merge(result.history, { revision: Number(result.revision), streamRevision: 0 });
+      if (state.conversation)
+        update({ conversation: { ...state.conversation, messages: history.messages() }, historyBefore: history.before, historyVersion: state.historyVersion + 1 });
+    } catch (error) {
+      if (requestedEpoch === epoch && !disposed)
+        update({ historyError: error instanceof Error ? error.message : "Earlier messages could not load. Scroll up to retry." });
+    } finally {
+      if (requestedEpoch === epoch && !disposed) {
+        update({ loadingHistory: false });
+        if (history.hasGap && !state.historyError) void loadOlderHistory();
+      }
+    }
+  }
+
   function reset() {
+    cancelVoiceRecovery();
     closeVoiceLocally();
     voiceId = undefined;
     voiceStop = undefined;
@@ -939,6 +1012,7 @@ export function createConversationClient(
     epoch++;
     access = null;
     readVersion = undefined;
+    history = createConversationHistory();
     resumeAccess = null;
     uncertainSubmission = null;
     uncertainVoiceAnswer = null;
@@ -953,6 +1027,10 @@ export function createConversationClient(
       optimisticMessage: null,
       pending: false,
       restoring: false,
+      loadingHistory: false,
+      historyBefore: null,
+      historyError: null,
+      historyVersion: 0,
       error: null,
       voice: idleVoice,
       approval: null,
@@ -1286,7 +1364,7 @@ export function createConversationClient(
     voiceConnection?.close();
     voiceConnection = undefined;
     window.clearTimeout(heartbeatTimer);
-    window.clearTimeout(voiceLimitTimer);
+    window.clearTimeout(voiceStableTimer);
     if (abortTool && !(isSuspended() && activeToolClaimed))
       toolController?.abort();
   }
@@ -1412,10 +1490,9 @@ export function createConversationClient(
       throw new Error(
         "Wait until voice is connected here and Roman has finished replying.",
       );
-    const question = latestQuestion(
-      state.conversation?.messages ?? [],
-      window.location.pathname,
-    );
+    const question = state.conversation
+      ? currentQuestion(state.conversation, window.location.pathname)
+      : undefined;
     if (
       "questionId" in selection &&
       (question?.invocationId !== selection.questionId ||
@@ -1593,7 +1670,122 @@ export function createConversationClient(
     }
   }
 
-  function failVoice(message: string) {
+  function cancelVoiceRecovery() {
+    voiceRecoveryEnabled = false;
+    voiceRecoveryAttempts = 0;
+    voiceRecoveryEpoch++;
+    wakeVoiceRecovery?.();
+    window.clearTimeout(voiceRecoveryTimer);
+    window.clearTimeout(voiceStableTimer);
+    voiceRecoveryTimer = undefined;
+  }
+
+  function handleVoiceEnded(voice: VoiceSessionSnapshot) {
+    closeVoiceLocally();
+    voiceId = undefined;
+    update({ voice: voice.status === "failed"
+      ? { status: "error", muted: false, error: voice.error || "Voice ended. You can continue in text." }
+      : idleVoice });
+    if (canRecoverVoice(voice.closeReason)) scheduleVoiceRecovery();
+    else cancelVoiceRecovery();
+  }
+
+  function scheduleVoiceRecovery() {
+    if (!voiceRecoveryEnabled || disposed || ending || isSuspended() ||
+        voiceRecoveryTimer !== undefined || recoveringVoice || voiceRecoveryAttempts >= 3) return;
+    const recoveryEpoch = voiceRecoveryEpoch;
+    const conversationEpoch = epoch;
+    const current = () => voiceRecoveryEnabled && !disposed && !ending && !isSuspended() &&
+      recoveryEpoch === voiceRecoveryEpoch && conversationEpoch === epoch;
+    voiceRecoveryTimer = window.setTimeout(() => {
+      voiceRecoveryTimer = undefined;
+      if (!current()) return;
+      recoveringVoice = true;
+      void (async () => {
+        let attempted = false;
+        let waitingForWork = false;
+        try {
+          await voiceStart?.catch(() => undefined);
+          await voiceStop?.catch(() => undefined);
+          if (!current()) return;
+          // Reconcile the old connection and all durable tool outcomes before
+          // opening another. Never replay an input or an interrupted action.
+          await api();
+          if (!current()) return;
+          const previous = state.conversation?.voice;
+          if (previous && (previous.status === "active" || previous.status === "starting")) {
+            if (previous.clientId !== clientId) { cancelVoiceRecovery(); return; }
+            await stopVoice("connection_lost");
+          }
+          if (!current()) return;
+          const terminal = state.conversation?.voice;
+          if (!terminal || !canRecoverVoice(terminal.closeReason)) {
+            cancelVoiceRecovery();
+            return;
+          }
+          const pendingWork = () => activeToolClaimed || activeToolSettlement || state.pending || state.conversation?.busy;
+          const waitDeadline = performance.now() + 90_000;
+          while (current() && pendingWork()) {
+            waitingForWork = true;
+            await new Promise<void>((resolve, reject) => {
+              const check = () => {
+                if (current() && pendingWork()) return;
+                finish();
+                resolve();
+              };
+              const timer = window.setTimeout(() => {
+                finish();
+                reject(new Error("Interrupted work has not settled."));
+              }, Math.max(0, waitDeadline - performance.now()));
+              const finish = () => {
+                window.clearTimeout(timer);
+                listeners.delete(check);
+                if (wakeVoiceRecovery === check) wakeVoiceRecovery = undefined;
+              };
+              listeners.add(check);
+              wakeVoiceRecovery = check;
+              void activeToolSettlement?.then(check, check);
+              check();
+            });
+            if (!current()) return;
+            await api();
+          }
+          waitingForWork = false;
+          if (!current()) return;
+          if (!canRecoverVoice(state.conversation?.voice?.closeReason)) {
+            cancelVoiceRecovery();
+            return;
+          }
+          attempted = true;
+          voiceRecoveryAttempts++;
+          await startVoice(true);
+        } catch (error) {
+          if (waitingForWork && current()) {
+            cancelVoiceRecovery();
+            update({ voice: { status: "error", muted: false,
+              error: "Voice is waiting for interrupted work to finish. You can start voice again once it has settled." } });
+            return;
+          }
+          if (!attempted && current()) voiceRecoveryAttempts++;
+          if (error instanceof MicrophonePermissionError) cancelVoiceRecovery();
+          if (current()) update({ voice: { status: "error", muted: false,
+            error: "Voice is reconnecting. You can also continue in text." } });
+        } finally {
+          recoveringVoice = false;
+          if (current() && state.voice.status !== "active") {
+            if (voiceRecoveryAttempts < 3) scheduleVoiceRecovery();
+            else update({ voice: { status: "error", muted: false,
+              error: "Voice could not reconnect. You can continue in text or start voice again." } });
+          }
+        }
+      })();
+    }, [500, 1_500, 3_000][voiceRecoveryAttempts]);
+  }
+
+  function failVoice(message: string, reason: VoiceCloseReason = "error") {
+    const recover = canRecoverVoice(reason) &&
+      (state.voice.status === "active" || voiceRecoveryAttempts > 0);
+    if (!recover) cancelVoiceRecovery();
     const failureEpoch = epoch;
     const stopping = stopVoice("connection_lost");
     const failureVoiceEpoch = voiceEpoch;
@@ -1604,9 +1796,14 @@ export function createConversationClient(
           epoch === failureEpoch &&
           voiceEpoch === failureVoiceEpoch
         )
-          update({ voice: { status: "error", muted: false, error: message } });
+          {
+            update({ voice: { status: "error", muted: false, error: message } });
+            const terminal = state.conversation?.voice;
+            if (recover && canRecoverVoice(terminal?.closeReason)) scheduleVoiceRecovery();
+            else if (terminal?.closeReason) cancelVoiceRecovery();
+          }
       })
-      .catch(() => undefined);
+      .catch(() => { if (recover) scheduleVoiceRecovery(); });
   }
 
   function scheduleHeartbeat(id: string, startedVoiceEpoch: number) {
@@ -1633,15 +1830,16 @@ export function createConversationClient(
             return;
           const message =
             "Voice lost its connection. Your microphone has stopped; start voice again to reconnect.";
-          failVoice(message);
+          failVoice(message, "transport_lost");
         });
     }, 20_000);
   }
 
-  function startVoice() {
+  function startVoice(recovery = false) {
     if (voiceStart)
       return Promise.reject(new Error("Voice is already connecting."));
-    const starting = connectVoice();
+    if (!recovery) { cancelVoiceRecovery(); voiceRecoveryEnabled = true; }
+    const starting = connectVoice(recovery);
     voiceStart = starting;
     void starting
       .finally(() => {
@@ -1651,7 +1849,7 @@ export function createConversationClient(
     return starting;
   }
 
-  async function connectVoice() {
+  async function connectVoice(recovery = false) {
     if (
       disposed ||
       ending ||
@@ -1684,9 +1882,9 @@ export function createConversationClient(
       voice: { status: "starting", muted: false, error: null },
       error: null,
     });
-    const connection = createVoiceConnection((message) => {
+    const connection = createVoiceConnection((message, reason) => {
       if (!current()) return;
-      failVoice(message);
+      failVoice(message, reason);
     });
     voiceConnection = connection;
     try {
@@ -1746,16 +1944,17 @@ export function createConversationClient(
       });
       if (!current()) return;
       update({ voice: { status: "active", muted: false, error: null } });
-      voiceLimitTimer = window.setTimeout(() => {
-        void stopVoice().catch(() => undefined);
-      }, 10 * 60_000);
+      if (voiceRecoveryAttempts > 0)
+        voiceStableTimer = window.setTimeout(() => {
+          if (current()) voiceRecoveryAttempts = 0;
+        }, 30_000);
       void poll();
     } catch (error) {
       connection.close();
       if (!current()) return;
       const message =
         error instanceof Error ? error.message : "Roman could not start voice.";
-      const stopping = stopVoice();
+      const stopping = stopVoice(recovery ? "connection_lost" : undefined);
       const stoppedVoiceEpoch = voiceEpoch;
       try {
         await stopping;
@@ -1783,6 +1982,7 @@ export function createConversationClient(
   }
 
   function onPageHide() {
+    cancelVoiceRecovery();
     const id = voiceId;
     closeVoiceLocally();
     if (id) bestEffortVoiceStop(id);
@@ -1844,7 +2044,7 @@ export function createConversationClient(
     } catch {
       saved = access ?? resumeAccess;
     }
-    if (!credential(saved) || Date.parse(saved.expiresAt) <= Date.now()) {
+    if (!credential(saved)) {
       if (access || resumeAccess || state.restoring || saved != null) reset();
       return;
     }
@@ -1893,6 +2093,7 @@ export function createConversationClient(
   return {
     sendVoiceAnswer,
     getSnapshot: () => state,
+    loadOlderHistory,
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -1901,6 +2102,7 @@ export function createConversationClient(
     },
     setOpen(open) {
       if (disposed || !isConversationStorefront(window.location.origin)) return;
+      if (!open) cancelVoiceRecovery();
       availabilityOpen = open;
       if (open) {
         window.clearTimeout(availabilityTimer);
@@ -1942,6 +2144,7 @@ export function createConversationClient(
         );
       if (state.voice.status === "starting" || state.voice.status === "active")
         return sendVoiceSelection(choice ?? { text });
+      cancelVoiceRecovery();
       if (
         ending ||
         voiceId ||
@@ -2206,10 +2409,12 @@ export function createConversationClient(
     },
     setVoice,
     stopVoice() {
+      cancelVoiceRecovery();
       setVoiceAutostartPreference(false);
       return stopVoice();
     },
     async end() {
+      cancelVoiceRecovery();
       setVoiceAutostartPreference(false);
       if (!access || disposed || ending || endingRequested) return;
       if (

@@ -44,6 +44,7 @@ model Conversation {
   revision            Int                   @default(0)
   status              String                @default("active")
   pendingRequestId    String?
+  memoJson            String                @default("{}")
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   messages            ConversationMessage[]
@@ -53,8 +54,22 @@ model Conversation {
   modelUsage          ModelUsage[]
   measurementDrafts   MeasurementDraft[]
   measurementWrites   MeasurementWriteReceipt[]
+  contexts            ConversationContext[]
 
   @@index([shop, createdAt])
+}
+
+// Provider-owned compacted windows are private and model-specific. The original
+// transcript remains the source of truth, independently of these checkpoints.
+model ConversationContext {
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  model          String
+  throughSequence Int
+  inputJson      String
+  updatedAt      DateTime @updatedAt
+
+  @@id([conversationId, model])
 }
 
 model ConversationMessage {
@@ -76,6 +91,7 @@ model ConversationMessage {
 
   @@unique([conversationId, requestId, role])
   @@unique([conversationId, sequence])
+  @@index([conversationId, completedAt, sequence])
 }
 
 model ToolInvocation {
@@ -128,6 +144,7 @@ model MeasurementWriteReceipt {
 
 model VoiceSession {
   id             String            @id
+  closeReason    String?
   conversationId String
   conversation   Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   clientId       String
@@ -182,6 +199,7 @@ model VoiceTranscript {
 
   @@unique([voiceId, providerEventId])
   @@unique([conversationId, sequence])
+  @@index([conversationId, role, sequence])
 }
 
 model ApiIncident {

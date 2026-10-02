@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { historySnapshot } from "./helpers/history-snapshot.mjs";
 
 const bundle = await build({
   stdin: {
@@ -53,7 +54,7 @@ function cart(quantities) {
     })),
   };
 }
-function setup(t, { open = true, restored = false, endExpected = false } = {}) {
+function setup(t, { open = true, restored = false, endExpected = false, brokenSnapshot = false } = {}) {
   const dom = new JSDOM(
     "<!doctype html><roman-ai-assistant></roman-ai-assistant>",
     {
@@ -63,6 +64,9 @@ function setup(t, { open = true, restored = false, endExpected = false } = {}) {
     },
   );
   const { window } = dom;
+  if (brokenSnapshot) window.addEventListener("error", (event) => {
+    if (/reading 'entries'/.test(event.error?.message ?? "")) event.preventDefault();
+  });
   Object.assign(window, { Request, Response, Headers });
   window.HTMLDialogElement.prototype.showModal = function () {
     this.open = true;
@@ -112,6 +116,8 @@ function setup(t, { open = true, restored = false, endExpected = false } = {}) {
   };
   const navigationListeners = new Set(),
     sessionListeners = new Set();
+  state.conversation = historySnapshot(state.conversation);
+  if (brokenSnapshot) state.conversation.history = undefined;
   const session = {
     getSnapshot: () => state,
     subscribe: (fn) => {
@@ -160,7 +166,10 @@ function setup(t, { open = true, restored = false, endExpected = false } = {}) {
   t.after(() => {
     dispose();
     window.close();
-    assert.deepEqual(errors, []);
+    if (brokenSnapshot) {
+      assert.ok(errors.some(error => /reading 'entries'/.test(error?.message ?? "")));
+      assert.ok(!errors.some(error => /destroy is not a function/.test(String(error))));
+    } else assert.deepEqual(errors, []);
     assert.deepEqual(sessionCalls, endExpected ? ["end"] : []);
   });
   return {
@@ -189,14 +198,14 @@ function setup(t, { open = true, restored = false, endExpected = false } = {}) {
     tools(tools) {
       state = {
         ...state,
-        conversation: {
+        conversation: historySnapshot({
           id: "restored",
           status: "active",
           messages: [],
           busy: false,
           ...state.conversation,
           tools,
-        },
+        }),
       };
       sessionListeners.forEach((fn) => fn());
     },
@@ -206,6 +215,13 @@ function setup(t, { open = true, restored = false, endExpected = false } = {}) {
     },
   };
 }
+
+test("render failures notify the error callback without treating its return as an effect cleanup", (t) => {
+  const ctx = setup(t, { restored: true, brokenSnapshot: true });
+  // The callback deliberately returns Array.push's number. It is a notification,
+  // not a React cleanup, including during StrictMode's repeated effects.
+  ctx.dispose();
+});
 
 test("the header counts total quantity from one shared read across Chat, Cart and Gallery", async (t) => {
   const ctx = setup(t, { restored: true });

@@ -31,6 +31,9 @@ import type {
 } from "@prisma/client";
 import type {
   ConversationBootstrap,
+  ConversationHistoryEntry,
+  ConversationHistoryPage,
+  ConversationCurrentState,
   ConversationMessage,
   ConversationSnapshot,
   SendMessageInput,
@@ -41,7 +44,7 @@ import type {
   ToolClaim,
   ToolClaimInput,
 } from "../../shared/conversation";
-import { MAX_MESSAGE_LENGTH, MAX_PRODUCT_CARDS } from "../../shared/conversation";
+import { CONVERSATION_HISTORY_PAGE_SIZE, MAX_MESSAGE_LENGTH, MAX_PRODUCT_CARDS } from "../../shared/conversation";
 import {
   MAX_CATALOG_CANDIDATES,
   parseCatalogQueryOutcomes,
@@ -103,8 +106,8 @@ import {
   type ApplyMeasurementsResult,
 } from "../../shared/measurements";
 import { isStorefrontPagePath } from "../../shared/journey";
-import { groupVoiceTranscript } from "../../shared/voice-transcript";
-import { parseVoiceEventPart } from "../../shared/voice";
+import { projectConversationTimeline } from "../../shared/conversation-timeline";
+import { parseVoiceEventPart, isVoiceCloseReason } from "../../shared/voice";
 import {
   parseProductGuidesCall,
   parseProductGuidesResult,
@@ -112,7 +115,6 @@ import {
   type ProductGuidesResult,
 } from "../../shared/product-guides";
 import {
-  MAX_VOICE_DURATION_MS,
   closeConversationVoiceSessions,
   expireVoiceSessions,
   expiredVoiceSessionWhere,
@@ -124,8 +126,14 @@ import {
   productPagePath,
 } from "../guides/product-page.server";
 import { ConversationError } from "./errors.server";
+import { PRIMARY_TEXT_MODEL } from "./availability.server";
 import { MAX_TURN_TOOL_CALLS } from "./limits.server";
 import type { ModelMessage } from "./history.server";
+import { recallConversationHistory } from "./memory-history.server";
+import {
+  applyMemoryUpdate, memoryMessage, parseMemo, parseCheckpoint,
+  parseMemoryUpdate, type MemoryUpdate, type ModelMemory, type ContextCheckpoint,
+} from "./memory.server";
 import {
   parseProductSelection,
   type ProductPresentation,
@@ -137,9 +145,6 @@ const processStartedAt = new Date();
 const credentialLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 const creationWindowMs = 24 * 60 * 60 * 1000;
 const maxDailyConversationsPerShop = 100;
-const maxTurns = 40;
-const maxVoiceQuestionAnswers = 40;
-const maxJourneyRows = 200;
 const productIdPattern = /^gid:\/\/shopify\/Product\/\d+$/;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -429,32 +434,10 @@ function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
   return { id: tool.id, ...call, status: tool.status };
 }
 
-function voiceAssociation(part: ConversationPart) {
-  return part.type === "products" ||
-    part.type === "guides" ||
-    part.type === "question"
-    ? part.voiceReply
-    : undefined;
-}
-
-function isBackgroundObservation(message: ConversationMessage): boolean {
-  return (
-    message.role === "context" &&
-    message.status !== "failed" &&
-    message.parts.length > 0 &&
-    message.parts.every(
-      (part) => part.type === "page_view" || part.type === "navigation",
-    )
-  );
-}
-
-export function conversationTimeline(
-  conversation: Pick<
-    StoredConversation,
-    "origin" | "messages" | "voiceTranscripts"
-  >,
-): ConversationMessage[] {
-  const rows = conversation.messages.map((message) => {
+export function conversationEntries(
+  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts">,
+): ConversationHistoryEntry[] {
+  const entries: ConversationHistoryEntry[] = conversation.messages.map((message) => {
     if (
       !["user", "assistant", "context"].includes(message.role) ||
       !["pending", "complete", "failed"].includes(message.status)
@@ -463,7 +446,6 @@ export function conversationTimeline(
     }
     return {
       sequence: message.sequence,
-      endSequence: message.sequence,
       message: {
         id: message.id,
         ...(message.role === "user" && uuidPattern.test(message.requestId)
@@ -477,154 +459,54 @@ export function conversationTimeline(
       } as ConversationMessage,
     };
   });
-  const voicePlacements = rows.flatMap((row) =>
-    row.message.parts.flatMap((part) => {
-      const reply = voiceAssociation(part);
-      return reply ? [reply] : [];
-    }),
-  );
-  const captionBoundaries = voicePlacements.flatMap((reply) => {
-    const nextMessage = rows.find(
-      (row) =>
-        row.sequence >= reply.afterSequence &&
-        !isBackgroundObservation(row.message),
-    );
-    if (!nextMessage) return [];
-    const responseStartMs = conversation.voiceTranscripts.reduce(
-      (startMs, fragment) =>
-        fragment.voiceId === reply.voiceId &&
-        fragment.role === "assistant" &&
-        fragment.sequence >= reply.afterSequence &&
-        fragment.sequence < nextMessage.sequence
-          ? Math.min(startMs, fragment.startMs)
-          : startMs,
-      Infinity,
-    );
-    // A spoken reply already separates the old response from the next one.
-    // Its delegation row can arrive after Roman starts acknowledging it (even
-    // between "Alright," and "the kitchen"); that bookkeeping is not another
-    // speech boundary. Keep the boundary when no new customer input is known.
-    if (
-      nextMessage.message.role === "context" &&
-      nextMessage.message.status !== "failed" &&
-      (nextMessage.message.parts.length === 0 ||
-        nextMessage.message.parts.some(voiceAssociation)) &&
-      conversation.voiceTranscripts.some(
-        (fragment) =>
-          fragment.voiceId === reply.voiceId &&
-          fragment.role === "user" &&
-          fragment.sequence >= reply.afterSequence &&
-          fragment.sequence < nextMessage.sequence &&
-          // ASR can arrive late: delivery after completion alone does not make
-          // it a new turn. The customer must speak after this response begins.
-          fragment.startMs > responseStartMs,
-      )
-    )
-      return [];
-    // Other messages/delegations end this response. Completion itself may
-    // happen midway through Roman's sentence; the projector handles it below.
-    return [nextMessage.sequence];
-  });
-  const captions = groupVoiceTranscript(
-    conversation.voiceTranscripts.map((fragment) => {
-      if (fragment.role !== "user" && fragment.role !== "assistant")
-        throw new Error("Invalid stored voice caption role.");
-      return {
-        ...fragment,
-        role: fragment.role,
-        createdAt: fragment.createdAt.toISOString(),
-      };
-    }),
-    // Reserved result rows and background page changes do not interrupt speech.
-    // Customer input and visible events remain boundaries; the next delegation
-    // adds one only when customer speech has not already separated the replies.
-    rows
-      .filter(
-        (row) =>
-          (row.message.parts.length === 0 && row.message.status !== "failed") ||
-          isBackgroundObservation(row.message) ||
-          row.message.parts.some(
-            (part) =>
-              voiceAssociation(part) ||
-              (part.type === "voice_event" && part.event === "started"),
-          ),
-      )
-      .map((row) => row.sequence),
-    captionBoundaries,
-    voicePlacements.map((reply) => reply.afterSequence),
-  );
-  for (const caption of captions)
-    rows.push({
-      sequence: caption.sequence,
-      endSequence: caption.endSequence,
-      message: {
-        id: caption.id,
-        role: caption.role,
-        status: "complete",
-        createdAt: caption.createdAt,
-        parts: [
-          {
-            type: "voice",
-            version: 1,
-            voiceId: caption.voiceId,
-            text: caption.text,
-            startMs: caption.startMs,
-            endMs: caption.endMs,
-          },
-        ],
-      },
-    });
-  rows.sort((left, right) => left.sequence - right.sequence);
-  // Delegation reserves a hidden row before tools run. Place its cards at
-  // completion, then beneath the following spoken response as captions arrive.
-  // Never cross a customer turn, different voice or another result.
-  const positions = new Map<string, number>();
-  for (const row of rows) {
-    const reply = row.message.parts.map(voiceAssociation).find(Boolean);
-    if (!reply || row.message.role !== "context") continue;
-    let position = reply.afterSequence - 0.5;
-    for (const next of rows) {
-      if (next === row || next.endSequence < reply.afterSequence) continue;
-      if (isBackgroundObservation(next.message)) continue;
-      if (
-        next.message.role !== "assistant" ||
-        !next.message.parts.every(
-          (part) => part.type === "voice" && part.voiceId === reply.voiceId,
-        )
-      )
-        break;
-      position = next.endSequence + 0.5;
-    }
-    positions.set(row.message.id, position);
+
+  for (const fragment of conversation.voiceTranscripts) {
+    if (fragment.role !== "user" && fragment.role !== "assistant") throw new Error("Invalid stored voice caption role.");
+    entries.push({ sequence: fragment.sequence, caption: { id: fragment.id, voiceId: fragment.voiceId, sequence: fragment.sequence, role: fragment.role, text: fragment.text, startMs: fragment.startMs, endMs: fragment.endMs, createdAt: fragment.createdAt.toISOString() } });
   }
-  // Captions can beat the browser's readiness request to the server. Keep the
-  // recorded start before its own speech without changing stored chronology.
-  for (const row of rows) {
-    const start = row.message.parts.find(
-      (part) => part.type === "voice_event" && part.event === "started",
-    );
-    if (start?.type !== "voice_event") continue;
-    const firstCaption = rows.find((candidate) =>
-      candidate.message.parts.some(
-        (part) => part.type === "voice" && part.voiceId === start.voiceId,
-      ),
-    );
-    positions.set(
-      row.message.id,
-      Math.min(row.sequence, firstCaption?.sequence ?? row.sequence) - 0.5,
-    );
-  }
-  return rows
-    .sort(
-      (left, right) =>
-        (positions.get(left.message.id) ?? left.sequence) -
-        (positions.get(right.message.id) ?? right.sequence),
-    )
-    .map((row) => row.message);
+  return entries.sort((left, right) => left.sequence - right.sequence);
 }
 
-function snapshot(conversation: StoredConversation): ConversationSnapshot {
-  const messages = conversationTimeline(conversation);
+export function conversationTimeline(
+  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts">,
+): ConversationMessage[] {
+  return projectConversationTimeline(conversationEntries(conversation));
+}
+
+function snapshot(
+  conversation: StoredConversation,
+  current?: ConversationCurrentState,
+): ConversationSnapshot {
+  const entries = conversationEntries(conversation);
+  const end = Math.max(conversation.nextSequence, (entries.at(-1)?.sequence ?? -1) + 1);
+  const start = Math.max(0, end - CONVERSATION_HISTORY_PAGE_SIZE);
+  const history: ConversationHistoryPage = {
+    start,
+    end,
+    before: start || null,
+    entries: entries.filter((entry) => entry.sequence >= start),
+  };
+  const messages = projectConversationTimeline(entries);
+  const historyUpdates = conversationEntries({
+    ...conversation,
+    voiceTranscripts: [],
+    messages: [...conversation.messages]
+      .sort((left, right) =>
+        (right.completedAt ?? right.createdAt).getTime() -
+        (left.completedAt ?? left.createdAt).getTime())
+      .slice(0, 8)
+      .filter((message) => message.sequence < start),
+  });
+  // Retain the source rows used by existing question and page-grounding checks,
+  // even when a long uninterrupted voice exchange has moved their page away.
+  for (const type of ["navigation", "page_view", "question", "user", "pending"]) {
+    const entry = [...entries].reverse().find((entry) => "message" in entry &&
+      (type === "user" ? entry.message.role === "user" :
+        type === "pending" ? entry.message.status === "pending" :
+          entry.message.parts.some((part) => part.type === type)));
+    if (entry && entry.sequence < start && !historyUpdates.some((update) => update.sequence === entry.sequence))
+      historyUpdates.push(entry);
+  }
   const voice =
     conversation.voiceSessions.find((session) =>
       ["starting", "active"].includes(session.status),
@@ -640,7 +522,14 @@ function snapshot(conversation: StoredConversation): ConversationSnapshot {
     id: conversation.id,
     status: conversation.status,
     revision: conversation.revision,
-    messages: messages.filter(
+    history,
+    historyUpdates,
+    current: current ?? {
+      activeProduct: activeProduct({ status: conversation.status, messages }) ?? null,
+      pendingQuestion: latestQuestion(messages) ?? null,
+      hasCustomerReply: messages.some((message) => message.role === "user"),
+    },
+    messages: projectConversationTimeline([...historyUpdates, ...history.entries]).filter(
       (message) => message.parts.length > 0 || message.status === "failed",
     ),
     busy: messages.some((message) => message.status === "pending"),
@@ -654,6 +543,7 @@ function snapshot(conversation: StoredConversation): ConversationSnapshot {
             clientId: voice.clientId,
             status: voice.status as "starting" | "active" | "closed" | "failed",
             ...(voice.error ? { error: voice.error } : {}),
+            ...(isVoiceCloseReason(voice.closeReason) ? { closeReason: voice.closeReason } : {}),
           },
         }
       : {}),
@@ -666,7 +556,6 @@ const withMessages = {
   voiceSessions: {
     orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
   },
-  voiceTranscripts: { orderBy: { sequence: "asc" as const } },
 };
 
 async function loadConversation(
@@ -682,7 +571,19 @@ async function loadConversation(
       404,
       "This chat could not be found. Start a new chat.",
     );
-  return conversation;
+  // Mutations retain every durable message/tool source for exact consent and
+  // guide validation. Captions are needed only for the visible tail and the
+  // latest customer speech that retires an older question, not a lifetime scan.
+  // Query the relation directly: Prisma's nested take may fetch an unbounded
+  // relation and trim in memory when it resolves parent rows separately.
+  const [voiceTranscripts, customer] = await Promise.all([
+    transaction.voiceTranscript.findMany({ where: { conversationId: id }, orderBy: { sequence: "desc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
+    transaction.voiceTranscript.findFirst({ where: { conversationId: id, role: "user" }, orderBy: { sequence: "desc" } }),
+  ]);
+  if (customer && !voiceTranscripts.some((row) => row.id === customer.id))
+    voiceTranscripts.push(customer);
+  voiceTranscripts.sort((left, right) => left.sequence - right.sequence);
+  return { ...conversation, voiceTranscripts };
 }
 
 function requireActive(conversation: Conversation) {
@@ -693,7 +594,7 @@ function requireActive(conversation: Conversation) {
     );
 }
 
-function modelHistory(conversation: StoredConversation): ModelMessage[] {
+function modelHistory(conversation: StoredConversation, context?: Awaited<ReturnType<typeof getCurrentContext>>): ModelMessage[] {
   const timeline = conversationTimeline(conversation);
   const pageEpisodes: ConversationPart[] = [];
   let lastPageKey: string | undefined;
@@ -710,7 +611,14 @@ function modelHistory(conversation: StoredConversation): ModelMessage[] {
   }
   // The tail state owns the current page; history keeps real prior transitions.
   const historicalPages = new Set(pageEpisodes.slice(0, -1));
-  const pending = latestQuestion(timeline);
+  if (context) {
+    backgroundPage = undefined;
+    for (const message of conversationTimeline({ ...conversation, messages: context.messages, voiceTranscripts: context.voiceTranscripts }))
+      for (const part of message.parts)
+        if (part.type === "page_view" || part.type === "navigation")
+          backgroundPage = { title: part.title, path: part.path };
+  }
+  const pending = context ? context.current.pendingQuestion ?? undefined : latestQuestion(timeline);
   const pendingQuestion: QuestionSelection | undefined = pending
     ? {
         question: pending.question,
@@ -745,7 +653,7 @@ function modelHistory(conversation: StoredConversation): ModelMessage[] {
         part.type !== "cart_sample_added" &&
         ((part.type !== "page_view" && part.type !== "navigation") || historicalPages.has(part)),
     );
-    return [
+    const entries: ModelMessage[] = [
       ...(text
         ? [
             {
@@ -821,8 +729,13 @@ function modelHistory(conversation: StoredConversation): ModelMessage[] {
           )}`,
         })),
     ];
+    return entries.map((entry) => ({
+      ...entry, sequence: message.sourceSequence, endSequence: message.sourceEndSequence,
+    }));
   });
-  const activeBlind = activeProduct({
+  const memo = memoryMessage(parseMemo(JSON.parse(conversation.memoJson)));
+  if (memo) history.push(memo);
+  const activeBlind = context ? context.current.activeProduct ?? undefined : activeProduct({
     status: conversation.status === "active" ? "active" : "ended",
     messages: timeline,
   });
@@ -890,7 +803,7 @@ export async function createConversation(
         credentialHash: tokenHash(token),
         credentialExpiresAt: new Date(now.getTime() + credentialLifetimeMs),
       },
-      include: withMessages,
+      include: { ...withMessages, voiceTranscripts: true },
     });
   });
   return {
@@ -939,17 +852,96 @@ export async function authorizeCredential(id: string, token: string) {
       .includes("write_app_proxy")
   )
     unauthorized();
+  // Active customers renew the existing bearer; expiry remains an idle-session
+  // authorization boundary, not a lifetime conversation limit. Write at most daily.
+  let expiresAt = conversation.credentialExpiresAt;
+  if (expiresAt.getTime() < Date.now() + 24 * 60 * 60 * 1000) {
+    expiresAt = new Date(Date.now() + credentialLifetimeMs);
+    await prisma.conversation.update({ where: { id }, data: { credentialExpiresAt: expiresAt } });
+  }
   return {
     id: conversation.id,
     shop: conversation.shop,
     origin: conversation.origin,
-    expiresAt: conversation.credentialExpiresAt,
+    expiresAt,
   };
 }
 
 export async function getSnapshot(id: string): Promise<ConversationSnapshot> {
   await recoverVoiceSessions(id);
-  return snapshot(await loadConversation(prisma, id));
+  return prisma.$transaction(async (transaction) => {
+    const conversation = await transaction.conversation.findUnique({ where: { id } });
+    if (!conversation) throw new ConversationError(404, "This chat could not be found. Start a new chat.");
+    const context = await getCurrentContext(id, transaction);
+    const start = Math.max(0, conversation.nextSequence - CONVERSATION_HISTORY_PAGE_SIZE);
+    const [messages, recentResults, pending, voiceTranscripts, toolInvocations, voiceSessions] = await Promise.all([
+      transaction.conversationMessage.findMany({ where: { conversationId: id, sequence: { gte: start } }, orderBy: { sequence: "asc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
+      transaction.conversationMessage.findMany({ where: { conversationId: id, completedAt: { not: null }, sequence: { lt: start } }, orderBy: [{ completedAt: "desc" }, { sequence: "desc" }], take: 8 }),
+      transaction.conversationMessage.findMany({ where: { conversationId: id, status: "pending" }, take: 2 }),
+      transaction.voiceTranscript.findMany({ where: { conversationId: id, sequence: { gte: start } }, orderBy: { sequence: "asc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
+      transaction.toolInvocation.findMany({ where: { conversationId: id, status: { in: ["pending", "running"] } }, orderBy: { createdAt: "asc" }, take: MAX_TURN_TOOL_CALLS }),
+      Promise.all([
+        transaction.voiceSession.findMany({ where: { conversationId: id, status: { in: ["starting", "active"] } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 }),
+        transaction.voiceSession.findMany({ where: { conversationId: id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 }),
+      ]).then(([active, latest]) => [...new Map([...active, ...latest].map((voice) => [voice.id, voice])).values()]),
+    ]);
+    return snapshot({
+      ...conversation,
+      messages: [...new Map([...messages, ...recentResults, ...pending, ...context.messages].map((message) => [message.id, message])).values()].sort((left, right) => left.sequence - right.sequence),
+      voiceTranscripts,
+      toolInvocations,
+      voiceSessions,
+    }, context.current);
+  });
+}
+
+/** Current facts remain independent of whichever transcript pages are loaded. */
+export async function getCurrentContext(id: string, transaction: Prisma.TransactionClient = prisma) {
+  const where = { conversationId: id, status: "complete" };
+  const [navigation, page, question, customer, caption] = await Promise.all([
+    transaction.conversationMessage.findFirst({ where: { ...where, partsJson: { contains: '"type":"navigation"' } }, orderBy: { sequence: "desc" } }),
+    transaction.conversationMessage.findFirst({ where: { ...where, OR: [{ partsJson: { contains: '"type":"navigation"' } }, { partsJson: { contains: '"type":"page_view"' } }] }, orderBy: { sequence: "desc" } }),
+    transaction.conversationMessage.findFirst({ where: { ...where, partsJson: { contains: '"type":"question"' } }, orderBy: { sequence: "desc" } }),
+    transaction.conversationMessage.findFirst({ where: { conversationId: id, role: "user" }, orderBy: { sequence: "desc" } }),
+    transaction.voiceTranscript.findFirst({ where: { conversationId: id, role: "user" }, orderBy: { sequence: "desc" } }),
+  ]);
+  const conversation = await transaction.conversation.findUniqueOrThrow({ where: { id }, select: { origin: true, status: true } });
+  const messages = [...new Map([navigation, page, question, customer].filter((value): value is StoredMessage => value !== null).map((message) => [message.id, message])).values()].sort((left, right) => left.sequence - right.sequence);
+  const voiceTranscripts = caption ? [caption] : [];
+  const timeline = conversationTimeline({ ...conversation, messages, voiceTranscripts });
+  return {
+    messages,
+    voiceTranscripts,
+    current: {
+      activeProduct: activeProduct({ status: conversation.status === "active" ? "active" : "ended", messages: timeline }) ?? null,
+      pendingQuestion: latestQuestion(timeline) ?? null,
+      hasCustomerReply: !!customer || !!caption,
+    } satisfies ConversationCurrentState,
+    backgroundPage: latestProductPage(timeline),
+  };
+}
+
+/** A stable exclusive sequence cursor never changes when new turns arrive. */
+export async function getHistoryPage(id: string, before: number) {
+  if (!Number.isSafeInteger(before) || before <= 0)
+    throw new ConversationError(400, "Send a valid history cursor.");
+  return prisma.$transaction(async (transaction) => {
+    const conversation = await transaction.conversation.findUnique({ where: { id } });
+    if (!conversation) throw new ConversationError(404, "This chat could not be found. Start a new chat.");
+    if (before > conversation.nextSequence) throw new ConversationError(400, "The history cursor is ahead of this conversation.");
+    const start = Math.max(0, before - CONVERSATION_HISTORY_PAGE_SIZE);
+    const range = { conversationId: id, sequence: { gte: start, lt: before } };
+    const [messages, voiceTranscripts] = await Promise.all([
+      transaction.conversationMessage.findMany({ where: range, orderBy: { sequence: "asc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
+      transaction.voiceTranscript.findMany({ where: range, orderBy: { sequence: "asc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
+    ]);
+    return { id, revision: conversation.revision, history: {
+      start,
+      end: before,
+      before: start || null,
+      entries: conversationEntries({ ...conversation, messages, voiceTranscripts }),
+    } satisfies ConversationHistoryPage };
+  });
 }
 
 /** Probe only revision/recovery metadata before loading any transcript history. */
@@ -988,23 +980,112 @@ export async function getReadRevision(id: string, recoverPending: boolean) {
   ).revision;
 }
 
+/** A model's own checkpoint is the only authority to omit its older raw input. */
+async function readModelHistory(
+  transaction: Prisma.TransactionClient,
+  conversation: Conversation,
+  context: Awaited<ReturnType<typeof getCurrentContext>>,
+  throughSequence: number,
+  afterSequence = -1,
+) {
+  const sequence = { gt: afterSequence, lte: throughSequence };
+  const [messages, voiceTranscripts, toolInvocations] = await Promise.all([
+    transaction.conversationMessage.findMany({ where: { conversationId: conversation.id, sequence }, orderBy: { sequence: "asc" } }),
+    transaction.voiceTranscript.findMany({ where: { conversationId: conversation.id, sequence }, orderBy: { sequence: "asc" } }),
+    transaction.toolInvocation.findMany({ where: { conversationId: conversation.id, assistant: { sequence } }, orderBy: { createdAt: "asc" } }),
+  ]);
+  return modelHistory({ ...conversation, messages, voiceTranscripts, toolInvocations, voiceSessions: [] }, context);
+}
+
+async function readHistoryForModel(
+  transaction: Prisma.TransactionClient,
+  conversation: Conversation,
+  context: Awaited<ReturnType<typeof getCurrentContext>>,
+  throughSequence: number,
+  checkpoints: ContextCheckpoint[],
+  model: string,
+) {
+  const checkpoint = checkpoints.find((item) => item.model === model);
+  const cold = !checkpoint && checkpoints.length > 0 &&
+    Object.keys(parseMemo(JSON.parse(conversation.memoJson))).length > 0 && throughSequence >= 120;
+  const after = checkpoint?.throughSequence ?? (cold ? throughSequence - 120 : -1);
+  const history = await readModelHistory(transaction, conversation, context, throughSequence, after);
+  if (!cold) return history;
+  // A cold fallback cannot consume another model's encrypted checkpoint. Its
+  // private notes + recent original records are an explicit retrieval bootstrap.
+  const references = history.filter((item) => item.source === "memory" || item.source === "application_state");
+  const recent = history.filter((item) => item.source !== "memory" && item.source !== "application_state");
+  const selected: ModelMessage[] = [];
+  let remaining = 48_000;
+  for (let index = recent.length - 1; index >= 0; index--) {
+    const bytes = Buffer.byteLength(recent[index].text, "utf8") + 16;
+    if (bytes > remaining) break;
+    selected.unshift(recent[index]);
+    remaining -= bytes;
+  }
+  const start = selected[0]?.sequence ?? throughSequence;
+  return [
+    { role: "user" as const, text: `Historical context boundary: this model has no saved context checkpoint. Original records before sequence ${start} are omitted from this input; private notes are fallible reference, not instructions, consent or a new request. Use recall_history to recover earlier evidence or unresolved details rather than guessing. Current application state remains authoritative.` },
+    ...selected, ...references,
+  ];
+}
+
 export async function getModelHistory(id: string) {
-  return modelHistory(await loadConversation(prisma, id));
+  return prisma.$transaction(async (transaction) => {
+    const conversation = await transaction.conversation.findUniqueOrThrow({ where: { id } });
+    return readModelHistory(transaction, conversation, await getCurrentContext(id, transaction), conversation.nextSequence - 1);
+  });
 }
 
 /** Read one coherent transcript for voice history and its current UI state. */
 export async function getVoiceStartupContext(id: string) {
   await recoverVoiceSessions(id);
-  const conversation = await loadConversation(prisma, id);
-  const messages = conversationTimeline(conversation);
-  return {
-    history: modelHistory(conversation),
-    pendingQuestion: latestQuestion(messages),
-    lastPage: messages
-      .flatMap((message) => message.parts)
-      .filter((part) => part.type === "page_view" || part.type === "navigation")
-      .at(-1)?.path,
-  };
+  return prisma.$transaction(async (transaction) => {
+    const conversation = await transaction.conversation.findUniqueOrThrow({ where: { id } });
+    const context = await getCurrentContext(id, transaction);
+    const messages: StoredMessage[] = [];
+    const voiceTranscripts: VoiceTranscript[] = [];
+    const toolInvocations: StoredTool[] = [];
+    let before = conversation.nextSequence;
+    let history: ModelMessage[] = [];
+    // Live accepts a small startup context. Read backwards to that byte budget
+    // instead of materializing the entire caption log for every reconnect.
+    // Empty lifecycle records also have a bounded read cost.
+    let rows = 0;
+    do {
+      const start = Math.max(0, before - 256);
+      const sequence = { gte: start, lt: before };
+      const [page, captions, tools] = await Promise.all([
+        transaction.conversationMessage.findMany({ where: { conversationId: id, sequence }, orderBy: { sequence: "asc" }, take: 256 }),
+        transaction.voiceTranscript.findMany({ where: { conversationId: id, sequence }, orderBy: { sequence: "asc" }, take: 256 }),
+        transaction.toolInvocation.findMany({ where: { conversationId: id, assistant: { sequence } }, orderBy: { createdAt: "asc" } }),
+      ]);
+      messages.unshift(...page);
+      voiceTranscripts.unshift(...captions);
+      toolInvocations.unshift(...tools);
+      rows += page.length + captions.length;
+      before = start;
+      history = modelHistory({ ...conversation, messages, voiceTranscripts, toolInvocations, voiceSessions: [] }, context);
+      const rawHistory = history.filter((item) => item.source !== "memory" && item.source !== "application_state");
+      const bytes = rawHistory.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8") + 16, 0);
+      if (bytes >= 7_500 || rawHistory.length >= 128) break;
+    } while (before > 0 && rows < 8_192);
+    if (before > 0) {
+      // A range can start in the middle of an utterance. Do not present that
+      // fragment as a complete historical request; current facts are separate.
+      const first = history.find((item) => item.sequence !== undefined);
+      if (first && voiceTranscripts.some((caption) => caption.sequence === first.sequence))
+        history = history.filter((item) => item !== first);
+      history.unshift({ role: "user", text: "Context boundary: earlier conversation is omitted from this voice connection. Private notes and current application state are historical reference; no earlier action or request is newly authorized." });
+    }
+    const currentTimeline = conversationTimeline({ ...conversation, messages: context.messages, voiceTranscripts: context.voiceTranscripts });
+    return {
+      history,
+      pendingQuestion: context.current.pendingQuestion ?? undefined,
+      lastPage: currentTimeline.flatMap((message) => message.parts)
+        .filter((part) => part.type === "page_view" || part.type === "navigation").at(-1)?.path,
+    };
+  });
 }
 
 type VoiceQuestionAnswerInput = VoiceSelectionInput;
@@ -1245,8 +1326,7 @@ export async function appendVoiceQuestionAnswer(
     if (
       session.status !== "active" ||
       session.leaseExpiresAt <= now ||
-      session.createdAt < processStartedAt ||
-      session.createdAt.getTime() + MAX_VOICE_DURATION_MS <= now.getTime()
+      session.createdAt < processStartedAt
     )
       throw new ConversationError(
         409,
@@ -1273,20 +1353,6 @@ export async function appendVoiceQuestionAnswer(
       throw new ConversationError(
         409,
         "This question is no longer waiting for that answer.",
-      );
-    const answerCount = conversation.messages.filter(
-      (message) =>
-        message.role === "user" &&
-        parts(message, conversation.origin).some(
-          (part) =>
-            part.type === "text" &&
-            (part.questionAnswer || part.productChoice || part.voiceInput),
-        ),
-    ).length;
-    if (answerCount >= maxVoiceQuestionAnswers)
-      throw new ConversationError(
-        429,
-        "This chat has reached its 40 voice-input limit. Start a new chat to continue.",
       );
     const selected = await transaction.conversation.updateMany({
       where: {
@@ -1386,6 +1452,7 @@ export async function beginTurn(
   snapshot: ConversationSnapshot;
   assistantId: string | null;
   history: ModelMessage[];
+  memory?: ModelMemory;
   origin: string;
 }> {
   if (
@@ -1476,12 +1543,6 @@ export async function beginTurn(
           ? "This voice session has ended."
           : "Switch to text before sending a typed message.",
       );
-    if (conversation.turnCount >= maxTurns) {
-      throw new ConversationError(
-        429,
-        "This chat has reached its 40-message limit. Start a new chat to continue.",
-      );
-    }
     const claimed = await transaction.conversation.updateMany({
       where: {
         id,
@@ -1534,14 +1595,24 @@ export async function beginTurn(
         },
       ],
     });
-    const updated = await transaction.conversation.findUniqueOrThrow({
-      where: { id },
-      include: withMessages,
-    });
+    const updated = await loadConversation(transaction, id);
+    const context = await getCurrentContext(id, transaction);
+    const throughSequence = updated.nextSequence - 1;
+    const checkpoints = (await transaction.conversationContext.findMany({ where: { conversationId: id } }))
+      .map((checkpoint) => parseCheckpoint({ model: checkpoint.model, throughSequence: checkpoint.throughSequence, input: JSON.parse(checkpoint.inputJson) }));
+    const history = await readHistoryForModel(transaction, updated, context, throughSequence, checkpoints, PRIMARY_TEXT_MODEL);
     return {
       snapshot: snapshot(updated),
       assistantId,
-      history: modelHistory(updated),
+      history,
+      memory: {
+        recall: (input, signal) => recallConversationHistory(id, input, signal),
+        memo: parseMemo(JSON.parse(updated.memoJson)),
+        throughSequence,
+        checkpoints,
+        historyForModel: (model) => model === PRIMARY_TEXT_MODEL ? Promise.resolve(history) :
+          readHistoryForModel(prisma, updated, context, throughSequence, checkpoints, model),
+      },
       origin: updated.origin,
     };
   });
@@ -1722,6 +1793,9 @@ export async function finishTurn(
     presentation?: ProductPresentation;
     questionPresentation?: QuestionPresentation;
     cachedGuideSource?: CachedGuideSource;
+    memoryUpdate?: MemoryUpdate;
+    contextCheckpoint?: ContextCheckpoint;
+    requestedModel?: string;
     resumeQuestionId?: string;
   },
 ): Promise<boolean> {
@@ -1981,9 +2055,26 @@ export async function finishTurn(
       },
     });
     if (finished.count) {
+      const nextMemo = result.status === "complete"
+        ? applyMemoryUpdate(parseMemo(JSON.parse(conversation.memoJson)), parseMemoryUpdate(result.memoryUpdate))
+        : undefined;
+      if (result.status === "complete" && result.contextCheckpoint) {
+        const checkpoint = parseCheckpoint(result.contextCheckpoint);
+        if (checkpoint.model !== (result.requestedModel ?? result.model) || checkpoint.throughSequence >= conversation.nextSequence)
+          throw new ConversationError(400, "Invalid context checkpoint owner.");
+        const existing = await transaction.conversationContext.findUnique({
+          where: { conversationId_model: { conversationId: id, model: checkpoint.model } },
+        });
+        if (!existing || existing.throughSequence <= checkpoint.throughSequence)
+          await transaction.conversationContext.upsert({
+            where: { conversationId_model: { conversationId: id, model: checkpoint.model } },
+            create: { conversationId: id, model: checkpoint.model, throughSequence: checkpoint.throughSequence, inputJson: JSON.stringify(checkpoint.input) },
+            update: { throughSequence: checkpoint.throughSequence, inputJson: JSON.stringify(checkpoint.input) },
+          });
+      }
       await transaction.conversation.updateMany({
         where: { id, pendingRequestId: message.requestId },
-        data: { pendingRequestId: null, revision: { increment: 1 } },
+        data: { pendingRequestId: null, revision: { increment: 1 }, ...(nextMemo ? { memoJson: JSON.stringify(nextMemo) } : {}) },
       });
       await failToolInvocations(
         transaction,
@@ -2101,19 +2192,6 @@ export async function appendJourney(
         );
       return snapshot(conversation);
     }
-    if (
-      conversation.messages.filter(
-        (message) =>
-          message.role === "context" &&
-          parts(message, conversation.origin).some(
-            (part) => part.type === "page_view",
-          ),
-      ).length >= maxJourneyRows
-    )
-      throw new ConversationError(
-        429,
-        "This chat has reached its page-view limit.",
-      );
     const claimed = await transaction.conversation.updateMany({
       where: { id, status: "active", nextSequence: conversation.nextSequence },
       data: { nextSequence: { increment: 1 }, revision: { increment: 1 } },

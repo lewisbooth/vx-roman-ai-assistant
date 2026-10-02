@@ -4,6 +4,8 @@ A customer assistant foundation for SelectBlinds and Blinds 2go stores. A compac
 
 Home tiles start a conversation about measuring, style, no-drill products or future visualization. Roman can select supported PDP options, enter clear customer-provided dimensions in mm/cm/in, offer the available measurement guarantee with its native terms and price, and use the theme's separate free-sample control. Product and sample additions remain distinct; unsupported customization controls stay with the theme.
 
+Long conversations retain original history, private working notes and compacted model context. Roman can pause one window or product layer, work on another and return to unfinished goals. Customer history loads automatically on upward scroll; the [backend README](admin/README.md#long-conversations-and-private-memory) documents memory, recovery and operation limits.
+
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 
 | Location                                                              | Owns                                                         | Runs on                                   |

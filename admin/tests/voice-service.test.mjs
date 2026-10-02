@@ -2022,13 +2022,78 @@ test("provider errors close voice with categorical diagnostics and preserve no p
   assert.equal(state.timers.size, 0);
 });
 
+test("long voice sessions retain bounded delegation dedupe without replaying evicted offsets", async () => {
+  const state = setup();
+  await state.start();
+  for (let index = 0; index < 160; index++) {
+    const offsetMs = index * 1000 + 500;
+    state.emit(transcript({ eventId: `caption-${index}`, startMs: offsetMs - 200, endMs: offsetMs }));
+    state.emit({ type: "delegation", delegationId: `delegation-${index}`, offsetMs });
+    await flush();
+  }
+  assert.equal(state.calls.delegate.length, 160);
+  assert.equal(state.providers[0].closed, false);
+  state.emit(transcript({ eventId: "later-caption", startMs: 160_000, endMs: 160_500 }));
+  state.emit({ type: "delegation", delegationId: "delegation-0", offsetMs: 500 });
+  state.emit({ type: "delegation", delegationId: "old-with-new-id", offsetMs: 159_500 });
+  await flush();
+  assert.equal(state.calls.delegate.length, 160);
+  state.emit({ type: "delegation", delegationId: "fresh", offsetMs: 160_500 });
+  await flush();
+  assert.equal(state.calls.delegate.length, 161);
+  await state.stop();
+});
+
+test("durable voice close reasons distinguish eligible recovery from terminal policy and user stops", async () => {
+  for (const [reason, expected] of [
+    ["expired", "provider_expired"], ["connection_lost", "transport_lost"],
+    ["content", "policy"], ["remote_hangup", "user_stop"],
+  ]) {
+    const state = setup();
+    await state.start();
+    state.emit({ type: "closed", reason, confirmed: true });
+    await flush();
+    assert.equal(state.rows.get(state.input.requestId).closeReason, expected);
+  }
+  const deliberate = setup();
+  await deliberate.start();
+  await deliberate.stop();
+  assert.equal(deliberate.rows.get(deliberate.input.requestId).closeReason, "user_stop");
+  const outage = setup();
+  await outage.start();
+  outage.mock.suspend();
+  await flush();
+  assert.equal(outage.rows.get(outage.input.requestId).closeReason, "outage");
+});
+
+test("a policy closure during transport shutdown remains ineligible for recovery", async () => {
+  const state = setup();
+  await state.start();
+  state.mock.onProviderClose = (record) => record.options.onEvent({ type: "closed", reason: "content", confirmed: true });
+  await state.api.stopVoice(state.conversationId, state.input.requestId, state.input.clientId, "connection_lost");
+  assert.equal(state.rows.get(state.input.requestId).closeReason, "policy");
+});
+
+test("a delayed transport loss cannot reconnect a customer whose idle deadline already elapsed", async () => {
+  const state = setup();
+  state.mock.now = 100_000;
+  await state.start();
+  state.emit(transcript());
+  await flush();
+  state.mock.now += 60_001;
+  state.emit({ type: "closed", reason: "connection_lost", confirmed: true });
+  await flush();
+  assert.equal(state.rows.get(state.input.requestId).closeReason, "idle");
+});
+
 test("unconfirmed provider close persists an explicit incomplete-finalization warning", async () => {
   const state = setup();
   await state.start();
   state.mock.onProviderClose = (record) =>
     record.options.onEvent({ type: "error", code: "close_unconfirmed" });
-  await state.stop();
+  await state.api.stopVoice(state.conversationId, state.input.requestId, state.input.clientId, "connection_lost");
   assert.equal(state.rows.get(state.input.requestId).status, "failed");
+  assert.equal(state.rows.get(state.input.requestId).closeReason, "error");
   assert.match(
     state.rows.get(state.input.requestId).error,
     /final captions may be missing/,
@@ -2041,10 +2106,11 @@ test("delegation cleanup failure still closes the provider and persists failed v
   state.mock.onCancelDelegation = async () => {
     throw new Error("private database problem");
   };
-  await assert.rejects(state.stop(), /private database problem/);
+  await assert.rejects(state.api.stopVoice(state.conversationId, state.input.requestId, state.input.clientId, "connection_lost"), /private database problem/);
   assert.equal(state.providers[0].closeCount, 1);
   assert.equal(state.providers[0].closed, true);
   assert.equal(state.rows.get(state.input.requestId).status, "failed");
+  assert.equal(state.rows.get(state.input.requestId).closeReason, "error");
   assert.match(
     state.rows.get(state.input.requestId).error,
     /pending work could not be finalized/,

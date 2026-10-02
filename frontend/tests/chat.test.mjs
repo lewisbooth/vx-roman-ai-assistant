@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { historySnapshot } from "./helpers/history-snapshot.mjs";
 
 const bundle = await build({
   stdin: {
@@ -95,9 +96,11 @@ async function setup(t, options = {}) {
     ...options.state,
   };
   const update = (changes) => {
+    if (changes.conversation) changes = { ...changes, conversation: historySnapshot(changes.conversation) };
     state = { ...state, ...changes };
     for (const listener of listeners) listener();
   };
+  state.conversation = historySnapshot(state.conversation);
   const session = {
     getSnapshot: () => state,
     subscribe: (listener) => {

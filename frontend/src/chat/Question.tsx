@@ -13,6 +13,8 @@ export function Question({
   onAnswer,
   currentTurn = false,
   revealPending = false,
+  historySequence,
+  historyId,
 }: {
   part: QuestionPart;
   active: boolean;
@@ -22,6 +24,8 @@ export function Question({
   currentTurn?: boolean;
   /** Reserve the actual wrapped panel without exposing unanswered controls early. */
   revealPending?: boolean;
+  historySequence?: number;
+  historyId?: string;
 }) {
   const id = useId();
   const text = useRef<HTMLParagraphElement>(null);
@@ -37,7 +41,8 @@ export function Question({
   useLayoutEffect(() => {
     if (!active && submittedFocus.current) {
       const paragraph = text.current;
-      const root = paragraph?.getRootNode() as Document | ShadowRoot | undefined;
+      const root = paragraph?.getRootNode() as
+        Document | ShadowRoot | undefined;
       const focused = root?.activeElement;
       // Keep a keyboard user's place when the submitted control disappears,
       // without taking focus back from the composer or another control.
@@ -55,7 +60,8 @@ export function Question({
   async function answer(value: string) {
     if (!active || controlsDisabled || sending.current) return;
     sending.current = true;
-    const root = panel.current?.getRootNode() as Document | ShadowRoot | undefined;
+    const root = panel.current?.getRootNode() as
+      Document | ShadowRoot | undefined;
     const focused = root?.activeElement;
     submittedFocus.current =
       focused && panel.current?.contains(focused) ? focused : null;
@@ -202,6 +208,8 @@ export function Question({
   );
   return (
     <li
+      data-history-sequence={historySequence}
+      data-history-id={historyId}
       className="roman-message roman-message-assistant"
       data-current-turn={currentTurn ? "true" : undefined}
       data-active-question={active || undefined}

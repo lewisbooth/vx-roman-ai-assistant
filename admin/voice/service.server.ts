@@ -7,6 +7,7 @@ import {
   VOICE_IDLE_MS,
   type LiveVoice,
   type VoiceStartResult,
+  type VoiceCloseReason,
 } from "../../shared/voice";
 import {
   ConversationError,
@@ -71,6 +72,7 @@ interface VoiceOwner {
   onInputReady?: () => void;
   userSpeechObserved: boolean;
   error?: string;
+  closeReason?: VoiceCloseReason;
   timer?: ReturnType<typeof setTimeout>;
   idleTimer?: ReturnType<typeof setTimeout>;
   idleExpiresAt?: number;
@@ -82,6 +84,7 @@ interface VoiceOwner {
   delegations: Promise<void>;
   delegationCount: number;
   seenDelegations: Set<string>;
+  delegationOffset: number;
   delegatedCaption?: string;
   scheduledCaption?: string;
   /** Fresh UI input is handled directly, never delegated a second time by Live. */
@@ -133,14 +136,20 @@ const disconnected = "Voice disconnected. Start voice again to reconnect.";
 onServiceSuspended(() => {
   for (const owner of owners.values()) {
     owner.error ??= UNAVAILABLE_MESSAGE;
+    owner.closeReason = "outage";
     void closeOwner(owner).catch(() => {
       console.error("[Roman] Could not save voice outage shutdown.");
     });
   }
 });
 
-function fail(owner: VoiceOwner, error: string, category: string) {
+function fail(owner: VoiceOwner, error: string, category: string, closeReason: VoiceCloseReason = "error") {
   owner.error ??= error;
+  // A delayed transport callback must not renew a customer who is already idle.
+  const idle = owner.idleExpiresAt !== undefined &&
+    owner.idleExpiresAt <= Date.now() && owner.delegationCount === 0;
+  if (closeReason === "error") owner.closeReason = "error";
+  else owner.closeReason ??= idle ? "idle" : closeReason;
   console.error("[Roman] Voice connection stopped.", { category });
   void closeOwner(owner).catch(() => {
     console.error("[Roman] Could not save voice shutdown.");
@@ -150,7 +159,7 @@ function fail(owner: VoiceOwner, error: string, category: string) {
 function lease(owner: VoiceOwner, expiresAt: Date) {
   if (owner.timer) clearTimeout(owner.timer);
   owner.timer = setTimeout(
-    () => fail(owner, disconnected, "lease_expired"),
+    () => fail(owner, disconnected, "lease_expired", "transport_lost"),
     Math.max(0, expiresAt.getTime() - Date.now()),
   );
   owner.timer.unref();
@@ -175,6 +184,7 @@ function voiceActivity(owner: VoiceOwner) {
       voiceActivity(owner);
       return;
     }
+    owner.closeReason = "idle";
     void closeOwner(owner).catch(() => {
       console.error("[Roman] Could not save idle voice shutdown.");
     });
@@ -269,15 +279,14 @@ function receiveDelegation(
 ) {
   if (owner.stopping || owner.seenDelegations.has(event.delegationId)) return;
   if (owner.resumeController && !owner.userSpeechObserved) return;
-  if (owner.seenDelegations.size >= 40) {
-    fail(
-      owner,
-      "Voice received too much pending work. Switch to text or start voice again.",
-      "delegation_limit",
-    );
-    return;
-  }
+  // Replayed or out-of-order offsets cannot authorize fresh work, even after
+  // their IDs leave the bounded recent set. Completed conversations have no
+  // cumulative delegation ceiling.
+  if (event.offsetMs <= owner.delegationOffset) return;
+  owner.delegationOffset = event.offsetMs;
   owner.seenDelegations.add(event.delegationId);
+  if (owner.seenDelegations.size > 64)
+    owner.seenDelegations.delete(owner.seenDelegations.values().next().value!);
   if (owner.pendingSpeech && owner.pendingSpeech.offsetMs > event.offsetMs)
     return;
   clearPendingSpeech(owner);
@@ -551,10 +560,12 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
 
 function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
   if (event.type === "error") {
-    if (event.code === "close_unconfirmed")
-      owner.error ??=
+    if (event.code === "close_unconfirmed") {
+      owner.closeReason = "error";
+      owner.error =
         "Voice stopped locally, but the provider did not confirm finalization. Some final captions may be missing.";
-    else if (!owner.stopping) fail(owner, disconnected, event.code);
+    }
+    else if (!owner.stopping) fail(owner, disconnected, event.code, event.code === "connection_failed" ? "transport_lost" : "error");
     return;
   }
   if (event.type === "output_audio_activity") {
@@ -571,6 +582,9 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
     if (owner.progress?.sentAt) owner.progress.outputAt = Date.now();
   }
   if (event.type === "closed") {
+    // A policy closure remains terminal even when a simultaneous browser
+    // transport failure has already begun draining the connection.
+    if (event.reason === "content") owner.closeReason = "policy";
     const usage = event.usage;
     if (usage && owner.reserved) {
       // Keep final provider usage in the same drain as captions. It remains
@@ -584,7 +598,10 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
           console.error("[Roman] Voice usage could not be saved.");
         });
     }
-    if (!owner.stopping) fail(owner, disconnected, "provider_closed");
+    if (!owner.stopping) fail(owner, disconnected, "provider_closed",
+      event.reason === "expired" ? "provider_expired" :
+      event.reason === "connection_lost" ? "transport_lost" :
+      event.reason === "content" ? "policy" : "user_stop");
     return;
   }
   if (event.type === "started") {
@@ -685,7 +702,8 @@ function closeOwner(owner: VoiceOwner): Promise<void> {
         await cancelVoiceDelegation(owner.conversationId, owner.voiceId);
       } catch (error) {
         failure = error;
-        owner.error ??=
+        owner.closeReason = "error";
+        owner.error =
           "Voice stopped, but its pending work could not be finalized. Refresh the conversation before continuing.";
       }
       // Creation may still be settling. Its adapter closes any partial provider.
@@ -694,7 +712,8 @@ function closeOwner(owner: VoiceOwner): Promise<void> {
         await owner.provider?.close();
       } catch (error) {
         failure ??= error;
-        owner.error ??=
+        owner.closeReason = "error";
+        owner.error =
           "Voice stopped locally, but provider shutdown could not be confirmed.";
       }
       await owner.events;
@@ -703,13 +722,14 @@ function closeOwner(owner: VoiceOwner): Promise<void> {
           owner.conversationId,
           owner.voiceId,
           owner.clientId,
-          { status: "failed", error: owner.error },
+          { status: "failed", error: owner.error, closeReason: owner.closeReason ?? "error" },
         );
       else if (owner.reserved)
         await cancelVoiceSession(
           owner.conversationId,
           owner.voiceId,
           owner.clientId,
+          { status: "closed", closeReason: owner.closeReason ?? "user_stop" },
         );
       if (failure) throw failure;
     } finally {
@@ -773,6 +793,7 @@ export async function startVoice(
     delegations: Promise.resolve(),
     delegationCount: 0,
     seenDelegations: new Set(),
+    delegationOffset: -1,
   };
   owners.set(conversationId, owner);
   owner.start = (async () => {
@@ -902,7 +923,7 @@ export async function heartbeatVoice(
       lease(owner, session.leaseExpiresAt);
     return idleDeadline(owner);
   } catch (error) {
-    fail(owner, disconnected, "heartbeat_failed");
+    fail(owner, disconnected, "heartbeat_failed", "transport_lost");
     throw error;
   }
 }
@@ -922,6 +943,7 @@ export async function stopVoice(
       );
     if (reason === "connection_lost" && !owner.stopping)
       owner.error ??= disconnected;
+    owner.closeReason ??= reason === "connection_lost" ? "transport_lost" : "user_stop";
     await closeOwner(owner);
   } else
     await cancelVoiceSession(
@@ -929,7 +951,7 @@ export async function stopVoice(
       voiceId,
       clientId,
       reason === "connection_lost"
-        ? { status: "failed", error: disconnected }
+        ? { status: "failed", error: disconnected, closeReason: "transport_lost" }
         : undefined,
     );
 }

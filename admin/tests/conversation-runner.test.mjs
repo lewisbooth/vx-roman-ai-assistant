@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import process from "node:process";
 import { createRequire } from "node:module";
 import { test } from "node:test";
@@ -370,6 +371,7 @@ function setup() {
     exports: module.exports,
     require,
     mock,
+    Buffer,
     URL,
     performance,
     TextEncoder,
@@ -6247,4 +6249,242 @@ test('checkout handoff rejects unsolicited follow-on tools after the browser out
  env.streams.push(events(completed('',{output:[catalogCall('checkout','open_checkout',{})]})),events(completed('',{output:[catalogCall('repeat','open_checkout',{})]})));
  await assert.rejects(env.api.generateReply([],()=>{},new AbortController().signal,async()=>{executions++;return{status:'opened'}}),/no further tools/);
  assert.equal(executions,1);assert.equal(env.calls.requests[1].input.tool_choice,'none');
+});
+
+function memoryReply(env, options = {}) {
+  return env.api.generateReply(
+    options.history ?? [], options.onText ?? (() => {}), new AbortController().signal,
+    options.execute, options.mode ?? "text", undefined, guideOrigin,
+    undefined, undefined, undefined, undefined, undefined, "medium",
+    options.memory ?? { memo: {}, throughSequence: 10, checkpoints: [] }, options.recall,
+  );
+}
+
+test("terminal memory patches stay private and use the same completion in text and voice", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup(), visible = [];
+    const memoryUpdate = {
+      set: [{ key: "kitchen/curtain", text: "PRIVATE_PENDING_CURTAIN: return after the blind. Source 8." }],
+      forget: [],
+    };
+    env.streams.push(events(completed("", { output: [questionCall({
+      message: "The width is saved.", question: "What is the drop?", answers: ["Help me measure"], memoryUpdate,
+    })] })));
+    const reply = await memoryReply(env, { mode, onText: (text) => visible.push(text) });
+    assert.deepEqual(plain(reply.memoryUpdate), memoryUpdate);
+    assert.doesNotMatch(JSON.stringify([visible, reply.text, reply.questionPresentation, reply.presentation]), /PRIVATE_|memoryUpdate|kitchen\/curtain/);
+    assert.equal(env.calls.requests.length, 1, "memory uses the terminal answer, not a second model request");
+    assert.equal(env.calls.browserTools.length, 0);
+    const terminal = env.calls.requests[0].input.tools.find((tool) => tool.name === "ask_question");
+    assert.ok(terminal.required === undefined);
+    assert.ok(terminal.parameters.required.includes("memoryUpdate"));
+    assert.deepEqual(terminal.parameters.properties.memoryUpdate.type, ["object", "null"]);
+  }
+});
+
+test("an invalid private patch gets one terminal-only repair without publishing or applying it", async () => {
+  const env = setup(), visible = [];
+  env.streams.push(
+    events(completed("", { output: [questionCall({
+      ...questionSelection,
+      memoryUpdate: { set: [{ key: "constructor", text: "PRIVATE_INVALID_NOTE" }], forget: [] },
+    }, "invalid-memory")] })),
+    events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null }, "valid-memory")] })),
+  );
+  const reply = await memoryReply(env, { onText: (text) => visible.push(text), execute: () => assert.fail("Repair cannot execute storefront work") });
+  assert.equal(reply.memoryUpdate, undefined);
+  assert.equal(reply.questionPresentation.callId, "valid-memory");
+  assert.deepEqual(visible, [""]);
+  assert.equal(env.calls.requests.length, 2);
+  assert.deepEqual(allowedToolNames(env.calls.requests[1].input), ["ask_question", "ask_measurement"]);
+  const rejection = env.calls.requests[1].input.input.find((item) => item.type === "function_call_output" && item.call_id === "invalid-memory");
+  assert.match(rejection.output, /Private notes|private memory/i);
+  assert.doesNotMatch(JSON.stringify([reply, visible]), /PRIVATE_INVALID_NOTE/);
+});
+
+test("automatic compaction persists the entire latest continuation and closes the terminal call", async () => {
+  const env = setup(), executions = [];
+  const compact = { type: "compaction", id: "compact-current", encrypted_content: "PRIVATE_COMPACT_CURRENT" };
+  const reasoning = { type: "reasoning", id: "reason-current", summary: [], encrypted_content: "PRIVATE_REASON_CURRENT" };
+  const read = catalogCall("cart-current", "get_cart", {});
+  const terminal = questionCall({ ...questionSelection, memoryUpdate: null }, "terminal-current");
+  env.streams.push(
+    events(completed("", { output: [
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "Obsolete pre-compaction text." }] },
+      compact, reasoning, read,
+    ] })),
+    events(completed("", { output: [terminal] })),
+  );
+  const reply = await memoryReply(env, {
+    history: [{ role: "user", text: "Long durable conversation. ".repeat(1000) }],
+    memory: { memo: { "kitchen/curtain": "Heading pending." }, throughSequence: 42, checkpoints: [] },
+    execute: async (...args) => { executions.push(args); return { status: "ready", itemCount: 0 }; },
+  });
+  const continuation = plain(reply.contextCheckpoint);
+  assert.equal(continuation.model, "gpt-6-luna");
+  assert.equal(reply.requestedModel, "gpt-6-luna");
+  assert.equal(reply.model, "gpt-5.6-luna-actual", "the provider's reported model remains the billing identity");
+  assert.equal(continuation.throughSequence, 42);
+  assert.deepEqual(continuation.input.slice(0, 3), [compact, reasoning, read]);
+  assert.deepEqual(continuation.input.map((item) => item.type), [
+    "compaction", "reasoning", "function_call", "function_call_output", "function_call", "function_call_output",
+  ]);
+  assert.equal(continuation.input[3].call_id, "cart-current");
+  assert.deepEqual(continuation.input[4], terminal);
+  assert.equal(continuation.input[5].call_id, "terminal-current");
+  assert.match(continuation.input[5].output, /"displayed":true/);
+  assert.doesNotMatch(JSON.stringify(continuation), /Obsolete pre-compaction/);
+  assert.equal(executions.length, 1);
+  assert.deepEqual(env.calls.requests[0].input.context_management, [{ type: "compaction", compact_threshold: 24000 }]);
+  assert.equal(env.calls.requests[0].input.store, false);
+  assert.equal(env.calls.requests.length, 2);
+});
+
+test("matching saved compaction uses only subsequent history plus current private and application references", async () => {
+  const env = setup();
+  const compact = { type: "compaction", encrypted_content: "PRIMARY_SAVED" };
+  const memory = {
+    memo: { "kitchen/blind": "Width corrected to 102 cm. Source 11." }, throughSequence: 12,
+    checkpoints: [{ model: "gpt-6-luna", throughSequence: 10, input: [compact] }],
+  };
+  env.streams.push(events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })));
+  await memoryReply(env, { memory, history: [
+    { role: "user", text: "OLD_WIDTH_100", sequence: 3, endSequence: 3 },
+    { role: "user", text: "Actually 102 cm.", sequence: 11, endSequence: 11 },
+    { role: "user", source: "memory", text: "STALE_PRIVATE_NOTE" },
+    { role: "user", source: "application_state", text: "CURRENT_PRODUCT_CONFIGURATION" },
+  ] });
+  const input = env.calls.requests[0].input.input;
+  assert.deepEqual(input.find((item) => item.type === "compaction"), compact);
+  assert.match(JSON.stringify(input), /Actually 102 cm|Width corrected to 102 cm/);
+  assert.equal(input.at(-1).content, "CURRENT_PRODUCT_CONFIGURATION");
+  assert.doesNotMatch(JSON.stringify(input), /OLD_WIDTH_100|STALE_PRIVATE_NOTE/);
+});
+
+test("fallback preserves calls before a compaction item without foreign encrypted context or repeated execution", async () => {
+  for (const savedFallback of [false, true]) {
+    const env = setup(), executions = [];
+    const call = catalogCall("confirmed-before-compaction", "show_view", { view: "cart" });
+    const primary = { type: "compaction", encrypted_content: "FOREIGN_PRIMARY_COMPACTION" };
+    const fallback = { type: "compaction", encrypted_content: "OWN_FALLBACK_COMPACTION" };
+    env.streams.push(
+      events(completed("", { output: [
+        { type: "reasoning", id: "primary-reason", summary: [], encrypted_content: "FOREIGN_PRIMARY_REASONING" },
+        call, primary,
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "POST_COMPACTION_REFERENCE" }] },
+      ] })),
+      events({ type: "response.failed", response: { model: "gpt-6-luna", output: [], error: { code: "server_error", message: "Unavailable" } } }),
+      events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })),
+    );
+    const memory = {
+      memo: { "kitchen/curtain": "Return to curtains." }, throughSequence: 11,
+      checkpoints: [
+        { model: "gpt-6-luna", throughSequence: 10, input: [{ type: "compaction", encrypted_content: "FOREIGN_SAVED_PRIMARY" }] },
+        ...(savedFallback ? [{ model: "gpt-5.6-luna", throughSequence: 2, input: [fallback] }] : []),
+      ],
+    };
+    await memoryReply(env, {
+      memory, history: [
+        { role: "user", text: "RAW_OLD_REQUEST", sequence: 1, endSequence: 1 },
+        { role: "user", text: "Show the cart.", sequence: 11, endSequence: 11 },
+        { role: "user", source: "application_state", text: "CURRENT_APPLICATION_FACTS" },
+      ],
+      execute: async (...args) => { executions.push(args); return { status: "shown", view: "cart" }; },
+    });
+    assert.equal(executions.length, 1, "confirmed storefront work is never replayed");
+    const request = env.calls.requests[2].input;
+    assert.equal(request.model, "gpt-5.6-luna");
+    assert.doesNotMatch(JSON.stringify(request.input), /FOREIGN_/);
+    assert.equal(request.input.filter((item) => item.type === "function_call" && item.call_id === call.call_id).length, 1);
+    assert.equal(request.input.filter((item) => item.type === "function_call_output" && item.call_id === call.call_id).length, 1);
+    assert.match(JSON.stringify(request.input), /Return to curtains|CURRENT_APPLICATION_FACTS|POST_COMPACTION_REFERENCE/);
+    assert.equal(JSON.stringify(request.input).includes("OWN_FALLBACK_COMPACTION"), savedFallback);
+    assert.equal(JSON.stringify(request.input).includes("RAW_OLD_REQUEST"), !savedFallback);
+    assert.equal(env.calls.requests.length, 3);
+  }
+});
+
+test("two historical reads leave all four ordinary storefront calls available", async () => {
+  const env = setup(), recalls = [], executions = [];
+  for (let index = 0; index < 2; index++)
+    env.streams.push(events(completed("", { output: [catalogCall(`history-${index}`, "recall_history", { query: "kitchen", beforeSequence: index ? 10 : null })] })));
+  for (let index = 0; index < 4; index++)
+    env.streams.push(events(completed("", { output: [catalogCall(`cart-${index}`, "get_cart", {})] })));
+  env.streams.push(events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })));
+  await memoryReply(env, {
+    recall: async (input) => { recalls.push(input); return { referenceOnly: true, entries: [{ source: "message:8", sequence: 8, text: "Kitchen curtain pending." }] }; },
+    execute: async (...args) => { executions.push(args); return { status: "ready", itemCount: 0 }; },
+  });
+  assert.equal(recalls.length, 2);
+  assert.equal(executions.length, 4);
+  assert.equal(env.calls.requests.length, 7);
+  assert.ok(allowedToolNames(env.calls.requests[1].input).includes("recall_history"));
+  assert.ok(!allowedToolNames(env.calls.requests[2].input).includes("recall_history"));
+  assert.ok(allowedToolNames(env.calls.requests[5].input).includes("get_cart"));
+  assert.ok(!allowedToolNames(env.calls.requests[6].input).includes("get_cart"));
+  assert.match(env.calls.requests[1].input.input.find((item) => item.type === "function_call_output" && item.call_id === "history-0").output, /message:8/);
+});
+
+test("an unsolicited third historical read is rejected before retrieval", async () => {
+  const env = setup();
+  let reads = 0;
+  for (let index = 0; index < 3; index++)
+    env.streams.push(events(completed("", { output: [catalogCall(`history-${index}`, "recall_history", { query: "", beforeSequence: null })] })));
+  await assert.rejects(memoryReply(env, {
+    recall: async () => { reads++; return { referenceOnly: true, entries: [] }; },
+  }), /history retrieval budget/);
+  assert.equal(reads, 2);
+  assert.equal(env.calls.requests.length, 3);
+  assert.equal(env.calls.browserTools.length, 0);
+});
+
+test("guide PDFs alone do not trigger compaction while long durable guide conversations can compact", async () => {
+  for (const longHistory of [false, true]) {
+    const env = setup();
+    env.mock.readGuides = async () => ({
+      status: "ready", sources: guideResult(["measuring"]).guides,
+      files: [{ ...syntheticGuideFile("measuring"), file_data: "data:application/pdf;base64," + Buffer.from("%PDF-1.7\n" + "synthetic-content ".repeat(4000) + "\n%%EOF").toString("base64") }],
+    });
+    env.streams.push(
+      events(completed("", { output: [guideLookup("guide-size-gate", ["measuring"])] })),
+      events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })),
+    );
+    await memoryReply(env, {
+      history: [{ role: "user", text: longHistory ? "Long durable history. ".repeat(1500) : "Help me measure." }],
+      execute: async () => guideResult(["measuring"]),
+    });
+    assert.equal(guideFiles(env.calls.requests[1].input).length, 1);
+    assert.ok(guideFiles(env.calls.requests[1].input)[0].file_data.length > 60000);
+    for (const request of env.calls.requests)
+      assert.equal(!!request.input.context_management, longHistory);
+  }
+});
+
+test("model-specific history loads only when needed and is reused across that model's tool rounds", async () => {
+  const env = setup(), loaded = [];
+  env.streams.push(
+    events(completed("", { output: [catalogCall("primary-cart", "get_cart", {})] })),
+    events({ type: "response.failed", response: { model: "gpt-6-luna", output: [], error: { code: "server_error", message: "Unavailable" } } }),
+    events(completed("", { output: [catalogCall("fallback-cart", "get_cart", {})] })),
+    events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })),
+  );
+  await memoryReply(env, {
+    history: [{ role: "user", text: "UNBOUNDED_INITIAL_HISTORY_MUST_NOT_BE_USED" }],
+    memory: {
+      memo: {}, throughSequence: 21, checkpoints: [],
+      historyForModel: async (model) => {
+        loaded.push(model);
+        return [{ role: "user", text: model === "gpt-6-luna" ? "PRIMARY_SUFFIX" : "FALLBACK_RAW_HISTORY", sequence: 20, endSequence: 20 }];
+      },
+    },
+    execute: async () => ({ status: "ready", itemCount: 0 }),
+  });
+  assert.deepEqual(loaded, ["gpt-6-luna", "gpt-5.6-luna"]);
+  assert.equal(env.calls.requests.length, 4);
+  for (const [index, request] of env.calls.requests.entries()) {
+    const serialized = JSON.stringify(request.input.input);
+    assert.doesNotMatch(serialized, /UNBOUNDED_INITIAL_HISTORY/);
+    assert.equal(serialized.includes("PRIMARY_SUFFIX"), index < 2);
+    assert.equal(serialized.includes("FALLBACK_RAW_HISTORY"), index >= 2);
+  }
 });

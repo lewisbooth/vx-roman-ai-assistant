@@ -30,6 +30,19 @@ export const DEFAULT_LIVE_VOICE: LiveVoice = "marin";
 export const VOICE_IDLE_MS = 60_000;
 export const VOICE_IDLE_WARNING_MS = 15_000;
 
+export const VOICE_CLOSE_REASONS = [
+  "transport_lost", "provider_expired", "idle", "user_stop", "outage", "policy", "error",
+] as const;
+export type VoiceCloseReason = (typeof VOICE_CLOSE_REASONS)[number];
+
+export function isVoiceCloseReason(value: unknown): value is VoiceCloseReason {
+  return VOICE_CLOSE_REASONS.some((reason) => reason === value);
+}
+
+export function canRecoverVoice(reason: unknown): boolean {
+  return reason === "transport_lost" || reason === "provider_expired";
+}
+
 export function isLiveVoice(value: unknown): value is LiveVoice {
   return (
     typeof value === "string" && LIVE_VOICES.some((voice) => voice === value)
@@ -41,6 +54,7 @@ export interface VoiceSessionSnapshot {
   clientId: string;
   status: "starting" | "active" | "closed" | "failed";
   error?: string;
+  closeReason?: VoiceCloseReason;
 }
 
 export interface VoiceCaptionPart {

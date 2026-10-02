@@ -2,7 +2,7 @@
 export interface VoiceTranscriptFragment {
   id: string;
   voiceId: string;
-  providerEventId: string;
+  providerEventId?: string;
   sequence: number;
   role: "user" | "assistant";
   text: string;

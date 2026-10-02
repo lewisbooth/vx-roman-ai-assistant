@@ -437,6 +437,7 @@ for (const sample of samples) {
       undefined,
       (name, active) => metrics.activity(name, active),
       effort,
+      { memo: {}, throughSequence: 0, checkpoints: [] },
     );
     metrics.ready(!!reply.presentation, mode === "voice");
     const selected = reply.presentation?.productIds ?? [];

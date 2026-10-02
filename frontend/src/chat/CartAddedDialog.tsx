@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationSnapshot } from "../../../shared/conversation";
 import { BrandedDialog } from "./BrandedDialog";
+import { liveSnapshotMessages } from "../session/live-messages";
 
 /** Confirmed additions only: native events and optimistic requests are not receipts. */
 export function CartAddedDialog({
@@ -19,7 +20,10 @@ export function CartAddedDialog({
   const [open, setOpen] = useState(() =>
     document.documentElement.hasAttribute("data-roman-open"),
   );
-  const seen = useRef<{ conversationId?: string; ids: Set<string> }>({
+  const seen = useRef<{
+    conversationId?: string;
+    ids: Set<string>;
+  }>({
     ids: new Set(),
   });
   const [notice, setNotice] = useState<{
@@ -43,7 +47,7 @@ export function CartAddedDialog({
   }, []);
 
   useEffect(() => {
-    const additions = (conversation?.messages ?? []).flatMap((message) =>
+    const additions = liveSnapshotMessages(conversation).flatMap((message) =>
       message.parts.flatMap((part) =>
         part.type === "cart_added"
           ? [
@@ -67,7 +71,7 @@ export function CartAddedDialog({
     const previous = seen.current;
     seen.current = {
       conversationId: conversation?.id,
-      ids: new Set(additions.map((addition) => addition.id)),
+      ids: new Set([...(previous.conversationId === conversation?.id ? previous.ids : []), ...additions.map((addition) => addition.id)]),
     };
     // First/restored snapshots establish the baseline. Additions received while
     // closed or another approval is active stay in history without later replay.

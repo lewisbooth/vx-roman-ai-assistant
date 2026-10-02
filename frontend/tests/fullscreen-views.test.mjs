@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { historySnapshot } from "./helpers/history-snapshot.mjs";
 
 const bundle = await build({
   stdin: {
@@ -147,10 +148,13 @@ async function setup(t, initial = {}, options = {}) {
     ...initial,
   };
   const update = (change) => {
+    if (change.conversation && (change.historyVersion === undefined || change.historyVersion === state.historyVersion))
+      change = { ...change, conversation: historySnapshot(change.conversation) };
     state = { ...state, ...change };
     listeners.forEach((listener) => listener());
   };
   const calls = [];
+  state.conversation = historySnapshot(state.conversation);
   const session = {
     getSnapshot: () => state,
     subscribe(listener) {
@@ -158,6 +162,7 @@ async function setup(t, initial = {}, options = {}) {
       return () => listeners.delete(listener);
     },
     clearError() {},
+    loadOlderHistory: async () => {},
     sendMessage: async (text) => calls.push(["text", text]),
     startVoice: async () => calls.push(["startVoice"]),
     stopVoice: async () => calls.push(["stopVoice"]),
@@ -279,6 +284,54 @@ test("Cart and Gallery use memory navigation while retaining the transcript and 
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.calls, []);
   assert.equal(ctx.fetches.length, 1);
+});
+
+test("upward scrolling requests history and preserves its visible row after prepending", async (t) => {
+  const latest = engagedConversation([{ ...message([{ type: "text", text: "Recent answer" }]), sequence: 301, endSequence: 301 }]);
+  latest.messages[0].sequence = 300;
+  latest.messages[0].endSequence = 300;
+  const ctx = await setup(t, { conversation: latest, historyBefore: 300, loadingHistory: false, historyVersion: 0 });
+  const scroll = ctx.container.querySelector(".roman-chat-scroll");
+  const row = scroll.querySelector('[data-history-sequence="300"]');
+  scroll.scrollTop = 20;
+  scroll.getBoundingClientRect = () => ({ top: 100, bottom: 600, height: 500 });
+  row.getBoundingClientRect = () => ({ top: 120, bottom: 160, height: 40 });
+  let loads = 0;
+  ctx.session.loadOlderHistory = async () => { loads++; ctx.update({ loadingHistory: true }); };
+  scroll.dispatchEvent(new ctx.window.WheelEvent("wheel", { bubbles: true, deltaY: -30 }));
+  await until(() => loads === 1, "Upward scroll did not request earlier messages");
+  row.getBoundingClientRect = () => ({ top: 350, bottom: 390, height: 40 });
+  ctx.update({ loadingHistory: false, historyVersion: 1, historyBefore: 44, conversation: { ...ctx.state().conversation, messages: [{ ...customerMessage("Earlier question"), id: "older", sequence: 44, endSequence: 44 }, ...latest.messages] } });
+  await until(() => scroll.querySelector('[data-history-sequence="44"]'), "Earlier page did not render");
+  assert.equal(scroll.scrollTop, 250);
+  assert.equal(ctx.container.querySelector(".roman-history-status"), null);
+});
+
+test("historical widgets and cart receipts loaded in a page never reopen Chat or a modal", async (t) => {
+  const ctx = await setup(t, { historyVersion: 0 });
+  await ctx.select("Cart");
+  const older = { ...message([
+    { type: "products", version: 1, invocationId: "old-carousel", productIds: ["gid://shopify/Product/1"] },
+    { type: "cart_added", version: 1, invocationId: "old-addition", product: { productPath: "/products/old", title: "Old blind" } },
+  ]), id: "old", sequence: 2 };
+  ctx.update({ historyVersion: 1, conversation: { ...ctx.state().conversation, messages: [older, ...ctx.state().conversation.messages] } });
+  await delay(0);
+  assert.equal(ctx.container.querySelector(".roman-chat-history").hidden, true);
+  assert.equal(ctx.container.querySelector(".roman-dialog[open]"), null);
+});
+
+test("fresh results remain visible when a live poll and older history finish together", async (t) => {
+  const ctx = await setup(t, { historyVersion: 0 });
+  await ctx.select("Cart");
+  const live = { ...message([
+    { type: "products", version: 1, invocationId: "fresh-carousel", productIds: ["gid://shopify/Product/1"] },
+    { type: "cart_added", version: 1, invocationId: "fresh-addition", product: { productPath: "/products/new", title: "New blind" } },
+  ]), id: "fresh", sequence: 300 };
+  const snapshot = historySnapshot({ ...ctx.state().conversation, messages: [...ctx.state().conversation.messages, live] });
+  ctx.update({ historyVersion: 1, conversation: { ...snapshot, messages: [{ ...customerMessage("Earlier request"), id: "old", sequence: 2 }, ...snapshot.messages] } });
+  await until(() => !ctx.container.querySelector(".roman-chat-history").hidden, "Fresh carousel was suppressed by older page completion");
+  await until(() => ctx.container.querySelector(".roman-dialog[open]"), "Fresh cart receipt was suppressed by older page completion");
+  assert.match(ctx.container.querySelector(".roman-dialog h2").textContent, /New blind added to cart/);
 });
 
 test("active voice remains connected and retains its controls through every Roman tab", async (t) => {

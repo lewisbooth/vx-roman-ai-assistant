@@ -1,4 +1,5 @@
 import type { ProductChoice, ProductChoiceReference } from "./product-choice";
+import type { VoiceTranscriptFragment } from "./voice-transcript";
 
 export type MessageStatus = "pending" | "complete" | "failed";
 
@@ -135,6 +136,12 @@ export interface JourneyInput {
 
 export interface ConversationMessage {
   id: string;
+  /** Display positions; late ASR can reorder captions into earlier slots. */
+  sequence?: number;
+  endSequence?: number;
+  /** Exact stored source range, independently of caption display order. */
+  sourceSequence?: number;
+  sourceEndSequence?: number;
   /** Customer submission identity, when available, for local-send reconciliation. */
   requestId?: string;
   role: "user" | "assistant" | "context";
@@ -149,11 +156,43 @@ export interface ConversationSnapshot {
   status: "active" | "ended";
   revision: number;
   messages: ConversationMessage[];
+  history: ConversationHistoryPage;
+  /** Recently changed reserved rows may precede the current caption page. */
+  historyUpdates: ConversationHistoryEntry[];
+  current: ConversationCurrentState;
   busy: boolean;
   tools: BrowserToolInvocation[];
   voice?: VoiceSessionSnapshot | null;
   /** Current server work only; never stored in the conversation transcript. */
   readingGuides?: ProductGuideKind[];
+}
+
+export interface ConversationCurrentState {
+  activeProduct: { path: string; title: string } | null;
+  pendingQuestion: QuestionPart | null;
+  hasCustomerReply: boolean;
+}
+
+/** Exact public timeline inputs; grouping happens after adjacent pages merge. */
+export type ConversationHistoryEntry =
+  | { sequence: number; message: ConversationMessage }
+  | {
+      sequence: number;
+      caption: Omit<VoiceTranscriptFragment, "providerEventId">;
+    };
+
+export interface ConversationHistoryPage {
+  /** Half-open durable sequence range, including invisible bookkeeping rows. */
+  start: number;
+  end: number;
+  before: number | null;
+  entries: ConversationHistoryEntry[];
+}
+
+export interface ConversationHistoryResult {
+  id: string;
+  revision: number;
+  history: ConversationHistoryPage;
 }
 
 /** Durable state plus current text/activity changes, scoped to one chat. */
@@ -190,8 +229,7 @@ export interface SendMessageInput {
 }
 
 export const MAX_MESSAGE_LENGTH = 4000;
-// 1,200 captions + 200 page observations + 40 turns with two message rows and
-// up to eight persisted tool notifications. Actual model action limits are lower.
-// Also accommodates 40 selected voice answers and 20 voice lifecycle events.
-export const MAX_CONVERSATION_MESSAGES = 1800;
+// Bounds one transport envelope, never the lifetime of a conversation.
+export const CONVERSATION_HISTORY_PAGE_SIZE = 256;
+export const MAX_HISTORY_UPDATES = 16;
 export const CONVERSATION_STORAGE_KEY = "roman:conversation";

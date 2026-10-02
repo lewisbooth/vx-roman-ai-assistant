@@ -18,6 +18,10 @@ export interface ConversationClientState {
   optimisticMessage?: ConversationMessage | null;
   pending: boolean;
   restoring: boolean;
+  loadingHistory: boolean;
+  historyBefore: number | null;
+  historyError: string | null;
+  historyVersion: number;
   error: string | null;
   voice: VoiceClientState;
   /** Monotonic time to warn about this tab's active voice connection. */
@@ -31,6 +35,8 @@ export interface ConversationClient {
   subscribe(listener: () => void): () => void;
   /** Polls public service availability while the assistant is visible. */
   setOpen(open: boolean): void;
+  /** Prepends the previous transcript page without changing current conversation state. */
+  loadOlderHistory(): Promise<void>;
   /** Uses connected/starting voice when present, otherwise text; resolves on acceptance. */
   sendMessage(text: string, productChoice?: ProductChoice): Promise<void>;
   /** Sends a saved suggested answer to this tab's live connection. */

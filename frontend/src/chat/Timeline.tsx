@@ -106,6 +106,8 @@ export function Timeline({
               onAnswer={onAnswer!}
               currentTurn={rowIndex >= lastCustomer}
               revealPending={revealPending}
+              historySequence={row.message.sequence}
+              historyId={row.id}
             />
           );
         }
@@ -118,6 +120,9 @@ export function Timeline({
         return (
           <li
             key={row.id}
+            data-history-id={row.id}
+            data-history-sequence={message.sequence}
+            data-history-end={message.endSequence ?? message.sequence}
             className={`roman-message roman-message-${message.role}`}
             data-current-turn={rowIndex >= lastCustomer ? "true" : undefined}
             aria-busy={

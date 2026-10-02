@@ -5,6 +5,7 @@ import { ROMAN_DISCOVERY_GUIDANCE } from "./discovery";
 import { ROMAN_GUIDE_GUIDANCE } from "./guides";
 import { ROMAN_HANDOFF_GUIDANCE } from "./handoff";
 import { ROMAN_MEASURING_GUIDANCE } from "./measuring";
+import { ROMAN_MEMORY_GUIDANCE } from "./memory";
 import { ROMAN_REPLACEMENT_GUIDANCE } from "./replacement";
 import { ROMAN_RESPONSE_GUIDANCE } from "./response";
 import { ROMAN_SHOPPING_GUIDANCE } from "./shopping";
@@ -14,6 +15,7 @@ import { ROMAN_UPSELL_GUIDANCE } from "./upsell";
 // No per-request classifier or keyword router changes these instructions.
 export const ROMAN_KNOWLEDGE_MODULES = {
   shopping: ROMAN_SHOPPING_GUIDANCE,
+  memory: ROMAN_MEMORY_GUIDANCE,
   discovery: ROMAN_DISCOVERY_GUIDANCE,
   replacement: ROMAN_REPLACEMENT_GUIDANCE,
   guides: ROMAN_GUIDE_GUIDANCE,

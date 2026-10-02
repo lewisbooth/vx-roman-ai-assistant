@@ -10,6 +10,7 @@ const bundle = await build({
       export * as bootstrap from "./admin/routes/api.storefront.bootstrap.ts";
       export * as availability from "./admin/routes/api.storefront.availability.ts";
       export * as conversation from "./admin/routes/api.conversations.$id.ts";
+      export * as history from "./admin/routes/api.conversations.$id.history.ts";
       export * as messages from "./admin/routes/api.conversations.$id.messages.ts";
       export * as journey from "./admin/routes/api.conversations.$id.journey.ts";
       export * as end from "./admin/routes/api.conversations.$id.end.ts";
@@ -48,6 +49,7 @@ const bundle = await build({
                 ? `export const authorizeCredential=(...args)=>mock.authorize(...args);
               export const createConversation=(...args)=>mock.create(...args);
               export const getSnapshot=(...args)=>mock.snapshot(...args);
+              export const getHistoryPage=(...args)=>mock.history(...args);
               export const appendJourney=(...args)=>mock.journey(...args);
               export const claimToolInvocation=(...args)=>mock.claim(...args);
               export const conversationApiBaseUrl=()=>mock.apiBaseUrl;`
@@ -148,6 +150,7 @@ function setup() {
       };
     },
     snapshot: async () => SNAPSHOT,
+    history: async (id, before) => ({ id, revision: 3, history: { start: Math.max(0, before - 256), end: before, before: Math.max(0, before - 256) || null, entries: [] } }),
     journey: async (...args) => {
       calls.journey.push(args);
       return { ...SNAPSHOT, revision: 1 };
@@ -241,6 +244,19 @@ const run = (route, request) =>
     context: {},
   });
 const json = (value) => JSON.stringify(value);
+
+test("history pages authenticate independently and validate their stable cursor", async () => {
+  const env = setup();
+  const response = await run(env.api.history, request(`/api/conversations/${ID}/history?before=500`));
+  assert.equal(response.status, 200);
+  assert.equal(env.calls.authorize, 1);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal((await response.json()).history.before, 244);
+  for (const query of ["", "?before=no", "?before=2&before=3", "?before=-1"])
+    assert.equal((await run(env.api.history, request(`/api/conversations/${ID}/history${query}`))).status, 400);
+  assert.equal((await run(env.api.history, request(`/api/conversations/${ID}/history?before=500`, { authorization: false }))).status, 401);
+  assert.equal((await run(env.api.history, request(`/api/conversations/${ID}/history?before=500`, { origin: "https://unrelated.example" }))).status, 401);
+});
 
 test("conditional conversation reads validate both versions after independent authorization", async () => {
   const env = setup();

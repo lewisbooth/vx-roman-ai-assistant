@@ -138,6 +138,22 @@ function setup(
     window.close();
   });
   function finish(call, body, status = 200) {
+    const paged = (snapshot) => {
+      if (!snapshot || !Array.isArray(snapshot.messages) || snapshot.history) return snapshot;
+      let question = null;
+      for (const message of [...snapshot.messages].reverse()) {
+        if (message.role === "user") break;
+        question = message.parts?.find((part) => part.type === "question") ?? null;
+        if (question) break;
+      }
+      const selected = snapshot.messages.flatMap((message) => message.parts ?? []).filter((part) => part.type === "navigation" && /^\/products\//.test(part.path)).at(-1);
+      return { ...snapshot,
+        history: { start: 0, end: snapshot.messages.length, before: null, entries: snapshot.messages.map((message, sequence) => ({ sequence, message })) },
+        historyUpdates: [],
+        current: { activeProduct: selected ? { path: selected.path, title: selected.title } : null, pendingQuestion: question, hasCustomerReply: snapshot.messages.some((message) => message.role === "user") },
+      };
+    };
+    body = body?.conversation ? { ...body, conversation: paged(body.conversation) } : paged(body);
     if (call.init.method === "GET" && body?.id && Array.isArray(body.messages))
       body = { streamRevision: 0, ...body };
     call.resolve({
@@ -445,7 +461,7 @@ test("unchanged polls retain state identity and notifications while later partia
     ],
   });
   await until(
-    () => ctx.client.getSnapshot().conversation.messages[1].parts.length > 0,
+    () => ctx.client.getSnapshot().conversation.messages[1]?.parts.length > 0,
     "Partial text was dropped",
   );
   assert.equal(ctx.client.getSnapshot().conversation.revision, 1);
@@ -990,7 +1006,7 @@ test("an older refresh cannot replace a newer accepted message snapshot", async 
   await delay(0);
   assert.equal(ctx.client.getSnapshot().conversation.busy, true);
   assert.equal(
-    ctx.client.getSnapshot().conversation.messages.at(-2).id,
+    ctx.client.getSnapshot().conversation.messages.at(-1).id,
     "new-user",
   );
   assert.equal(ctx.timers.size, 1);
@@ -1314,48 +1330,25 @@ test("confirmed navigation notifications survive response validation and unsafe 
   assert.equal(ctx.client.getSnapshot().conversation, restored);
 });
 
-test("navigation history fits alongside maximum captions, visits and text turns", async (t) => {
-  const parts = [
-    ...Array.from({ length: 1200 }, () => ({
-      type: "voice",
-      version: 1,
-      voiceId: "22222222-2222-4222-8222-222222222222",
-      text: "Caption",
-      startMs: 0,
-      endMs: 1,
-    })),
-    ...Array.from({ length: 200 }, () => ({
-      type: "page_view",
-      version: 1,
-      title: "Storefront",
-      path: "/",
-      occurredAt: "2026-09-15T10:00:00Z",
-    })),
-    ...Array.from({ length: 80 }, () => ({
-      type: "text",
-      text: "A conversation turn",
-    })),
-    ...Array.from({ length: 160 }, () => ({
-      type: "navigation",
-      version: 1,
-      invocationId,
-      title: "Shade",
-      path: "/products/shade",
-    })),
-  ];
-  const saved = {
-    ...complete,
-    messages: parts.map((part, index) => ({
-      ...complete.messages[1],
-      id: `history-${index}`,
-      parts: [part],
-    })),
-  };
+test("a page boundary limits transport size without imposing a lifetime message limit", async (t) => {
+  const entries = Array.from({ length: 256 }, (_, index) => ({ sequence: 3000 + index, message: { ...complete.messages[1], id: "history-" + index, parts: [{type: "text", text: "An older conversation"}] } }));
+  const saved = { ...complete, history: { start: 3000, end: 3256, before: 3000, entries }, historyUpdates: [], current: {activeProduct: null, pendingQuestion: null, hasCustomerReply: true}, messages: entries.map(entry => entry.message) };
   const ctx = setup(t, { saved: access });
   await resume(ctx, saved);
   assert.equal(ctx.client.getSnapshot().error, null);
-  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 1640);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 256);
+  assert.equal(ctx.client.getSnapshot().historyBefore, 3000);
+  const loading = ctx.client.loadOlderHistory();
+  const call = ctx.calls.length - 1;
+  assert.match(ctx.calls[call].url, /history\?before=3000$/);
+  ctx.respond(call, {id: conversationId, revision: 2, history: {start: 2744, end: 3000, before: 2744, entries: [{ sequence: 2744, message: { ...complete.messages[1], id: "earlier-message" } }] }});
+  await loading;
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 257);
+  assert.equal(ctx.client.getSnapshot().conversation.messages[0].id, "earlier-message");
+  assert.equal(ctx.client.getSnapshot().historyBefore, 2744);
+  assert.equal(ctx.client.getSnapshot().historyVersion, 1);
 });
+
 const recommendations = {
   ...complete,
   messages: [
@@ -1436,7 +1429,7 @@ test("a streamed reply completes with a carousel and question through the real r
   );
   assert.equal(ctx.client.getSnapshot().error, null);
   assert.deepEqual(
-    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages, (key, value) => ["sequence", "endSequence", "sourceSequence", "sourceEndSequence"].includes(key) ? undefined : value)),
     recommendations.messages,
   );
   assert.equal(ctx.timers.size, 0);
@@ -1467,7 +1460,7 @@ test("saved questions, including voice associations and answered history, surviv
   await resume(ctx, saved);
   assert.equal(ctx.client.getSnapshot().error, null);
   assert.deepEqual(
-    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages, (key, value) => ["sequence", "endSequence", "sourceSequence", "sourceEndSequence"].includes(key) ? undefined : value)),
     saved.messages,
   );
 });
@@ -1518,7 +1511,7 @@ for (const [name, invalid] of Object.entries({
     assert.equal(ctx.client.getSnapshot().error, null);
     assert.deepEqual(
       JSON.parse(
-        JSON.stringify(ctx.client.getSnapshot().conversation.messages),
+        JSON.stringify(ctx.client.getSnapshot().conversation.messages, (key, value) => ["sequence", "endSequence", "sourceSequence", "sourceEndSequence"].includes(key) ? undefined : value),
       ),
       recommendations.messages,
     );
@@ -1602,7 +1595,7 @@ test("saved voice lifecycle events restore without reacquiring audio", async (t)
   await resume(ctx, events);
   assert.equal(ctx.client.getSnapshot().error, null);
   assert.deepEqual(
-    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages)),
+    JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages, (key, value) => ["sequence", "endSequence", "sourceSequence", "sourceEndSequence"].includes(key) ? undefined : value)),
     events.messages,
   );
   assert.equal(ctx.media.calls.microphone, 0);
@@ -4462,4 +4455,173 @@ test("a different selected product cannot reuse an uncertain request just becaus
   assert.deepEqual(ctx.calls[4].body.productChoice, changed);
   ctx.respond(4, acceptedTextProduct(optimistic));
   await second;
+});
+
+function fireVoiceTimer(ctx, milliseconds) {
+  const entry = [...ctx.timers].find(([, timer]) => timer.ms === milliseconds);
+  assert.ok(entry, `Missing ${milliseconds}ms voice timer`);
+  ctx.timers.delete(entry[0]);
+  entry[1].callback();
+}
+
+async function interruptVoice(ctx, voice, closeReason = "provider_expired") {
+  ctx.media.event("session.closed", {
+    reason: closeReason === "provider_expired" ? "expired" : "connection_lost",
+  });
+  const index = ctx.calls.length - 1;
+  assert.match(ctx.calls[index].url, /\/stop$/);
+  const ended = { ...empty, revision: 2, voice: { ...voice, status: "failed", closeReason, error: "Connection interrupted." } };
+  ctx.respond(index, ended);
+  await until(() => ctx.client.getSnapshot().voice.status === "error", "Interrupted connection did not finalize");
+  await delay(0);
+  await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 500), "Recovery was not scheduled");
+  return ended;
+}
+
+test("voice expiration recovers in the same conversation without lifetime timer or replaying customer work", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 600_000));
+  const ended = await interruptVoice(ctx, voice);
+  assert.equal(ctx.media.peers[0].closed, true);
+  fireVoiceTimer(ctx, 500);
+  await until(() => ctx.calls.length === 5, "Recovery did not reconcile history");
+  assert.equal(ctx.calls[4].init.method, "GET");
+  ctx.respond(4, ended);
+  await until(() => ctx.calls.length === 6, "Recovery did not request a new connection");
+  const request = ctx.calls[5];
+  assert.equal(request.url, `${access.apiBaseUrl}/${conversationId}/voice`);
+  assert.notEqual(request.body.requestId, voice.id);
+  const recovered = { id: request.body.requestId, clientId: voice.clientId, status: "active" };
+  ctx.respond(5, { voiceId: recovered.id, sdp: "v=0\r\no=recovered" });
+  await until(() => !!ctx.media.peers[1]?.remoteDescription, "Recovery SDP was not applied");
+  ctx.media.connect();
+  await until(() => ctx.client.getSnapshot().voice.status === "active", "Recovery did not activate");
+  await until(() => ctx.calls.length === 7, "Recovery did not refresh history");
+  ctx.respond(6, { ...empty, revision: 3, voice: recovered });
+  assert.ok(!ctx.calls.some(({ url }) => /\/(messages|answers|tools)$/.test(url)));
+  assert.equal(ctx.media.calls.microphone, 2);
+});
+
+test("deliberate stop and closing the overlay cancel a queued voice recovery", async (t) => {
+  for (const stop of [ctx => ctx.client.stopVoice(), ctx => ctx.client.setOpen(false)]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    await interruptVoice(ctx, voice);
+    await stop(ctx);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => [500, 1500, 3000].includes(ms)));
+    assert.equal(ctx.media.calls.microphone, 1);
+  }
+});
+
+test("a terminal reason discovered during recovery prevents another microphone connection", async (t) => {
+  for (const closeReason of ["idle", "user_stop", "outage", "policy", "error"]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    const ended = await interruptVoice(ctx, voice);
+    fireVoiceTimer(ctx, 500);
+    await until(() => ctx.calls.length === 5, "Recovery did not reconcile");
+    ctx.respond(4, { ...ended, revision: 3, voice: { ...ended.voice, closeReason } });
+    await delay(0);
+    assert.equal(ctx.media.calls.microphone, 1, closeReason);
+    assert.ok(!ctx.calls.some((call, index) => index > 3 && call.init.method === "POST"), closeReason);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => [500, 1500, 3000].includes(ms)), closeReason);
+  }
+});
+
+test("voice recovery retries are bounded per failure episode", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  let ended = await interruptVoice(ctx, voice);
+  for (const [attempt, milliseconds] of [500, 1500, 3000].entries()) {
+    const before = ctx.calls.length;
+    fireVoiceTimer(ctx, milliseconds);
+    await until(() => ctx.calls.length === before + 1, "Recovery read missing");
+    ctx.respond(before, ended);
+    await until(() => ctx.calls.length === before + 2, "Recovery start missing");
+    const request = ctx.calls[before + 1];
+    ctx.respond(before + 1, { error: { message: "Temporary connection failure" } }, 500);
+    await until(() => ctx.calls.length === before + 3, "Failed start was not finalized");
+    ended = { ...empty, revision: 3 + attempt, voice: { id: request.body.requestId, clientId: voice.clientId, status: "failed", closeReason: "transport_lost", error: "Temporary connection failure" } };
+    ctx.respond(before + 2, ended);
+    await until(() => ctx.client.getSnapshot().voice.status === "error", "Failed attempt did not settle");
+    await delay(0);
+  }
+  assert.equal(ctx.calls.filter(({ url }) => /\/voice$/.test(url)).length, 4);
+  assert.ok(![...ctx.timers.values()].some(({ ms }) => [500, 1500, 3000].includes(ms)));
+  assert.match(ctx.client.getSnapshot().voice.error, /could not reconnect/);
+});
+
+test("stop during recovery reconciliation cannot open a late microphone connection", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  const ended = await interruptVoice(ctx, voice);
+  fireVoiceTimer(ctx, 500);
+  await until(() => ctx.calls.length === 5, "Recovery read missing");
+  await ctx.client.stopVoice();
+  ctx.respond(4, ended);
+  await delay(0);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.calls.length, 5);
+});
+
+test("sending text cancels a queued voice reconnect", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  const ended = await interruptVoice(ctx, voice);
+  const sending = ctx.client.sendMessage("Continue in text");
+  await until(() => ctx.calls.length === 5, "Text request missing");
+  assert.match(ctx.calls[4].url, /\/messages$/);
+  ctx.respond(4, { ...ended, revision: 3 });
+  await sending;
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.ok(![...ctx.timers.values()].some(({ ms }) => [500, 1500, 3000].includes(ms)));
+});
+
+test("voice recovery waits for pending work without spending connection attempts", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  const ended = await interruptVoice(ctx, voice);
+  fireVoiceTimer(ctx, 500);
+  await until(() => ctx.calls.length === 5, "Recovery read missing");
+  ctx.respond(4, { ...ended, revision: 3, busy: true });
+  await until(() => [...ctx.timers.values()].some(({ ms }) => ms > 89_000), "Pending work was not awaited");
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 1500 || ms === 3000));
+  // Normal authoritative polling settles the interrupted turn. It does not
+  // submit an input or retry a storefront action to recover voice.
+  ctx.client.clearError();
+  await until(() => ctx.calls.length === 6, "Settlement poll missing");
+  ctx.respond(5, { ...ended, revision: 4 });
+  await until(() => ctx.calls.length === 7, "Recovery did not recheck settlement");
+  ctx.respond(6, { ...ended, revision: 4 });
+  await until(() => ctx.calls.length === 8, "Settled recovery did not start");
+  assert.match(ctx.calls[7].url, /\/voice$/);
+  ctx.respond(7, { error: { message: "Temporary connection failure" } }, 500);
+  await until(() => ctx.calls.length === 9, "Failed connection not finalized");
+  ctx.respond(8, { ...ended, revision: 5, voice: { ...ended.voice, id: ctx.calls[7].body.requestId } });
+  await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 1500), "Waiting consumed the first actual reconnect attempt");
+  assert.equal(ctx.calls.filter(({ url }) => /\/voice$/.test(url)).length, 2);
+});
+
+test("voice recovery settlement wait ends on explicit stop or its bounded deadline", async (t) => {
+  for (const stop of [true, false]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    const ended = await interruptVoice(ctx, voice);
+    fireVoiceTimer(ctx, 500);
+    await until(() => ctx.calls.length === 5, "Recovery read missing");
+    ctx.respond(4, { ...ended, revision: 3, busy: true });
+    await until(() => [...ctx.timers.values()].some(({ ms }) => ms > 89_000), "Pending work was not awaited");
+    if (stop) await ctx.client.stopVoice();
+    else {
+      const deadline = [...ctx.timers].find(([, timer]) => timer.ms > 89_000);
+      ctx.timers.delete(deadline[0]);
+      deadline[1].callback();
+    }
+    await delay(0);
+    assert.equal(ctx.media.calls.microphone, 1);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => ms > 89_000 || ms === 1500 || ms === 3000));
+    if (!stop) assert.match(ctx.client.getSnapshot().voice.error, /waiting for interrupted work/);
+  }
 });

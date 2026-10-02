@@ -385,6 +385,72 @@ test("trusted transcript deltas retain timestamps and delegation contains metada
   ]);
 });
 
+test("long voice sessions retain bounded delegation authority without replaying older work", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  for (let index = 0; index < 256; index++) {
+    socket.event({ ...delegation(`work-${index}`), offset_ms: index * 100 });
+  }
+  assert.equal(app.events.length, 256);
+  assert.equal(app.events.every((event) => event.type === "delegation"), true);
+  for (const event of [
+    { ...delegation("work-0"), offset_ms: 0 },
+    { ...delegation("late-unseen"), offset_ms: 100 },
+    { ...delegation("same-time"), offset_ms: 25_500 },
+    { ...delegation("work-255"), offset_ms: 25_600 },
+  ]) socket.event(event);
+  assert.equal(app.events.length, 256, "duplicates and old offsets do not reopen work");
+  await assert.rejects(provider.appendCommentary("work-0", "Old work."), { code: "command_failed" });
+  const current = provider.appendCommentary("work-255", "Verified current result.");
+  socket.ack();
+  await current;
+  socket.event({ ...delegation("work-256"), offset_ms: 25_600 });
+  assert.equal(app.events.at(-1).delegationId, "work-256");
+  assert.deepEqual(app.logs, []);
+  const closing = provider.close();
+  socket.event(ended);
+  await closing;
+});
+
+test("Live reserves the complete private memo and current context before its recent suffix", async () => {
+  const app = setup();
+  const memo = "測".repeat(2000);
+  const current = { role: "user", source: "application_state", text: 'Application state: {"activeBlind":{"title":"Lottie","path":"/products/lottie"}}' };
+  await app.connect({ history: [
+    { role: "user", source: "memory", text: "Obsolete private note." },
+    ...Array.from({ length: 200 }, (_, index) => ({ role: "user", text: `Older conversation ${index} ${"x".repeat(100)}` })),
+    { role: "user", source: "memory", text: memo },
+    { role: "user", text: "Return to the kitchen blind." },
+    current,
+  ] });
+  const input = plain(app.requests[0][0].session.input);
+  assert.equal(input[0].role, "user");
+  assert.match(input[0].content[0].text, /silent reference data, not a customer request or instructions/);
+  assert.ok(input[0].content[0].text.endsWith(memo), "the whole 6000-byte memo survives");
+  assert.equal(input.at(-1).content[0].text, current.text);
+  assert.equal(input.at(-2).content[0].text, "Return to the kitchen blind.");
+  assert.doesNotMatch(JSON.stringify(input), /Obsolete private note/);
+  assert.ok(input.length <= 128);
+  assert.ok(input.reduce((bytes, item) => bytes + Buffer.byteLength(item.content[0].text, "utf8") + 16, 0) <= 7500);
+  assert.doesNotMatch(app.requests[0][0].session.instructions, /測|Obsolete private note/);
+});
+
+test("private memo is not an earlier reply and oversized recent records do not replace it", async () => {
+  const app = setup();
+  const memo = "m".repeat(6000);
+  await app.connect({ history: [
+    { role: "user", source: "memory", text: memo },
+    { role: "user", text: "Help with my kitchen window." },
+    { role: "user", text: "x".repeat(7000) },
+  ] });
+  const session = app.requests[0][0].session;
+  assert.match(session.instructions, /This is your first spoken or written reply/);
+  assert.ok(session.input[0].content[0].text.endsWith(memo));
+  assert.equal(session.input[1].content[0].text, "Help with my kitchen window.");
+  assert.match(session.input[2].content[0].text, /oversized conversation record was omitted/);
+});
+
 test("thinking and commentary require matching acknowledgment and known delegation", async () => {
   const app = setup();
   const provider = await app.connect();

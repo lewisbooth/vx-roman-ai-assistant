@@ -1,18 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma, VoiceSession, VoiceTranscript } from "@prisma/client";
 import type { VoiceTranscriptFragment } from "../../shared/voice-transcript";
-import type { VoiceEventPart } from "../../shared/voice";
+import { isVoiceCloseReason, type VoiceCloseReason, type VoiceEventPart } from "../../shared/voice";
 import type { QuestionPart } from "../../shared/questions";
 import { ROMAN_WELCOME_QUESTION } from "../prompts/shared.server";
 import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
 
 export const VOICE_LEASE_MS = 45_000;
-export const MAX_VOICE_DURATION_MS = 10 * 60_000;
-export const MAX_VOICE_SESSIONS = 10;
-// Conversation totals bound polling and later text-model history across reconnects.
-export const MAX_VOICE_FRAGMENTS = 1200;
-const maxVoiceCharacters = 60_000;
 const processStartedAt = new Date();
 const activeStatuses = ["starting", "active"];
 const uuidPattern =
@@ -80,7 +75,6 @@ export function expiredVoiceSessionWhere(
     status: { in: activeStatuses },
     OR: [
       { leaseExpiresAt: { lte: now } },
-      { createdAt: { lte: new Date(now.getTime() - MAX_VOICE_DURATION_MS) } },
       { createdAt: { lt: processStartedAt } },
     ],
   };
@@ -104,6 +98,7 @@ export async function expireVoiceSessions(
       {
         status: "failed",
         error: "Voice disconnected. Start voice again to reconnect.",
+        closeReason: "transport_lost",
       },
       now,
     );
@@ -174,14 +169,6 @@ export async function reserveVoiceSession(
       })
     )
       throw new ConversationError(409, "Voice is already active in this chat.");
-    if (
-      (await transaction.voiceSession.count({ where: { conversationId } })) >=
-      MAX_VOICE_SESSIONS
-    )
-      throw new ConversationError(
-        429,
-        "This chat has reached its voice session limit. Start a new chat.",
-      );
     const session = await transaction.voiceSession.create({
       data: {
         id: voiceId,
@@ -416,22 +403,18 @@ export async function heartbeatVoiceSession(
     return transaction.voiceSession.update({
       where: { id: voiceId },
       data: {
-        leaseExpiresAt: new Date(
-          Math.min(
-            now.getTime() + VOICE_LEASE_MS,
-            session.createdAt.getTime() + MAX_VOICE_DURATION_MS,
-          ),
-        ),
+        leaseExpiresAt: new Date(now.getTime() + VOICE_LEASE_MS),
       },
     });
   });
 }
 
-type VoiceCloseOutcome = { status: "closed" | "failed"; error?: string };
+type VoiceCloseOutcome = { status: "closed" | "failed"; error?: string; closeReason?: VoiceCloseReason };
 
 function validateCloseOutcome(outcome: VoiceCloseOutcome) {
   if (
     !["closed", "failed"].includes(outcome.status) ||
+    (outcome.closeReason !== undefined && !isVoiceCloseReason(outcome.closeReason)) ||
     (outcome.error !== undefined &&
       (typeof outcome.error !== "string" || outcome.error.length > 500))
   )
@@ -471,6 +454,7 @@ async function closeSession(
     data: {
       status: outcome.status,
       error: outcome.error ?? null,
+      closeReason: outcome.closeReason ?? (outcome.status === "failed" ? "error" : "user_stop"),
       closedAt,
     },
   });
@@ -505,7 +489,7 @@ export async function cancelVoiceSession(
   voiceId: string,
   clientId: string,
   outcome: VoiceCloseOutcome = { status: "closed" },
-): Promise<VoiceSession | null> {
+): Promise<VoiceSession> {
   requireUuid(voiceId);
   requireUuid(clientId);
   validateCloseOutcome(outcome);
@@ -526,13 +510,6 @@ export async function cancelVoiceSession(
       return closeSession(transaction, existing, outcome);
     }
     requireActiveConversation(conversation.status);
-    if (
-      (await transaction.voiceSession.count({ where: { conversationId } })) >=
-      MAX_VOICE_SESSIONS
-    )
-      // No session rows are removed during a chat, so a future start is already
-      // permanently denied. Stopping that unknown request needs no tombstone.
-      return null;
     const now = new Date();
     const cancelled = await transaction.voiceSession.create({
       data: {
@@ -541,6 +518,7 @@ export async function cancelVoiceSession(
         clientId,
         status: outcome.status,
         error: outcome.error ?? null,
+        closeReason: outcome.closeReason ?? (outcome.status === "failed" ? "error" : "user_stop"),
         createdAt: now,
         closedAt: now,
         leaseExpiresAt: now,
@@ -580,7 +558,7 @@ function parseTranscript(value: unknown): VoiceTranscriptInput {
     typeof input.endMs !== "number" ||
     !Number.isFinite(input.endMs) ||
     input.endMs < input.startMs ||
-    input.endMs > MAX_VOICE_DURATION_MS
+    input.endMs > Number.MAX_SAFE_INTEGER
   )
     throw new ConversationError(400, "Invalid voice caption.");
   return input as unknown as VoiceTranscriptInput;
@@ -636,21 +614,6 @@ export async function appendVoiceTranscript(
         );
       return fragment(existing);
     }
-    const previous = await transaction.voiceTranscript.findMany({
-      where: { conversationId },
-      select: { text: true },
-    });
-    if (
-      previous.length >= MAX_VOICE_FRAGMENTS ||
-      previous.reduce(
-        (length, caption) => length + caption.text.length,
-        input.text.length,
-      ) > maxVoiceCharacters
-    )
-      throw new ConversationError(
-        429,
-        "This chat has reached its voice transcript limit. Start a new chat.",
-      );
     const row = await transaction.voiceTranscript.create({
       data: {
         id: randomUUID(),

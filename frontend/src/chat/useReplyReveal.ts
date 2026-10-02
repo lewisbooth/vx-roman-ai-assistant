@@ -32,6 +32,11 @@ export function reconcileReplyReveal(
 ): ReplyReveal {
   const existing = new Map(previous?.parts.map((part) => [part.key, part]));
   const lastCustomer = lastCustomerIndex(messages);
+  const previousStart = Math.min(
+    ...(previous?.messages.flatMap((message) =>
+      typeof message.sequence === "number" ? [message.sequence] : [],
+    ) ?? []),
+  );
   const parts = messages.flatMap((message, messageIndex) => {
     if (message.role !== "assistant") return [];
     const voice = message.parts.some((part) => part.type === "voice");
@@ -44,7 +49,12 @@ export function reconcileReplyReveal(
         old?.source === part.text && old.pending === pending
           ? old.prepared
           : prepareRichText(part.text, pending);
-      const fresh = old?.fresh ?? (!!previous || pending);
+      const historical =
+        !!previous &&
+        Number.isFinite(previousStart) &&
+        typeof message.sequence === "number" &&
+        message.sequence < previousStart;
+      const fresh = old?.fresh ?? (!historical && (!!previous || pending));
       const animate =
         fresh &&
         !voice &&

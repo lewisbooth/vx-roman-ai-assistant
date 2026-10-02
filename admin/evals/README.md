@@ -18,6 +18,10 @@ The later concise-reply run initially repeated accepted guarantee details in fou
 
 ## Discovery
 
+Synthetic advisor evaluations include the same private `memoryUpdate` terminal schema as live turns, without writing notes or checkpoints to the customer database. The long-conversation checks also cover model-specific compaction, private memo persistence, historical recall, task switching and caption/page boundaries in the regular test suite.
+
+Synthetic advisor evaluations include the same private `memoryUpdate` terminal schema as live turns, without writing notes or checkpoints to the customer database. The long-conversation checks also cover model-specific compaction, private memo persistence, historical recall, task switching and caption/page boundaries in the regular test suite.
+
 Run from the repository root:
 
 ```powershell

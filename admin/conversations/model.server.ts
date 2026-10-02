@@ -56,6 +56,11 @@ import {
   textModelForRequest,
 } from "./availability.server";
 import type { ModelMessage } from "./history.server";
+import {
+  COMPACT_THRESHOLD_TOKENS, applyMemoryUpdate, memoryUpdateSchema,
+  modelMemoryInput, parseCheckpoint, parseMemoryUpdate, parseRecallHistory, shouldCompactContext,
+  recallHistoryToolDefinition, type MemoryUpdate, type ModelMemory, type ContextCheckpoint,
+} from "./memory.server";
 import { guideLibraryToolDefinition } from "../../shared/guide-library";
 import { storeSupportToolDefinition } from "../../shared/store-support";
 import { readLibraryGuidesToolDefinition } from "../guides/library.server";
@@ -185,10 +190,14 @@ type ModelToolOutcome =
 export interface ModelReply {
   text: string;
   model: string;
+  /** Requested alias owns opaque context; model retains provider billing identity. */
+  requestedModel?: string;
   serviceTier?: string;
   presentation?: ProductPresentation;
   questionPresentation?: QuestionPresentation;
   cachedGuideSource?: CachedGuideSource;
+  memoryUpdate?: MemoryUpdate;
+  contextCheckpoint?: ContextCheckpoint;
 }
 
 let client: OpenAI | undefined;
@@ -273,6 +282,8 @@ export async function generateReply(
   libraryReuse?: LibraryReuse,
   onToolActivity?: (name: string, active: boolean) => void,
   reasoningEffort: "low" | "medium" = "medium",
+  memory?: ModelMemory,
+  recallHistory?: (input: unknown, signal: AbortSignal) => Promise<unknown>,
 ): Promise<ModelReply> {
   const trackTool = async <T>(name: string, action: () => Promise<T>) => {
     onToolActivity?.(name, true);
@@ -284,10 +295,41 @@ export async function generateReply(
   };
   let turnModel = await textModelForRequest();
   client ??= new OpenAI({ maxRetries: 0, timeout: 90_000 });
-  const input: ResponseInput = history.map(({ role, text }) => ({
-    role,
-    content: text,
-  }));
+  // Provider checkpoints are model-specific; this turn's verified results are
+  // separately retained so failover never replays actions or uses foreign state.
+  const input: ResponseInput = [];
+  const replay: ResponseInput = [];
+  const histories = new Map<string, ModelMessage[]>();
+  let compactedThisTurn = false;
+  let recallCalls = 0;
+  const appendInput = (...items: ResponseInput) => {
+    input.push(...items);
+    replay.push(...items.filter((item) => item.type !== "compaction"));
+  };
+  const appendOutput = (output: Response["output"]) => {
+    const items = output.filter((item) =>
+      item.type === "message" || item.type === "reasoning" ||
+      item.type === "function_call" || item.type === "compaction");
+    // Fallback needs every raw call and result, including calls emitted before
+    // a compaction item in this response. Only the owning model uses that item.
+    replay.push(...items.filter((item) => item.type !== "compaction"));
+    const compactIndex = items.reduce((latest, item, index) => item.type === "compaction" ? index : latest, -1);
+    if (compactIndex >= 0) {
+      compactedThisTurn = true;
+      input.splice(0, input.length, ...items.slice(compactIndex));
+    } else input.push(...items);
+  };
+  const checkpoint = (model: string): ContextCheckpoint | undefined => {
+    if (!memory || !compactedThisTurn) return undefined;
+    try {
+      return parseCheckpoint({ model, throughSequence: memory.throughSequence, input: [...input] });
+    } catch {
+      // A provider-sized checkpoint must never turn a completed shopping action
+      // into a failed reply. The original transcript still supplies the next call.
+      console.warn("[Roman] Context checkpoint exceeded storage bounds.");
+      return undefined;
+    }
+  };
   let browserCalls = 0;
   const actions = new StorefrontTurn();
   const withinToolBudget = (name: string) =>
@@ -332,8 +374,14 @@ export async function generateReply(
           applyMeasurementsToolDefinition,
         ]
       : []),
-    askQuestionToolDefinition,
-    ...(execute ? [askMeasurementToolDefinition] : []),
+    ...(recallHistory ? [recallHistoryToolDefinition] : []),
+    ...[askQuestionToolDefinition, ...(execute ? [askMeasurementToolDefinition] : [])].map((tool) => memory ? {
+      ...tool,
+      parameters: { ...tool.parameters,
+        properties: { ...tool.parameters.properties, memoryUpdate: memoryUpdateSchema },
+        required: [...tool.parameters.required, "memoryUpdate"],
+      },
+    } : tool),
   ];
   const stableTools = resumeQuestion
     ? allTools.filter(
@@ -375,6 +423,7 @@ export async function generateReply(
         return false;
       if (name === "ask_question" || name === "ask_measurement") return true;
       if (answerRepair) return false;
+      if (name === "recall_history") return recallCalls < 2;
       return withinToolBudget(name) && actions.allows(name);
     });
     let model = turnModel;
@@ -383,6 +432,13 @@ export async function generateReply(
     let completed: Response | undefined;
     let repairIncompleteAnswer = false;
     for (;;) {
+      if (!histories.has(model)) {
+        histories.set(model, await memory?.historyForModel?.(model) ?? history);
+        signal.throwIfAborted();
+      }
+      const durableInput: ResponseInput = [
+        ...(compactedThisTurn ? [] : modelMemoryInput(histories.get(model)!, model, memory)), ...input,
+      ];
       const usageId = randomUUID();
       const attempt = responseUsage(usageId, "pending", undefined, model);
       // Persist each provider attempt before issuing a possibly billed request.
@@ -400,7 +456,8 @@ export async function generateReply(
               mode === "voice"
                 ? ROMAN_VOICE_BRIEFING_PROMPT
                 : ROMAN_TEXT_PROMPT,
-            input: [...prefix, ...guides.context(), ...resumeInput, ...input],
+            input: [...prefix, ...guides.context(), ...resumeInput, ...durableInput],
+            ...(memory && shouldCompactContext(durableInput) ? { context_management: [{ type: "compaction" as const, compact_threshold: COMPACT_THRESHOLD_TOKENS }] } : {}),
             prompt_cache_key: createHash("sha256")
               .update(
                 JSON.stringify([
@@ -505,8 +562,8 @@ export async function generateReply(
               turnModel = model;
               // Encrypted reasoning is owned by the model that produced it.
               // Function calls and confirmed results remain valid turn input.
-              for (let index = input.length - 1; index >= 0; index--)
-                if (input[index].type === "reasoning") input.splice(index, 1);
+              compactedThisTurn = false;
+              input.splice(0, input.length, ...replay.filter((item) => item.type !== "reasoning" && item.type !== "compaction"));
               continue;
             }
           } else await reportFallbackUnavailable();
@@ -526,7 +583,7 @@ export async function generateReply(
         providerStatus: "incomplete",
         incompleteReason: "max_messages",
       });
-      input.push({
+      appendInput({
         role: "developer",
         content:
           "The previous response ended before producing a complete answer request; none of its output was displayed or executed. Use the completed tool results already in this turn to finish once with ask_question or ask_measurement. Preserve the confirmed outcome in message and ask the next useful question. Do not repeat completed work or claim that unfinished work happened; only an answer request is available.",
@@ -534,6 +591,7 @@ export async function generateReply(
       continue;
     }
     if (!completed) throw new ModelResponseError("stream_ended");
+    appendOutput(completed.output);
     const toolCalls = completed.output.filter(
       (item) => item.type === "function_call",
     );
@@ -554,21 +612,20 @@ export async function generateReply(
           item.content.some((part) => part.type === "refusal"),
       );
       if (refused || (actions.checkoutHandoff && text.trim())) {
+        const contextCheckpoint = checkpoint(model);
         onText(text);
         return {
           text,
           model: completed.model,
           serviceTier: completed.service_tier ?? undefined,
+          ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
         };
       }
       if (!text.trim()) throw new Error("The model returned an empty reply.");
       if (answerRepair)
         throw new Error("Roman did not finish with a valid answer request.");
       answerRepair = true;
-      input.push(
-        ...completed.output.filter(
-          (item) => item.type === "message" || item.type === "reasoning",
-        ),
+      appendInput(
         {
           role: "developer",
           content:
@@ -577,16 +634,6 @@ export async function generateReply(
       );
       continue;
     }
-    // Preserve provider reasoning/function items only within this turn. Never
-    // expose them as chat content or persist a second provider-owned transcript.
-    input.push(
-      ...completed.output.filter(
-        (item) =>
-          item.type === "message" ||
-          item.type === "reasoning" ||
-          item.type === "function_call",
-      ),
-    );
     for (const call of toolCalls) {
       signal.throwIfAborted();
       if (actions.checkoutHandoff)
@@ -603,10 +650,18 @@ export async function generateReply(
         throw new Error("Only read-only question resume tools are allowed.");
       if (call.name === "ask_question" || call.name === "ask_measurement") {
         try {
+          const argumentsValue: unknown = JSON.parse(call.arguments);
+          if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue))
+            throw new Error("Invalid answer request.");
+          const { memoryUpdate: rawMemoryUpdate, ...publicAnswer } = argumentsValue as Record<string, unknown>;
+          const memoryUpdate = parseMemoryUpdate(rawMemoryUpdate);
+          if (memoryUpdate && !memory) throw new Error("Private memory is not available for this reply.");
+          if (resumeQuestion && memoryUpdate) throw new Error("Read-only question resumption cannot change private memory.");
+          if (memory) applyMemoryUpdate(memory.memo, memoryUpdate);
           const { message, productIds, ...selection } =
             call.name === "ask_measurement"
-              ? parseMeasurementQuestionCall(JSON.parse(call.arguments))
-              : parseQuestionCall(JSON.parse(call.arguments));
+              ? parseMeasurementQuestionCall(publicAnswer)
+              : parseQuestionCall(publicAnswer);
           if (!call.call_id || call.call_id.length > 200)
             throw new Error("Invalid question presentation call ID.");
           const selectedIds = productIds.length
@@ -673,6 +728,8 @@ export async function generateReply(
           signal.throwIfAborted();
           const cachedGuideSource = guides.cachedSource();
           const answer = mode === "voice" ? spoken : message;
+          appendInput({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ displayed: true, question: selection.question }) });
+          const contextCheckpoint = checkpoint(model);
           onText(answer);
           return {
             text: answer,
@@ -681,6 +738,8 @@ export async function generateReply(
             ...(presentation ? { presentation } : {}),
             questionPresentation,
             ...(cachedGuideSource ? { cachedGuideSource } : {}),
+            ...(memoryUpdate ? { memoryUpdate } : {}),
+            ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
           };
         } catch (error) {
           signal.throwIfAborted();
@@ -689,7 +748,7 @@ export async function generateReply(
               "Roman did not finish with a valid answer request.",
             );
           answerRepair = true;
-          input.push({
+          appendInput({
             type: "function_call_output",
             call_id: call.call_id,
             output: JSON.stringify({
@@ -710,6 +769,14 @@ export async function generateReply(
         throw new Error(
           "Only an answer request can repair the completed work's reply.",
         );
+      if (call.name === "recall_history") {
+        if (!recallHistory || ++recallCalls > 2)
+          throw new Error("Roman reached the history retrieval budget for this reply.");
+        const result = await recallHistory(parseRecallHistory(JSON.parse(call.arguments)), signal);
+        signal.throwIfAborted();
+        appendInput({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
+        continue;
+      }
       if (!execute || !withinToolBudget(call.name))
         throw new Error(
           "Roman reached the storefront tool limit for this reply.",
@@ -723,14 +790,14 @@ export async function generateReply(
             model: completed.model,
             serviceTier: completed.service_tier ?? undefined,
           };
-        input.push({
+        appendInput({
           type: "function_call_output",
           call_id: call.call_id,
           output: JSON.stringify(result.output),
         });
         if (result.stopBatch) {
           for (const queued of toolCalls.slice(toolCalls.indexOf(call) + 1))
-            input.push({
+            appendInput({
               type: "function_call_output",
               call_id: queued.call_id,
               output: JSON.stringify({
@@ -785,7 +852,7 @@ export async function generateReply(
       }
 
       const output = JSON.stringify(outcome);
-      input.push({
+      appendInput({
         type: "function_call_output",
         call_id: call.call_id,
         output,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -13,6 +14,7 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
     contents: `export * from "./admin/conversations/repository.server.ts";
+      export {recallConversationHistory} from "./admin/conversations/memory-history.server.ts";
       export {saveLibraryDiscovery, bindLibrarySource, clearLibrarySession, readLibraryGuides} from "./admin/guides/library.server.ts";
       export {latestProductPage} from "./admin/guides/product-page.server.ts";`,
     resolveDir: process.cwd(),
@@ -29,6 +31,7 @@ let directory;
 let database;
 let repository;
 const queries = [];
+const queryDetails = [];
 const previousAppUrl = process.env.SHOPIFY_APP_URL;
 const previousGlobal = global.prismaGlobal;
 
@@ -48,7 +51,13 @@ before(async () => {
     datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
     log: [{ emit: "event", level: "query" }],
   });
-  database.$on("query", ({ query }) => queries.push(query));
+  database.$on("query", ({ query, params }) => {
+    queries.push(query);
+    // Bulk write parameter logs may be truncated by Prisma. These small read
+    // parameters are the evidence for actual SQL bounds, not in-memory take.
+    if (/^SELECT/.test(query) && /FROM .*VoiceTranscript/.test(query))
+      queryDetails.push({ query, params: JSON.parse(params) });
+  });
   global.prismaGlobal = database;
   process.env.SHOPIFY_APP_URL = "https://roman.example.test";
   const migrations = (
@@ -1059,6 +1068,9 @@ test("credentials are hashed, scoped to their conversation, and expire", async (
     messages: [],
     busy: false,
     tools: [],
+    current: { activeProduct: null, hasCustomerReply: false, pendingQuestion: null },
+    history: { start: 0, end: 0, before: null, entries: [] },
+    historyUpdates: [],
   });
   const row = await database.conversation.findUniqueOrThrow({
     where: { id: first.conversationId },
@@ -1082,6 +1094,89 @@ test("credentials are hashed, scoped to their conversation, and expire", async (
     repository.authorizeCredential(first.conversationId, first.token),
     { status: 401 },
   );
+});
+
+test("valid activity renews a near-expiry credential without reviving expired or invalid tokens", async () => {
+  const first = await repository.createConversation(shop, origin);
+  const nearExpiry = new Date(Date.now() + 60_000);
+  await database.conversation.update({where:{id:first.conversationId},data:{credentialExpiresAt:nearExpiry}});
+  await assert.rejects(repository.authorizeCredential(first.conversationId, "invalid"), {status:401});
+  assert.equal((await database.conversation.findUniqueOrThrow({where:{id:first.conversationId}})).credentialExpiresAt.getTime(), nearExpiry.getTime());
+  const renewed = await repository.authorizeCredential(first.conversationId, first.token);
+  assert.ok(new Date(renewed.credentialExpiresAt ?? renewed.expiresAt).getTime() > Date.now() + 6 * 86400_000);
+});
+
+test("private window and layer notes and a model-owned checkpoint commit with the reply and survive reload", async () => {
+  const {conversationId:id}=await repository.createConversation(shop,origin);
+  const turn=await repository.beginTurn(id,{requestId:randomUUID(),text:"A blind and curtains for the kitchen, then the bedroom"});
+  const contextCheckpoint={model:"gpt-6-luna",throughSequence:turn.memory.throughSequence,input:[
+    {type:"compaction",encrypted_content:"opaque-fixture"},
+    {role:"assistant",content:"Let's start with the kitchen blind."},
+  ]};
+  await repository.finishTurn(id,turn.assistantId,{
+    status:"complete",text:"Let's start with the kitchen blind.",model:"gpt-6-luna-snapshot",requestedModel:"gpt-6-luna",
+    memoryUpdate:{set:[
+      {key:"kitchen",text:"Blind first, curtain layer pending; visualize both together when available. Customer prefers green."},
+      {key:"bedroom",text:"Return here after kitchen. No measurements yet."},
+    ],forget:[]},contextCheckpoint,
+  });
+  const reloaded=loadRepository();
+  const next=await reloaded.beginTurn(id,{requestId:randomUUID(),text:"Actually blue for the kitchen"});
+  assert.match(next.memory.memo.kitchen,/curtain layer pending/);
+  assert.match(next.memory.memo.bedroom,/Return here/);
+  assert.deepEqual(next.memory.checkpoints,[contextCheckpoint]);
+  assert.equal(typeof next.memory.recall,"function");
+  assert.ok(next.history.some(item=>item.source==="memory"&&item.text.includes("bedroom")));
+  await repository.finishTurn(id,next.assistantId,{
+    status:"complete",text:"Blue for the kitchen.",memoryUpdate:{set:[{key:"kitchen",text:"Blue replaces green. Blind first; curtain pending."}],forget:[]},
+  });
+  const state=await reloaded.getSnapshot(id);
+  assert.ok(!JSON.stringify(state).includes("curtain pending"));
+  assert.ok(!JSON.stringify(state).includes("opaque-fixture"));
+  assert.ok(!JSON.stringify(state).includes("memoJson"));
+  const row=await database.conversation.findUniqueOrThrow({where:{id}});
+  assert.equal(JSON.parse(row.memoJson).bedroom,"Return here after kitchen. No measurements yet.");
+  const voice=await reloaded.getModelHistory(id);
+  assert.ok(voice.some(item=>item.source==="memory"&&item.text.includes("Blue replaces green")));
+});
+
+test("invalid, failed and late replies cannot partially change memory or context", async () => {
+  const {conversationId:id}=await repository.createConversation(shop,origin);
+  const turn=await repository.beginTurn(id,{requestId:randomUUID(),text:"Measure the kitchen"});
+  const patch={set:[{key:"kitchen",text:"Unfinished measuring task"}],forget:[]};
+  await assert.rejects(repository.finishTurn(id,turn.assistantId,{
+    status:"complete",text:"A response",memoryUpdate:patch,
+    contextCheckpoint:{model:"foreign-model",throughSequence:1,input:[{type:"compaction",encrypted_content:"invalid-owner"}]},
+    model:"gpt-6-luna",
+  }),/checkpoint owner/);
+  assert.equal((await database.conversation.findUniqueOrThrow({where:{id}})).memoJson,"{}");
+  assert.equal((await database.conversationMessage.findUniqueOrThrow({where:{id:turn.assistantId}})).status,"pending");
+  await assert.rejects(repository.finishTurn(id,turn.assistantId,{
+    status:"complete",text:"A response",memoryUpdate:patch,
+    questionPresentation:{callId:randomUUID(),question:"Pick one",answers:["Same","Same"]},
+  }));
+  assert.equal((await database.conversation.findUniqueOrThrow({where:{id}})).memoJson,"{}");
+  await repository.finishTurn(id,turn.assistantId,{status:"failed",text:"",memoryUpdate:patch});
+  await repository.finishTurn(id,turn.assistantId,{status:"complete",text:"Late",memoryUpdate:patch});
+  assert.equal((await database.conversation.findUniqueOrThrow({where:{id}})).memoJson,"{}");
+  assert.equal(await database.conversationContext.count(),0);
+});
+
+test("older evidence recall is conversation-scoped, bounded and cancellable", async () => {
+  const first=await repository.createConversation(shop,origin);
+  const second=await repository.createConversation(shop,origin);
+  for (const [id,text] of [[first.conversationId,"Kitchen curtain must be blue"],[second.conversationId,"Kitchen curtain secret from another customer"]]) {
+    const turn=await repository.beginTurn(id,{requestId:randomUUID(),text});
+    await repository.finishTurn(id,turn.assistantId,{status:"complete",text:"Noted"});
+  }
+  const result=await repository.recallConversationHistory(first.conversationId,{query:"Kitchen curtain",beforeSequence:null},new AbortController().signal);
+  assert.equal(result.referenceOnly,true);
+  assert.match(JSON.stringify(result.entries),/must be blue/);
+  assert.ok(!JSON.stringify(result).includes("another customer"));
+  assert.equal(result.nextBeforeSequence,0);
+  const older=await repository.recallConversationHistory(first.conversationId,{query:"",beforeSequence:0},new AbortController().signal);
+  assert.deepEqual(older.entries,[]);
+  await assert.rejects(repository.recallConversationHistory(first.conversationId,{query:"",beforeSequence:null},AbortSignal.abort()));
 });
 
 test("scope revocation and uninstall deny credentials while retaining the conversation", async () => {
@@ -1126,7 +1221,7 @@ test("turns persist ordered public messages and deduplicate the exact request", 
   assert.equal(started.snapshot.messages[0].requestId, input.requestId);
   assert.notEqual(started.snapshot.messages[0].id, input.requestId);
   assert.equal(started.snapshot.messages[1].requestId, undefined);
-  assert.deepEqual(started.history, [{ role: "user", text: input.text }]);
+  assert.deepEqual(started.history, [{ role: "user", text: input.text, sequence: 0, endSequence: 0 }]);
   assert.deepEqual(
     started.snapshot.messages.map(({ role, status }) => [role, status]),
     [
@@ -1162,9 +1257,13 @@ test("turns persist ordered public messages and deduplicate the exact request", 
   );
   assert.deepEqual(Object.keys(persisted.messages[1]).sort(), [
     "createdAt",
+    "endSequence",
     "id",
     "parts",
     "role",
+    "sequence",
+    "sourceEndSequence",
+    "sourceSequence",
     "status",
   ]);
   const next = await repository.beginTurn(id, {
@@ -1233,12 +1332,12 @@ test("restart recovery fails only old pending replies and ignores late completio
     text: "New question",
   });
   assert.deepEqual(next.history, [
-    { role: "user", text: "Old question" },
-    { role: "user", text: "New question" },
+    { role: "user", text: "Old question", sequence: 0, endSequence: 0 },
+    { role: "user", text: "New question", sequence: 2, endSequence: 2 },
   ]);
 });
 
-test("failed replies release the conversation and bounded turn limit survives reload", async () => {
+test("failed replies release the conversation and long chats retain idempotency without a turn cutoff", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
@@ -1253,17 +1352,17 @@ test("failed replies release the conversation and bounded turn limit survives re
   assert.equal((await repository.getSnapshot(id)).busy, false);
   await database.conversation.update({
     where: { id },
-    data: { turnCount: 40 },
+    data: { turnCount: 1000 },
   });
   const reloaded = loadRepository();
   assert.equal((await reloaded.beginTurn(id, firstInput)).assistantId, null);
-  await assert.rejects(
-    reloaded.beginTurn(id, {
+  const next = await reloaded.beginTurn(id, {
       requestId: randomUUID(),
       text: "Another question",
-    }),
-    { status: 429 },
-  );
+    });
+  assert.ok(next.assistantId);
+  assert.equal((await database.conversation.findUniqueOrThrow({where: {id}})).turnCount, 1001);
+  await assert.rejects(reloaded.beginTurn(id, {requestId: randomUUID(), text: "Overlapping turn"}), {status: 409});
 });
 
 test("the daily shop creation bound is durable and does not leak between shops", async () => {
@@ -1372,7 +1471,7 @@ test("journey and turns share one durable order with idempotent revisions and un
   );
 });
 
-test("journey rejects sensitive URLs, unbounded timestamps and excess rows without storing them", async () => {
+test("journey rejects sensitive URLs and unbounded timestamps but continues beyond 200 page views", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
     origin,
@@ -1427,12 +1526,10 @@ test("journey rejects sensitive URLs, unbounded timestamps and excess rows witho
     where: { id },
     data: { nextSequence: 200 },
   });
-  await assert.rejects(repository.appendJourney(id, pageView()), {
-    status: 429,
-  });
+  await repository.appendJourney(id, pageView());
   assert.equal(
     await database.conversationMessage.count({ where: { conversationId: id } }),
-    200,
+    201,
   );
 });
 
@@ -2009,6 +2106,7 @@ test("a displayed carousel keeps its ID-title mapping before a spoken partial-ti
       endMs: 800,
     },
   });
+  await database.conversation.update({ where: { id }, data: { nextSequence: 3 } });
   const history = await restored.getModelHistory(id);
   const observationIndex = history.findIndex((entry) =>
     entry.text.startsWith("Storefront history") &&
@@ -2096,8 +2194,9 @@ test("questions persist after product widgets, survive reload and keep short ans
       role: "user",
       source: "roman_question",
       text: 'Roman question: {"question":"Is blackout your priority?","answers":["Yes","Daytime privacy"]}',
+      sequence: 1, endSequence: 1,
     },
-    { role: "user", text: "Yes" },
+    { role: "user", text: "Yes", sequence: 2, endSequence: 2 },
   ]);
   assert.ok(
     next.history
@@ -2405,7 +2504,7 @@ test("measurement questions with unknown units persist without inventing units o
   assert.deepEqual(question.measurement,{productPath:guidePath,label:"Width",unit:null,instructions:""});
   const text='Width: 1 1/2 in, or about 38 mm';
   const next=await restarted.beginTurn(id,{requestId:randomUUID(),text});
-  assert.deepEqual(next.history.at(-1),{role:"user",text});
+  assert.deepEqual(next.history.at(-1),{role:"user",text,sequence:2,endSequence:2});
   assert.ok(next.history.some(item=>item.source==="roman_question"&&item.text.includes('"unit":null')));
   assert.equal(await database.measurementDraft.count(),0);
 });
@@ -2478,8 +2577,8 @@ test("measurement questions persist verified product context and resume through 
     text: "Handle clearance: 0 mm",
   });
   assert.deepEqual(next.history.slice(-2), [
-    { role: "user", source: "roman_question", text: `Roman question: ${JSON.stringify(selection)}` },
-    { role: "user", text: "Handle clearance: 0 mm" },
+    { role: "user", source: "roman_question", text: `Roman question: ${JSON.stringify(selection)}`, sequence: 1, endSequence: 1 },
+    { role: "user", text: "Handle clearance: 0 mm", sequence: 2, endSequence: 2 },
   ]);
 });
 
@@ -2962,6 +3061,9 @@ test("migration retains legacy messages, metadata and credentials and advances o
       new Date(),
     );
     await migrate("20260915150000_conversation_catalog_journey");
+    for (const migration of (await readdir("prisma/migrations", {withFileTypes:true}))
+      .filter(entry => entry.isDirectory() && entry.name > "20260915150000_conversation_catalog_journey")
+      .map(entry => entry.name).sort()) await migrate(migration);
     const row = await legacy.conversation.findUniqueOrThrow({
       where: { id },
       include: { messages: true },
@@ -2969,6 +3071,8 @@ test("migration retains legacy messages, metadata and credentials and advances o
     assert.equal(row.credentialHash, "a".repeat(64));
     assert.equal(row.nextSequence, 8);
     assert.equal(row.status, "active");
+    assert.equal(row.memoJson, "{}");
+    assert.equal(await legacy.conversationContext.count(), 0);
     assert.deepEqual(JSON.parse(row.messages[0].partsJson), [
       { type: "text", text: originalText },
     ]);
@@ -3551,4 +3655,79 @@ test("history supplies application facts once while preserving corrections, earl
   assert.equal(state.pendingQuestion, null);
   assert.equal(next.history.filter((row) => row.text.includes("/products/original")).length, 1);
   assert.equal(next.history.filter((row) => row.text.includes("/products/other")).length, 1);
+});
+
+async function longCaptionHistory({ memo = false } = {}) {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const voiceId = randomUUID();
+  await database.voiceSession.create({ data: {
+    id: voiceId, conversationId: id, clientId: randomUUID(), status: "closed",
+    leaseExpiresAt: new Date(), closedAt: new Date(),
+  } });
+  await database.voiceTranscript.createMany({ data: Array.from({ length: 5000 }, (_, sequence) => ({
+    id: randomUUID(), voiceId, conversationId: id, providerEventId: `history-${sequence}`,
+    sequence, role: sequence % 2 ? "assistant" : "user",
+    text: `Synthetic original ${sequence}: ${"historical evidence ".repeat(12)}`,
+    startMs: sequence * 4000, endMs: sequence * 4000 + 500,
+  })) });
+  await database.conversation.update({ where: { id }, data: {
+    nextSequence: 5000,
+    ...(memo ? { memoJson: JSON.stringify({ windows: "Kitchen blind unfinished; bedroom follows. No new action is authorized." }) } : {}),
+  } });
+  await database.conversationContext.create({ data: {
+    conversationId: id, model: "gpt-6-luna", throughSequence: 4900,
+    inputJson: JSON.stringify([{ type: "compaction", encrypted_content: "primary-only-encrypted-state" }]),
+  } });
+  return { id, voiceId };
+}
+
+test("post-compaction turns read bounded caption tails and load another model's raw history only on demand", async () => {
+  const { id, voiceId } = await longCaptionHistory();
+  queries.length = 0;
+  queryDetails.length = 0;
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Continue with the kitchen" });
+  const captions = queryDetails.filter(({ query }) => /^SELECT/.test(query) && /FROM .*VoiceTranscript/.test(query));
+  assert.ok(captions.length > 0);
+  assert.ok(captions.every(({ query, params }) =>
+    (params.at(-2) > 0 && params.at(-2) <= 256) ||
+    (/sequence[`"] >/.test(query) && params.includes(4900))), "mutation reads have a positive row limit; model reads start at their saved checkpoint");
+  assert.ok(turn.history.filter((item) => item.sequence !== undefined).every((item) => item.sequence > 4900));
+  queries.length = 0;
+  assert.deepEqual(await turn.memory.historyForModel("gpt-6-luna"), turn.history);
+  assert.equal(queries.length, 0, "primary history was already read inside the turn transaction");
+  await database.voiceTranscript.create({ data: {
+    id: randomUUID(), voiceId, conversationId: id, providerEventId: "concurrent-later-caption",
+    sequence: 5002, role: "user", text: "A later correction must not enter the earlier checkpoint", startMs: 21_000_000, endMs: 21_000_500,
+  } });
+  queries.length = 0;
+  const fallback = await turn.memory.historyForModel("gpt-5.6-luna");
+  assert.ok(fallback.some((item) => item.text.startsWith("Synthetic original 0:")), "empty memory cannot silently discard unsummarized history");
+  assert.ok(!fallback.some((item) => item.text.includes("later correction")), "the callback pins the turn's inclusive source frontier");
+  assert.ok(queries.some((query) => /VoiceTranscript/.test(query) && /sequence[`"] >/.test(query) && /sequence[`"] <=/.test(query)), queries.join("\n"));
+  queries.length = 0;
+  await repository.finishTurn(id, turn.assistantId, { status: "complete", text: "The current question follows." });
+  assert.ok(queries.filter((query) => /^SELECT/.test(query) && /FROM .*VoiceTranscript/.test(query)).every((query) => /LIMIT/.test(query)), "finishing retains exact durable sources without rereading all captions");
+});
+
+test("cold fallback uses notes and explicitly bounded historical evidence; voice startup never reads the full caption log", async () => {
+  const { id } = await longCaptionHistory({ memo: true });
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Continue with the kitchen" });
+  queries.length = 0;
+  const fallback = await turn.memory.historyForModel("gpt-5.6-luna");
+  assert.match(fallback[0].text, /Historical context boundary.*recall_history/);
+  assert.ok(fallback.some((item) => item.source === "memory" && item.text.includes("bedroom")));
+  assert.ok(fallback.filter((item) => item.sequence !== undefined).every((item) => item.sequence > turn.memory.throughSequence - 120));
+  assert.ok(!JSON.stringify(fallback).includes("primary-only-encrypted-state"));
+  assert.ok(fallback.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0) < 50_000);
+  assert.ok(queries.filter((query) => /FROM .*VoiceTranscript/.test(query)).every((query) => /sequence[`"] >/.test(query)), queries.join("\n"));
+  await repository.finishTurn(id, turn.assistantId, { status: "complete", text: "Continue." });
+  queries.length = 0;
+  queryDetails.length = 0;
+  const startup = await repository.getVoiceStartupContext(id);
+  assert.match(startup.history[0].text, /Context boundary/);
+  assert.ok(startup.history.some((item) => item.source === "memory" && item.text.includes("bedroom")));
+  assert.ok(!startup.history.some((item) => item.text.startsWith("Synthetic original 0:")));
+  const startupCaptions = queryDetails.filter(({ query }) => /^SELECT/.test(query) && /FROM .*VoiceTranscript/.test(query));
+  assert.equal(startupCaptions.length, 2, "latest customer context plus one bounded startup page");
+  assert.ok(startupCaptions.every(({ params }) => params.at(-2) > 0 && params.at(-2) <= 256));
 });

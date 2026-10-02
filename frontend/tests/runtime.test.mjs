@@ -4,6 +4,14 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { voiceMedia } from "./helpers/voice-media.mjs";
+import { historySnapshot } from "./helpers/history-snapshot.mjs";
+
+function wire(body) {
+  if (body?.conversation) return { ...body, conversation: wire(body.conversation) };
+  return Array.isArray(body?.messages)
+    ? { ...historySnapshot(body), current: { activeProduct: null, pendingQuestion: null, hasCustomerReply: true } }
+    : body;
+}
 
 const bundle = await build({
   entryPoints: ["frontend/src/main.tsx"],
@@ -167,7 +175,7 @@ test("closing text-only Roman preserves its saved conversation and pending store
     ok: true,
     status: 200,
     headers: { get: () => "application/json" },
-    json: async () => body,
+    json: async () => wire(body),
   });
   ctx.window.fetch = async (url, init) => {
     calls.push(String(url));
@@ -312,7 +320,7 @@ function voiceBackend(ctx) {
     ok: status === 200,
     status,
     headers: { get: () => "application/json" },
-    json: async () => body,
+    json: async () => wire(body),
   });
   ctx.window.fetch = async (url, init) => {
     url = String(url);

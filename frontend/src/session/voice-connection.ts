@@ -1,3 +1,5 @@
+import type { VoiceCloseReason } from "../../../shared/voice";
+
 export class MicrophonePermissionError extends Error {
   constructor() {
     super("Allow microphone access in your browser to talk to Roman.");
@@ -6,7 +8,7 @@ export class MicrophonePermissionError extends Error {
 }
 
 /** One explicitly started microphone/peer connection. No credentials or transcript handling. */
-export function createVoiceConnection(onFailure: (message: string) => void) {
+export function createVoiceConnection(onFailure: (message: string, closeReason: VoiceCloseReason) => void) {
   let closed = false;
   let stream: MediaStream | undefined;
   let peer: RTCPeerConnection | undefined;
@@ -72,7 +74,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
     rejectReady?.(new Error("Voice was stopped."));
   }
 
-  function fail(message: string, reason: string) {
+  function fail(message: string, reason: string, closeReason: VoiceCloseReason = "error") {
     if (closed) return;
     // Categorical diagnostics only: never SDP, audio, captions or credentials.
     console.warn("[Roman] Voice connection failed.", {
@@ -87,7 +89,7 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
     reportTiming("failed");
     rejectReady?.(new Error(message));
     close();
-    onFailure(message);
+    onFailure(message, closeReason);
   }
 
   function checkReady() {
@@ -198,12 +200,14 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
               fail(
                 "Voice disconnected. Start voice again when you are ready.",
                 "peer_disconnect_timeout",
+                "transport_lost",
               );
           }, 10_000);
         } else if (["failed", "closed"].includes(peer.connectionState)) {
           fail(
             "Voice disconnected. Start voice again when you are ready.",
             `peer_${peer.connectionState}`,
+            "transport_lost",
           );
         }
         checkReady();
@@ -239,6 +243,9 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
           fail(
             "Roman's voice session ended. You can continue in text or start voice again.",
             "provider_closed",
+            "reason" in data && data.reason === "expired" ? "provider_expired" :
+            "reason" in data && data.reason === "connection_lost" ? "transport_lost" :
+            "reason" in data && data.reason === "content" ? "policy" : "user_stop",
           );
         }
       };
@@ -247,12 +254,14 @@ export function createVoiceConnection(onFailure: (message: string) => void) {
           fail(
             "Voice disconnected. Start voice again when you are ready.",
             "data_channel_closed",
+            "transport_lost",
           );
       };
       channel.onerror = () =>
         fail(
           "Roman could not connect voice. Please try again.",
           "data_channel_error",
+          "transport_lost",
         );
       // Permission must precede conversation creation, but its authenticated
       // bootstrap can run while the browser prepares the local audio offer.

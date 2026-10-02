@@ -1,4 +1,5 @@
 import type { GuideReuse } from "./guide-turn.server";
+import type { ModelMemory } from "./memory.server";
 import type {
   ConversationSnapshot,
   ConversationRead,
@@ -156,6 +157,7 @@ export async function startTurn(
       started.origin,
       turn,
       started.snapshot,
+      started.memory,
     );
     return started.snapshot;
   } catch (error) {
@@ -173,6 +175,7 @@ async function completeTurn(
   origin: string,
   turn: ActiveTurn,
   initial: ConversationSnapshot,
+  memory?: ModelMemory,
 ): Promise<ModelReply | undefined> {
   const metrics = new TurnMetrics();
   let outcome: "complete" | "failed" | "cancelled" = "failed";
@@ -270,6 +273,9 @@ async function completeTurn(
         metrics.activity(name, active);
         turn.onToolActivity?.(name, active);
       },
+      "medium",
+      memory,
+      memory?.recall,
     );
     signal.throwIfAborted();
     await assertServiceAvailable();
@@ -424,6 +430,7 @@ export async function runVoiceDelegation(
       started.origin,
       turn,
       started.snapshot,
+      started.memory,
     );
   } finally {
     initialized();

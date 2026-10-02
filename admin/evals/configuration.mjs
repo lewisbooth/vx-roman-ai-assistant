@@ -950,6 +950,7 @@ async function liveEvaluation(args) {
         undefined,
         (name, active) => metrics.activity(name, active),
         "medium",
+        { memo: {}, throughSequence: 0, checkpoints: [] },
       );
       metrics.ready(false, sample.mode === "voice");
       const failures = gradeConfigurationReply(sample, fixture, reply);

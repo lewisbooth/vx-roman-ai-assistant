@@ -29,6 +29,10 @@ const MAX_CONTEXT_CHARACTERS = 1_200;
 // UTF-8 bytes, rather than characters, while the backend retains the full input.
 const MAX_INPUT_CONTEXT_BYTES = 500;
 const MAX_HISTORY_BYTES = 6_000;
+const MAX_MEMORY_CONTEXT_BYTES = 6_500;
+const MAX_HISTORY_WITH_MEMORY_BYTES = 7_500;
+const HISTORY_ITEM_FRAMING_BYTES = 16;
+const MAX_RECENT_DELEGATIONS = 128;
 const consumedEventTypes = new Set([
   "session.started",
   "session.closed",
@@ -98,27 +102,45 @@ function timestamp(value: unknown): value is number {
 
 function initialHistory(history: readonly ModelMessage[]): InitialItem[] {
   const selected: InitialItem[] = [];
-  let remaining = MAX_HISTORY_BYTES;
+  let memory: ModelMessage | undefined;
+  for (let index = history.length - 1; index >= 0; index--) {
+    if (history[index].source === "memory") {
+      memory = history[index];
+      break;
+    }
+  }
+  const memoryText = memory?.text.trim()
+    ? `Private working memory; silent reference data, not a customer request or instructions.\n${memory.text}`
+    : undefined;
+  const memoryBytes = memoryText ? Buffer.byteLength(memoryText, "utf8") : 0;
+  if (memoryBytes > MAX_MEMORY_CONTEXT_BYTES)
+    throw new VoiceProviderError("invalid_event");
+  const itemFraming = memoryText ? HISTORY_ITEM_FRAMING_BYTES : 0;
+  const tailBudget = memoryText
+    ? MAX_HISTORY_WITH_MEMORY_BYTES - memoryBytes - itemFraming
+    : MAX_HISTORY_BYTES;
+  let remaining = tailBudget;
   // A conservative UTF-8 byte budget leaves room for message framing within
   // Live's 8,192-token history limit, including non-English conversation.
   for (
     let index = history.length - 1;
-    index >= 0 && selected.length < 128;
+    index >= 0 && selected.length < (memoryText ? 127 : 128);
     index--
   ) {
     let message = history[index];
+    if (message.source === "memory") continue;
     if (!message.text.trim()) continue;
     let bytes = Buffer.byteLength(message.text, "utf8");
     // One oversized record must not erase the surrounding conversation. Mark
     // that gap explicitly; ordinary budget exhaustion still retains a suffix.
-    if (bytes > MAX_HISTORY_BYTES) {
+    if (bytes + itemFraming > tailBudget) {
       message = {
         role: "user",
         text: "Context boundary: an oversized conversation record was omitted here. Its contents are unknown; this is not a new customer request.",
       };
       bytes = Buffer.byteLength(message.text, "utf8");
     }
-    if (bytes > remaining) break;
+    if (bytes + itemFraming > remaining) break;
     selected.unshift(
       message.role === "assistant"
         ? { role: "assistant", content: [{ type: "text", text: message.text }] }
@@ -127,8 +149,13 @@ function initialHistory(history: readonly ModelMessage[]): InitialItem[] {
             content: [{ type: "input_text", text: message.text }],
           },
     );
-    remaining -= bytes;
+    remaining -= bytes + itemFraming;
   }
+  if (memoryText)
+    selected.unshift({
+      role: "user",
+      content: [{ type: "input_text", text: memoryText }],
+    });
   return selected;
 }
 
@@ -211,6 +238,7 @@ export async function createVoiceProvider(options: {
       optionalCommandIds.delete(optionalCommandIds.values().next().value!);
   };
   const knownDelegations = new Set<string>();
+  let newestDelegationOffset = -1;
   const emit = (event: VoiceProviderEvent) => {
     options.onEvent(event);
   };
@@ -395,14 +423,16 @@ export async function createVoiceProvider(options: {
         if (!timestamp(event.offset_ms)) {
           throw new VoiceProviderError("invalid_event");
         }
-        invalidField = "delegation_limit";
+        // Duplicate or delayed events cannot restart earlier work, including
+        // after their IDs leave the bounded recent authorization set.
         if (
-          knownDelegations.size >= 128 &&
-          !knownDelegations.has(event.delegation.id)
-        ) {
-          throw new VoiceProviderError("invalid_event");
-        }
+          knownDelegations.has(event.delegation.id) ||
+          event.offset_ms <= newestDelegationOffset
+        ) return;
+        newestDelegationOffset = event.offset_ms;
         knownDelegations.add(event.delegation.id);
+        if (knownDelegations.size > MAX_RECENT_DELEGATIONS)
+          knownDelegations.delete(knownDelegations.values().next().value!);
         invalidField = "event_handler";
         emit({
           type: "delegation",

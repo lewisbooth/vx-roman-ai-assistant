@@ -456,3 +456,12 @@ test("one shared reveal budget keeps multi-part replies in order", (t) => {
   state = api.advanceReplyReveal(state, 1000);
   assert.ok(state.parts.every((part) => part.visible === part.prepared.length));
 });
+
+test("loading an older page never typewrites historic text again", (t) => {
+  const { api } = setup(t);
+  const recent = { ...message("recent", "assistant", [text("Recent answer")]), sequence: 300 };
+  const older = { ...message("older", "assistant", [text("Historic answer")]), sequence: 44 };
+  let state = api.reconcileReplyReveal(undefined, [recent]);
+  state = api.reconcileReplyReveal(state, [older, recent]);
+  assert.ok(state.parts.every((part) => part.visible === part.prepared.length));
+});

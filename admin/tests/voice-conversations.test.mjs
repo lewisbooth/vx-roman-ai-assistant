@@ -244,7 +244,7 @@ test("cancelled voice search stays silent and no longer separates continuous cap
   const input = textInput("My correction");
   const next = await conversation.beginTurn(id, input);
   assert.deepEqual(next.history.slice(0, 1), [
-    { role: "assistant", text: "Hm. Yeah" },
+    { role: "assistant", text: "Hm. Yeah", sequence: 0, endSequence: 2 },
   ]);
   await conversation.finishTurn(id, turn.assistantId, {
     text: "",
@@ -506,6 +506,10 @@ test("late input ASR projects before Roman's reply on reload and in model histor
     { role: "user", text: "Sure!" },
     { role: "assistant", text: "Great. Let's continue." },
   ];
+  const expectedHistory = [
+    { ...expected[0], sequence: 1, endSequence: 2 },
+    { ...expected[1], sequence: 0, endSequence: 3 },
+  ];
   for (let read = 0; read < 2; read++) {
     const state = await conversation.getSnapshot(id);
     assert.deepEqual(
@@ -519,7 +523,7 @@ test("late input ASR projects before Roman's reply on reload and in model histor
       state.messages.map((message) => message.id),
       [customer.id, reply.id],
     );
-    assert.deepEqual(await conversation.getModelHistory(id), expected);
+    assert.deepEqual(await conversation.getModelHistory(id), expectedHistory);
     if (read === 0) {
       await voice.closeVoiceSession(id, session.id, clientId);
       ({ conversation, voice } = load());
@@ -535,8 +539,8 @@ test("late input ASR projects before Roman's reply on reload and in model histor
   );
   const next = await conversation.beginTurn(id, textInput("What next?"));
   assert.deepEqual(next.history, [
-    ...expected,
-    { role: "user", text: "What next?" },
+    ...expectedHistory,
+    { role: "user", text: "What next?", sequence: 4, endSequence: 4 },
   ]);
 });
 
@@ -548,7 +552,7 @@ test("voice delegation has one hidden context owner and never fabricates spoken 
   assert.equal(delegated.snapshot.busy, true);
   assert.equal(delegated.snapshot.messages.length, 1);
   assert.deepEqual(delegated.history, [
-    { role: "user", text: "Show me blackout options" },
+    { role: "user", text: "Show me blackout options", sequence: 0, endSequence: 0 },
   ]);
   const pending = await database.conversationMessage.findUniqueOrThrow({
     where: { id: delegated.assistantId },
@@ -602,7 +606,7 @@ test("empty delegation bookkeeping does not split a spoken reply during or after
   );
   assert.equal(await database.voiceTranscript.count(), 3);
   assert.deepEqual(await conversation.getModelHistory(id), [
-    { role: "assistant", text: "Hello there. How can I help?" },
+    { role: "assistant", text: "Hello there. How can I help?", sequence: 0, endSequence: 3 },
   ]);
 });
 
@@ -1214,7 +1218,7 @@ test("restart recovery fails hidden delegation ownership and voice without dupli
   assert.equal(state.messages[1].id, delegated.assistantId);
   assert.equal(state.messages[1].status, "failed");
   assert.deepEqual(await restarted.conversation.getModelHistory(id), [
-    { role: "user", text: "Find a blind" },
+    { role: "user", text: "Find a blind", sequence: 0, endSequence: 0 },
   ]);
 });
 
@@ -1294,22 +1298,38 @@ async function questionDuringVoice(measurement = false, measurementOverrides = {
   return { session, input, question };
 }
 
-test("voice startup projects its history, pending question and page from one conversation read", async () => {
+test("voice startup projects coherent history, question and page with bounded transcript reads", async () => {
   const { question } = await questionDuringVoice();
   await journey();
-  const findUnique = database.conversation.findUnique;
-  let transcriptReads = 0;
-  database.conversation.findUnique = (...args) => {
-    if (args[0]?.include?.messages) transcriptReads++;
-    return findUnique.apply(database.conversation, args);
-  };
+  const transaction = database.$transaction;
+  let transactionId = 0;
+  const conversationReads = [];
+  const transcriptReads = [];
+  database.$transaction = (callback, ...options) => transaction.call(database, async (client) => {
+    const currentTransaction = ++transactionId;
+    const findConversation = client.conversation.findUniqueOrThrow;
+    const findCaptions = client.voiceTranscript.findMany;
+    client.conversation.findUniqueOrThrow = (...args) => {
+      conversationReads.push(currentTransaction);
+      assert.equal(args[0]?.include, undefined, "startup does not load unbounded transcript relations");
+      return findConversation.apply(client.conversation, args);
+    };
+    client.voiceTranscript.findMany = (...args) => {
+      transcriptReads.push(args[0]);
+      return findCaptions.apply(client.voiceTranscript, args);
+    };
+    return callback(client);
+  }, ...options);
   let context;
   try {
     context = await conversation.getVoiceStartupContext(id);
   } finally {
-    database.conversation.findUnique = findUnique;
+    database.$transaction = transaction;
   }
-  assert.equal(transcriptReads, 1);
+  assert.equal(conversationReads.length, 2, "history and current-state metadata are bounded reads");
+  assert.equal(new Set(conversationReads).size, 1, "both projections share one transaction snapshot");
+  assert.ok(transcriptReads.length > 0);
+  assert.ok(transcriptReads.every((query) => Number.isInteger(query.take) && query.take <= 256));
   assert.deepEqual(context.history, await conversation.getModelHistory(id));
   assert.deepEqual(context.pendingQuestion, question);
   assert.equal(context.lastPage, "/products/blackout-roller");
@@ -1582,7 +1602,7 @@ for (const channel of ["typed", "spoken"])
       }
       const context = await conversation.getVoiceStartupContext(id);
       assert.equal(context.pendingQuestion, undefined);
-      assert.deepEqual(context.history.at(-1), { role: "user", text });
+      assert.deepEqual(context.history.at(-1), { role: "user", text, sequence: 2, endSequence: 2 });
       assert.ok(context.history.some((message) => message.text.includes(question.question)));
       assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
       assert.equal(await database.measurementDraft.count(), before);
@@ -1709,6 +1729,8 @@ test("a selected voice answer saves customer text, retires its question and leav
   assert.deepEqual((await conversation.getModelHistory(id)).at(-2), {
     role: "user",
     text: "Bedroom",
+    sequence: before.nextSequence,
+    endSequence: before.nextSequence,
   });
   const after = await database.conversation.findUniqueOrThrow({
     where: { id },
@@ -1791,6 +1813,8 @@ test("voice product choices bind to a saved carousel, persist once and reconcile
   assert.deepEqual(history.at(-2), {
     role: "user",
     text: receipt.answer,
+    sequence: 2,
+    endSequence: 2,
   });
   assert.match(history.at(-1).text, /Carousel choice/);
   assert.ok(history.at(-1).text.includes(choice.productId));
@@ -1901,6 +1925,8 @@ test("typed voice input persists before browser readiness and reconciles after e
   assert.deepEqual((await conversation.getModelHistory(id)).at(-1), {
     role: "user",
     text: input.text.trim(),
+    sequence: 0,
+    endSequence: 0,
   });
   assert.equal(await database.voiceTranscript.count(), 0);
   assert.equal(
@@ -2016,7 +2042,7 @@ test("typed voice inputs cannot bypass active ownership, text bounds or pending 
   );
 });
 
-test("typed voice messages share the bounded selection allowance without losing retry receipts", async () => {
+test("typed voice messages continue past forty submissions without losing retry receipts", async () => {
   const session = await startVoice();
   await voice.activateVoiceSession(
     id,
@@ -2030,26 +2056,24 @@ test("typed voice messages share the bounded selection allowance without losing 
     session.id,
     input,
   );
-  for (let index = 1; index < 40; index++)
+  for (let index = 1; index < 50; index++)
     await conversation.appendVoiceQuestionAnswer(id, session.id, {
       ...input,
       requestId: randomUUID(),
       text: `Reply ${index}`,
     });
-  await assert.rejects(
-    conversation.appendVoiceQuestionAnswer(id, session.id, {
+  const next = await conversation.appendVoiceQuestionAnswer(id, session.id, {
       ...input,
       requestId: randomUUID(),
-    }),
-    { status: 429 },
-  );
+    });
+  assert.equal(next.created, true);
   assert.deepEqual(
     await conversation.appendVoiceQuestionAnswer(id, session.id, input),
     { ...first, created: false },
   );
   assert.equal(
     await database.conversationMessage.count({ where: { role: "user" } }),
-    40,
+    51,
   );
 });
 
@@ -2177,7 +2201,6 @@ for (const invalidState of [
   "starting",
   "closed",
   "expired",
-  "duration",
   "restarted",
   "ended",
   "busy",
@@ -2191,13 +2214,6 @@ for (const invalidState of [
         data: { status: invalidState },
       });
     if (invalidState === "expired") clock += voice.VOICE_LEASE_MS;
-    if (invalidState === "duration") {
-      clock += voice.MAX_VOICE_DURATION_MS;
-      await database.voiceSession.update({
-        where: { id: session.id },
-        data: { leaseExpiresAt: new Date(clock + 1000) },
-      });
-    }
     let repository = conversation;
     if (invalidState === "restarted") {
       clock++;
@@ -2229,7 +2245,20 @@ for (const invalidState of [
   });
 }
 
-test("selected answers have an independent bounded write allowance and preserve exact retry receipts at the limit", async () => {
+test("an active long voice session can answer its pending question while its lease is valid", async () => {
+  const { session, input } = await questionDuringVoice();
+  clock += 61 * 60 * 1000;
+  await database.voiceSession.update({
+    where: { id: session.id },
+    data: { leaseExpiresAt: new Date(clock + voice.VOICE_LEASE_MS) },
+  });
+  const answer = await conversation.appendVoiceQuestionAnswer(id, session.id, input);
+  assert.equal(answer.created, true);
+  assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
+  assert.equal(await database.conversationMessage.count({ where: { role: "user" } }), 1);
+});
+
+test("selected answers continue past forty writes and preserve exact old retry receipts", async () => {
   const { session, input, question } = await questionDuringVoice();
   const first = await conversation.appendVoiceQuestionAnswer(
     id,
@@ -2275,21 +2304,19 @@ test("selected answers have an independent bounded write allowance and preserve 
     where: { id },
     data: { nextSequence: 140 },
   });
-  await assert.rejects(
-    conversation.appendVoiceQuestionAnswer(id, session.id, {
+  const next = await conversation.appendVoiceQuestionAnswer(id, session.id, {
       ...input,
       requestId: randomUUID(),
       questionId: nextQuestion.invocationId,
-    }),
-    { status: 429 },
-  );
+    });
+  assert.equal(next.created, true);
   assert.deepEqual(
     await conversation.appendVoiceQuestionAnswer(id, session.id, input),
     { ...first, created: false },
   );
   assert.equal(
     await database.conversationMessage.count({ where: { role: "user" } }),
-    40,
+    41,
   );
 });
 
@@ -2539,7 +2566,7 @@ test("late browser readiness places start before same-call captions without spli
     ],
   );
   assert.deepEqual(await conversation.getModelHistory(id), [
-    { role: "assistant", text: "Good morning" },
+    { role: "assistant", text: "Good morning", sequence: 0, endSequence: 2 },
   ]);
 });
 

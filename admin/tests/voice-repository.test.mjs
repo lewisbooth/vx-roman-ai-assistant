@@ -128,7 +128,7 @@ async function storedConversation() {
   });
 }
 
-test("voice reservations are scoped, bounded, and idempotent without reconnecting", async () => {
+test("voice reservations stay scoped and idempotent beyond ten reconnects", async () => {
   const voiceId = randomUUID();
   const first = await reserve(voiceId);
   assert.equal(first.created, true);
@@ -144,12 +144,12 @@ test("voice reservations are scoped, bounded, and idempotent without reconnectin
   await repository.closeVoiceSession(conversationId, voiceId, clientId);
   assert.equal((await reserve(voiceId)).created, false);
   assert.equal((await reserve(voiceId)).session.status, "closed");
-  for (let count = 1; count < 10; count++) {
+  for (let count = 1; count < 12; count++) {
     clock++;
     const { session } = await reserve();
     await repository.closeVoiceSession(conversationId, session.id, clientId);
   }
-  await assert.rejects(reserve(), { status: 429 });
+  assert.equal((await reserve()).created, true);
 });
 
 test("voice cannot overlap a text reply or start after the chat ends", async () => {
@@ -263,29 +263,17 @@ test("cancellation is scoped and tombstones cannot hide another active session",
   await assert.rejects(reserve(), { status: 409 });
 });
 
-test("cancel tombstones respect the shared connection bound", async () => {
+test("cancel tombstones remain idempotent without a cumulative connection bound", async () => {
   for (let index = 0; index < 10; index++)
     await repository.cancelVoiceSession(conversationId, randomUUID(), clientId);
   const blockedRequestId = randomUUID();
-  assert.equal(
-    await repository.cancelVoiceSession(
-      conversationId,
-      blockedRequestId,
-      clientId,
-    ),
-    null,
-  );
-  assert.equal(
-    await repository.cancelVoiceSession(
-      conversationId,
-      blockedRequestId,
-      clientId,
-    ),
-    null,
-  );
-  await assert.rejects(reserve(blockedRequestId), { status: 429 });
-  await assert.rejects(reserve(), { status: 429 });
-  assert.equal(await database.voiceSession.count(), 10);
+  const cancelled = await repository.cancelVoiceSession(conversationId, blockedRequestId, clientId);
+  assert.equal(cancelled.status, "closed");
+  assert.equal(cancelled.closeReason, "user_stop");
+  assert.deepEqual(await repository.cancelVoiceSession(conversationId, blockedRequestId, clientId), cancelled);
+  assert.equal((await reserve(blockedRequestId)).created, false);
+  assert.equal((await reserve()).created, true);
+  assert.equal(await database.voiceSession.count(), 12);
 });
 
 test("ending chat permits existing voice cancellation but rejects unknown new tombstones", async () => {
@@ -386,10 +374,10 @@ test("an expired heartbeat cannot revive voice, and terminal failure remains vis
   assert.equal((await reserve()).created, true);
 });
 
-test("heartbeats stop at the ten-minute session deadline", async () => {
+test("heartbeats renew active sessions beyond ten minutes without changing their identity", async () => {
   const start = clock;
   const { session } = await reserve();
-  for (let tick = 1; tick <= 29; tick++) {
+  for (let tick = 1; tick <= 61; tick++) {
     clock = start + tick * 20000;
     await repository.heartbeatVoiceSession(
       conversationId,
@@ -399,17 +387,11 @@ test("heartbeats stop at the ten-minute session deadline", async () => {
   }
   assert.equal(
     (await repository.getVoiceState(conversationId)).leaseExpiresAt.getTime(),
-    start + 600000,
+    clock + 45000,
   );
-  clock = start + 600000;
-  await assert.rejects(
-    repository.heartbeatVoiceSession(conversationId, session.id, clientId),
-    { status: 409 },
-  );
-  assert.equal(
-    (await repository.getVoiceState(conversationId)).status,
-    "failed",
-  );
+  assert.equal((await repository.getVoiceState(conversationId)).id, session.id);
+  await append(session.id, { startMs: 1_200_000, endMs: 1_201_000 });
+  assert.equal(await database.voiceTranscript.count(), 1);
 });
 
 test("server restart abandons its prior connection without erasing transcript or replaying start", async () => {
@@ -549,7 +531,7 @@ test("caption validation rejects malformed or oversized provider payloads", asyn
     caption({ startMs: NaN }),
     caption({ endMs: Infinity }),
     caption({ endMs: 99 }),
-    caption({ endMs: 600001 }),
+    caption({ endMs: Number.MAX_SAFE_INTEGER + 1 }),
     caption({ providerEventId: " " }),
     caption({ providerEventId: "x".repeat(201) }),
   ]) {
@@ -561,7 +543,7 @@ test("caption validation rejects malformed or oversized provider payloads", asyn
   assert.equal(await database.voiceTranscript.count(), 0);
 });
 
-test("voice caption count is bounded without overwriting existing records", async () => {
+test("voice captions continue beyond 1200 fragments without overwriting existing records", async () => {
   const { session } = await reserve();
   await database.voiceTranscript.createMany({
     data: Array.from({ length: 1200 }, (_, sequence) => ({
@@ -580,28 +562,28 @@ test("voice caption count is bounded without overwriting existing records", asyn
     where: { id: conversationId },
     data: { nextSequence: 1200 },
   });
-  await assert.rejects(append(session.id), { status: 429 });
-  assert.equal(await database.voiceTranscript.count(), 1200);
-  assert.equal((await storedConversation()).nextSequence, 1200);
+  await append(session.id);
+  assert.equal(await database.voiceTranscript.count(), 1201);
+  assert.equal((await storedConversation()).nextSequence, 1201);
 });
 
-test("voice caption character limit bounds total payload independently of fragment count", async () => {
+test("voice captions continue beyond 60000 total characters while each event remains bounded", async () => {
   const { session } = await reserve();
   for (let index = 0; index < 30; index++)
     await append(session.id, { text: "a".repeat(2000) });
-  await assert.rejects(append(session.id), { status: 429 });
-  assert.equal(await database.voiceTranscript.count(), 30);
+  await append(session.id);
+  assert.equal(await database.voiceTranscript.count(), 31);
 });
 
-test("caption limits apply across reconnects rather than resetting with each voice session", async () => {
+test("reconnecting keeps prior captions while accepting further history", async () => {
   const { session } = await reserve();
   for (let index = 0; index < 30; index++)
     await append(session.id, { text: "a".repeat(2000) });
   await repository.closeVoiceSession(conversationId, session.id, clientId);
   clock++;
   const next = await reserve();
-  await assert.rejects(append(next.session.id), { status: 429 });
-  assert.equal(await database.voiceTranscript.count(), 30);
+  await append(next.session.id);
+  assert.equal(await database.voiceTranscript.count(), 31);
 });
 
 test("provider captions preserve whitespace and fractional timestamps exactly", async () => {

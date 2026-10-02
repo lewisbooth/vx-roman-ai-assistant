@@ -1,4 +1,4 @@
-import type { ConversationMessage } from "./conversation";
+import type { ConversationMessage, ConversationSnapshot } from "./conversation";
 import { MAX_PRODUCT_CARDS } from "./conversation";
 import type { ProductChoice } from "./product-choice";
 import { parseProductPath, productPathSchema } from "./product-path";
@@ -282,10 +282,13 @@ function terminalProductIds(input: unknown): string[] {
     input.length > MAX_PRODUCT_CARDS ||
     new Set(input).size !== input.length ||
     input.some(
-      (id) => typeof id !== "string" || id.length > 100 || !productIdPattern.test(id),
+      (id) =>
+        typeof id !== "string" || id.length > 100 || !productIdPattern.test(id),
     )
   )
-    throw new Error(`Select zero to ${MAX_PRODUCT_CARDS} distinct Shopify Product IDs.`);
+    throw new Error(
+      `Select zero to ${MAX_PRODUCT_CARDS} distinct Shopify Product IDs.`,
+    );
   return [...input];
 }
 
@@ -434,4 +437,33 @@ export function latestQuestion(
       }
     }
   }
+}
+
+/** A transcript page is not authoritative evidence that an older question retired. */
+export function currentQuestion(
+  conversation:
+    | (Pick<ConversationSnapshot, "messages" | "status"> &
+        Partial<Pick<ConversationSnapshot, "current">>)
+    | null
+    | undefined,
+  storefrontPath?: string,
+) {
+  if (conversation?.status !== "active") return;
+  if (!conversation.current)
+    return latestQuestion(conversation.messages, storefrontPath);
+  const part = conversation.current.pendingQuestion;
+  return part
+    ? latestQuestion(
+        [
+          {
+            id: part.invocationId,
+            role: "context",
+            status: "complete",
+            createdAt: "",
+            parts: [part],
+          },
+        ],
+        storefrontPath,
+      )
+    : undefined;
 }
