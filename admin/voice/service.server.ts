@@ -24,6 +24,7 @@ import {
   getVoiceStartupContext,
   findVoiceQuestionAnswer,
   appendVoiceQuestionAnswer,
+  type VoiceQuestionAnswerReceipt,
 } from "../conversations/repository.server";
 import {
   cancelVoiceDelegation,
@@ -243,7 +244,7 @@ type AdvisorRequest =
       kind: "input";
       requestId: string;
       caption: string;
-      progressCue?: string;
+      progressInput: VoiceQuestionAnswerReceipt;
       earlyProgress?: EarlyProgress;
     }
   | { kind: "resume"; questionId: string };
@@ -337,6 +338,9 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
   }
   const signal = AbortSignal.any([controller.signal, owner.controller.signal]);
   const progress: VoiceProgress = { toolActive: false };
+  const progressCue = request.kind === "input"
+    ? voiceInputProgress(request.progressInput)
+    : undefined;
   owner.progress = progress;
   if (request.kind === "input" && request.earlyProgress) {
     progress.sentAt = request.earlyProgress.sentAt;
@@ -400,11 +404,13 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
   const onToolActivity = (name: string, active: boolean) => {
     if (signal.aborted || owner.stopping || owner.progress !== progress) return;
     progress.toolActive = active;
-    progress.toolCue = active ? voiceToolProgress(name) : undefined;
+    progress.toolCue = active
+      ? voiceToolProgress(name, request.kind === "input" ? request.progressInput : undefined)
+      : undefined;
     // General UI requests keep one turn-wide timer. Routine measuring choices
     // have no generic cue; only a named tool that remains active earns one.
     if (request.kind === "input") {
-      if (request.progressCue || request.earlyProgress) return;
+      if (progressCue || request.earlyProgress) return;
       if (!active) {
         clearProgressTimer();
         return;
@@ -425,15 +431,15 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     if (
       request.kind !== "input" ||
       request.earlyProgress ||
-      !request.progressCue
+      !progressCue
     )
       return;
-    scheduleProgress(Date.now(), () => progress.toolCue ?? request.progressCue);
+    scheduleProgress(Date.now(), () => progress.toolCue ?? progressCue);
   };
   const waitForProgress = async () => {
     clearProgressTimer();
     await progress.sending;
-    if (progress.failed || !progress.sentAt) return;
+    if (!progress.sentAt || (progress.failed && !progress.outputAt)) return;
     // Live acknowledges context injection, not audible completion. Generated
     // audio activity plus a short quiet window gives the final briefing room;
     // the bound prevents a lost activity signal from stalling the answer.
@@ -1097,7 +1103,7 @@ async function submitVoiceInput(
         kind: "input",
         requestId: receipt.messageId,
         caption: `answer:${receipt.messageId}`,
-        progressCue: voiceInputProgress(receipt),
+        progressInput: receipt,
         earlyProgress,
       });
     } catch {

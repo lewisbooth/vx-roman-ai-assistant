@@ -18,6 +18,7 @@ import {
   ROMAN_VOICE_OPENING_CUE,
   ROMAN_VOICE_PENDING_QUESTION_OPENING,
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
+  ROMAN_VOICE_PROGRESS_CUE,
 } from "../prompts/voice.server";
 
 export const VOICE_MODEL = "gpt-live-1";
@@ -619,8 +620,24 @@ export async function createVoiceProvider(options: {
       appendThinking: (text) => append("thinking", null, text),
       appendCommentary: (delegationId, text) =>
         append("commentary", delegationId, text),
-      appendProgress: (delegationId, text) =>
-        append("commentary", delegationId, text, true),
+      appendProgress: async (delegationId, text) => {
+        // Keep reference data out of spoken commentary. Send both in order,
+        // without an extra acknowledgement round trip or a contextless cue.
+        if (
+          commands.size > 2 ||
+          !text.trim() ||
+          Buffer.byteLength(text, "utf8") > MAX_INPUT_CONTEXT_BYTES
+        )
+          throw new VoiceProviderError("command_failed");
+        const updates = await Promise.allSettled([
+          append("thinking", delegationId, text, true),
+          append("commentary", delegationId, ROMAN_VOICE_PROGRESS_CUE, true),
+        ]);
+        // Drain both optional commands even if one fails, so its sibling cannot
+        // arrive after we release the queued final answer.
+        for (const update of updates)
+          if (update.status === "rejected") throw update.reason;
+      },
       appendCustomerInput: async (text) => {
         if (!text.trim() || text.length > MAX_MESSAGE_LENGTH)
           throw new VoiceProviderError("command_failed");

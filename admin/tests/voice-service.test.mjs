@@ -1139,9 +1139,10 @@ test("a slow catalog tool gets one spoken cue and queues its verified answer", a
   state.mock.now += 2_500;
   timer.callback();
   await flush();
-  assert.deepEqual(plain(state.providers[0].progress), [
-    ["catalog-work", "The current store range is being searched for the customer's latest requirements; matches are not yet verified."],
-  ]);
+  assert.equal(state.providers[0].progress.length, 1);
+  assert.equal(state.providers[0].progress[0][0], "catalog-work");
+  assert.match(state.providers[0].progress[0][1], /store range is being searched/);
+  assert.match(state.providers[0].progress[0][1], /matches are not yet verified/);
   tool.resolve();
   await flush();
   assert.deepEqual(state.providers[0].commentaries, []);
@@ -1290,7 +1291,7 @@ test("one UI progress cue uses an active tool but survives earlier short tools",
     const state = setup();
     state.mock.now = 100_000;
     await answerableVoice(state);
-    const input = { requestId: randomUUID(), clientId: state.input.clientId, text: "Show me more." };
+    const input = { requestId: randomUUID(), clientId: state.input.clientId, text: "Show me more green kitchen blinds." };
     const advisor = deferred();
     state.mock.onDelegate = async (_id, _voiceId, _requestId, _signal, options) => {
       options.onToolActivity("search_products", true);
@@ -1311,14 +1312,11 @@ test("one UI progress cue uses an active tool but survives earlier short tools",
     state.mock.now += 2_500;
     timer.callback();
     await flush();
-    assert.deepEqual(plain(state.providers[0].progress), [
-      [
-        null,
-        toolActiveAtDeadline
-          ? "The current store range is being searched for the customer's latest requirements; matches are not yet verified."
-          : `Pending customer request; no research or action result is confirmed yet. {"answer":"Show me more."}`,
-      ],
-    ]);
+    assert.equal(state.providers[0].progress.length, 1);
+    assert.equal(state.providers[0].progress[0][0], null);
+    const cue = state.providers[0].progress[0][1];
+    assert.match(cue, /Show me more green kitchen blinds/);
+    assert.match(cue, toolActiveAtDeadline ? /store range is being searched/ : /request is pending/);
     await state.stop();
     advisor.resolve();
   }

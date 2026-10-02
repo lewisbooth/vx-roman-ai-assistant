@@ -56,6 +56,7 @@ const {
   ROMAN_VOICE_OPENING_PROMPTS,
   ROMAN_VOICE_PENDING_QUESTION_OPENING,
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
+  ROMAN_VOICE_PROGRESS_CUE,
 } = promptModule.exports;
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -431,13 +432,17 @@ test("optional progress accepts a known delegation without treating acknowledgme
     "Checking the guide.",
   );
   assert.deepEqual(socket.sent[0], {
-    type: "session.commentary.append",
+    type: "session.thinking.append",
     event_id: socket.sent[0].event_id,
     delegation_id: "item_delegated",
     content: "Checking the guide.",
   });
+  assert.equal(socket.sent[1].type, "session.commentary.append");
+  assert.equal(socket.sent[1].delegation_id, "item_delegated");
+  assert.equal(socket.sent[1].content, ROMAN_VOICE_PROGRESS_CUE);
   assert.match(socket.sent[0].event_id, /^command-\d+$/);
-  socket.ack();
+  socket.ack(0);
+  socket.ack(1);
   await progress;
   assert.deepEqual(app.events, [
     {
@@ -448,8 +453,10 @@ test("optional progress accepts a known delegation without treating acknowledgme
     },
   ]);
   const general = provider.appendProgress(null, "Checking current options.");
-  assert.equal(socket.sent[1].delegation_id, null);
-  socket.ack();
+  assert.equal(socket.sent[2].delegation_id, null);
+  assert.equal(socket.sent[3].delegation_id, null);
+  socket.ack(2);
+  socket.ack(3);
   await general;
   assert.equal(app.timers.size, 0);
   const closing = provider.close();
@@ -491,6 +498,49 @@ test("optional progress timeout and a late correlated error leave voice healthy"
   assert.equal(app.timers.size, 0);
 });
 
+test("progress skips the entire pair when capacity or reference limits are exceeded", async () => {
+  const app = setup();
+  const provider = await app.connect();
+  const socket = app.sockets[0];
+  const pending = Array.from({ length: 3 }, () => provider.appendThinking("Existing context."));
+  await assert.rejects(provider.appendProgress(null, "Pending catalog search."), { code: "command_failed" });
+  assert.equal(socket.sent.length, 3);
+  for (let index = 0; index < 3; index++) socket.ack(index);
+  await Promise.all(pending);
+  await assert.rejects(provider.appendProgress(null, "🪟".repeat(126)), { code: "command_failed" });
+  await assert.rejects(provider.appendProgress(null, " "), { code: "command_failed" });
+  assert.equal(socket.sent.length, 3, "no contextless spoken cue was sent");
+  assert.deepEqual(app.events, []);
+});
+
+for (const failedIndex of [0, 1]) {
+  test(`progress drains both optional commands when command ${failedIndex} fails`, async () => {
+    const app = setup();
+    const provider = await app.connect();
+    const socket = app.sockets[0];
+    const reference = 'Pending request: {"answer":"Privacy", "question":"Kitchen blinds?"}';
+    let settled = false;
+    const progress = provider.appendProgress(null, reference).finally(() => { settled = true; });
+    const rejected = assert.rejects(progress, { code: "command_failed" });
+    assert.equal(socket.sent[0].content, reference);
+    assert.doesNotMatch(socket.sent[1].content, /Privacy|Kitchen|answer|question/);
+    socket.event({
+      type: "error", event_id: "progress-pair-error",
+      client_event_id: socket.sent[failedIndex].event_id,
+      error: { code: "invalid_request_error", type: "invalid_request_error", message: "PRIVATE" },
+    });
+    await flush();
+    assert.equal(settled, false, "the sibling must drain before releasing the answer");
+    socket.ack(1 - failedIndex);
+    await rejected;
+    assert.deepEqual(app.events, []);
+    assert.equal(app.timers.size, 0);
+    const reply = provider.appendReply("The verified result.");
+    socket.ack();
+    await reply;
+  });
+}
+
 test("correlated progress rejection does not hide unrelated provider errors", async () => {
   const app = setup();
   const provider = await app.connect();
@@ -507,6 +557,7 @@ test("correlated progress rejection does not hide unrelated provider errors", as
       type: "invalid_request_error",
     },
   });
+  socket.ack(1);
   await rejected;
   assert.deepEqual(app.events, []);
   assert.deepEqual(app.logs, []);
