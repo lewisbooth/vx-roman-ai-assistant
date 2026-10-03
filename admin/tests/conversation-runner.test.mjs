@@ -1648,24 +1648,13 @@ test("model cart changes have no confirmation argument and cannot automatically 
   );
 });
 
-test("text and voice complete requested copies after a confirmed add within the existing four-call budget", async (t) => {
+test("text and voice send the whole requested count in one native add without a follow-up cart mutation", async (t) => {
   for (const mode of ["text", "voice"]) {
     await t.test(mode, async () => {
       const env = setup();
-      const lineKey = "123:configured";
-      const added = {
-        status: "added", message: "One blind added.", quantityAdded: 1,
-        addedProduct: { productPath: "/products/shade", title: "Shade", lineKey },
-      };
-      const cart = (quantity) => ({
-        currency: "GBP", itemCount: quantity, totalPriceMinorUnits: quantity * 1000,
-        items: [{ lineKey, title: "Shade", variantId: 123, quantity, linePriceMinorUnits: quantity * 1000 }],
-      });
       env.streams.push(
         events(completed("", { output: [catalogCall("configuration", "get_product_configuration", { productPath: "/products/shade" })] })),
-        events(completed("", { output: [catalogCall("first-add", "add_to_cart", { productPath: "/products/shade" })] })),
-        events(completed("", { output: [catalogCall("fresh-cart", "get_cart", {})] })),
-        events(completed("", { output: [catalogCall("remaining-copies", "set_cart_quantity", { lineKey, quantity: 7 })] })),
+        events(completed("", { output: [catalogCall("add-three", "add_to_cart", { productPath: "/products/shade", quantity: 3 })] })),
         events(completed("The three requested blinds were added.")),
       );
       const executed = [];
@@ -1675,21 +1664,17 @@ test("text and voice complete requested copies after a confirmed add within the 
         async (id, name, args) => {
           executed.push({ id, name, args });
           if (name === "get_product_configuration") return configuration(1);
-          if (name === "add_to_cart") return added;
-          if (name === "get_cart") return cart(5);
-          return { status: "updated", message: "Quantity is seven.", cart: cart(7) };
+          return {
+            status: "added", message: "Three blinds added.", quantityAdded: 3,
+            addedProduct: { productPath: "/products/shade", title: "Shade", lineKey: "123:configured" },
+          };
         }, mode,
       );
-      assert.deepEqual(executed.map(({ name }) => name), [
-        "get_product_configuration", "add_to_cart", "get_cart", "set_cart_quantity",
-      ]);
-      assert.deepEqual(plain(executed[3].args), { lineKey, quantity: 7 });
-      assert.equal(allowedToolNames(env.calls.requests[2].input).includes("set_cart_quantity"), false);
-      assert.equal(allowedToolNames(env.calls.requests[3].input).includes("set_cart_quantity"), true);
-      for (const name of ["add_to_cart", "add_sample_to_cart", "remove_from_cart", "clear_cart"])
-        assert.equal(allowedToolNames(env.calls.requests[3].input).includes(name), false, name);
-      assert.equal(allowedToolNames(env.calls.requests[4].input).includes("set_cart_quantity"), false);
-      assert.equal(env.calls.requests.length, 5);
+      assert.deepEqual(executed.map(({ name }) => name), ["get_product_configuration", "add_to_cart"]);
+      assert.deepEqual(plain(executed[1].args), { productPath: "/products/shade", quantity: 3 });
+      for (const name of ["add_to_cart", "add_sample_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart"])
+        assert.equal(allowedToolNames(env.calls.requests[2].input).includes(name), false, name);
+      assert.equal(env.calls.requests.length, 3);
       assert.match(reply.text, /^The three requested blinds were added\./);
       assertNextActions(reply);
     });
@@ -1735,7 +1720,7 @@ test("an unconfirmed addition blocks further cart mutations in text and voice", 
       {
         id: "first-add",
         name: "add_to_cart",
-        args: { productPath: "/products/shade" },
+        args: { productPath: "/products/shade", quantity: 1 },
       },
     ]);
     const tools = allowedTools(env.calls.requests[1].input).map(

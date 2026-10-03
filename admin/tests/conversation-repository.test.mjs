@@ -380,6 +380,30 @@ test("requested removals need no second approval and remain bound to the claimed
   }
 });
 
+test("native add quantities persist while older pending additions remain readable as one product", async () => {
+  const productPath = "/products/shade";
+  const current = await cartInvocation("add_to_cart", { productPath, quantity: 3 });
+  assert.deepEqual(current.tool.arguments, { productPath, quantity: 3 });
+  const stored = await database.toolInvocation.findUniqueOrThrow({ where: { id: current.tool.id } });
+  assert.deepEqual(JSON.parse(stored.argumentsJson), { productPath, quantity: 3 });
+  assert.deepEqual((await loadRepository().getSnapshot(current.id)).tools[0].arguments, { productPath, quantity: 3 });
+
+  const historical = await cartInvocation("add_to_cart", { productPath });
+  await database.toolInvocation.update({
+    where: { id: historical.tool.id },
+    data: { argumentsJson: JSON.stringify({ productPath }) },
+  });
+  const reloaded = loadRepository();
+  assert.deepEqual((await reloaded.getSnapshot(historical.id)).tools[0].arguments, { productPath, quantity: 1 });
+  const claim = executor();
+  assert.deepEqual(await repository.claimToolInvocation(historical.id, historical.tool.id, claim), { claimed: true });
+  await repository.completeToolInvocation(historical.id, historical.tool.id, claim, {
+    productIds: [],
+    outcome: { status: "added", message: "One product added.", quantityAdded: 1, addedProduct: { productPath, title: "Shade" } },
+  });
+  assert.equal((await database.toolInvocation.findUniqueOrThrow({ where: { id: historical.tool.id } })).status, "complete");
+});
+
 test("cart additions need no approval but remain bound to their executor and uncertain outcomes never replay", async () => {
   const { id, turn, tool } = await cartInvocation("add_to_cart", {
     productPath: "/products/shade",

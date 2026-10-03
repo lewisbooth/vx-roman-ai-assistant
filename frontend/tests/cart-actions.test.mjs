@@ -38,6 +38,8 @@ function setup(
     initialized = true,
     items = [line("123:a"), line("123:b", 2)],
     quantityTag = "quantity-input",
+    quantityKeys = ["123:a", "123:b"],
+    notification = false,
   } = {},
 ) {
   const quantityControl = (key, quantity) => quantityTag === "quantity-select"
@@ -47,11 +49,13 @@ function setup(
     `<!doctype html><body><app-provider><main id="main"><cart-sections section-id="cart">
       <form id="cart" data-cart-form>
         <cart-remove-toggle key="123:a"><span><button>Remove first</button></span></cart-remove-toggle>
-        ${quantityControl("123:a", 1)}
+        ${quantityKeys.includes("123:a") ? quantityControl("123:a", 1) : ""}
         <cart-remove-toggle key="123:b"><button type="button">Remove second</button></cart-remove-toggle>
-        ${quantityControl("123:b", 2)}
+        ${quantityKeys.includes("123:b") ? quantityControl("123:b", 2) : ""}
       </form>
-    </cart-sections></main></app-provider></body>`,
+    </cart-sections></main>
+    ${notification ? '<cart-sections section-id="cart-drawer-dialog" data-cart-notification-mode></cart-sections>' : ""}
+    </app-provider></body>`,
     {
       url: "https://hd-dev-single.myshopify.com/cart",
       runScripts: "outside-only",
@@ -65,6 +69,7 @@ function setup(
   let requests = 0;
   let nativeSubmissions = 0;
   let clearPromise;
+  let quantityPromise;
   document.querySelector("form").addEventListener("submit", (event) => {
     nativeSubmissions++;
     event.preventDefault();
@@ -80,6 +85,10 @@ function setup(
         clearCart() {
           calls.push({ kind: "clear", owner: this });
           return clearPromise ?? Promise.resolve();
+        }
+        updateQuantityToCart(updates) {
+          calls.push({ kind: "notification-quantity", owner: this, updates, cart: this.cart });
+          return quantityPromise ?? Promise.resolve();
         }
       },
     );
@@ -209,6 +218,7 @@ function setup(
         (element) =>
           tag === "cart-sections" || element.getAttribute("key") === key,
       ),
+    notification: () => document.querySelector("cart-sections[data-cart-notification-mode]"),
     update: (owner, value) =>
       owner.dispatchEvent(
         new window.CustomEvent("cart:updated", {
@@ -231,6 +241,9 @@ function setup(
     },
     setClearPromise: (value) => {
       clearPromise = value;
+    },
+    setQuantityPromise: (value) => {
+      quantityPromise = value;
     },
   };
 }
@@ -302,6 +315,454 @@ test("quantity uses the configured line's change workflow with the full linked-i
   );
   assert.equal((await action).status, "updated");
   assert.equal(env.listeners.size, 0);
+});
+
+test("missing line controls use the current notification owner with the exact Product line key", async (t) => {
+  const other = line("123:a", 1, { product_type: "Product" });
+  const target = line("123:b", 1, { product_type: "Product", properties: { Width: "1200mm" } });
+  const linked = line("insurance:1", 1, { product_type: "Insurance" });
+  const env = setup(t, {
+    items: [other, target, linked],
+    quantityKeys: ["123:a"],
+    notification: true,
+  });
+  const owner = env.notification();
+  const action = env.actions.setCartQuantity(target.key, 3, env.controller.signal);
+  await flush();
+  assert.equal(env.requests(), 1);
+  assert.equal(env.nativeSubmissions(), 0);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].kind, "notification-quantity");
+  assert.equal(env.calls[0].owner, owner);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0].updates)), { [target.key]: 3 });
+  assert.equal(env.calls[0].cart.items[2].key, linked.key);
+  env.update(owner, cart([{ ...other, quantity: 3, final_line_price: 3000 }, target, linked]));
+  assert.equal(env.hasDeadline(), true, "the same variant's other line cannot confirm the change");
+  env.update(env.owner("cart-sections"), cart([other, { ...target, quantity: 3, final_line_price: 3000 }, linked]));
+  assert.equal(env.hasDeadline(), true, "another owner cannot confirm the change");
+  env.update(owner, cart([other, { ...target, quantity: 3, final_line_price: 3000 }, linked]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.equal(result.cart.items.find((item) => item.lineKey === target.key).quantity, 3);
+  assert.equal(result.cart.items.find((item) => item.lineKey === other.key).quantity, 1);
+  assert.equal(JSON.stringify(result).includes("Width"), false);
+  assert.equal(JSON.stringify(result).includes("private-cart-token"), false);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.listeners.size, 0);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("quantity accepts a rotated Shopify key only for the unique configured Product line", async (t) => {
+  const other = line("123:a", 1, {
+    product_type: "Product",
+    properties: { _group_id: "other", Width: "900mm" },
+  });
+  const target = line("123:b", 3, {
+    product_type: "Product",
+    properties: { _group_id: "target", Width: "1200mm" },
+  });
+  const linked = line("cover:1", 3, {
+    product_type: "Insurance",
+    properties: { _group_id: "target" },
+  });
+  const env = setup(t, {
+    items: [other, target, linked],
+    quantityKeys: ["123:a"],
+    notification: true,
+  });
+  const action = env.actions.setCartQuantity(target.key, 4, env.controller.signal);
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0].updates)), { [target.key]: 4 });
+  const rotated = line("123:rotated", 4, {
+    product_type: "Product",
+    properties: { Width: "1200mm", _group_id: "target" },
+  });
+  env.update(env.notification(), cart([other, rotated, linked]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.equal(result.cart.items.find((item) => item.lineKey === rotated.key).quantity, 4);
+  assert.equal(result.cart.items.some((item) => item.lineKey === target.key), false);
+  assert.equal(result.cart.items.find((item) => item.lineKey === other.key).quantity, 1);
+  assert.equal(env.calls.length, 1, "key rotation never submits a second mutation");
+  assert.equal(env.listeners.size, 0);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("rotated-key confirmation rejects changed, missing and ambiguous Product identities", async (t) => {
+  const base = { product_type: "Product", properties: { _group_id: "target", Width: "1200mm" } };
+  const target = line("123:b", 3, base);
+  const other = line("123:a", 1, {
+    product_type: "Product",
+    properties: { _group_id: "other", Width: "900mm" },
+  });
+  const rotated = line("123:rotated", 4, base);
+  const cases = [
+    ["changed properties", [other, line("123:rotated", 4, {
+      product_type: "Product",
+      properties: { _group_id: "target", Width: "1100mm" },
+    })]],
+    ["changed variant", [other, { ...rotated, variant_id: 456 }]],
+    ["wrong quantity", [other, { ...rotated, quantity: 2, final_line_price: 2000 }]],
+    ["original key remains", [other, target, rotated]],
+    ["ambiguous new lines", [other, rotated, { ...rotated, key: "123:also-rotated" }]],
+    ["linked new line", [other, { ...rotated, parent_relationship: { parent_key: other.key } }]],
+  ];
+  for (const [name, updatedItems] of cases) {
+    await t.test(name, async (t) => {
+      const env = setup(t, {
+        items: [other, target],
+        quantityKeys: ["123:a"],
+        notification: true,
+      });
+      const action = env.actions.setCartQuantity(target.key, 4, env.controller.signal);
+      await flush();
+      assert.equal(env.calls.length, 1);
+      env.update(env.notification(), cart(updatedItems));
+      assert.equal(env.hasDeadline(), true, "this event cannot confirm the requested line");
+      env.timeout();
+      assert.equal((await action).status, "handed_off");
+      assert.equal(env.calls.length, 1);
+      assert.equal(env.listeners.size, 0);
+    });
+  }
+  for (const [name, baselineItems] of [
+    ["missing native properties", [other, line("123:b", 3, { product_type: "Product" })]],
+    ["ambiguous baseline", [other, target, { ...target, key: "123:duplicate" }]],
+  ]) {
+    await t.test(name, async (t) => {
+      const env = setup(t, {
+        items: baselineItems,
+        quantityKeys: ["123:a"],
+        notification: true,
+      });
+      const action = env.actions.setCartQuantity(target.key, 4, env.controller.signal);
+      await flush();
+      assert.equal(env.calls.length, 1);
+      env.update(env.notification(), cart([other, rotated]));
+      assert.equal(env.hasDeadline(), true);
+      env.timeout();
+      assert.equal((await action).status, "handed_off");
+    });
+  }
+});
+
+test("rotated-key confirmation compares selling plans and the immutable admission identity", async (t) => {
+  const originalProperties = { _group_id: "target", Width: "1200mm" };
+  const target = line("123:b", 3, {
+    product_type: "Product",
+    properties: originalProperties,
+    selling_plan_allocation: { selling_plan: { id: 111 } },
+  });
+  const env = setup(t, {
+    items: [target],
+    quantityKeys: [],
+    notification: true,
+  });
+  const baseline = cart([structuredClone(target)]);
+  env.window.fetch = async () => ({ ok: true, json: async () => baseline });
+  const action = env.actions.setCartQuantity(target.key, 4, env.controller.signal);
+  await flush();
+  assert.equal(env.calls.length, 1);
+  baseline.items[0].properties.Width = "1100mm";
+  env.update(env.notification(), cart([line("123:rotated", 4, {
+    product_type: "Product",
+    properties: { _group_id: "target", Width: "1100mm" },
+    selling_plan_allocation: { selling_plan: { id: 111 } },
+  })]));
+  assert.equal(env.hasDeadline(), true, "an in-place baseline change cannot redefine the admitted line");
+  env.update(env.notification(), cart([line("123:rotated", 4, {
+    product_type: "Product",
+    properties: originalProperties,
+    selling_plan_allocation: { selling_plan: { id: 222 } },
+  })]));
+  assert.equal(env.hasDeadline(), true, "a different selling plan is a different line");
+  env.update(env.notification(), cart([line("123:rotated", 4, {
+    product_type: "Product",
+    properties: originalProperties,
+    selling_plan_allocation: { selling_plan: { id: 111 } },
+  })]));
+  assert.equal((await action).status, "updated");
+  assert.equal(env.calls.length, 1);
+});
+
+test("linked per-product cover and blind use one native update with both exact keys", async (t) => {
+  const parent = line("123:a", 3, {
+    product_type: "Product",
+    properties: { _group_id: "configured-a", _insurance_group: "cover-a", Width: "1200mm" },
+  });
+  const child = line("cover:a", 3, {
+    product_type: "Insurance",
+    properties: {
+      _group_id: "configured-a",
+      _insurance_group: "cover-a",
+      _associated_product_id: "123",
+      _insurance_type: "product",
+    },
+    parent_relationship: { parent_key: parent.key },
+  });
+  const unrelated = line("123:b", 2, {
+    product_type: "Product",
+    properties: { _group_id: "configured-b", Width: "900mm" },
+  });
+  const env = setup(t, { items: [parent, child, unrelated], quantityKeys: ["123:a", "123:b"] });
+  const input = env.owner("quantity-input", parent.key).querySelector("input");
+  const action = env.actions.setCartQuantity(parent.key, 4, env.controller.signal);
+  await flush();
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].kind, "notification-quantity");
+  assert.equal(env.calls[0].owner, env.owner("cart-sections"));
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0].updates)), {
+    [parent.key]: 4,
+    [child.key]: 4,
+  });
+  assert.equal(input.value, "1", "a grouped update does not dispatch a second line-control change");
+  const newParent = {
+    ...parent, key: "123:rotated", quantity: 4, final_line_price: 4000,
+  };
+  const newChild = {
+    ...child, key: "cover:rotated", quantity: 4, final_line_price: 4000,
+    parent_relationship: { parent_key: newParent.key },
+  };
+  env.update(env.owner("cart-sections"), cart([newParent, newChild, unrelated]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.equal(result.cart.items.find((item) => item.lineKey === newParent.key).quantity, 4);
+  assert.equal(result.cart.items.find((item) => item.lineKey === newChild.key).quantity, 4);
+  assert.equal(result.cart.items.find((item) => item.lineKey === unrelated.key).quantity, 2);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.listeners.size, 0);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("missing quantity controls may update a verified linked warranty through the current notification owner", async (t) => {
+  const parent = line("123:a", 2, {
+    product_type: "Product",
+    properties: { _group_id: "configured-a", _warranty_group: "warranty-a" },
+  });
+  const child = line("warranty:a", 2, {
+    product_type: "Warranty",
+    properties: { _group_id: "configured-a", _warranty_group: "warranty-a", _associated_product_id: 123 },
+    parent_relationship: { parent_key: parent.key },
+  });
+  const env = setup(t, { items: [parent, child], quantityKeys: [], notification: true });
+  const action = env.actions.setCartQuantity(parent.key, 4, env.controller.signal);
+  await flush();
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].owner, env.notification());
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0].updates)), {
+    [parent.key]: 4,
+    [child.key]: 4,
+  });
+  env.update(env.notification(), cart([
+    { ...parent, quantity: 4, final_line_price: 4000 },
+    { ...child, quantity: 4, final_line_price: 4000 },
+  ]));
+  assert.equal((await action).status, "updated");
+});
+
+test("linked quantity rejects unknown or mismatched children before any cart write", async (t) => {
+  const parent = line("123:a", 3, {
+    product_type: "Product",
+    properties: { _group_id: "configured-a", _insurance_group: "cover-a", _warranty_group: "warranty-a" },
+  });
+  const insuranceProperties = {
+    _group_id: "configured-a",
+    _insurance_group: "cover-a",
+    _associated_product_id: "123",
+    _insurance_type: "product",
+  };
+  const child = line("cover:a", 3, {
+    product_type: "Insurance",
+    properties: insuranceProperties,
+    parent_relationship: { parent_key: parent.key },
+  });
+  const cases = [
+    ["mismatched initial quantity", { ...child, quantity: 2 }],
+    ["cart-level cover", { ...child, properties: { ...insuranceProperties, _insurance_type: "cart" } }],
+    ["missing per-product role", { ...child, properties: { ...insuranceProperties, _insurance_type: undefined } }],
+    ["different insurance group", { ...child, properties: { ...insuranceProperties, _insurance_group: "other" } }],
+    ["different configured group", { ...child, properties: { ...insuranceProperties, _group_id: "other" } }],
+    ["different associated product", { ...child, properties: { ...insuranceProperties, _associated_product_id: "456" } }],
+    ["unknown linked extra", { ...child, product_type: "Express Dispatch" }],
+    ["ambiguous child identity", child, { ...child, key: "cover:duplicate" }],
+  ];
+  for (const [name, ...linked] of cases) {
+    await t.test(name, async (t) => {
+      const env = setup(t, { items: [parent, ...linked], quantityKeys: [parent.key] });
+      await assert.rejects(
+        env.actions.setCartQuantity(parent.key, 4, env.controller.signal),
+        /linked cart line|linked cart lines/,
+      );
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.requests(), 1);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("a partial linked update remains uncertain and never triggers another mutation", async (t) => {
+  const parent = line("123:a", 3, {
+    product_type: "Product",
+    properties: { _group_id: "configured-a", _insurance_group: "cover-a" },
+  });
+  const child = line("cover:a", 3, {
+    product_type: "Insurance",
+    properties: {
+      _group_id: "configured-a", _insurance_group: "cover-a",
+      _associated_product_id: "123", _insurance_type: "product",
+    },
+    parent_relationship: { parent_key: parent.key },
+  });
+  const env = setup(t, { items: [parent, child], quantityKeys: [parent.key] });
+  const action = env.actions.setCartQuantity(parent.key, 4, env.controller.signal);
+  await flush();
+  const owner = env.owner("cart-sections");
+  env.update(owner, cart([
+    { ...parent, key: "123:rotated", quantity: 4, final_line_price: 4000 },
+    { ...child, quantity: 4, final_line_price: 4000 },
+  ]));
+  assert.equal(env.hasDeadline(), true, "a child still linked to the old parent key cannot confirm success");
+  env.update(owner, cart([
+    { ...parent, key: "123:rotated", quantity: 4, final_line_price: 4000 },
+    { ...child, parent_relationship: { parent_key: "123:rotated" } },
+  ]));
+  assert.equal(env.hasDeadline(), true, "parent-only confirmation cannot hide an unchanged cover");
+  env.timeout();
+  const result = await action;
+  assert.equal(result.status, "handed_off");
+  assert.match(result.message, /linked cover/);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.listeners.size, 0);
+});
+
+test("linked controls validate range and require an available atomic theme method before writing", async (t) => {
+  const parent = line("123:a", 3, {
+    product_type: "Product",
+    properties: { _group_id: "configured-a", _warranty_group: "warranty-a" },
+  });
+  const child = line("warranty:a", 3, {
+    product_type: "Warranty",
+    properties: { _group_id: "configured-a", _warranty_group: "warranty-a", _associated_product_id: "123" },
+    parent_relationship: { parent_key: parent.key },
+  });
+  for (const state of ["out-of-range", "missing-method", "stale-owner", "disabled-control"]) {
+    await t.test(state, async (t) => {
+      const env = setup(t, { items: [parent, child], quantityKeys: [parent.key] });
+      const control = env.owner("quantity-input", parent.key);
+      const sections = env.owner("cart-sections");
+      if (state === "out-of-range") control.querySelector("input").max = "3";
+      if (state === "missing-method") sections.updateQuantityToCart = undefined;
+      if (state === "stale-owner") sections.cart.items.pop();
+      if (state === "disabled-control") control.querySelector("input").disabled = true;
+      const action = env.actions.setCartQuantity(parent.key, 4, env.controller.signal);
+      if (state === "out-of-range") await assert.rejects(action, /allowed range/);
+      else if (state === "missing-method") await assert.rejects(action, /cannot update this blind and its linked cover/);
+      else assert.equal((await action).status, "needs_cart_page");
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("notification fallback refuses samples, linked lines and non-Product lines", async (t) => {
+  for (const [name, extra] of [
+    ["sample", { product_type: "Sample" }],
+    ["insurance", { product_type: "Insurance" }],
+    ["warranty", { product_type: "Warranty" }],
+    ["linked product", { product_type: "Product", parent_relationship: { parent_key: "123:a" } }],
+    ["unknown product type", {}],
+  ]) {
+    await t.test(name, async (t) => {
+      const env = setup(t, {
+        items: [line("123:a", 1, { product_type: "Product" }), line("123:b", 1, extra)],
+        quantityKeys: ["123:a"],
+        notification: true,
+      });
+      const result = await env.actions.setCartQuantity("123:b", 3, env.controller.signal);
+      assert.equal(result.status, "needs_cart_page");
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("notification fallback requires a registered fresh idle owner and current line", async (t) => {
+  for (const state of ["missing", "stale", "inert", "aria-disabled", "missing-method", "loading", "uninitialized", "duplicate-provider", "stale-line"]) {
+    await t.test(state, async (t) => {
+      const env = setup(t, {
+        initialized: state !== "uninitialized",
+        items: [line("123:a", 1, { product_type: "Product" }), line("123:b", 1, { product_type: "Product" })],
+        quantityKeys: ["123:a"],
+        notification: state !== "missing",
+      });
+      const owner = env.notification();
+      if (state === "stale") owner.cart.items.pop();
+      if (state === "inert") owner.setAttribute("inert", "");
+      if (state === "aria-disabled") owner.setAttribute("aria-disabled", "true");
+      if (state === "missing-method") owner.updateQuantityToCart = undefined;
+      if (state === "loading") owner.shopifyCartLoading = true;
+      if (state === "duplicate-provider") env.document.body.append(env.document.createElement("app-provider"));
+      const run = env.actions.setCartQuantity(state === "stale-line" ? "123:gone" : "123:b", 3, env.controller.signal);
+      if (state === "loading") await assert.rejects(run, /current cart update/);
+      else if (state === "stale-line") await assert.rejects(run, /no longer exists/);
+      else assert.equal((await run).status, "needs_cart_page");
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("existing quantity controls remain authoritative when the notification owner is available", async (t) => {
+  for (const state of ["ready", "disabled", "stale", "wrong-property-key", "invalid-range"]) {
+    await t.test(state, async (t) => {
+      const env = setup(t, {
+        items: [line("123:a", 1, { product_type: "Product" }), line("123:b", 2, { product_type: "Product" })],
+        notification: true,
+      });
+      const owner = env.owner("quantity-input");
+      if (state === "disabled") owner.querySelector("input").disabled = true;
+      if (state === "stale") owner.cart.items.pop();
+      if (state === "wrong-property-key") Object.defineProperty(owner, "lineItemKey", { value: "123:b" });
+      if (state === "invalid-range") owner.querySelector("input").max = "2";
+      const run = env.actions.setCartQuantity("123:a", 3, env.controller.signal);
+      if (state === "invalid-range") await assert.rejects(run, /allowed range/);
+      else if (state === "ready") {
+        await flush();
+        assert.equal(env.calls.length, 1);
+        assert.equal(env.calls[0].owner, owner);
+        env.update(owner, cart([line("123:a", 3), line("123:b", 2)]));
+        assert.equal((await run).status, "updated");
+      } else assert.equal((await run).status, "needs_cart_page");
+      assert.equal(env.calls.some((call) => call.kind === "notification-quantity"), false);
+    });
+  }
+});
+
+test("notification quantity failures and cancellation never replay its one native call", async (t) => {
+  for (const state of ["cart-error", "rejected-promise", "cancelled"]) {
+    await t.test(state, async (t) => {
+      const env = setup(t, {
+        items: [line("123:a", 1, { product_type: "Product" })],
+        quantityKeys: [],
+        notification: true,
+      });
+      let rejectTheme;
+      if (state === "rejected-promise")
+        env.setQuantityPromise(new Promise((_, reject) => { rejectTheme = reject; }));
+      const action = env.actions.setCartQuantity("123:a", 3, env.controller.signal);
+      const rejected = state === "cancelled" ? undefined : assert.rejects(action, /could not confirm/);
+      await flush();
+      assert.equal(env.calls.length, 1);
+      if (state === "cart-error") env.notification().dispatchEvent(new env.window.Event("cart:error"));
+      if (state === "rejected-promise") rejectTheme(new Error("private theme failure"));
+      if (state === "cancelled") env.controller.abort();
+      if (rejected) await rejected;
+      else assert.equal((await action).status, "handed_off");
+      assert.equal(env.calls.length, 1);
+      assert.equal(env.listeners.size, 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
 });
 
 test("batch removal serializes native controls, keeps unrelated cover, and reports only its final confirmed cart", async (t) => {
@@ -726,7 +1187,7 @@ test("already satisfied quantities and empty carts need no theme submission", as
 
 test("invalid quantities and stale line keys are rejected before mutation", async (t) => {
   const env = setup(t);
-  for (const quantity of [0, -1, 1.5, Infinity])
+  for (const quantity of [0, -1, 1.5, 1000, Infinity])
     await assert.rejects(
       env.actions.setCartQuantity("123:a", quantity, env.controller.signal),
       /positive whole-number/,

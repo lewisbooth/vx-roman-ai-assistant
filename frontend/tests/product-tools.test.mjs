@@ -22,7 +22,7 @@ function setup(
     <dynamic-pricing><form data-dynamic-pricing-form>
       <input name="_width" value="100" required>
       <input name="_drop" value="150" required>
-      <input name="quantity" value="2">
+      <input name="quantity" type="number" min="1" max="50" step="1" value="2">
       <button type="submit" data-instant-price-button>Calculate price</button>
       <button type="submit" name="add" data-atc-button data-price-box-atc>Add</button>
     </form></dynamic-pricing></main></app-provider></body>`,
@@ -35,6 +35,7 @@ function setup(
   const { window } = dom;
   const { document } = window;
   let submissions = 0;
+  const submittedQuantities = [];
   if (initialized) {
     window.customElements.define(
       "dynamic-pricing",
@@ -51,6 +52,7 @@ function setup(
                   this.querySelector("[data-price-box-atc]"),
                 );
                 submissions++;
+                submittedQuantities.push(new window.FormData(event.target).get("quantity"));
               });
         }
       },
@@ -96,7 +98,8 @@ function setup(
     button,
     controller,
     listeners,
-    run: () => window.RomanProduct.addConfiguredProduct(controller.signal),
+    run: (quantity) => window.RomanProduct.addConfiguredProduct(controller.signal, quantity),
+    submittedQuantities,
     submissions: () => submissions,
     timeout: () => deadline(),
     hasDeadline: () => deadline !== undefined,
@@ -109,6 +112,139 @@ function setup(
       ),
   };
 }
+
+function quantitySelect(env) {
+  const select = env.document.createElement("select");
+  select.name = "quantity";
+  select.setAttribute("data-quantity-select", "");
+  select.innerHTML = [1, 2, 3, 4, 5].map(value => `<option value="${value}">${value}</option>`).join("");
+  select.value = "2";
+  env.form.elements.namedItem("quantity").replaceWith(select);
+  return select;
+}
+
+test("requested quantities use the native form control and submit exactly once", async (t) => {
+  for (const type of ["number", "select"]) {
+    await t.test(type, async (t) => {
+      const env = setup(t);
+      const control = type === "select" ? quantitySelect(env) : env.form.elements.namedItem("quantity");
+      const events = [];
+      for (const name of ["input", "change"]) control.addEventListener(name, event => events.push([event.type, control.value]));
+      const fieldCount = env.form.elements.length;
+      const action = env.run(3);
+      assert.equal(control.value, "3");
+      assert.deepEqual(events, [["input", "3"], ["change", "3"]]);
+      assert.deepEqual(env.submittedQuantities, ["3"]);
+      assert.equal(env.form.elements.length, fieldCount, "No synthetic quantity fields are created");
+      env.update([{ variant_id: 123, quantity: 4 }, { variant_id: 999, quantity: 3 }]);
+      const result = await action;
+      assert.equal(result.status, "added");
+      assert.equal(result.quantityAdded, 3);
+      assert.equal(env.submissions(), 1);
+    });
+  }
+});
+
+test("the default single add resets a previous native quantity rather than silently adding multiple units", async (t) => {
+  const env = setup(t);
+  const action = env.run();
+  assert.deepEqual(env.submittedQuantities, ["1"]);
+  env.update([{ variant_id: 123, quantity: 2 }]);
+  assert.equal((await action).quantityAdded, 1);
+});
+
+test("invalid requested quantities are rejected before changing or submitting the form", async (t) => {
+  const env = setup(t);
+  for (const quantity of [0, -1, 1.5, 1000, Infinity, NaN, "3"])
+    await assert.rejects(env.run(quantity), /positive whole number up to 999/);
+  assert.equal(env.form.elements.namedItem("quantity").value, "2");
+  assert.equal(env.submissions(), 0);
+});
+
+test("unavailable quantity controls and native ranges make no add or field change", async (t) => {
+  for (const reason of ["missing", "duplicate", "foreign-form", "disabled", "disabled-fieldset", "readonly", "inert", "hidden", "unsupported-type", "max", "step", "select-multiple", "select-unoffered", "select-disabled-option", "select-disabled-optgroup", "select-hidden-option"]) {
+    await t.test(reason, async (t) => {
+      const env = setup(t);
+      const control = reason.startsWith("select-") ? quantitySelect(env) : env.form.elements.namedItem("quantity");
+      if (reason === "missing") control.remove();
+      if (reason === "duplicate") env.form.append(control.cloneNode(true));
+      if (reason === "foreign-form") control.setAttribute("form", "another-form");
+      if (reason === "disabled") control.disabled = true;
+      if (reason === "disabled-fieldset") {
+        const fieldset = env.document.createElement("fieldset");
+        fieldset.disabled = true;
+        control.replaceWith(fieldset);
+        fieldset.append(control);
+      }
+      if (reason === "readonly") control.readOnly = true;
+      if (reason === "inert") control.setAttribute("inert", "");
+      if (reason === "hidden") control.hidden = true;
+      if (reason === "unsupported-type") control.type = "hidden";
+      if (reason === "max") control.max = "2";
+      if (reason === "step") { control.min = "2"; control.step = "2"; }
+      if (reason === "select-multiple") control.multiple = true;
+      if (reason === "select-unoffered") control.querySelector('option[value="3"]').remove();
+      if (reason === "select-disabled-option") control.querySelector('option[value="3"]').disabled = true;
+      if (reason === "select-hidden-option") control.querySelector('option[value="3"]').hidden = true;
+      if (reason === "select-disabled-optgroup") {
+        const option = control.querySelector('option[value="3"]');
+        const group = env.document.createElement("optgroup");
+        group.disabled = true;
+        option.replaceWith(group);
+        group.append(option);
+      }
+      const result = await env.run(3);
+      assert.equal(result.status, "needs_configuration");
+      assert.match(result.message, /requested quantity.*unavailable/);
+      assert.equal(control.value, "2");
+      assert.equal(env.submissions(), 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("a click handler that resets the requested quantity cannot submit a different amount", async (t) => {
+  const env = setup(t);
+  const select = quantitySelect(env);
+  env.button.addEventListener("click", () => { select.value = "1"; });
+  const result = await env.run(3);
+  assert.equal(result.status, "needs_configuration");
+  assert.equal(env.submissions(), 0);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("quantity changes that start pricing or cancel the action cannot submit prematurely", async (t) => {
+  for (const reason of ["pricing", "cancel"]) {
+    await t.test(reason, async (t) => {
+      const env = setup(t);
+      const select = quantitySelect(env);
+      select.addEventListener("change", () => {
+        if (reason === "pricing") env.form.classList.add("loading");
+        else env.controller.abort();
+      });
+      const result = await env.run(3);
+      assert.notEqual(result.status, "added");
+      assert.equal(env.submissions(), 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("a quantity mismatch reports the actual increase and never repeats the add", async (t) => {
+  for (const quantityAdded of [1, 4]) {
+    await t.test(String(quantityAdded), async (t) => {
+      const env = setup(t);
+      const action = env.run(3);
+      env.update([{ variant_id: 123, quantity: 1 + quantityAdded }]);
+      const result = await action;
+      assert.equal(result.status, "added");
+      assert.equal(result.quantityAdded, quantityAdded);
+      assert.match(result.message, new RegExp(`confirmed ${quantityAdded} added, but 3 were requested`));
+      assert.match(result.message, /do not repeat/);
+      assert.equal(env.submissions(), 1);
+    });
+  }
+});
 
 test("configured-product add uses the actual submitter and waits for a scoped cart quantity increase", async (t) => {
   const env = setup(t);

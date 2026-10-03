@@ -87,8 +87,11 @@ const definitions = [
   ],
   [
     "add_to_cart",
-    "Add the chosen configured product on its verified current productPath after an explicit add request and fresh valid, priced native configuration. Requires resolved paid-choice consent and separate reply from form changes. Theme validation is authoritative. No additional review panel, payment or checkout.",
-    { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
+    "Add quantity identical copies of the chosen configured product on its verified current productPath after an explicit add request and fresh valid, priced native configuration. quantity is the requested additional count, not a final cart total; use 1 for one product. One native submission handles the count and linked extras. Requires resolved paid-choice consent and separate reply from form changes. Theme validation is authoritative. No additional review panel, payment or checkout.",
+    {
+      productPath: { type: "string", minLength: 1, maxLength: 2048 },
+      quantity: { type: "integer", minimum: 1, maximum: 999 },
+    },
   ],
   [
     "add_sample_to_cart",
@@ -252,7 +255,20 @@ export function parseCartCall(
     exact(args, []);
     return { name, arguments: {} };
   }
-  if (name === "add_to_cart" || name === "add_sample_to_cart") {
+  if (name === "add_to_cart") {
+    const hasQuantity = Object.hasOwn(args, "quantity");
+    exact(args, ["productPath", ...(hasQuantity ? ["quantity"] : [])]);
+    // Persisted calls created before quantity was supported mean one product.
+    // New model calls require the explicit quantity through the strict schema.
+    const quantity = hasQuantity ? args.quantity : 1;
+    if (!integer(quantity, 1, 999))
+      throw new Error("Cart quantity must be a positive whole number up to 999.");
+    return {
+      name,
+      arguments: { productPath: productPath(args.productPath), quantity },
+    };
+  }
+  if (name === "add_sample_to_cart") {
     exact(args, ["productPath"]);
     return {
       name,

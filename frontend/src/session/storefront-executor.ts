@@ -516,7 +516,11 @@ export function createStorefrontExecutor(
           signal.throwIfAborted();
           return parseCartResult(
             call.name,
-            await tools.execute(call.name, {}, signal),
+            await tools.execute(
+              call.name,
+              { quantity: call.arguments.quantity },
+              signal,
+            ),
           );
         },
         signal,

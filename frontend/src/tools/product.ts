@@ -165,10 +165,47 @@ function addedLineKey(
     return increases[0].lineKey;
 }
 
+function nativeQuantityControl(form: HTMLFormElement, quantity: number) {
+  const controls = Array.from(form.elements).filter(
+    (element) => element.getAttribute("name") === "quantity",
+  );
+  if (controls.length !== 1) return;
+  const control = controls[0];
+  if (
+    !(
+      control instanceof HTMLSelectElement ||
+      (control instanceof HTMLInputElement && control.type === "number")
+    ) ||
+    control.form !== form ||
+    !form.contains(control) ||
+    control.matches(":disabled") ||
+    control.closest('[hidden], [inert], [aria-hidden="true"], [aria-disabled="true"], .hidden')
+  )
+    return;
+  if (control instanceof HTMLSelectElement) {
+    const options = Array.from(control.options).filter(
+      (option) => option.value === String(quantity),
+    );
+    if (
+      control.multiple ||
+      options.length !== 1 ||
+      options[0].disabled ||
+      options[0].closest('optgroup:disabled, [hidden], [aria-disabled="true"]')
+    )
+      return;
+  } else if (control.readOnly) return;
+  const candidate = control.cloneNode(true) as typeof control;
+  candidate.value = String(quantity);
+  return candidate.checkValidity() ? control : undefined;
+}
+
 export async function addConfiguredProduct(
   signal: AbortSignal,
+  quantity = 1,
 ): Promise<ProductActionResult> {
   signal.throwIfAborted();
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 999)
+    throw new Error("Product quantity must be a positive whole number up to 999.");
   const form = inspectConfiguredProduct();
   const product = form.parentElement as PricingElement;
   const definition = customElements.get("dynamic-pricing");
@@ -200,7 +237,13 @@ export async function addConfiguredProduct(
     product.classList.contains("loading")
   )
     return needsConfiguration;
-  if (!form.reportValidity()) return needsConfiguration;
+  const unavailableQuantity: ProductActionResult = {
+    status: "needs_configuration",
+    message:
+      "The requested quantity is unavailable in this product's native quantity control. No product was added.",
+  };
+  const quantityControl = nativeQuantityControl(form, quantity);
+  if (!quantityControl) return unavailableQuantity;
   signal.throwIfAborted();
 
   pendingProducts.add(product);
@@ -238,6 +281,21 @@ export async function addConfiguredProduct(
     const onLeave = () => finish(handedOff);
     const captureSubmission = (event: SubmitEvent) => {
       if (event.target !== form || captured) return;
+      const control = nativeQuantityControl(form, quantity);
+      const values = new FormData(form).getAll("quantity");
+      if (
+        !control ||
+        control.value !== String(quantity) ||
+        values.length !== 1 ||
+        values[0] !== String(quantity)
+      ) {
+        // A click/change handler may have replaced or reset the quantity. Stop
+        // before the theme's slot handler can submit a different amount.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        finish(unavailableQuantity);
+        return;
+      }
       captured = true;
       // Snapshot the fields before the theme's slot handler submits them.
       // Later edits or pricing updates must not rewrite the recorded add.
@@ -271,9 +329,9 @@ export async function addConfiguredProduct(
       )
         return;
       const cart = (event as CustomEvent<unknown>).detail;
-      const quantity = cartVariantQuantity(cart, variantId);
-      if (quantity !== null && quantity > previousQuantity) {
-        const quantityAdded = quantity - previousQuantity;
+      const currentQuantity = cartVariantQuantity(cart, variantId);
+      if (currentQuantity !== null && currentQuantity > previousQuantity) {
+        const quantityAdded = currentQuantity - previousQuantity;
         const lineKey = addedLineKey(
           previousCart,
           cartIdentitySnapshot(cart),
@@ -287,7 +345,9 @@ export async function addConfiguredProduct(
             ? { addedProduct: { ...addedProduct, ...(lineKey ? { lineKey } : {}) } }
             : {}),
           message:
-            "The storefront confirmed the configured product was added to the cart.",
+            quantityAdded === quantity
+              ? "The storefront confirmed the configured product was added to the cart."
+              : `The storefront confirmed ${quantityAdded} added, but ${quantity} were requested. Check the cart before another add; do not repeat this request automatically.`,
         });
       }
     };
@@ -310,6 +370,24 @@ export async function addConfiguredProduct(
     product.addEventListener("cart:updated", onCartUpdated);
     product.addEventListener("cart:error", onCartError);
     try {
+      if (quantityControl.value !== String(quantity)) {
+        quantityControl.value = String(quantity);
+        quantityControl.dispatchEvent(new Event("input", { bubbles: true }));
+        quantityControl.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      signal.throwIfAborted();
+      if (
+        settled ||
+        !form.isConnected ||
+        button.matches(':disabled, [aria-disabled="true"]') ||
+        button.closest('[hidden], [inert], [aria-hidden="true"], .hidden') ||
+        form.matches(".loading, .adding, .blocking, .adding-sample, .variant-loading") ||
+        product.classList.contains("loading") ||
+        !form.reportValidity()
+      ) {
+        if (!settled) finish(needsConfiguration);
+        return;
+      }
       // Clicking preserves native constraint validation and the exact submitter
       // the theme uses to distinguish pricing from a configured-product add.
       button.click();

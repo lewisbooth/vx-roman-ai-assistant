@@ -134,8 +134,38 @@ test("add executes the current product directly without another approval", async
   assert.equal(result.addedProduct.title, "Kitchen shade");
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [
     "add_to_cart",
-    {},
+    { quantity: 1 },
   ]);
+  assert.equal(ctx.calls.length, 1);
+});
+
+test("requested additional quantity reaches the native product action in one submission", async (t) => {
+  const ctx = setup(
+    t,
+    async () => ({
+      status: "added",
+      message: "Added three more.",
+      quantityAdded: 3,
+    }),
+    "/products/shade",
+  );
+  const result = await ctx.executor.execute("add_to_cart", {
+    productPath: "/products/shade",
+    quantity: 3,
+  });
+  assert.equal(result.quantityAdded, 3);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.calls.map((call) => call.slice(0, 2)))),
+    [["add_to_cart", { quantity: 3 }]],
+  );
+  for (const quantity of [0, -1, 1.5, 1000, "3", null]) {
+    assert.throws(() =>
+      ctx.executor.execute("add_to_cart", {
+        productPath: "/products/shade",
+        quantity,
+      }),
+    );
+  }
   assert.equal(ctx.calls.length, 1);
 });
 
@@ -179,7 +209,7 @@ test("add checks again after foreground queue wait and never leaks model product
   assert.equal(result.status, "added");
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [
     "add_to_cart",
-    {},
+    { quantity: 1 },
   ]);
   const searching = ctx.executor.execute("search_products", {
     queries: ["shade"],

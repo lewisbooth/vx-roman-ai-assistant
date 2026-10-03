@@ -19,6 +19,7 @@ type CartElement = HTMLElement & {
   min?: number;
   max?: number;
   clearCart?: () => Promise<unknown>;
+  updateQuantityToCart?: (updates: Record<string, number>) => Promise<unknown>;
 };
 type Action =
   | { kind: "remove"; lineKey: string }
@@ -59,13 +60,148 @@ function matchingCart(value: unknown, current: StoreCart): boolean {
   }
 }
 
+type NativeLineIdentity = {
+  productType: string;
+  variantId: number;
+  properties: string;
+  sellingPlanId: string | null;
+};
+
+function nativeLineIdentity(item: StoreCart["items"][number]): NativeLineIdentity | undefined {
+  if (!["Product", "Insurance", "Warranty"].includes(String(item.product_type)) ||
+    (item.product_type === "Product" && item.parent_relationship != null))
+    return;
+  const properties = item.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties))
+    return;
+  const entries = Object.entries(properties);
+  if (
+    !entries.length ||
+    entries.some(([, value]) =>
+      value !== null && !["string", "number", "boolean"].includes(typeof value),
+    )
+  )
+    return;
+  const allocation = item.selling_plan_allocation;
+  let sellingPlanId: string | null = null;
+  if (allocation != null) {
+    if (typeof allocation !== "object" || Array.isArray(allocation)) return;
+    const plan = (allocation as Record<string, unknown>).selling_plan;
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) return;
+    const id = (plan as Record<string, unknown>).id;
+    if (typeof id !== "string" && typeof id !== "number") return;
+    sellingPlanId = String(id);
+  }
+  entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return {
+    productType: item.product_type as string,
+    variantId: item.variant_id,
+    properties: JSON.stringify(entries),
+    sellingPlanId,
+  };
+}
+
+function sameNativeLine(left: NativeLineIdentity | undefined, right: NativeLineIdentity): boolean {
+  return !!left &&
+    left.productType === right.productType &&
+    left.variantId === right.variantId &&
+    left.properties === right.properties &&
+    left.sellingPlanId === right.sellingPlanId;
+}
+
+type LinkedQuantityTarget = { key: string; identity: NativeLineIdentity };
+
+function parentKey(item: StoreCart["items"][number]): string | undefined {
+  const relationship = item.parent_relationship;
+  if (!relationship || typeof relationship !== "object" || Array.isArray(relationship))
+    return;
+  const key = (relationship as Record<string, unknown>).parent_key;
+  return typeof key === "string" ? key : undefined;
+}
+
+function propertiesOf(item: StoreCart["items"][number]): Record<string, unknown> | undefined {
+  const properties = item.properties;
+  return properties && typeof properties === "object" && !Array.isArray(properties)
+    ? properties as Record<string, unknown>
+    : undefined;
+}
+
+function sharedNonemptyProperty(
+  parent: Record<string, unknown>,
+  child: Record<string, unknown>,
+  name: string,
+): boolean {
+  const value = parent[name];
+  return typeof value === "string" && !!value.trim() && child[name] === value;
+}
+
+function linkedQuantityTargets(cart: StoreCart, parent: StoreCart["items"][number]): LinkedQuantityTarget[] {
+  const children = cart.items.filter((item) => parentKey(item) === parent.key);
+  if (!children.length) return [];
+  const parentProperties = propertiesOf(parent);
+  const parentIdentity = nativeLineIdentity(parent);
+  if (
+    parent.product_type !== "Product" || parent.parent_relationship != null ||
+    !parentProperties || !parentIdentity ||
+    cart.items.filter((item) => sameNativeLine(nativeLineIdentity(item), parentIdentity)).length !== 1
+  )
+    throw new Error("This blind's linked cart lines cannot be verified. No cart change was submitted.");
+  return children.map((child) => {
+    const childProperties = propertiesOf(child);
+    const identity = nativeLineIdentity(child);
+    const associated = childProperties?._associated_product_id;
+    const associationMatches = associated === parent.variant_id || associated === String(parent.variant_id);
+    const groupMatches = !!parentProperties && !!childProperties &&
+      sharedNonemptyProperty(parentProperties, childProperties, "_group_id");
+    const roleMatches = !!parentProperties && !!childProperties && (
+      (child.product_type === "Insurance" &&
+        childProperties._insurance_type === "product" &&
+        sharedNonemptyProperty(parentProperties, childProperties, "_insurance_group")) ||
+      (child.product_type === "Warranty" &&
+        sharedNonemptyProperty(parentProperties, childProperties, "_warranty_group"))
+    );
+    if (
+      child.quantity !== parent.quantity || !associationMatches ||
+      !groupMatches || !roleMatches || !identity ||
+      cart.items.filter((item) => sameNativeLine(nativeLineIdentity(item), identity)).length !== 1
+    )
+      throw new Error("This blind has a linked cart line Roman cannot safely update. No cart change was submitted.");
+    return { key: child.key, identity };
+  });
+}
+
+function confirmedQuantityLine(
+  cart: StoreCart,
+  key: string,
+  quantity: number,
+  identity: NativeLineIdentity | undefined,
+  requireIdentity: boolean,
+): StoreCart["items"][number] | undefined {
+  const direct = cart.items.find((item) => item.key === key);
+  if (direct)
+    return direct.quantity === quantity &&
+      (!requireIdentity || (identity && sameNativeLine(nativeLineIdentity(direct), identity)))
+      ? direct : undefined;
+  if (!identity) return;
+  const rotated = cart.items.filter((item) => sameNativeLine(nativeLineIdentity(item), identity));
+  return rotated.length === 1 && rotated[0].quantity === quantity ? rotated[0] : undefined;
+}
+
 function observeAction(
   owner: CartElement,
   action: Action,
+  baseline: StoreCart,
   signal: AbortSignal,
   submit: () => unknown,
+  linkedTargets: LinkedQuantityTarget[] = [],
 ): Promise<CartActionResult> {
   signal.throwIfAborted();
+  const identity = action.kind === "quantity"
+    ? nativeLineIdentity(baseline.items.find((item) => item.key === action.lineKey)!)
+    : undefined;
+  const rotatedIdentity = identity && baseline.items.filter(
+    (item) => sameNativeLine(nativeLineIdentity(item), identity),
+  ).length === 1 ? identity : undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
     const cleanup = () => {
@@ -82,7 +218,10 @@ function observeAction(
       cleanup();
       resolve(result);
     };
-    const onLeave = () => finish(handedOff);
+    const onLeave = () => finish(linkedTargets.length ? {
+      ...handedOff,
+      message: "The storefront update was submitted, but Roman could not confirm the blind and every linked cover reached the requested quantity. Check the cart before trying again; do not repeat the update automatically.",
+    } : handedOff);
     const onError = (event?: Event) => {
       if (settled || (event && event.target !== owner)) return;
       settled = true;
@@ -106,11 +245,18 @@ function observeAction(
           ? cart.items.length === 0 && cart.item_count === 0
           : action.kind === "remove"
             ? !cart.items.some((item) => item.key === action.lineKey)
-            : cart.items.some(
-                (item) =>
-                  item.key === action.lineKey &&
-                  item.quantity === action.quantity,
-              );
+            : (() => {
+                const parent = confirmedQuantityLine(
+                  cart, action.lineKey, action.quantity, rotatedIdentity,
+                  linkedTargets.length > 0,
+                );
+                return !!parent && linkedTargets.every((target) => {
+                  const child = confirmedQuantityLine(
+                    cart, target.key, action.quantity, target.identity, true,
+                  );
+                  return !!child && parentKey(child) === parent.key;
+                });
+              })();
       if (confirmed)
         finish({
           status: "updated",
@@ -134,6 +280,35 @@ function observeAction(
   });
 }
 
+function quantityUpdates(action: Extract<Action, { kind: "quantity" }>, linkedTargets: LinkedQuantityTarget[]) {
+  return Object.fromEntries(
+    [action.lineKey, ...linkedTargets.map((target) => target.key)]
+      .map((key) => [key, action.quantity]),
+  ) as Record<string, number>;
+}
+
+async function updateLinkedQuantity(
+  control: CartElement,
+  action: Extract<Action, { kind: "quantity" }>,
+  cart: StoreCart,
+  signal: AbortSignal,
+  linkedTargets: LinkedQuantityTarget[],
+): Promise<CartActionResult> {
+  const sections = control.closest("cart-sections");
+  if (!sections || !registered(sections) ||
+    typeof sections.updateQuantityToCart !== "function")
+    throw new Error("The storefront cannot update this blind and its linked cover together. No cart change was submitted.");
+  if (sections.closest('[inert], [aria-disabled="true"]') ||
+    !matchingCart(sections.cart, cart))
+    return needsCartPage;
+  if (sections.shopifyCartLoading || sections.classList.contains("loading"))
+    throw new Error("Wait for the storefront's current cart update to finish.");
+  return await observeAction(sections, action, cart, signal, () =>
+    sections.updateQuantityToCart!(quantityUpdates(action, linkedTargets)),
+    linkedTargets,
+  );
+}
+
 async function runAction(
   action: Action,
   signal: AbortSignal,
@@ -147,10 +322,12 @@ async function runAction(
     throw new Error("Provide a current lineKey from get_cart.");
   if (
     action.kind === "quantity" &&
-    (!Number.isSafeInteger(action.quantity) || action.quantity < 1)
+    (!Number.isSafeInteger(action.quantity) ||
+      action.quantity < 1 ||
+      action.quantity > 999)
   )
     throw new Error(
-      "Provide a positive whole-number quantity. Use remove_from_cart to remove an item.",
+      "Provide a positive whole-number quantity up to 999. Use remove_from_cart to remove an item.",
     );
   const initialUrl = window.location.href;
   let leftPage = false;
@@ -168,18 +345,22 @@ async function runAction(
   }
   signal.throwIfAborted();
   if (leftPage || window.location.href !== initialUrl) return needsCartPage;
+  let linkedTargets: LinkedQuantityTarget[] = [];
   if (action.kind !== "clear") {
     const item = cart.items.find((entry) => entry.key === action.lineKey);
     if (!item)
       throw new Error(
         "That cart line no longer exists. Read get_cart for its current lineKey.",
       );
-    if (action.kind === "quantity" && item.quantity === action.quantity)
-      return {
-        status: "updated",
-        cart: summarizeCart(cart),
-        message: "The cart line already has that quantity; no change was made.",
-      };
+    if (action.kind === "quantity") {
+      linkedTargets = linkedQuantityTargets(cart, item);
+      if (item.quantity === action.quantity)
+        return {
+          status: "updated",
+          cart: summarizeCart(cart),
+          message: "The cart line already has that quantity; no change was made.",
+        };
+    }
   } else if (cart.items.length === 0 && cart.item_count === 0) {
     return {
       status: "updated",
@@ -207,6 +388,41 @@ async function runAction(
             ? element.key === action.lineKey
             : element.lineItemKey === action.lineKey)),
   );
+  if (action.kind === "quantity" && candidates.length === 0) {
+    // A present control remains authoritative even when it is uninitialized,
+    // disabled or stale. Only the notification owner can cover its absence.
+    const controls = provider.querySelectorAll("quantity-input, quantity-select");
+    if (
+      Array.from(controls).some(
+        (element) =>
+          element.getAttribute("key") === action.lineKey ||
+          (element as CartElement).lineItemKey === action.lineKey,
+      )
+    )
+      return needsCartPage;
+    const item = cart.items.find((entry) => entry.key === action.lineKey)!;
+    if (item.product_type !== "Product" || item.parent_relationship != null)
+      return needsCartPage;
+    const notification = Array.from(
+      provider.querySelectorAll("cart-sections[data-cart-notification-mode]"),
+    ).find(
+      (element): element is CartElement =>
+        registered(element) &&
+        typeof element.updateQuantityToCart === "function" &&
+        !element.closest('[inert], [aria-disabled="true"]') &&
+        matchingCart(element.cart, cart),
+    );
+    if (!notification) return needsCartPage;
+    if (
+      notification.shopifyCartLoading ||
+      notification.classList.contains("loading")
+    )
+      throw new Error("Wait for the storefront's current cart update to finish.");
+    return await observeAction(notification, action, cart, signal, () =>
+      notification.updateQuantityToCart!(quantityUpdates(action, linkedTargets)),
+      linkedTargets,
+    );
+  }
   // Cart page and drawer can both have controls. Both use the same context;
   // prefer the page's control when present and invoke only one owner.
   const owner =
@@ -221,7 +437,7 @@ async function runAction(
     throw new Error("Wait for the storefront's current cart update to finish.");
 
   if (action.kind === "clear")
-    return await observeAction(owner, action, signal, () => owner.clearCart!());
+    return await observeAction(owner, action, cart, signal, () => owner.clearCart!());
 
   if (action.kind === "remove") {
     const controls = owner.querySelectorAll<
@@ -238,7 +454,7 @@ async function runAction(
       child.contains(control),
     );
     if (!slottedChild?.assignedSlot) return needsCartPage;
-    return await observeAction(owner, action, signal, () => {
+    return await observeAction(owner, action, cart, signal, () => {
       // The theme handles its slot's click. Block the native link/form default
       // even if that handler stops working; Roman must not submit a raw form.
       const preventNative = (event: Event) => event.preventDefault();
@@ -270,7 +486,9 @@ async function runAction(
       options[0].closest('optgroup:disabled, [aria-disabled="true"]')
     )
       throw new Error("That quantity is outside this cart line's allowed range.");
-    return await observeAction(owner, action, signal, () => {
+    if (linkedTargets.length)
+      return await updateLinkedQuantity(owner, action, cart, signal, linkedTargets);
+    return await observeAction(owner, action, cart, signal, () => {
       // The theme's select change handler owns its debounce and cart update.
       select.value = options[0].value;
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -296,7 +514,9 @@ async function runAction(
     (typeof owner.max === "number" && action.quantity > owner.max)
   )
     throw new Error("That quantity is outside this cart line's allowed range.");
-  return await observeAction(owner, action, signal, () => {
+  if (linkedTargets.length)
+    return await updateLinkedQuantity(owner, action, cart, signal, linkedTargets);
+  return await observeAction(owner, action, cart, signal, () => {
     // quantity-input owns debouncing, bounds, pricing and grouped accessories.
     input.value = String(action.quantity);
     input.dispatchEvent(new Event("change", { bubbles: true }));

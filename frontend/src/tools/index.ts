@@ -255,13 +255,21 @@ export function createAssistantTools(
             case "get_cart":
               argumentsObject(input, []);
               return getCart(request.signal);
-            case "add_to_cart":
-              argumentsObject(input, []);
+            case "add_to_cart": {
+              const args = argumentsObject(input, ["quantity"]);
+              const call = parseCartCall(name, {
+                ...args,
+                productPath: productPath(),
+              });
               if (navigation.getSnapshot().pending)
                 throw new Error(
                   "Wait for storefront navigation to finish before adding a product.",
                 );
-              return addConfiguredProduct(request.signal);
+              return addConfiguredProduct(
+                request.signal,
+                call.arguments.quantity as number,
+              );
+            }
             case "add_sample_to_cart": {
               const args = argumentsObject(input, ["productPath"]);
               if (navigation.getSnapshot().pending)

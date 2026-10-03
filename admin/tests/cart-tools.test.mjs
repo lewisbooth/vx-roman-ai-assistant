@@ -101,6 +101,25 @@ test("removal accepts one bounded, unique set of current line keys and never a v
   ]) assert.throws(() => parseCartCall("remove_from_cart", input));
 });
 
+test("native additions require a bounded count in the model schema while historical calls normalize to one", () => {
+  const add = cartToolDefinitions.find(({ name }) => name === "add_to_cart");
+  assert.deepEqual(add.parameters.required, ["productPath", "quantity"]);
+  assert.deepEqual(add.parameters.properties.quantity, { type: "integer", minimum: 1, maximum: 999 });
+  const productPath = "/en-gb/products/shade";
+  for (const quantity of [1, 3, 999])
+    assert.deepEqual(parseCartCall("add_to_cart", { productPath: `${productPath}/`, quantity }), {
+      name: "add_to_cart", arguments: { productPath, quantity },
+    });
+  assert.deepEqual(parseCartCall("add_to_cart", { productPath }), {
+    name: "add_to_cart", arguments: { productPath, quantity: 1 },
+  });
+  for (const quantity of [undefined, null, 0, -1, 1.5, "3", true, 1000, NaN, Infinity])
+    assert.throws(() => parseCartCall("add_to_cart", { productPath, quantity }));
+  assert.throws(() => parseCartCall("add_to_cart", { productPath, quantity: 3, confirmed: true }));
+  assert.throws(() => parseCartCall("add_sample_to_cart", { productPath, quantity: 3 }));
+  assert.deepEqual(parseCartCall("add_sample_to_cart", { productPath }).arguments, { productPath });
+});
+
 test("confirmed additions carry only actual bounded public product facts", () => {
   const product = {
     productPath: "/en-gb/products/shade",

@@ -6,8 +6,6 @@ import {
   isCartMutation,
   isCartTool,
   parseCartCall,
-  parseCartResult,
-  parseCartSnapshot,
 } from "../../shared/cart-tools";
 import {
   isProductConfigurationTool,
@@ -59,8 +57,6 @@ export function isConfigurationStep(name: string) {
 /** One turn's mutation permission; a model's tool choice is never authorization. */
 export class StorefrontTurn {
   private cartAttempted = false;
-  private addedLine?: { lineKey: string; quantityAdded: number };
-  private addedLineQuantity?: number;
   private formProductPath?: string;
   private formBlocked = false;
   private configurationAttempts = 0;
@@ -86,10 +82,7 @@ export class StorefrontTurn {
     )
       return false;
     if (isCartMutation(name))
-      return this.cartAttempted
-        ? name === "set_cart_quantity" && !!this.addedLine &&
-          this.addedLineQuantity !== undefined
-        : !this.formProductPath && !this.formBlocked;
+      return !this.cartAttempted && !this.formProductPath && !this.formBlocked;
     if (name === "configure_product")
       return (
         !this.cartAttempted &&
@@ -112,27 +105,10 @@ export class StorefrontTurn {
       throw new Error("This storefront change is not available in this reply.");
     if (call.name === "navigate") {
       this.currentConfiguration = undefined;
-      this.addedLineQuantity = undefined;
       if (this.formProductPath) this.formBlocked = true;
     }
     if (call.name === "open_checkout") this.checkoutAttempted = true;
-    if (isCartMutation(call.name)) {
-      const addedLine = this.addedLine;
-      const quantity = this.addedLineQuantity;
-      this.addedLine = undefined;
-      this.addedLineQuantity = undefined;
-      if (this.cartAttempted) {
-        const args = call.arguments as { lineKey?: string; quantity?: number };
-        if (
-          call.name !== "set_cart_quantity" || !addedLine ||
-          args.lineKey !== addedLine.lineKey || quantity === undefined ||
-          typeof args.quantity !== "number" || args.quantity <= quantity
-        )
-          throw new Error("Only remaining copies of the freshly added cart line can follow an addition.");
-      }
-      this.cartAttempted = true;
-    }
-    if (call.name === "get_cart") this.addedLineQuantity = undefined;
+    if (isCartMutation(call.name)) this.cartAttempted = true;
     if (
       call.name === "configure_product" ||
       call.name === "apply_measurements"
@@ -182,26 +158,6 @@ export class StorefrontTurn {
     call: ReturnType<typeof parseStorefrontCall>,
     outcome: BrowserToolOutcome | MeasurementToolResult,
   ) {
-    if (call.name === "add_to_cart") {
-      const result = parseCartResult("add_to_cart", outcome);
-      if (
-        "status" in result && result.status === "added" &&
-        result.quantityAdded && result.addedProduct?.lineKey &&
-        "productPath" in call.arguments &&
-        result.addedProduct.productPath === call.arguments.productPath
-      )
-        this.addedLine = {
-          lineKey: result.addedProduct.lineKey,
-          quantityAdded: result.quantityAdded,
-        };
-    }
-    if (call.name === "get_cart" && this.addedLine) {
-      const line = parseCartSnapshot(outcome).items.find(
-        ({ lineKey }) => lineKey === this.addedLine!.lineKey,
-      );
-      if (line && line.quantity >= this.addedLine.quantityAdded)
-        this.addedLineQuantity = line.quantity;
-    }
     if (call.name === "get_product_configuration") {
       const configuration = parseProductConfigurationResult(call.name, outcome);
       if (
@@ -231,10 +187,6 @@ export class StorefrontTurn {
   }
 
   failed(name: string) {
-    if (isCartMutation(name)) {
-      this.addedLine = undefined;
-      this.addedLineQuantity = undefined;
-    }
     if (name === "configure_product" || name === "apply_measurements") {
       this.formBlocked = true;
       this.currentConfiguration = undefined;
