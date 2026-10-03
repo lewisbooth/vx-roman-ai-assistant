@@ -1748,7 +1748,7 @@ test("an unconfirmed addition blocks further cart mutations in text and voice", 
   }
 });
 
-test("measurement application never unlocks a cart add in the same text or voice reply", async (t) => {
+test("measurement application without fresh priced readback cannot unlock a cart add in text or voice", async (t) => {
   for (const mode of ["text", "voice"])
     for (const [label, apply, addPath, resultPath] of [
       ["applied same PDP", "applied", "/products/shade", "/products/shade"],
@@ -1805,7 +1805,7 @@ test("measurement application never unlocks a cart add in the same text or voice
         assert.equal(
           tools.includes("add_to_cart"),
           false,
-          "a measurement application never exposes a cart mutation in this reply",
+          "a measurement application alone does not verify the configured addition",
         );
         {
           const denied = env.calls.requests[2].input.input.find(
@@ -2008,7 +2008,7 @@ test("text and voice can apply Exact then newly exposed Bracket to Bracket, ente
         !allowedToolNames(env.calls.requests[index].input).includes(
           "add_to_cart",
         ),
-        "Cart remains separate from configuration",
+        "Configuration without a settled price cannot unlock an addition",
       );
     assert.ok(
       !allowedToolNames(env.calls.requests[5].input).includes(
@@ -2172,6 +2172,76 @@ test("configuration cap allows three choices and one measurement application, th
     "ask_question",
     "ask_measurement",
   ]);
+});
+
+test("text and voice complete an accepted add after form work and fresh priced readback beyond the ordinary tool budget", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup();
+    const draft = {
+      productPath: "/products/shade", width: 1200, height: 800,
+      unit: "mm", kind: "order", mount: "exact",
+    };
+    const steps = [
+      configRead(1),
+      configWrite(1),
+      configRead(2),
+      catalogCall("save", "set_measurements", draft),
+      catalogCall("apply", "apply_measurements", { productPath: draft.productPath }),
+      configRead(3),
+      catalogCall("add", "add_to_cart", { productPath: draft.productPath, quantity: 3 }),
+      questionCall({ message: "Three blinds added.", question: "What would you like to do next?", answers: ["View cart", "Choose another blind"] }),
+    ];
+    env.streams.push(...steps.map((call) => events(completed("", { output: [call] }))));
+    const executions = [];
+    const reply = await env.api.generateReply(
+      [
+        { role: "assistant", text: "The configured blind is £45 each, with no extra fees; three cost £135." },
+        { role: "user", text: "Add three at that price, Exact fit, 1200 mm wide and 800 mm drop." },
+      ],
+      () => {}, new AbortController().signal,
+      async (id, name, args) => {
+        executions.push({ id, name, args });
+        if (name === "get_product_configuration") return {
+          ...configuration(Number(id.split("-")[1])),
+          measurements: { width: draft.width, height: draft.height, unit: draft.unit, availableUnits: [draft.unit] },
+          configuredPrice: "£45.00",
+        };
+        if (name === "set_measurements") return { status: "saved", draft: { ...draft, updatedAt: "2026-10-03T10:00:00.000Z" } };
+        if (name === "add_to_cart") return { status: "added", quantityAdded: 3, message: "Three added." };
+        return { status: "applied", productPath: draft.productPath, message: "Applied." };
+      }, mode,
+    );
+    assert.deepEqual(executions.map(({ name }) => name), steps.slice(0, -1).map(({ name }) => name));
+    assert.deepEqual(plain(executions.at(-1).args), { productPath: draft.productPath, quantity: 3 });
+    assert.match(reply.text, /Three blinds added/);
+    assert.equal(allowedToolNames(env.calls.requests[5].input).includes("add_to_cart"), false, "the form write invalidated the previous read");
+    const completionTools = allowedToolNames(env.calls.requests[6].input);
+    assert.ok(completionTools.includes("add_to_cart"), "the seventh call can finish the verified configuration");
+    for (const name of ["search_products", "get_cart", "add_sample_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart"])
+      assert.equal(completionTools.includes(name), false, name);
+    const afterAdd = allowedToolNames(env.calls.requests[7].input);
+    for (const name of ["add_to_cart", "add_sample_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+      assert.equal(afterAdd.includes(name), false, name);
+  }
+});
+
+test("configuration reads alone cannot grant an extra cart mutation beyond the ordinary budget", async () => {
+  const env = setup();
+  const steps = [1, 2, 3, 4].map((n) => configRead(n));
+  env.streams.push(
+    ...steps.map((call) => events(completed("", { output: [call] }))),
+    events(completed("", { output: [catalogCall("add", "add_to_cart", { productPath: "/products/shade", quantity: 3 })] })),
+  );
+  const executions = [];
+  await assert.rejects(env.api.generateReply(
+    [], () => {}, new AbortController().signal,
+    async (id, name) => {
+      executions.push(name);
+      return { ...configuration(Number(id.split("-")[1])), configuredPrice: "£45.00" };
+    },
+  ), /tool limit/i);
+  assert.deepEqual(executions, Array(4).fill("get_product_configuration"));
+  assert.equal(allowedToolNames(env.calls.requests[4].input).includes("add_to_cart"), false);
 });
 
 test("an explicit add request can verify and add in text or voice without a prior conversational review", async () => {

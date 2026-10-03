@@ -21,6 +21,23 @@ const line = (key, quantity = 1, extra = {}) => ({
   final_line_price: quantity * 1000,
   ...extra,
 });
+const linkedBlind = (key, coverKey, quantity, group) => {
+  const product = line(key, quantity, {
+    product_type: "Product",
+    properties: { _group_id: group, _insurance_group: `cover-${group}`, Width: group },
+  });
+  const cover = line(coverKey, quantity, {
+    product_type: "Insurance",
+    properties: {
+      _group_id: group,
+      _insurance_group: `cover-${group}`,
+      _associated_product_id: "123",
+      _insurance_type: "product",
+    },
+    parent_relationship: { parent_key: product.key },
+  });
+  return [product, cover];
+};
 const cart = (items) => ({
   currency: "GBP",
   item_count: items.reduce((sum, item) => sum + item.quantity, 0),
@@ -39,6 +56,7 @@ function setup(
     items = [line("123:a"), line("123:b", 2)],
     quantityTag = "quantity-input",
     quantityKeys = ["123:a", "123:b"],
+    removeKeys = ["123:a", "123:b"],
     notification = false,
   } = {},
 ) {
@@ -48,9 +66,9 @@ function setup(
   const dom = new JSDOM(
     `<!doctype html><body><app-provider><main id="main"><cart-sections section-id="cart">
       <form id="cart" data-cart-form>
-        <cart-remove-toggle key="123:a"><span><button>Remove first</button></span></cart-remove-toggle>
+        ${removeKeys.includes("123:a") ? '<cart-remove-toggle key="123:a"><span><button>Remove first</button></span></cart-remove-toggle>' : ""}
         ${quantityKeys.includes("123:a") ? quantityControl("123:a", 1) : ""}
-        <cart-remove-toggle key="123:b"><button type="button">Remove second</button></cart-remove-toggle>
+        ${removeKeys.includes("123:b") ? '<cart-remove-toggle key="123:b"><button type="button">Remove second</button></cart-remove-toggle>' : ""}
         ${quantityKeys.includes("123:b") ? quantityControl("123:b", 2) : ""}
       </form>
     </cart-sections></main>
@@ -70,6 +88,7 @@ function setup(
   let nativeSubmissions = 0;
   let clearPromise;
   let quantityPromise;
+  let removePromise;
   document.querySelector("form").addEventListener("submit", (event) => {
     nativeSubmissions++;
     event.preventDefault();
@@ -89,6 +108,10 @@ function setup(
         updateQuantityToCart(updates) {
           calls.push({ kind: "notification-quantity", owner: this, updates, cart: this.cart });
           return quantityPromise ?? Promise.resolve();
+        }
+        removeItemFromCart(keys) {
+          calls.push({ kind: "notification-remove", owner: this, keys, cart: this.cart });
+          return removePromise ?? Promise.resolve();
         }
       },
     );
@@ -245,6 +268,9 @@ function setup(
     setQuantityPromise: (value) => {
       quantityPromise = value;
     },
+    setRemovePromise: (value) => {
+      removePromise = value;
+    },
   };
 }
 
@@ -273,6 +299,144 @@ test("removal delegates to the matching theme control and confirms the exact con
   assert.equal(JSON.stringify(result).includes("properties"), false);
   assert.equal(env.listeners.size, 0);
   assert.equal(env.hasDeadline(), false);
+});
+
+test("notification removal submits one exact native batch and retains another configured blind", async (t) => {
+  const [first, firstCover] = linkedBlind("123:a", "cover:a", 1, "a");
+  const [second, secondCover] = linkedBlind("123:b", "cover:b", 2, "b");
+  const [retained, retainedCover] = linkedBlind("123:c", "cover:c", 3, "c");
+  const env = setup(t, {
+    items: [first, firstCover, second, secondCover, retained, retainedCover],
+    removeKeys: [],
+    notification: true,
+  });
+  const action = env.actions.removeFromCart([first.key, second.key], env.controller.signal);
+  await flush();
+  assert.equal(env.requests(), 1);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].kind, "notification-remove");
+  assert.equal(env.calls[0].owner, env.notification());
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0].keys)), [
+    first.key, firstCover.key, second.key, secondCover.key,
+  ]);
+  env.update(env.notification(), cart([retained, retainedCover]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.deepEqual(result.cart.items.map((item) => item.lineKey), [retained.key, retainedCover.key]);
+  assert.equal(result.cart.items[0].quantity, 3);
+  assert.equal(result.cart.items[1].quantity, 3);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.listeners.size, 0);
+  assert.equal(env.hasDeadline(), false);
+  assert.equal(JSON.stringify(result).includes("_insurance_group"), false);
+});
+
+test("native batch removal waits for selected identities to disappear and retained lines to survive", async (t) => {
+  const [first, firstCover] = linkedBlind("123:a", "cover:a", 1, "a");
+  const [second, secondCover] = linkedBlind("123:b", "cover:b", 2, "b");
+  const [retained, retainedCover] = linkedBlind("123:c", "cover:c", 3, "c");
+  const env = setup(t, {
+    items: [first, firstCover, second, secondCover, retained, retainedCover],
+    removeKeys: [],
+    notification: true,
+  });
+  const action = env.actions.removeFromCart([first.key, second.key], env.controller.signal);
+  await flush();
+  env.update(env.notification(), cart([
+    { ...first, key: "123:rotated" }, firstCover, retained, retainedCover,
+  ]));
+  assert.equal(env.hasDeadline(), true, "a selected blind surviving with a new key cannot confirm removal");
+  env.update(env.notification(), cart([retained]));
+  assert.equal(env.hasDeadline(), true, "the retained cover must remain");
+  const rotatedRetained = { ...retained, key: "123:retained-rotated" };
+  env.update(env.notification(), cart([rotatedRetained, retainedCover]));
+  assert.equal(env.hasDeadline(), true, "the retained cover must follow its rotated parent key");
+  env.update(env.notification(), cart([
+    rotatedRetained,
+    { ...retainedCover, parent_relationship: { parent_key: rotatedRetained.key } },
+  ]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.equal(result.cart.items[0].lineKey, rotatedRetained.key);
+  assert.equal(env.calls.length, 1);
+});
+
+test("native removal preserves the theme's last-product insurance cleanup", async (t) => {
+  const [product, cover] = linkedBlind("123:a", "cover:a", 1, "a");
+  const cartCover = line("cart-cover", 1, { product_type: "Insurance", properties: { _insurance_type: "cart" } });
+  const sample = line("sample", 1, { product_type: "Sample" });
+  const env = setup(t, {
+    items: [product, cover, cartCover, sample],
+    removeKeys: [],
+    notification: true,
+  });
+  const action = env.actions.removeFromCart([product.key], env.controller.signal);
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0].keys)), [product.key, cover.key, cartCover.key]);
+  env.update(env.notification(), cart([sample]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.deepEqual(result.cart.items.map((item) => item.lineKey), [sample.key]);
+});
+
+test("native removal rejects unknown links and mixed controls before any write", async (t) => {
+  const [first, firstCover] = linkedBlind("123:a", "cover:a", 1, "a");
+  const second = line("123:b", 1, { product_type: "Product", properties: { _group_id: "b" } });
+  const retained = line("123:c", 3, { product_type: "Product", properties: { _group_id: "c" } });
+  for (const [name, items, removeKeys] of [
+    ["unknown linked extra", [first, { ...firstCover, product_type: "Express Dispatch" }, second, retained], []],
+    ["mismatched cover group", [first, { ...firstCover, properties: { ...firstCover.properties, _group_id: "other" } }, second, retained], []],
+    ["mixed present and absent controls", [first, firstCover, second, retained], [first.key]],
+  ]) {
+    await t.test(name, async (t) => {
+      const env = setup(t, { items, removeKeys, notification: true });
+      const action = env.actions.removeFromCart([first.key, second.key], env.controller.signal);
+      if (removeKeys.length) assert.equal((await action).status, "needs_cart_page");
+      else await assert.rejects(action, /linked cart line/);
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.requests(), 1);
+    });
+  }
+});
+
+test("uncertain or unavailable native removal never replays a batch", async (t) => {
+  const [product, cover] = linkedBlind("123:a", "cover:a", 1, "a");
+  for (const state of ["stale-owner", "missing-method", "partial-result", "rejected-promise", "cancelled"]) {
+    await t.test(state, async (t) => {
+      const env = setup(t, { items: [product, cover], removeKeys: [], notification: true });
+      if (state === "stale-owner") env.notification().cart.items.pop();
+      if (state === "missing-method") env.notification().removeItemFromCart = undefined;
+      let rejectTheme;
+      if (state === "rejected-promise")
+        env.setRemovePromise(new Promise((_, reject) => { rejectTheme = reject; }));
+      const action = env.actions.removeFromCart([product.key], env.controller.signal);
+      const rejected = state === "rejected-promise" ? assert.rejects(action, /could not confirm/) : undefined;
+      await flush();
+      if (state === "stale-owner" || state === "missing-method") {
+        assert.equal((await action).status, "needs_cart_page");
+        assert.equal(env.calls.length, 0);
+        return;
+      }
+      assert.equal(env.calls.length, 1);
+      if (state === "partial-result") {
+        env.update(env.notification(), cart([cover]));
+        assert.equal(env.hasDeadline(), true);
+        env.timeout();
+        assert.equal((await action).status, "handed_off");
+      }
+      if (state === "rejected-promise") {
+        rejectTheme(new Error("private theme failure"));
+        await rejected;
+      }
+      if (state === "cancelled") {
+        env.controller.abort();
+        assert.equal((await action).status, "handed_off");
+      }
+      assert.equal(env.calls.length, 1);
+      assert.equal(env.listeners.size, 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
 });
 
 test("quantity uses the configured line's change workflow with the full linked-item context", async (t) => {

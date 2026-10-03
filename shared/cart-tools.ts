@@ -87,7 +87,7 @@ const definitions = [
   ],
   [
     "add_to_cart",
-    "Add quantity identical copies of the chosen configured product on its verified current productPath after an explicit add request and fresh valid, priced native configuration. quantity is the requested additional count, not a final cart total; use 1 for one product. One native submission handles the count and linked extras. Requires resolved paid-choice consent and separate reply from form changes. Theme validation is authoritative. No additional review panel, payment or checkout.",
+    "Add quantity identical copies of the chosen configured product on its verified current productPath after an explicit add request and fresh valid, priced native configuration. quantity is the requested additional count, not a final cart total; use 1 for one product. One native submission handles the count and linked extras. Requires resolved paid-choice consent; successful same-product form changes may be followed by this add after a fresh valid, priced native readback. One cart mutation per reply; failed or uncertain changes block it. Theme validation is authoritative. No additional review panel, payment or checkout.",
     {
       productPath: { type: "string", minLength: 1, maxLength: 2048 },
       quantity: { type: "integer", minimum: 1, maximum: 999 },

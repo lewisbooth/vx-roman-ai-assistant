@@ -339,7 +339,7 @@ export async function generateReply(
   const withinToolBudget = (name: string) =>
     browserCalls < 4 ||
     (actions.configurationMode &&
-      isConfigurationStep(name) &&
+      (isConfigurationStep(name) || actions.isConfigurationCompletion(name)) &&
       browserCalls < MAX_TURN_TOOL_CALLS);
   let answerRepair = false;
   let outputTokenBudget = OUTPUT_TOKEN_BUDGET;

@@ -176,7 +176,7 @@ test("domain owners retain their executable contract references without prescrib
       "configuredPrice",
     ],
     upsell: ["measurement_guarantee"],
-    cart: ["get_cart", "add_to_cart", "add_sample_to_cart", "lineKey"],
+    cart: ["get_cart", "add_to_cart", "add_sample_to_cart", "lineKey", "quantityAdded"],
     checkout: ["open_checkout"],
     response: ["ask_question", "ask_measurement", "productIds"],
   };
@@ -270,6 +270,9 @@ test("measurement entry and explicit cart actions retain their shared tool contr
   assert.match(add.description, /explicit add request/);
   assert.match(add.description, /priced native configuration/);
   assert.match(add.description, /paid-choice consent/);
+  assert.match(add.description, /same-product.*fresh.*readback/);
+  for (const policy of [kb.cart, kb.configuration, add.description])
+    assert.doesNotMatch(policy, /separate repl(?:y|ies)|separation of form work/i);
 });
 
 test("guide tool exposes source retrieval rather than a second advisor workflow", () => {

@@ -75,6 +75,27 @@ export class StorefrontTurn {
     }
   }
 
+  /** Complete the same product after verified form work; native validation still owns submission. */
+  isConfigurationCompletion(name: string): boolean {
+    const configuration = this.currentConfiguration;
+    const measurements = configuration?.measurements;
+    return (
+      name === "add_to_cart" &&
+      !this.checkoutHandoff &&
+      !this.cartAttempted &&
+      !this.formBlocked &&
+      !!this.formProductPath &&
+      configuration?.productPath === this.formProductPath &&
+      !!configuration.configuredPrice &&
+      !!measurements?.unit &&
+      measurements.availableUnits.includes(measurements.unit) &&
+      measurements.width !== null &&
+      measurements.width > 0 &&
+      measurements.height !== null &&
+      measurements.height > 0
+    );
+  }
+
   allows(name: string): boolean {
     if (
       this.checkoutHandoff ||
@@ -82,7 +103,11 @@ export class StorefrontTurn {
     )
       return false;
     if (isCartMutation(name))
-      return !this.cartAttempted && !this.formProductPath && !this.formBlocked;
+      return (
+        !this.cartAttempted &&
+        !this.formBlocked &&
+        (!this.formProductPath || this.isConfigurationCompletion(name))
+      );
     if (name === "configure_product")
       return (
         !this.cartAttempted &&
@@ -103,6 +128,13 @@ export class StorefrontTurn {
   before(call: ReturnType<typeof parseStorefrontCall>) {
     if (!this.allows(call.name))
       throw new Error("This storefront change is not available in this reply.");
+    if (
+      call.name === "add_to_cart" &&
+      this.formProductPath &&
+      (!("productPath" in call.arguments) ||
+        call.arguments.productPath !== this.formProductPath)
+    )
+      throw new Error("The configured addition must stay on the same product.");
     if (call.name === "navigate") {
       this.currentConfiguration = undefined;
       if (this.formProductPath) this.formBlocked = true;

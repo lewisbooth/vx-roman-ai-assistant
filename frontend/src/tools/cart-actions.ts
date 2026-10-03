@@ -19,6 +19,7 @@ type CartElement = HTMLElement & {
   min?: number;
   max?: number;
   clearCart?: () => Promise<unknown>;
+  removeItemFromCart?: (lineKeys: string[]) => Promise<unknown>;
   updateQuantityToCart?: (updates: Record<string, number>) => Promise<unknown>;
 };
 type Action =
@@ -110,6 +111,15 @@ function sameNativeLine(left: NativeLineIdentity | undefined, right: NativeLineI
 }
 
 type LinkedQuantityTarget = { key: string; identity: NativeLineIdentity };
+type RemovalPlan = {
+  removed: { key: string; identity: NativeLineIdentity }[];
+  retained: {
+    key: string;
+    quantity: number;
+    identity: NativeLineIdentity | undefined;
+    parentKey: string | undefined;
+  }[];
+};
 
 function parentKey(item: StoreCart["items"][number]): string | undefined {
   const relationship = item.parent_relationship;
@@ -135,6 +145,20 @@ function sharedNonemptyProperty(
   return typeof value === "string" && !!value.trim() && child[name] === value;
 }
 
+function verifiedChildRole(parent: StoreCart["items"][number], child: StoreCart["items"][number]): boolean {
+  const parentProperties = propertiesOf(parent);
+  const childProperties = propertiesOf(child);
+  if (!parentProperties || !childProperties) return false;
+  const associated = childProperties._associated_product_id;
+  if (associated !== parent.variant_id && associated !== String(parent.variant_id)) return false;
+  if (!sharedNonemptyProperty(parentProperties, childProperties, "_group_id")) return false;
+  return (child.product_type === "Insurance" &&
+      childProperties._insurance_type === "product" &&
+      sharedNonemptyProperty(parentProperties, childProperties, "_insurance_group")) ||
+    (child.product_type === "Warranty" &&
+      sharedNonemptyProperty(parentProperties, childProperties, "_warranty_group"));
+}
+
 function linkedQuantityTargets(cart: StoreCart, parent: StoreCart["items"][number]): LinkedQuantityTarget[] {
   const children = cart.items.filter((item) => parentKey(item) === parent.key);
   if (!children.length) return [];
@@ -147,27 +171,89 @@ function linkedQuantityTargets(cart: StoreCart, parent: StoreCart["items"][numbe
   )
     throw new Error("This blind's linked cart lines cannot be verified. No cart change was submitted.");
   return children.map((child) => {
-    const childProperties = propertiesOf(child);
     const identity = nativeLineIdentity(child);
-    const associated = childProperties?._associated_product_id;
-    const associationMatches = associated === parent.variant_id || associated === String(parent.variant_id);
-    const groupMatches = !!parentProperties && !!childProperties &&
-      sharedNonemptyProperty(parentProperties, childProperties, "_group_id");
-    const roleMatches = !!parentProperties && !!childProperties && (
-      (child.product_type === "Insurance" &&
-        childProperties._insurance_type === "product" &&
-        sharedNonemptyProperty(parentProperties, childProperties, "_insurance_group")) ||
-      (child.product_type === "Warranty" &&
-        sharedNonemptyProperty(parentProperties, childProperties, "_warranty_group"))
-    );
     if (
-      child.quantity !== parent.quantity || !associationMatches ||
-      !groupMatches || !roleMatches || !identity ||
+      child.quantity !== parent.quantity || !verifiedChildRole(parent, child) || !identity ||
       cart.items.filter((item) => sameNativeLine(nativeLineIdentity(item), identity)).length !== 1
     )
       throw new Error("This blind has a linked cart line Roman cannot safely update. No cart change was submitted.");
     return { key: child.key, identity };
   });
+}
+
+function nativeRemovalPlan(cart: StoreCart, keys: string[]): RemovalPlan {
+  const requested = keys.map((key) => cart.items.find((item) => item.key === key)!);
+  if (requested.some((item) => item.product_type !== "Product" || item.parent_relationship != null))
+    throw new Error("The storefront cannot safely remove these cart lines without their native controls. No cart change was submitted.");
+  const removedKeys = new Set(keys);
+  // The theme removes cart-level insurance when no non-sample, non-insurance
+  // item will remain. Its remove toggle otherwise removes per-product groups.
+  const remainingNonInsurance = cart.items.filter((item) =>
+    !removedKeys.has(item.key) && item.product_type !== "Insurance",
+  );
+  const clearAllInsurance = remainingNonInsurance.every((item) => item.product_type === "Sample");
+  for (const parent of requested) {
+    const parentProperties = propertiesOf(parent);
+    for (const child of cart.items) {
+      if (removedKeys.has(child.key)) continue;
+      const exactChild = parentKey(child) === parent.key;
+      const childProperties = propertiesOf(child);
+      const groupChild = !!parentProperties && !!childProperties && (
+        (child.product_type === "Insurance" &&
+          childProperties._insurance_type === "product" &&
+          sharedNonemptyProperty(parentProperties, childProperties, "_insurance_group")) ||
+        (child.product_type === "Warranty" &&
+          sharedNonemptyProperty(parentProperties, childProperties, "_warranty_group"))
+      );
+      if (!exactChild && !groupChild) continue;
+      if (clearAllInsurance && child.product_type === "Insurance") {
+        removedKeys.add(child.key);
+        continue;
+      }
+      if (!verifiedChildRole(parent, child) ||
+        (parentKey(child) !== undefined && parentKey(child) !== parent.key))
+        throw new Error("A linked cart line cannot be safely identified. No cart change was submitted.");
+      removedKeys.add(child.key);
+    }
+  }
+  if (clearAllInsurance)
+    for (const item of cart.items)
+      if (item.product_type === "Insurance") removedKeys.add(item.key);
+  const removed = cart.items.filter((item) => removedKeys.has(item.key)).map((item) => {
+    const identity = nativeLineIdentity(item);
+    if (!identity ||
+      cart.items.filter((entry) => sameNativeLine(nativeLineIdentity(entry), identity)).length !== 1)
+      throw new Error("A requested cart line cannot be uniquely verified. No cart change was submitted.");
+    return { key: item.key, identity };
+  });
+  return {
+    removed,
+    retained: cart.items.filter((item) => !removedKeys.has(item.key)).map((item) => ({
+      key: item.key,
+      quantity: item.quantity,
+      identity: nativeLineIdentity(item),
+      parentKey: parentKey(item),
+    })),
+  };
+}
+
+function removalConfirmed(cart: StoreCart, plan: RemovalPlan): boolean {
+  if (!plan.removed.every((target) =>
+    !cart.items.some((item) =>
+      item.key === target.key || sameNativeLine(nativeLineIdentity(item), target.identity),
+    ),
+  )) return false;
+  const retained = new Map<string, StoreCart["items"][number]>();
+  for (const target of plan.retained) {
+    const item = confirmedQuantityLine(
+      cart, target.key, target.quantity, target.identity, !!target.identity,
+    );
+    if (!item) return false;
+    retained.set(target.key, item);
+  }
+  return plan.retained.every((target) =>
+    !target.parentKey || parentKey(retained.get(target.key)!) === retained.get(target.parentKey)?.key,
+  );
 }
 
 function confirmedQuantityLine(
@@ -194,6 +280,7 @@ function observeAction(
   signal: AbortSignal,
   submit: () => unknown,
   linkedTargets: LinkedQuantityTarget[] = [],
+  removalPlan?: RemovalPlan,
 ): Promise<CartActionResult> {
   signal.throwIfAborted();
   const identity = action.kind === "quantity"
@@ -218,7 +305,10 @@ function observeAction(
       cleanup();
       resolve(result);
     };
-    const onLeave = () => finish(linkedTargets.length ? {
+    const onLeave = () => finish(removalPlan ? {
+      ...handedOff,
+      message: "The storefront removal was submitted, but Roman could not confirm every selected blind and linked cover was removed while the other cart lines stayed. Check the cart before trying again; do not repeat the removal automatically.",
+    } : linkedTargets.length ? {
       ...handedOff,
       message: "The storefront update was submitted, but Roman could not confirm the blind and every linked cover reached the requested quantity. Check the cart before trying again; do not repeat the update automatically.",
     } : handedOff);
@@ -244,7 +334,8 @@ function observeAction(
         action.kind === "clear"
           ? cart.items.length === 0 && cart.item_count === 0
           : action.kind === "remove"
-            ? !cart.items.some((item) => item.key === action.lineKey)
+            ? removalPlan ? removalConfirmed(cart, removalPlan)
+              : !cart.items.some((item) => item.key === action.lineKey)
             : (() => {
                 const parent = confirmedQuantityLine(
                   cart, action.lineKey, action.quantity, rotatedIdentity,
@@ -533,6 +624,49 @@ async function exclusively(operation: () => Promise<CartActionResult>) {
   }
 }
 
+async function removeWithoutLineControls(
+  keys: string[],
+  cart: StoreCart,
+  signal: AbortSignal,
+): Promise<CartActionResult | undefined> {
+  const providers = document.querySelectorAll("app-provider");
+  if (providers.length !== 1 || !registered(providers[0])) return needsCartPage;
+  const provider = providers[0];
+  const controls = Array.from(provider.querySelectorAll("cart-remove-toggle"));
+  const present = keys.map((key) => controls.some((control) =>
+    control.getAttribute("key") === key || (control as CartElement).key === key,
+  ));
+  if (present.every(Boolean)) return;
+  // A present control remains authoritative even if it is disabled or stale.
+  // A requested dependent without its own control may be removed by an earlier
+  // native toggle; the serial path confirms that before considering another write.
+  if (present.some(Boolean))
+    return keys.every((key, index) => present[index] ||
+      ["Insurance", "Warranty"].includes(String(cart.items.find((item) => item.key === key)?.product_type)))
+      ? undefined : needsCartPage;
+  const notification = Array.from(
+    provider.querySelectorAll("cart-sections[data-cart-notification-mode]"),
+  ).find((element): element is CartElement =>
+    registered(element) &&
+    typeof element.removeItemFromCart === "function" &&
+    !element.closest('[inert], [aria-disabled="true"]') &&
+    matchingCart(element.cart, cart),
+  );
+  if (!notification) return needsCartPage;
+  if (notification.shopifyCartLoading || notification.classList.contains("loading"))
+    throw new Error("Wait for the storefront's current cart update to finish.");
+  const plan = nativeRemovalPlan(cart, keys);
+  return await observeAction(
+    notification,
+    { kind: "remove", lineKey: keys[0] },
+    cart,
+    signal,
+    () => notification.removeItemFromCart!(plan.removed.map((target) => target.key)),
+    [],
+    plan,
+  );
+}
+
 export async function removeFromCart(lineKeys: string[], signal: AbortSignal) {
   const call = parseCartCall("remove_from_cart", { lineKeys });
   const keys = call.arguments.lineKeys as string[];
@@ -561,6 +695,8 @@ export async function removeFromCart(lineKeys: string[], signal: AbortSignal) {
         throw new Error(
           "A requested cart line no longer exists. Read get_cart for current lineKeys.",
         );
+      const nativeResult = await removeWithoutLineControls(keys, baseline, controller.signal);
+      if (nativeResult) return nativeResult;
       let result: CartActionResult | undefined;
       for (const key of keys) {
         controller.signal.throwIfAborted();

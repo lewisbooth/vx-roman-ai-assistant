@@ -29,7 +29,7 @@ test("configuration owns dependent choices, fresh evidence and completion; model
     configuration,
     /operation, compatibility, included hardware or cost/,
   );
-  assert.match(configuration, /harmless default/);
+  assert.match(configuration, /harmless [^.]*defaults?/);
   assert.match(configuration, /option.priceLabel/);
   assert.match(configuration, /At most three.*one apply_measurements/);
   assert.match(configuration, /only when valid and priced/);
