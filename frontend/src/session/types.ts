@@ -7,7 +7,6 @@ import type {
 import type { CatalogResult, CatalogProduct } from "../../../shared/catalog";
 import type { MeasurementToolResult } from "../../../shared/measurements";
 import type { LiveVoice, VoiceClientState } from "../../../shared/voice";
-import type { PendingToolApproval } from "./tool-approval";
 import type { ProductGallerySnapshot } from "../tools/product-image";
 
 export interface ConversationClientState {
@@ -27,7 +26,6 @@ export interface ConversationClientState {
   /** Monotonic time to warn about this tab's active voice connection. */
   voiceIdleWarningAt: number | null;
   selectedVoice: LiveVoice;
-  approval: PendingToolApproval | null;
 }
 
 export interface ConversationClient {
@@ -59,7 +57,6 @@ export interface ConversationClient {
     url: string,
     signal: AbortSignal,
   ): Promise<ProductGallerySnapshot | undefined>;
-  resolveToolApproval(invocationId: string, confirmed: boolean): void;
   startVoice(): Promise<void>;
   setVoice(voice: LiveVoice): void;
   stopVoice(): Promise<void>;

@@ -30,7 +30,6 @@ function activityLabel(state: ConversationClientState, ending: boolean) {
     state.availability === "suspended" ||
     state.restoring ||
     state.error ||
-    state.approval ||
     state.voice.status === "starting" ||
     state.voice.status === "stopping" ||
     conversation?.status === "ended"

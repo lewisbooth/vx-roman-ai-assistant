@@ -380,31 +380,6 @@ test("voice cancellation preserves claimed action uncertainty, but confirmed and
   }
 });
 
-test("a declined cart action is quiet when its voice work is cancelled despite its saved claim receipt", async () => {
-  const session = await startVoice();
-  const turn = await conversation.beginTurn(id, textInput(""), session.id);
-  const tool = await conversation.createToolInvocation(id, turn.assistantId, {
-    providerCallId: randomUUID(),
-    name: "clear_cart",
-    arguments: {},
-  });
-  await conversation.claimToolInvocation(id, tool.id, {
-    clientId,
-    claimToken: randomBytes(32).toString("base64url"),
-    confirmed: false,
-  });
-  const stored = await database.toolInvocation.findUniqueOrThrow({
-    where: { id: tool.id },
-  });
-  assert.ok(stored.claimTokenHash);
-  await conversation.finishTurn(id, turn.assistantId, {
-    text: "",
-    status: "cancelled",
-  });
-  assert.deepEqual((await conversation.getSnapshot(id)).messages, []);
-  assert.equal(JSON.parse(stored.resultJson).status, "cancelled");
-});
-
 test("real voice reply failures keep their visible boundary and cannot be erased by later cancellation", async () => {
   const session = await startVoice();
   await caption(session, "Hm", 0, "assistant");

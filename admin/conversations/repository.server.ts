@@ -42,7 +42,6 @@ import type {
   BrowserToolName,
   JourneyInput,
   ToolClaim,
-  ToolClaimInput,
 } from "../../shared/conversation";
 import { CONVERSATION_HISTORY_PAGE_SIZE, MAX_MESSAGE_LENGTH, MAX_PRODUCT_CARDS } from "../../shared/conversation";
 import {
@@ -89,7 +88,6 @@ import {
   parseCartAddedProduct,
   parseCartAddedSample,
   parseCartResult,
-  requiresCartConfirmation,
   interruptedCartResult,
   type CartToolResult,
 } from "../../shared/cart-tools";
@@ -2286,6 +2284,7 @@ function invocation(
 
 function validateClaim(claim: ToolClaim) {
   if (
+    Object.keys(claim).length !== 2 ||
     !uuidPattern.test(claim.clientId) ||
     !/^[A-Za-z0-9_-]{43}$/.test(claim.claimToken)
   )
@@ -2373,60 +2372,18 @@ export async function createToolInvocation(
 export async function claimToolInvocation(
   id: string,
   invocationId: string,
-  claim: ToolClaimInput,
-): Promise<{ claimed: boolean; outcome?: StoredActionResult }> {
+  claim: ToolClaim,
+): Promise<{ claimed: boolean }> {
   validateClaim(claim);
   return prisma.$transaction(async (transaction) => {
     const conversation = await loadConversation(transaction, id);
     requireActive(conversation);
     const tool = invocation(conversation, invocationId);
-    const requiresConfirmation = requiresCartConfirmation(tool.name);
-    if (
-      (requiresConfirmation && typeof claim.confirmed !== "boolean") ||
-      (!requiresConfirmation && claim.confirmed !== undefined)
-    )
-      throw new ConversationError(
-        400,
-        requiresConfirmation
-          ? "This cart change requires the shopper's explicit review and confirmation."
-          : "Only reviewed cart changes accept a shopper confirmation field.",
-      );
     if (tool.status !== "pending" && tool.status !== "running")
-      return {
-        claimed: false,
-        ...(claim.confirmed === false &&
-        ownsClaim(tool, claim) &&
-        tool.resultJson &&
-        requiresConfirmation
-          ? { outcome: storedActionResult(tool, JSON.parse(tool.resultJson)) }
-          : {}),
-      };
+      return { claimed: false };
     pendingAssistant(conversation, tool.assistantId);
     if (tool.status === "running") {
       if (!ownsClaim(tool, claim)) return { claimed: false };
-      if (claim.confirmed === false)
-        throw new ConversationError(
-          409,
-          "This action is already running; its effects cannot be cancelled by declining now.",
-        );
-    }
-    if (claim.confirmed === false) {
-      const outcome = interruptedActionResult(tool, false)!;
-      await transaction.toolInvocation.update({
-        where: { id: invocationId },
-        data: {
-          status: "complete",
-          claimClientId: claim.clientId,
-          claimTokenHash: tokenHash(claim.claimToken),
-          resultJson: JSON.stringify(outcome),
-          completedAt: new Date(),
-        },
-      });
-      await transaction.conversation.update({
-        where: { id },
-        data: { revision: { increment: 1 } },
-      });
-      return { claimed: false, outcome };
     }
     if (tool.name === "apply_measurements") {
       const command = parseApplyMeasurementsCommand(
@@ -2461,7 +2418,6 @@ export async function claimToolInvocation(
         status: "running",
         claimClientId: claim.clientId,
         claimTokenHash: tokenHash(claim.claimToken),
-        ...(requiresConfirmation ? { confirmedAt: new Date() } : {}),
       },
     });
     if (!claimed.count) return { claimed: false };
@@ -2613,11 +2569,6 @@ export async function completeToolInvocation(
       throw new ConversationError(
         409,
         "Claim this storefront action before completing it.",
-      );
-    if (requiresCartConfirmation(tool.name) && !tool.confirmedAt)
-      throw new ConversationError(
-        409,
-        "This cart action was not confirmed by the shopper.",
       );
     if (tool.name === "navigate" && result.productIds.length)
       throw new ConversationError(

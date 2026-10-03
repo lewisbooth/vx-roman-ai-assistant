@@ -6,7 +6,7 @@ import {
 } from "./cart";
 import { parseCartCall, type CartSnapshot } from "../../../shared/cart-tools";
 
-type CartActionResult = {
+export type CartActionResult = {
   status: "updated" | "needs_cart_page" | "handed_off";
   cart?: CartSnapshot;
   message: string;
@@ -30,7 +30,7 @@ let actionPending = false;
 const needsCartPage: CartActionResult = {
   status: "needs_cart_page",
   message:
-    "Open Cart and wait for its controls to load, then run this action again. The current page has no ready, matching theme cart control.",
+    "The storefront has no ready, matching cart control. No cart change was submitted; Roman's Cart view does not load those background controls.",
 };
 const handedOff: CartActionResult = {
   status: "handed_off",

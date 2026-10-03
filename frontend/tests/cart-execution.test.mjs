@@ -58,99 +58,62 @@ function setup(t, execute, path = "/cart") {
   return { executor, calls, window: dom.window };
 }
 
-test("positive quantity changes require one locally owned review", async (t) => {
-  const ctx = setup(t, async (name) =>
-    name === "get_cart"
-      ? cart
-      : {
-          status: "updated",
-          message: "Removed.",
-          cart: { ...cart, itemCount: 0, items: [], totalPriceMinorUnits: 0 },
-        },
-  );
-  const command = tool("set_cart_quantity", { lineKey: "123:abc", quantity: 4 });
-  assert.throws(
-    () => ctx.executor.execute(command.name, command.arguments),
-    /confirmation/,
-  );
-  const approval = await ctx.executor.prepareApproval(command);
-  assert.deepEqual(
-    ctx.calls.map((call) => call[0]),
-    ["get_cart"],
-  );
-  assert.match(approval.details.join(" "), /Kitchen blind.*from 2 to 4/);
-  await assert.rejects(
-    ctx.executor.executeApproved(command, { ...approval }),
-    /fresh review/,
-  );
-  const result = await ctx.executor.executeApproved(command, approval);
-  assert.equal(result.status, "updated");
-  assert.deepEqual(
-    ctx.calls.map((call) => call[0]),
-    ["get_cart", "get_cart", "set_cart_quantity"],
-  );
-  await assert.rejects(
-    ctx.executor.executeApproved(command, approval),
-    /fresh review/,
-  );
-});
-
-test("cart changes while confirmation waits cause no mutation", async (t) => {
-  let current = cart;
-  const ctx = setup(t, async (name) => {
-    assert.equal(name, "get_cart");
-    return current;
+for (const [name, args] of [
+  ["set_cart_quantity", { lineKey: "123:abc", quantity: 4 }],
+  ["clear_cart", {}],
+])
+  test(`requested ${name} executes directly under the shared queue`, async (t) => {
+    const result = {
+      status: "updated",
+      message: "Updated.",
+      cart:
+        name === "clear_cart"
+          ? { ...cart, itemCount: 0, items: [], totalPriceMinorUnits: 0 }
+          : {
+              ...cart,
+              itemCount: 4,
+              items: [{ ...cart.items[0], quantity: 4 }],
+            },
+    };
+    const ctx = setup(t, async () => result);
+    const outcome = await ctx.executor.execute(name, args);
+    assert.equal(outcome.status, "updated");
+    assert.equal(ctx.calls.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [
+      name,
+      args,
+    ]);
   });
-  const command = tool("set_cart_quantity", {
-    lineKey: "123:abc",
-    quantity: 4,
-  });
-  const approval = await ctx.executor.prepareApproval(command);
-  current = {
-    ...cart,
-    itemCount: 3,
-    items: [{ ...cart.items[0], quantity: 3 }],
-  };
-  await assert.rejects(
-    ctx.executor.executeApproved(command, approval),
-    /changed after review/,
-  );
-  assert.deepEqual(
-    ctx.calls.map((call) => call[0]),
-    ["get_cart", "get_cart"],
-  );
-});
 
-test("missing cart lines and empty carts are unavailable to approve", async (t) => {
-  const ctx = setup(t, async () => ({
-    ...cart,
-    itemCount: 0,
-    totalPriceMinorUnits: 0,
-    items: [],
-  }));
-  await assert.rejects(
-    ctx.executor.prepareApproval(
-      tool("set_cart_quantity", { lineKey: "123:abc", quantity: 4 }),
-    ),
-    /no longer/,
+test("invalid quantity and clear arguments are rejected before queue execution", async (t) => {
+  const ctx = setup(t, () =>
+    assert.fail("Invalid input must not reach the theme"),
   );
-  await assert.rejects(
-    ctx.executor.prepareApproval(tool("clear_cart")),
-    /already empty/,
-  );
+  for (const [name, args] of [
+    ["set_cart_quantity", { lineKey: "123:abc", quantity: 0 }],
+    ["set_cart_quantity", { lineKey: "123:abc", quantity: 1.5 }],
+    ["clear_cart", { extra: true }],
+  ])
+    assert.throws(() => ctx.executor.execute(name, args));
+  assert.equal(ctx.calls.length, 0);
 });
 
 test("requested removal delegates one complete batch without another review", async (t) => {
   const result = {
-    status: "updated", message: "Removed.",
+    status: "updated",
+    message: "Removed.",
     cart: { ...cart, itemCount: 0, items: [], totalPriceMinorUnits: 0 },
   };
   const ctx = setup(t, async () => result);
-  const command = tool("remove_from_cart", { lineKeys: ["123:abc", "456:def"] });
+  const command = tool("remove_from_cart", {
+    lineKeys: ["123:abc", "456:def"],
+  });
   const outcome = await ctx.executor.execute(command.name, command.arguments);
   assert.equal(outcome.status, "updated");
-  assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [command.name, command.arguments]);
-  await assert.rejects(ctx.executor.prepareApproval(command), /does not need approval/);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.calls[0].slice(0, 2))), [
+    command.name,
+    command.arguments,
+  ]);
   assert.equal(ctx.calls.length, 1);
 });
 
@@ -173,10 +136,6 @@ test("add executes the current product directly without another approval", async
     "add_to_cart",
     {},
   ]);
-  await assert.rejects(
-    ctx.executor.prepareApproval(command),
-    /does not need approval/,
-  );
   assert.equal(ctx.calls.length, 1);
 });
 
@@ -222,17 +181,23 @@ test("add checks again after foreground queue wait and never leaks model product
     "add_to_cart",
     {},
   ]);
-  const searching = ctx.executor.execute("search_products", { queries: ["shade"] });
+  const searching = ctx.executor.execute("search_products", {
+    queries: ["shade"],
+  });
   const adding = ctx.executor.execute(command.name, command.arguments);
   await setImmediate();
   ctx.window.history.pushState({}, "", "/products/different");
-  release({ products: [], messages: [], queries: [{query:"shade",status:"succeeded",productIds:[]}] });
+  release({
+    products: [],
+    messages: [],
+    queries: [{ query: "shade", status: "succeeded", productIds: [] }],
+  });
   await searching;
   await assert.rejects(adding, /requested product/);
   assert.equal(ctx.calls.filter((call) => call[0] === "add_to_cart").length, 1);
 });
 
-test("cancelled queued approval never reaches the theme mutation", async (t) => {
+test("cancelled queued cart mutation never reaches the theme", async (t) => {
   let release;
   const ctx = setup(t, async (name) =>
     name === "get_cart"
@@ -242,19 +207,24 @@ test("cancelled queued approval never reaches the theme mutation", async (t) => 
         }),
   );
   const command = tool("clear_cart");
-  const approval = await ctx.executor.prepareApproval(command);
-  const searching = ctx.executor.execute("search_products", { queries: ["shade"] });
+  const searching = ctx.executor.execute("search_products", {
+    queries: ["shade"],
+  });
   const controller = new ctx.window.AbortController();
-  const action = ctx.executor.executeApproved(
-    command,
-    approval,
+  const action = ctx.executor.execute(
+    command.name,
+    command.arguments,
     controller.signal,
   );
   const rejected = assert.rejects(action, /abort/i);
   await setImmediate();
   controller.abort();
   await rejected;
-  release({ products: [], messages: [], queries: [{query:"shade",status:"succeeded",productIds:[]}] });
+  release({
+    products: [],
+    messages: [],
+    queries: [{ query: "shade", status: "succeeded", productIds: [] }],
+  });
   await searching;
   assert.equal(
     ctx.calls.some((call) => call[0] === "clear_cart"),

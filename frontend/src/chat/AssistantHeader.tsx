@@ -93,8 +93,7 @@ export function AssistantHeader({
       className="roman-end-chat"
       disabled={endDisabled}
       onClick={(event) => {
-        // The native confirmation dialog must capture a trigger that will
-        // still be visible after this dropdown closes.
+        // Keep a visible focus target while the asynchronous end request runs.
         (mobile ? toggle.current : event.currentTarget)?.focus({
           preventScroll: true,
         });

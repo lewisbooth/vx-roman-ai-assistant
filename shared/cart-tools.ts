@@ -109,7 +109,7 @@ const definitions = [
   ],
   [
     "set_cart_quantity",
-    "Request shopper confirmation to set an exact current cart lineKey to a positive whole-number quantity. Use remove_from_cart for removal. The theme owns linked items and allowed quantity ranges.",
+    "Set an exact current cart lineKey to a positive whole-number quantity when the shopper asks. Use remove_from_cart for removal. The theme owns linked items and allowed quantity ranges.",
     {
       lineKey: lineKeySchema,
       quantity: { type: "integer", minimum: 1, maximum: 999 },
@@ -117,7 +117,7 @@ const definitions = [
   ],
   [
     "clear_cart",
-    "Request explicit shopper confirmation to empty the entire current cart through the theme, including linked items. Use only when the shopper asks to clear the whole cart.",
+    "Empty the entire current cart through the theme, including linked items, when the shopper asks to clear the whole cart.",
     {},
   ],
 ] as const;
@@ -142,9 +142,6 @@ export function isCartTool(name: string): name is CartToolName {
 }
 export function isCartMutation(name: string): boolean {
   return isCartTool(name) && name !== "get_cart";
-}
-export function requiresCartConfirmation(name: string): boolean {
-  return name === "set_cart_quantity" || name === "clear_cart";
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))

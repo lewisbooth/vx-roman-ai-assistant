@@ -40,7 +40,6 @@ function setup(initial = {}, start, storage = new Map()) {
     pending: false,
     restoring: false,
     error: null,
-    approval: null,
     voice: { status: "idle", muted: false, error: null },
     ...initial,
   };
@@ -134,9 +133,8 @@ test("opening waits for restoration and pending text/tool work to settle", () =>
   ctx.update({ restoring: false, pending: true });
   ctx.update({ pending: false, conversation: { busy: true, tools: [] } });
   ctx.update({ conversation: { busy: false, tools: [{}] } });
-  ctx.update({ conversation: { busy: false, tools: [] }, approval: {} });
   assert.equal(ctx.starts(), 0);
-  ctx.update({ approval: null });
+  ctx.update({ conversation: { busy: false, tools: [] } });
   assert.equal(ctx.starts(), 1);
   ctx.controller.dispose();
 });

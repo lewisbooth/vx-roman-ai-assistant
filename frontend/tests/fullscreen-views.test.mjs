@@ -142,7 +142,6 @@ async function setup(t, initial = {}, options = {}) {
     pending: false,
     restoring: false,
     error: null,
-    approval: null,
     voice: { status: "idle", muted: false, error: null },
     selectedVoice: "marin",
     ...initial,
@@ -418,11 +417,6 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
   await ctx.select("Cart");
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "Confirmation missing",
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
-  await until(
     () => !ctx.container.querySelector(".roman-end-chat"),
     "Conversation did not end",
   );
@@ -646,7 +640,7 @@ test("selected-product actions share the message queue while busy and preserve c
   );
 });
 
-test("product actions stay disabled during restoration, end confirmation and ending", async (t) => {
+test("product actions stay disabled during restoration and ending", async (t) => {
   let releaseEnd;
   const ctx = await setup(
     t,
@@ -675,12 +669,6 @@ test("product actions stay disabled during restoration, end confirmation and end
     "Restoration completion unlocks actions",
   );
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "End confirmation opens",
-  );
-  assert.ok(buttons().every((button) => button.disabled));
-  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(() => releaseEnd, "End starts");
   assert.ok(buttons().every((button) => button.disabled));
   assert.deepEqual(ctx.calls, [["end"]]);
@@ -1056,11 +1044,6 @@ test("restored customer conversation opens the transcript and ending it restores
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "Confirmation missing",
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
-  await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "End chat did not reset the welcome",
   );
@@ -1263,14 +1246,6 @@ test("closed, restored, blocked and changed-session cart receipts are consumed w
   receiveCart(ctx, "restoring");
   await delay(10);
   ctx.update({ restoring: false });
-  await delay(10);
-  assert.equal(cartNotice(ctx), null);
-  ctx.update({
-    approval: { invocationId: "clear", title: "Empty your cart?", details: [] },
-  });
-  receiveCart(ctx, "while-approving");
-  await delay(10);
-  ctx.update({ approval: null });
   await delay(10);
   assert.equal(cartNotice(ctx), null);
   assert.equal(clock.pending(), 0);

@@ -122,11 +122,6 @@ export interface ToolClaim {
   claimToken: string;
 }
 
-/** Supplied by the shopper's cart review controls, never by the model's arguments. */
-export interface ToolClaimInput extends ToolClaim {
-  confirmed?: boolean;
-}
-
 export interface JourneyInput {
   requestId: string;
   title: string;

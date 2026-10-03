@@ -94,7 +94,6 @@ async function setup(t, initial = {}, options = {}) {
     pending: false,
     restoring: false,
     error: null,
-    approval: null,
     voice: { status: "idle", muted: false, error: null },
     ...initial,
   };
@@ -144,8 +143,6 @@ async function setup(t, initial = {}, options = {}) {
     },
     async end() {
       container.querySelector(".roman-end-chat").click();
-      await until(() => container.querySelector(".roman-dialog-primary"), "End confirmation missing");
-      container.querySelector(".roman-dialog-primary").click();
     },
   };
 }
@@ -257,7 +254,7 @@ test("only successful End chat restores the burgundy welcome", async (t) => {
   await until(() => ctx.container.textContent.includes("Could not clear chat"), "End failure was not shown");
   assert.equal(ctx.dark(), false);
   failEnd = false;
-  ctx.container.querySelector(".roman-dialog-primary").click();
+  await ctx.end();
   await until(() => ctx.dark(), "Clearing chat did not restore the burgundy welcome");
   assert.ok(ctx.container.querySelector(".roman-welcome"));
   for (const name of ["Cart", "Gallery", "Chat"]) {

@@ -93,7 +93,7 @@ export const navigationToolDefinition = {
   type: "function",
   name: "navigate",
   description:
-    "Synchronize a verified root-relative storefront path behind Roman. Requires an explicit first product choice or confirmed replacement before loading a new active blind. Changes background page, not Roman's visible tab. Account, checkout, app/API and cart-action URLs are forbidden. Redirects or unsafe swaps fail without reloading.",
+    "Synchronize a verified root-relative storefront path behind Roman after an explicit first product choice or replacement request. Changes background page, not Roman's visible tab. Account, checkout, app/API and cart-action URLs are forbidden. Redirects or unsafe swaps fail without reloading.",
   strict: true,
   parameters: {
     type: "object",

@@ -33,7 +33,6 @@ import {
   parseCartAddedProduct,
   parseCartAddedSample,
   parseCartCall,
-  requiresCartConfirmation,
 } from "../../../shared/cart-tools";
 import {
   parseApplyMeasurementsCommand,
@@ -63,7 +62,6 @@ import {
 import type {
   createStorefrontExecutor,
   BrowserToolResult,
-  PreparedToolApproval,
 } from "./storefront-executor";
 import { isConversationStorefront } from "../../../shared/storefronts";
 import type { ConversationClient, ConversationClientState } from "./types";
@@ -488,7 +486,6 @@ export function createConversationClient(
     voice: idleVoice,
     voiceIdleWarningAt: null,
     selectedVoice: DEFAULT_LIVE_VOICE,
-    approval: null,
   };
   let access: ConversationCredential | null = null;
   let resumeAccess: ConversationCredential | null = null;
@@ -540,8 +537,6 @@ export function createConversationClient(
   let activeToolClaimed = false;
   let activeToolSettlement: Promise<void> | undefined;
   let endingRequested = false;
-  let approvalChoice:
-    { id: string; resolve(confirmed: boolean): void } | undefined;
   const clientId = window.crypto.randomUUID();
   const toolAttempts = new Map<
     string,
@@ -549,8 +544,6 @@ export function createConversationClient(
       claim: ToolClaim;
       durable: boolean;
       attempts: number;
-      confirmed?: boolean;
-      approval?: PreparedToolApproval;
       abandoned?: boolean;
       outcome?: { result: BrowserToolResult } | { error: string };
     }
@@ -1037,7 +1030,6 @@ export function createConversationClient(
       historyVersion: 0,
       error: null,
       voice: idleVoice,
-      approval: null,
     });
   }
 
@@ -1103,8 +1095,6 @@ export function createConversationClient(
           // End/Stop may fail while a claim response is in flight. Ownership
           // can be reconciled later, but that cannot revive permission to act.
           attempt.abandoned = true;
-          attempt.approval = undefined;
-          if (requiresCartConfirmation(tool.name)) attempt.confirmed ??= false;
         }
       }
       processingTool = false;
@@ -1151,65 +1141,20 @@ export function createConversationClient(
       };
       toolAttempts.set(tool.id, attempt);
     }
-    const needsApproval = requiresCartConfirmation(tool.name);
-    if (needsApproval && attempt.confirmed === undefined) {
-      let unavailable: string | undefined;
-      try {
-        attempt.approval = await executor!.prepareApproval(tool, signal);
-      } catch (error) {
-        signal.throwIfAborted();
-        unavailable =
-          error instanceof Error
-            ? error.message
-            : "This action cannot be reviewed on this page.";
-      }
-      signal.throwIfAborted();
-      attempt.confirmed = await new Promise<boolean>((resolve, reject) => {
-        const finish = (confirmed: boolean) => {
-          if (confirmed && unavailable) return;
-          signal.removeEventListener("abort", cancel);
-          if (approvalChoice?.id === tool.id) approvalChoice = undefined;
-          update({ approval: null });
-          resolve(confirmed);
-        };
-        const cancel = () => {
-          if (approvalChoice?.id === tool.id) approvalChoice = undefined;
-          update({ approval: null });
-          reject(signal.reason);
-        };
-        approvalChoice = { id: tool.id, resolve: finish };
-        signal.addEventListener("abort", cancel, { once: true });
-        update({
-          approval: {
-            invocationId: tool.id,
-            title: attempt!.approval?.title ?? "This action needs your review",
-            details: attempt!.approval?.details ?? [],
-            ...(unavailable ? { unavailable } : {}),
-          },
-        });
-      });
-    }
     signal.throwIfAborted();
     if (isSuspended() || endingRequested) return;
     if (attempt.attempts++ >= 5) return;
     if (!attempt.outcome) {
-      const claimed = await rawApi(`/tools/${tool.id}/claim`, {
-        ...attempt.claim,
-        ...(needsApproval ? { confirmed: attempt.confirmed } : {}),
-      });
+      const claimed = await rawApi(`/tools/${tool.id}/claim`, attempt.claim);
       if (!record(claimed) || claimed.claimed !== true) {
         if (record(claimed) && claimed.claimed === false) {
           toolAttempts.delete(tool.id);
-          return needsApproval && attempt.confirmed === false;
+          return false;
         }
         throw new Error(
           "Roman could not confirm ownership of this storefront action.",
         );
       }
-      if (needsApproval && attempt.confirmed !== true)
-        throw new Error(
-          "The cancelled action was not executed. Refresh Roman to check its status.",
-        );
       activeToolClaimed = attempt.durable;
       if (
         disposed ||
@@ -1226,9 +1171,7 @@ export function createConversationClient(
             "This action was interrupted. Check the product or cart before requesting another change; Roman will not repeat it automatically.",
           );
         attempt.outcome = {
-          result: needsApproval
-            ? await executor!.executeApproved(tool, attempt.approval!, signal)
-            : tool.name === "apply_measurements"
+          result: tool.name === "apply_measurements"
               ? await executor!.execute(
                   "apply_measurements",
                   tool.arguments,
@@ -1247,7 +1190,9 @@ export function createConversationClient(
                     : tool.name === "get_cart" ||
                         tool.name === "add_to_cart" ||
                         tool.name === "add_sample_to_cart" ||
-                        tool.name === "remove_from_cart"
+                        tool.name === "remove_from_cart" ||
+                        tool.name === "set_cart_quantity" ||
+                        tool.name === "clear_cart"
                       ? await executor!.execute(
                           tool.name,
                           tool.arguments,
@@ -2397,14 +2342,6 @@ export function createConversationClient(
           new Error("Start a chat to load product images."),
         );
       return executor.loadProductGallery(url, signal);
-    },
-    resolveToolApproval(invocationId, confirmed) {
-      if (
-        state.availability !== "suspended" &&
-        approvalChoice?.id === invocationId &&
-        typeof confirmed === "boolean"
-      )
-        approvalChoice.resolve(confirmed);
     },
     startVoice() {
       if (state.availability === "suspended")

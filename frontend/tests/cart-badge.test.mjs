@@ -387,13 +387,8 @@ test("ending chat retains the real cart snapshot and its badge without another r
   ctx.show("cart");
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "End chat review opens",
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
-  await until(
-    () => !ctx.container.querySelector(".roman-dialog"),
-    "Confirmed chat ends",
+    () => ctx.container.querySelector(".roman-welcome") && !ctx.container.querySelector(".roman-end-chat"),
+    "Acknowledged chat ends",
   );
   assert.equal(ctx.badge().textContent, "3");
   ctx.show("cart");

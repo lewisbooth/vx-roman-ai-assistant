@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import process from "node:process";
 import { setImmediate } from "node:timers";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
@@ -557,9 +558,8 @@ for (const [name, args, result] of [
   });
 }
 
-test("only validated automatic tools reach the shared browser tool owner without approval", async () => {
+test("only validated catalog tools reach the shared browser tool owner", async () => {
   const { executor, calls } = setup(async () => ({ products: [] }));
-  assert.throws(() => executor.execute("clear_cart", {}), /confirmation/);
   for (const [name, args] of [
     ["search_products", { queries: ["shade"], shop: "other" }],
     ["lookup_catalog", { ids: [] }],

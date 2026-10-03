@@ -15,7 +15,7 @@ import {
   parseNavigationResult,
   type NavigationResult,
 } from "../../shared/navigation-tool";
-import type { ToolClaim, ToolClaimInput } from "../../shared/conversation";
+import type { ToolClaim } from "../../shared/conversation";
 import {
   isCartTool,
   parseCartCall,
@@ -188,22 +188,16 @@ export async function requestBrowserTool(
   }
 }
 
-/** Cart confirmation belongs to the invocation, not to model-supplied args. */
 export async function claimBrowserTool(
   conversationId: string,
   invocationId: string,
-  claim: ToolClaimInput,
+  claim: ToolClaim,
 ) {
   const decision = await claimToolInvocation(
     conversationId,
     invocationId,
     claim,
   );
-  if (decision.outcome) {
-    const pending = waiting.get(conversationId);
-    if (pending?.invocationId === invocationId)
-      pending.resolve?.(decision.outcome);
-  }
   return { claimed: decision.claimed };
 }
 

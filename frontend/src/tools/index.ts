@@ -3,8 +3,13 @@ import { parseCartCall } from "../../../shared/cart-tools";
 import { openCheckout } from "./checkout";
 import type { StorefrontNavigation } from "../navigation/shared";
 import { selectStore } from "../navigation/themes";
-import { getCart } from "./cart";
-import { clearCart, removeFromCart, setCartQuantity } from "./cart-actions";
+import { cartPagePath, getCart } from "./cart";
+import {
+  clearCart,
+  removeFromCart,
+  setCartQuantity,
+  type CartActionResult,
+} from "./cart-actions";
 import { getProduct, lookupCatalog, searchProducts } from "./catalog";
 import { parseCatalogCall } from "../../../shared/catalog-tools";
 import { addConfiguredProduct } from "./product";
@@ -97,10 +102,12 @@ export function createAssistantTools(
       active = request;
       const abort = () => request.abort(signal?.reason);
       signal?.addEventListener("abort", abort, { once: true });
-      // These operations own their shared deadlines below the single-operation
-      // guard. A shorter outer timer must not cut a serialized cart batch short.
+      // Cart preparation and native changes share one deadline and executor slot.
+      const cartChange = [
+        "remove_from_cart", "set_cart_quantity", "clear_cart",
+      ].includes(name);
       const timer =
-        name === "navigate" || name === "search_products" || name === "remove_from_cart"
+        name === "navigate" || name === "search_products"
           ? undefined
           : window.setTimeout(
               () =>
@@ -109,8 +116,39 @@ export function createAssistantTools(
                     "The tool timed out. Check the storefront before retrying a cart action.",
                   ),
                 ),
-              20000,
+              cartChange ? 35000 : 20000,
             );
+      async function runCartAction(action: () => Promise<CartActionResult>) {
+        const initialUrl = window.location.href;
+        const result = await action();
+        // This outcome guarantees no submission. Never replay a partial,
+        // handed-off, timed-out or failed mutation after navigation.
+        if (result.status !== "needs_cart_page") return result;
+        request.signal.throwIfAborted();
+        if (window.location.href !== initialUrl || navigation.getSnapshot().pending)
+          return { ...result, message: "The storefront changed before cart preparation. No cart change was submitted." };
+        const path = cartPagePath();
+        const outcome = await navigation.navigate(path, request.signal, {
+          source: "model",
+        });
+        request.signal.throwIfAborted();
+        const page = navigation.getSnapshot();
+        const loadedUrl = new URL(page.url);
+        const destination = new URL(path, window.location.origin);
+        // The navigation owner may retain the current theme-preview query.
+        if (
+          outcome !== "navigated" || page.pending || page.error ||
+          loadedUrl.origin !== destination.origin ||
+          loadedUrl.pathname !== destination.pathname ||
+          window.location.href !== page.url
+        )
+          return {
+            ...result,
+            message: "Roman could not prepare the storefront cart controls. No cart change was submitted.",
+          };
+        // Native owners reread the cart and revalidate exact keys before writing.
+        return action();
+      }
       try {
         const result = await (async () => {
           if (
@@ -269,9 +307,8 @@ export function createAssistantTools(
                 throw new Error(
                   "Wait for storefront navigation to finish before changing the cart.",
                 );
-              return removeFromCart(
-                call.arguments.lineKeys as string[],
-                request.signal,
+              return runCartAction(() =>
+                removeFromCart(call.arguments.lineKeys as string[], request.signal),
               );
             }
             case "set_cart_quantity": {
@@ -289,7 +326,10 @@ export function createAssistantTools(
                 throw new Error(
                   "Wait for storefront navigation to finish before changing the cart.",
                 );
-              return setCartQuantity(lineKey, args.quantity, request.signal);
+              const quantity = args.quantity;
+              return runCartAction(() =>
+                setCartQuantity(lineKey, quantity, request.signal),
+              );
             }
             case "clear_cart":
               argumentsObject(input, []);
@@ -297,7 +337,7 @@ export function createAssistantTools(
                 throw new Error(
                   "Wait for storefront navigation to finish before changing the cart.",
                 );
-              return clearCart(request.signal);
+              return runCartAction(() => clearCart(request.signal));
             case "set_measurements": {
               const args = argumentsObject(input, [
                 "width",

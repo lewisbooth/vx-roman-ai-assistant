@@ -293,7 +293,7 @@ test("bootstrap creating the first conversation keeps queued follow-ups", async 
   assert.equal(ctx.calls[1].text, "follow-up");
 });
 
-test("end-chat review pauses the queue, cancelling review resumes it, successful end clears it", async (t) => {
+test("pending End chat pauses the queue, failure resumes it, successful end clears it", async (t) => {
   const ctx = await setup(t, { pending: true });
   ctx.queue().enqueue("queued");
   ctx.window.pauseQueue(true);

@@ -259,17 +259,10 @@ test("unavailable current-product guides are an explicit empty result, not an in
   });
 });
 
-test("declined cart approval reaches the model only after its durable decision", async () => {
+test("a cart claim does not resolve the model until its result is saved", async () => {
   const env = setup();
-  const gate = deferred();
-  const outcome = {
-    status: "cancelled",
-    message: "The shopper declined this change.",
-  };
-  env.mock.claim = async () => {
-    await gate.promise;
-    return { claimed: false, outcome };
-  };
+  env.mock.toolName = "clear_cart";
+  env.mock.toolArguments = {};
   let resolved = false;
   const pending = env.api
     .requestBrowserTool(
@@ -285,16 +278,17 @@ test("declined cart approval reaches the model only after its durable decision",
       return value;
     });
   await flush();
-  const decision = env.api.claimBrowserTool("conversation-1", "invocation-1", {
-    ...claim,
-    confirmed: false,
-  });
-  await flush();
+  const decision = await env.api.claimBrowserTool("conversation-1", "invocation-1", claim);
+  assert.deepEqual(plain(decision), { claimed: true });
   assert.equal(resolved, false);
-  gate.resolve();
-  assert.deepEqual(plain(await decision), { claimed: false });
+  const outcome = {
+    status: "updated",
+    message: "Cart cleared.",
+    cart: { currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: [] },
+  };
+  await env.api.submitBrowserToolResult("conversation-1", "invocation-1", claim, outcome);
   assert.deepEqual(plain(await pending), outcome);
-  assert.equal(env.calls.complete.length, 0);
+  assert.equal(env.calls.complete.length, 1);
 });
 
 test("confirmed addition facts reach the model only after durable completion", async () => {

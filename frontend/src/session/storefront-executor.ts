@@ -18,10 +18,7 @@ import {
   parseViewResult,
   type ViewResult,
 } from "../../../shared/assistant-view";
-import type {
-  CatalogToolName,
-  BrowserToolInvocation,
-} from "../../../shared/conversation";
+import type { CatalogToolName } from "../../../shared/conversation";
 import {
   parseNavigationCall,
   type NavigationResult,
@@ -46,7 +43,6 @@ import {
 import {
   parseCartCall,
   parseCartResult,
-  requiresCartConfirmation,
   type CartToolResult,
 } from "../../../shared/cart-tools";
 import {
@@ -68,12 +64,6 @@ import {
   type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
-import {
-  cartReview,
-  publicCart,
-  recheckCart,
-  type ToolApprovalReview,
-} from "./tool-approval";
 
 export type BrowserToolResult =
   | CatalogResult
@@ -86,7 +76,6 @@ export type BrowserToolResult =
   | ProductGuidesResult
   | GuideLibraryResult
   | StoreSupportResult;
-export type PreparedToolApproval = ToolApprovalReview;
 
 const DISPLAY_CACHE_MS = 60_000;
 const MAX_DISPLAY_PRODUCTS = 60;
@@ -118,13 +107,6 @@ export function createStorefrontExecutor(
   let active: StorefrontJob | undefined;
   let disposed = false;
   const storefrontOrigin = window.location.origin;
-  const approvals = new WeakMap<
-    PreparedToolApproval,
-    {
-      command: string;
-      execute(signal: AbortSignal): Promise<CartToolResult>;
-    }
-  >();
   const displayProducts = new Map<
     string,
     { product: CatalogProduct; messages: CatalogMessage[]; expiresAt: number }
@@ -392,7 +374,13 @@ export function createStorefrontExecutor(
     signal?: AbortSignal,
   ): Promise<ViewResult>;
   function execute(
-    name: "get_cart" | "add_to_cart" | "add_sample_to_cart" | "remove_from_cart",
+    name:
+      | "get_cart"
+      | "add_to_cart"
+      | "add_sample_to_cart"
+      | "remove_from_cart"
+      | "set_cart_quantity"
+      | "clear_cart",
     input: unknown,
     signal?: AbortSignal,
   ): Promise<CartToolResult>;
@@ -511,7 +499,10 @@ export function createStorefrontExecutor(
       return enqueue(
         "foreground",
         async (signal) =>
-          publicCart(await tools.execute(call.name, call.arguments, signal)),
+          parseCartResult(
+            call.name,
+            await tools.execute(call.name, call.arguments, signal),
+          ),
         signal,
       );
     }
@@ -531,7 +522,12 @@ export function createStorefrontExecutor(
         signal,
       );
     }
-    if (name === "add_sample_to_cart" || name === "remove_from_cart") {
+    if (
+      name === "add_sample_to_cart" ||
+      name === "remove_from_cart" ||
+      name === "set_cart_quantity" ||
+      name === "clear_cart"
+    ) {
       const call = parseCartCall(name, input);
       return enqueue(
         "foreground",
@@ -565,10 +561,6 @@ export function createStorefrontExecutor(
         signal,
       );
     }
-    if (requiresCartConfirmation(name))
-      throw new Error(
-        "This action needs the shopper's review and confirmation.",
-      );
     const call =
       name === "navigate"
         ? { name: "navigate" as const, arguments: parseNavigationCall(input) }
@@ -637,54 +629,6 @@ export function createStorefrontExecutor(
   }
   return {
     execute,
-    prepareApproval(
-      tool: BrowserToolInvocation,
-      signal?: AbortSignal,
-    ): Promise<PreparedToolApproval> {
-      return enqueue(
-        "foreground",
-        async (signal) => {
-          const call = parseCartCall(tool.name, tool.arguments);
-          if (!requiresCartConfirmation(call.name))
-            throw new Error("This tool does not need approval.");
-          const cart = publicCart(await tools.execute("get_cart", {}, signal));
-          const review = cartReview(call.name, call.arguments, cart);
-          const operation = async (signal: AbortSignal) => {
-            const current = publicCart(
-              await tools.execute("get_cart", {}, signal),
-            );
-            recheckCart(cart, current);
-            signal.throwIfAborted();
-            return parseCartResult(
-              call.name,
-              await tools.execute(call.name, call.arguments, signal),
-            );
-          };
-          signal.throwIfAborted();
-          approvals.set(review, {
-            command: JSON.stringify([tool.id, tool.name, tool.arguments]),
-            execute: operation,
-          });
-          return review;
-        },
-        signal,
-      );
-    },
-    executeApproved(
-      tool: BrowserToolInvocation,
-      approval: PreparedToolApproval,
-      signal?: AbortSignal,
-    ) {
-      const owned = approvals.get(approval);
-      if (
-        !owned ||
-        owned.command !== JSON.stringify([tool.id, tool.name, tool.arguments])
-      )
-        return Promise.reject(new Error("This action needs a fresh review."));
-      // A review is one invocation, never a reusable authorization or replay.
-      approvals.delete(approval);
-      return enqueue("foreground", (signal) => owned.execute(signal), signal);
-    },
     getCachedProducts(ids: readonly string[]): CatalogProduct[] {
       if (disposed || window.location.origin !== storefrontOrigin) return [];
       return [...displaySelection(ids).products.values()];

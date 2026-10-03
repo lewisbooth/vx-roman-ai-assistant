@@ -21,7 +21,6 @@ const {
   parseCartAddedProduct,
   parseCartAddedSample,
   isCartMutation,
-  requiresCartConfirmation,
 } = module.exports;
 const cart = {
   currency: "GBP",
@@ -38,15 +37,11 @@ const cart = {
   ],
 };
 
-test("cart schemas have exact operation arguments and never accept model-supplied confirmation", () => {
+test("cart schemas have exact operation arguments and never accept model-supplied approval", () => {
   for (const definition of cartToolDefinitions) {
     assert.equal(definition.strict, true);
     assert.equal(definition.parameters.additionalProperties, false);
     assert.ok(!("confirmed" in definition.parameters.properties));
-    assert.equal(
-      requiresCartConfirmation(definition.name),
-      ["set_cart_quantity", "clear_cart"].includes(definition.name),
-    );
     assert.equal(
       isCartMutation(definition.name),
       definition.name !== "get_cart",

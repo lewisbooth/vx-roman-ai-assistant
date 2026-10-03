@@ -28,7 +28,7 @@ export function StorefrontLink({
   let href: string | undefined;
   try {
     const target = new URL(url, window.location.origin);
-    // Product choice goes through Roman so a replacement can be confirmed.
+    // Product choice goes through Roman to preserve selection and task context.
     // Historical prose links cannot bypass that conversation.
     if (/(?:^|\/)(?:products|collections)(?:\/|$)/i.test(target.pathname))
       return <span className={className}>{children}</span>;

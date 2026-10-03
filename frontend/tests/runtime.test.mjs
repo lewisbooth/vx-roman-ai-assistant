@@ -676,8 +676,6 @@ test("End chat restores the welcome canvas only after the server confirms cleari
   mounted.runtime.setOpen(true);
   assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)");
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => !!ctx.container.querySelector(".roman-dialog-primary"), "End chat review did not open");
-  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(() => !!confirmEnd, "End chat was not requested");
   assert.equal(ctx.panel.hasAttribute("data-welcome-theme"), false);
   assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)", "Pending clearing must keep the existing conversation appearance");

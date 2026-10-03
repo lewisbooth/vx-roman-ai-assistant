@@ -23,7 +23,7 @@ const bundle = await build({
       export * from './admin/prompts/knowledge-base/response';
       export * from './admin/prompts/text.server';
       export * from './admin/prompts/voice.server';
-      export { cartToolDefinitions, requiresCartConfirmation } from './shared/cart-tools';
+      export { cartToolDefinitions } from './shared/cart-tools';
       export { productGuidesToolDefinition } from './shared/product-guides';
       export { askQuestionToolDefinition, askMeasurementToolDefinition } from './shared/questions';
       export { measurementToolDefinitions, applyMeasurementsToolDefinition } from './shared/measurements';
@@ -61,7 +61,6 @@ const {
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
   romanVoicePrompt,
   cartToolDefinitions,
-  requiresCartConfirmation,
   productGuidesToolDefinition,
   askQuestionToolDefinition,
   askMeasurementToolDefinition,
@@ -230,7 +229,7 @@ test("terminal response schemas keep cards and questions atomic with distinct in
   );
 });
 
-test("measurement entry and cart consent remain separate shared tool contracts", () => {
+test("measurement entry and explicit cart actions retain their shared tool contracts", () => {
   const save = measurementToolDefinitions.find(
     ({ name }) => name === "set_measurements",
   );
@@ -266,12 +265,6 @@ test("measurement entry and cart consent remain separate shared tool contracts",
   for (const definition of cartToolDefinitions) {
     assert.equal(definition.strict, true);
     assert.equal(definition.parameters.additionalProperties, false);
-    assert.equal(
-      requiresCartConfirmation(definition.name),
-      ["set_cart_quantity", "clear_cart"].includes(
-        definition.name,
-      ),
-    );
   }
   const add = cartToolDefinitions.find(({ name }) => name === "add_to_cart");
   assert.match(add.description, /explicit add request/);

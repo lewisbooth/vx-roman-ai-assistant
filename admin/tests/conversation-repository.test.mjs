@@ -313,55 +313,52 @@ test("cart reads persist only sanitized results and remain available to future t
   assert.equal(stored.confirmedAt, null);
 });
 
-test("positive quantity changes and clearing require an invocation-specific shopper decision and decline is durable", async () => {
+test("quantity changes and clearing execute through ordinary owned claims in text and voice", async () => {
   for (const [name, args] of [
     ["set_cart_quantity", { lineKey: "123:abc", quantity: 2 }],
     ["clear_cart", {}],
-  ]) {
-    const { id, tool } = await cartInvocation(name, args);
+  ]) for (const voice of [false, true]) {
+    const { id, tool } = await cartInvocation(name, args, voice);
     const claim = executor();
-    await assert.rejects(repository.claimToolInvocation(id, tool.id, claim), {
-      status: 400,
+    for (const confirmed of [true, false])
+      await assert.rejects(
+        repository.claimToolInvocation(id, tool.id, { ...claim, confirmed }),
+        { status: 400 },
+      );
+    assert.deepEqual(await repository.claimToolInvocation(id, tool.id, claim), {
+      claimed: true,
     });
-    await assert.rejects(
-      repository.claimToolInvocation(id, tool.id, {
-        ...claim,
-        confirmed: "true",
-      }),
-      { status: 400 },
-    );
-    assert.equal(
-      (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
-        .status,
-      "pending",
-    );
-    const declined = await repository.claimToolInvocation(id, tool.id, {
-      ...claim,
-      confirmed: false,
+    assert.deepEqual(await repository.claimToolInvocation(id, tool.id, claim), {
+      claimed: true,
     });
-    assert.equal(declined.claimed, false);
-    assert.equal(declined.outcome.status, "cancelled");
+    assert.deepEqual(await repository.claimToolInvocation(id, tool.id, executor()), {
+      claimed: false,
+    });
+    const result = {
+      productIds: [],
+      outcome: {
+        status: "updated",
+        message: "Cart updated.",
+        cart: name === "clear_cart"
+          ? { currency: "GBP", itemCount: 0, totalPriceMinorUnits: 0, items: [] }
+          : {
+              ...cartFixture,
+              itemCount: 2,
+              totalPriceMinorUnits: 2000,
+              items: [{ ...cartFixture.items[0], quantity: 2, linePriceMinorUnits: 2000 }],
+            },
+      },
+    };
+    await assert.rejects(repository.completeToolInvocation(id, tool.id, executor(), result), {
+      status: 401,
+    });
+    await repository.completeToolInvocation(id, tool.id, claim, result);
     const before = await repository.getSnapshot(id);
-    assert.deepEqual(
-      await repository.claimToolInvocation(id, tool.id, {
-        ...claim,
-        confirmed: false,
-      }),
-      declined,
-    );
-    assert.deepEqual(
-      await repository.claimToolInvocation(id, tool.id, {
-        ...claim,
-        confirmed: true,
-      }),
-      { claimed: false },
-    );
+    await repository.completeToolInvocation(id, tool.id, claim, result);
     assert.deepEqual(await repository.getSnapshot(id), before);
-    assert.equal(
-      (await database.toolInvocation.findUnique({ where: { id: tool.id } }))
-        .confirmedAt,
-      null,
-    );
+    const stored = await database.toolInvocation.findUniqueOrThrow({ where: { id: tool.id } });
+    assert.equal(stored.status, "complete");
+    assert.equal(stored.confirmedAt, null);
   }
 });
 
@@ -788,10 +785,7 @@ test("timeout, End and restart preserve claimed cart uncertainty and unclaimed c
           name === "add_to_cart" ? { productPath: "/products/shade" } : {},
         );
         if (claimed)
-          await repository.claimToolInvocation(id, tool.id, {
-            ...executor(),
-            ...(name === "clear_cart" ? { confirmed: true } : {}),
-          });
+          await repository.claimToolInvocation(id, tool.id, executor());
         if (cleanup === "timeout")
           await repository.failToolInvocation(id, tool.id, "Timed out.");
         if (cleanup === "end") await repository.endConversation(id);

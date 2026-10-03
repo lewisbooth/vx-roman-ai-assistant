@@ -33,7 +33,6 @@ export function createVoiceAutostart(
       state.restoring ||
       state.pending ||
       state.error ||
-      state.approval ||
       state.conversation?.busy ||
       state.conversation?.tools.length
     )

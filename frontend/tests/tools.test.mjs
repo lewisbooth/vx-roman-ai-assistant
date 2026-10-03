@@ -78,7 +78,7 @@ function setup(t, options = {}) {
   const originalSetTimeout = window.setTimeout.bind(window);
   const originalClearTimeout = window.clearTimeout.bind(window);
   window.setTimeout = (callback, ms, ...args) => {
-    if (ms !== 20000) return originalSetTimeout(callback, ms, ...args);
+    if (![20000, 35000].includes(ms)) return originalSetTimeout(callback, ms, ...args);
     const id = --timerId;
     timers.set(id, callback);
     return id;
@@ -89,10 +89,10 @@ function setup(t, options = {}) {
   };
   const navigation = {
     getSnapshot: () => snapshot,
-    navigate: async (path, signal) => {
+    navigate: async (path, signal, navigationOptions) => {
       visits.push(path);
       if (options.navigate)
-        snapshot = await options.navigate(path, snapshot, signal);
+        snapshot = await options.navigate(path, snapshot, signal, navigationOptions);
       else
         snapshot = {
           ...snapshot,
@@ -754,7 +754,7 @@ test("tool execution prevents overlapping actions and disposal aborts the owner 
   await assert.rejects(tools.execute("get_measurements", {}), /disposed/);
 });
 
-test("a native removal batch owns its 35s deadline instead of inheriting the generic 20s timeout", async (t) => {
+test("cart preparation and native removal use a 35s deadline instead of the generic 20s timeout", async (t) => {
   const first = cartData.items[0];
   const second = {...first, key: "12345:second", quantity: 1, final_line_price: 12500};
   const snapshot = (items) => ({...cartData, items, item_count: items.reduce((sum, item) => sum + item.quantity, 0), total_price: items.reduce((sum, item) => sum + item.final_line_price, 0)});
@@ -806,6 +806,91 @@ test("a native removal batch owns its 35s deadline instead of inheriting the gen
   assert.equal(ctx.calls.length, 2, "one fresh cart read per native removal");
 });
 
+test("quantity changes prepare the background cart once and revalidate before a single native write", async (t) => {
+  for (const scenario of ["ready", "preview", "missing controls", "stale key", "cancelled", "wrong page"]) {
+    await t.test(scenario, async (t) => {
+      const ready = scenario === "ready" || scenario === "preview";
+      let current = structuredClone(cartData);
+      let submissions = 0;
+      let completeNavigation;
+      const controller = new AbortController();
+      const ctx = setup(t, {
+        fetch: async () => cartResponse(current),
+        navigate: async (path, snapshot, signal, navigationOptions) => {
+          assert.equal(path, "/en-gb/cart");
+          assert.equal(navigationOptions.source, "model", "Preparation must never fall back to a full-page reload");
+          if (scenario === "cancelled") {
+            await new Promise((resolve) => { completeNavigation = resolve; });
+            signal.throwIfAborted();
+          }
+          const { window } = ctx;
+          if (scenario === "wrong page") return { ...snapshot, url: `${origin}/collections/blinds` };
+          window.history.replaceState({}, "", path + (scenario === "preview" ? "?preview_theme_id=123" : ""));
+          window.document.dispatchEvent(new window.CustomEvent("roman:navigation"));
+          if (scenario === "stale key") current.items[0].key = "replacement-key";
+          if (ready) {
+            window.customElements.define("app-provider", class extends window.HTMLElement {});
+            window.customElements.define("quantity-input", class extends window.HTMLElement {
+              get lineItemKey() { return this.getAttribute("key"); }
+              connectedCallback() {
+                this.addEventListener("change", (event) => {
+                  submissions++;
+                  current.items[0].quantity = Number(event.target.value);
+                  current.item_count = current.items[0].quantity;
+                  this.cart = current;
+                  this.dispatchEvent(new window.CustomEvent("cart:updated", { detail: current }));
+                });
+              }
+            });
+            const provider = window.document.createElement("app-provider");
+            provider.innerHTML = `<main id="main"><quantity-input key="${cartData.items[0].key}"><input type="number" min="1" max="10" value="2"></quantity-input></main>`;
+            window.document.body.append(provider);
+            provider.querySelector("quantity-input").cart = structuredClone(current);
+          }
+          return { ...snapshot, url: window.location.href };
+        },
+      });
+      ctx.window.Shopify = { routes: { root: "/en-gb/" } };
+      const pending = ctx.tools.execute("set_cart_quantity", { lineKey: cartData.items[0].key, quantity: 4 }, controller.signal);
+      if (scenario === "cancelled") {
+        await new Promise((resolve) => setImmediate(resolve));
+        await assert.rejects(ctx.tools.execute("get_cart", {}), /Another tool is still running/);
+        controller.abort();
+        completeNavigation();
+        await assert.rejects(pending, (error) => error.name === "AbortError");
+      } else if (scenario === "stale key") {
+        await assert.rejects(pending, /no longer exists/);
+      } else {
+        const result = await pending;
+        assert.equal(result.status, ready ? "updated" : "needs_cart_page");
+        if (ready) assert.equal(result.cart.items[0].quantity, 4);
+      }
+      assert.equal(submissions, ready ? 1 : 0);
+      assert.deepEqual(ctx.visits, ["/en-gb/cart"]);
+      assert.equal(ctx.timers.size, 0);
+      assert.ok(ctx.calls.every((call) => !call.method), "Roman uses theme controls, never a raw cart write");
+    });
+  }
+});
+
+test("cart preparation does not override a customer navigation during the initial cart read", async (t) => {
+  const ctx = setup(t, {
+    fetch: async () => {
+      ctx.window.history.replaceState({}, "", "/products/another-blind");
+      ctx.setPage("/products/another-blind");
+      return cartResponse();
+    },
+  });
+  const result = await ctx.tools.execute("set_cart_quantity", {
+    lineKey: cartData.items[0].key,
+    quantity: 4,
+  });
+  assert.equal(result.status, "needs_cart_page");
+  assert.match(result.message, /No cart change was submitted/);
+  assert.deepEqual(ctx.visits, []);
+  assert.equal(ctx.calls.length, 1);
+});
+
 test("tool timeout aborts the request and allows a later independent call", async (t) => {
   const { tools, calls, timers } = setup(t, {
     fetch: (_url, { signal }) =>
@@ -834,7 +919,7 @@ test("tool timeout aborts the request and allows a later independent call", asyn
 test("aborting an already-submitted cart action preserves its handed-off outcome", async (t) => {
   for (const outcome of ["dispose", "timeout"]) {
     await t.test(outcome, async (t) => {
-      const { window, tools, calls, timers } = setup(t);
+      const { window, tools, calls, timers, visits } = setup(t);
       window.customElements.define(
         "app-provider",
         class extends window.HTMLElement {},
@@ -880,6 +965,7 @@ test("aborting an already-submitted cart action preserves its handed-off outcome
       assert.equal(calls.length, 1);
       assert.equal(submissions, 1);
       assert.equal(timers.size, 0);
+      assert.deepEqual(visits, [], "An uncertain submission never triggers background navigation or a replay");
       finishTheme();
     });
   }

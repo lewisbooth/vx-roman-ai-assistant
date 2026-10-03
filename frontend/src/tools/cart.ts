@@ -35,6 +35,10 @@ function cartUrl(): URL {
   return new URL("cart.js", root);
 }
 
+export function cartPagePath(): string {
+  return cartUrl().pathname.replace(/\.js$/, "");
+}
+
 // Raw cart data is for theme integration only; tool results use summarizeCart.
 export async function getStoreCart(signal: AbortSignal): Promise<StoreCart> {
   signal.throwIfAborted();

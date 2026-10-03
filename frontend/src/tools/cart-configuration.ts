@@ -50,7 +50,7 @@ export function cartLineConfiguration(
   if (properties) {
     // HD's theme serializer stores customer selections in these private fields.
     // Decode only their display values; IDs, pricing and linked-item metadata
-    // stay private. These fields never enter Roman's tool/approval snapshots.
+    // stay private. These fields never enter Roman's tool snapshots.
     const userUnit = unit(properties._user_unit);
     const baseUnit = unit(properties._unit);
     for (const [axis, label] of [

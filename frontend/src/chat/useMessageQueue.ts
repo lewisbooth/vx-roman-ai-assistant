@@ -44,7 +44,7 @@ function transportBusy(
 /** Unsent input belongs to this mounted conversation, never a server turn.
  * The existing client still owns acceptance, request identity and reconciliation.
  * Carousel choices retain their provenance for client/server validation at dispatch.
- * Quick answers and approvals retain their immediate submission paths.
+ * Quick answers retain their immediate submission paths.
  */
 export function useMessageQueue(session: ConversationClient, paused: boolean) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);

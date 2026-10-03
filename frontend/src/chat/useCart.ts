@@ -21,7 +21,7 @@ type DisplayCart = Omit<CartSnapshot, "items"> & {
   })[];
 };
 
-/** Cart imagery is display-only and never changes tool/approval snapshots. */
+/** Cart imagery is display-only and never changes tool snapshots. */
 function cartImageUrl(item: Record<string, unknown>): string | undefined {
   const featured = item.featured_image;
   const candidates = [

@@ -69,7 +69,7 @@ export function CartAddedNotice({
       ]),
     };
     // First/restored snapshots establish the baseline. Additions received while
-    // closed or another approval is active stay in history without later replay.
+    // closed or a blocking operation is active stay in history without later replay.
     if (
       !conversation ||
       conversation.status !== "active" ||

@@ -308,21 +308,16 @@ test("conditional conversation reads validate both versions after independent au
   assert.equal(denied.status, 401);
 });
 
-test("shopper approval is a strict claim field and cannot be smuggled in result uploads", async () => {
+test("executor claims accept only identity and token, never an approval field", async () => {
   const env = setup();
   const path = `/api/conversations/${ID}/tools/${INVOCATION_ID}`;
-  for (const confirmed of [true, false]) {
-    const response = await run(
-      env.api.claim,
-      request(`${path}/claim`, {
-        method: "POST",
-        body: json({ ...CLAIM, confirmed }),
-      }),
-    );
-    assert.equal(response.status, 200);
-    assert.equal(env.calls.claim.at(-1)[2].confirmed, confirmed);
-  }
-  for (const confirmed of ["true", 1, null, {}]) {
+  const accepted = await run(
+    env.api.claim,
+    request(`${path}/claim`, { method: "POST", body: json(CLAIM) }),
+  );
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.calls.claim.at(-1)[2])), CLAIM);
+  for (const confirmed of [true, false, "true", 1, null, {}]) {
     const response = await run(
       env.api.claim,
       request(`${path}/claim`, {
@@ -340,7 +335,7 @@ test("shopper approval is a strict claim field and cannot be smuggled in result 
     }),
   );
   assert.equal(result.status, 400);
-  assert.equal(env.calls.claim.length, 2);
+  assert.equal(env.calls.claim.length, 1);
   assert.equal(env.calls.result.length, 0);
 });
 

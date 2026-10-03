@@ -160,7 +160,6 @@ async function setup(t, options = {}) {
           : {}),
       });
     },
-    resolveToolApproval: (id, confirmed) => options.onApproval?.(id, confirmed),
   };
   let navigationState = {
     url: window.location.href,
@@ -443,95 +442,6 @@ test("malformed or foreign historical guide records create no customer warning o
     1,
   );
   assert.doesNotMatch(ctx.container.textContent, /guides are unavailable/);
-});
-
-test("cart approvals use one in-app question panel without changing shopper decisions", async (t) => {
-  for (const title of [
-    "Empty your cart?",
-    "Remove this item?",
-    "Change this quantity?",
-  ])
-    await t.test(title, async (t) => {
-      const choices = [];
-      const approval = {
-        invocationId: "cart-one",
-        title,
-        details: ["Kitchen blind", "Current quantity 2."],
-      };
-      const ctx = await setup(t, {
-        state: {
-          approval,
-          conversation: {
-            id: "chat",
-            status: "active",
-            messages: [],
-            busy: true,
-            tools: [],
-          },
-          voice: { status: "active", muted: false, error: null },
-        },
-        onApproval: (...args) => choices.push(args),
-      });
-      const panel = ctx.container.querySelector(".roman-tool-approval");
-      assert.equal(
-        ctx.container.getRootNode().querySelectorAll(".roman-tool-approval")
-          .length,
-        1,
-      );
-      assert.ok(panel.classList.contains("roman-action-panel"));
-      assert.equal(panel.querySelector("h2").textContent, title);
-      assert.equal(
-        panel.getAttribute("aria-labelledby"),
-        panel.querySelector("h2").id,
-      );
-      assert.match(panel.textContent, /Kitchen blind.*quantity 2/);
-      assert.equal(
-        panel.querySelector(".roman-approval-details").getAttribute("aria-live"),
-        "polite",
-      );
-      assert.deepEqual(
-        [...panel.querySelectorAll(".roman-action-buttons button")].map(
-          (button) => [button.textContent, button.type, button.disabled],
-        ),
-        [
-          ["Cancel", "button", false],
-          ["Approve", "button", false],
-        ],
-      );
-      assert.equal(panel.getAttribute("role"), null);
-      const approve = panel.querySelector("button:last-child");
-      approve.focus();
-      assert.equal(panel.getRootNode().activeElement, approve);
-      approve.click();
-      assert.deepEqual(choices, [["cart-one", true]]);
-      ctx.update({
-        approval: {
-          ...approval,
-          unavailable: "The cart changed. Ask Roman to prepare a new review.",
-        },
-      });
-      await until(
-        () => panel.querySelector("button:last-child").disabled,
-        "Unavailable action was still approvable",
-      );
-      assert.match(
-        panel.querySelector('[role="status"]').textContent,
-        /cart changed/,
-      );
-      panel.querySelector("button:last-child").click();
-      assert.equal(
-        choices.length,
-        1,
-        "Unavailable approvals must not be submitted",
-      );
-      panel.querySelector("button").click();
-      assert.deepEqual(choices.at(-1), ["cart-one", false]);
-      ctx.update({ approval: null });
-      await until(
-        () => !ctx.container.querySelector(".roman-tool-approval"),
-        "Completed approval remained mounted",
-      );
-    });
 });
 
 test("welcome uses original assets and actionable tiles without Settings or developer controls", async (t) => {
@@ -2224,10 +2134,12 @@ test("revealed carousel choices stay enabled while Roman works and queue with pr
   }
 });
 
-test("carousel selections respect failed results, restoration and end-chat review", async (t) => {
+test("carousel selections respect failed results, restoration and pending End chat", async (t) => {
+  let rejectEnd;
   const ctx = await setup(t, {
     state: { conversation: engagedConversation([productsMessage()]) },
     onLoadProducts: () => catalog,
+    onEnd: () => new Promise((_resolve, reject) => { rejectEnd = reject; }),
   });
   const card = () => ctx.container.querySelector(".roman-choose-blind");
   await until(card, "Choice is loaded");
@@ -2251,11 +2163,11 @@ test("carousel selections respect failed results, restoration and end-chat revie
     "Ready results become selectable",
   );
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(() => card().disabled, "End-chat review locks carousel choices");
+  await until(() => card()?.disabled, "Pending End chat locks carousel choices");
   card().click();
   assert.deepEqual(ctx.calls, []);
-  ctx.container.querySelector(".roman-dialog button").click();
-  await until(() => !card().disabled, "Cancelling End restores selections");
+  rejectEnd(new ctx.window.Error("Could not end the chat."));
+  await until(() => card() && !card().disabled, "A failed End restores selections");
 });
 
 test("a foreign-store carousel URL is rejected before it can enter the queue", async (t) => {
@@ -2455,7 +2367,6 @@ test("saved cart additions render product and submitted dimensions with a workin
   );
   assert.deepEqual(ctx.navigationCalls, []);
   assert.deepEqual(ctx.productCalls, []);
-  assert.equal(ctx.container.querySelector(".roman-tool-approval"), null);
 });
 
 test("saved sample additions render as samples rather than full products", async (t) => {
@@ -2570,11 +2481,6 @@ test("a suspended pending turn still allows End Chat while input stays unavailab
   const end = ctx.container.querySelector(".roman-end-chat");
   assert.equal(end.disabled, false);
   end.click();
-  await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "End confirmation did not open",
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(() => ctx.endCalls.length === 1, "End Chat was blocked by suspension");
   assert.equal(ctx.container.querySelector(".roman-unavailable-bar")?.textContent, "Roman is currently unavailable");
 });
@@ -2596,26 +2502,9 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   const end = ctx.container.querySelector(".roman-end-chat");
   end.click();
   end.click();
-  await until(
-    () => ctx.container.querySelector(".roman-dialog[open]"),
-    "End confirmation did not open",
-  );
-  assert.deepEqual(ctx.endCalls, []);
-  assert.equal(ctx.input().value, "Unsent draft");
-  const confirm = ctx.container.querySelector(".roman-dialog-primary");
-  confirm.click();
-  confirm.click();
   await until(() => ctx.input().disabled, "Ending did not lock the composer");
   assert.deepEqual(ctx.endCalls, ["end"]);
-  const dialog = ctx.container.querySelector(".roman-dialog");
-  dialog.dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));
-  assert.ok(
-    dialog.open,
-    "Pending End must not dismiss its acknowledgement state",
-  );
-  assert.ok(
-    [...dialog.querySelectorAll("button")].every((button) => button.disabled),
-  );
+  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
   assert.match(ctx.container.textContent, /Your saved conversation/);
   assert.equal(ctx.input().value, "Unsent draft");
   finish();
@@ -2629,6 +2518,11 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   assert.equal(ctx.input().value, "");
   assert.equal(ctx.input().disabled, false);
   assert.equal(ctx.container.querySelector(".roman-end-chat"), null);
+  assert.equal(
+    ctx.container.getRootNode().activeElement,
+    ctx.container.querySelector('.roman-view-nav a[href="/"]'),
+    "End chat moves focus from its removed trigger to the persistent Chat link",
+  );
   await ctx.type("A new conversation");
   ctx.container.querySelector('.roman-composer button[type="submit"]').click();
   await until(
@@ -2638,7 +2532,7 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   assert.deepEqual(ctx.calls, ["A new conversation"]);
 });
 
-test("an unsuccessful End keeps its confirmation, conversation and draft available for retry", async (t) => {
+test("an unsuccessful End keeps its conversation and draft available for retry", async (t) => {
   let attempts = 0;
   const ctx = await setup(t, {
     state: {
@@ -2654,96 +2548,23 @@ test("an unsuccessful End keeps its confirmation, conversation and draft availab
   await ctx.type("Keep this draft");
   ctx.container.querySelector(".roman-end-chat").click();
   await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "Confirmation missing",
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
-  await until(
     () => ctx.container.querySelector('[role="alert"]'),
     "End failure was hidden",
   );
   assert.match(ctx.container.textContent, /Could not end the chat/);
   assert.match(ctx.container.textContent, /Keep this conversation/);
   assert.equal(ctx.input().value, "Keep this draft");
-  assert.equal(
-    ctx.input().disabled,
-    true,
-    "Open confirmation keeps background entry locked",
-  );
+  assert.equal(ctx.input().disabled, false);
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
-  assert.ok(ctx.container.querySelector(".roman-dialog[open]"));
-  assert.equal(
-    ctx.container.querySelector(".roman-dialog-primary").disabled,
-    false,
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
+  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
+  assert.equal(ctx.container.querySelector(".roman-end-chat").disabled, false);
+  ctx.container.querySelector(".roman-end-chat").click();
   await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "Retry did not finish End",
   );
   assert.deepEqual(ctx.endCalls, ["end", "end"]);
   assert.equal(ctx.container.querySelector(".roman-dialog"), null);
-});
-
-test("cancelling End preserves chat and lets the native dialog own Escape and Tab", async (t) => {
-  const ctx = await setup(t, {
-    state: {
-      conversation: engagedConversation([
-        message("reply", "assistant", "Keep chatting here"),
-      ]),
-    },
-  });
-  await ctx.type("Keep my unsent draft");
-  let escapedPanel = false;
-  ctx.container.getRootNode().addEventListener("keydown", () => {
-    escapedPanel = true;
-  });
-  for (const method of ["button", "escape"]) {
-    ctx.container.querySelector(".roman-end-chat").click();
-    await until(
-      () => ctx.container.querySelector(".roman-dialog[open]"),
-      "Confirmation missing",
-    );
-    const dialog = ctx.container.querySelector(".roman-dialog");
-    const cancel = dialog.querySelector("button");
-    assert.equal(ctx.container.getRootNode().activeElement, cancel);
-    assert.match(
-      dialog.textContent,
-      /Items in your Cart and Gallery will remain/,
-    );
-    if (method === "button") cancel.click();
-    else {
-      for (const key of ["Tab", "Escape"]) {
-        const event = new ctx.window.KeyboardEvent("keydown", {
-          key,
-          bubbles: true,
-          cancelable: true,
-        });
-        cancel.dispatchEvent(event);
-        assert.equal(
-          event.defaultPrevented,
-          false,
-          "Native dialog keyboard behaviour must remain enabled",
-        );
-      }
-      assert.equal(
-        escapedPanel,
-        false,
-        "Dialog keys escaped into the assistant panel",
-      );
-      dialog.dispatchEvent(
-        new ctx.window.Event("cancel", { cancelable: true }),
-      );
-    }
-    await until(
-      () => !ctx.container.querySelector(".roman-dialog"),
-      "Cancel did not dismiss confirmation",
-    );
-    assert.deepEqual(ctx.endCalls, []);
-    assert.deepEqual(ctx.stopVoiceCalls, []);
-    assert.match(ctx.container.textContent, /Keep chatting here/);
-    assert.equal(ctx.input().value, "Keep my unsent draft");
-  }
 });
 
 test("late product loading follows the transcript only while the reader stays at its end", async (t) => {
@@ -4180,45 +4001,12 @@ test("restoration, request errors, voice transitions and ended sessions suppress
   assert.equal(activity(), null);
 });
 
-test("an outstanding cart approval does not claim the action is already executing", async (t) => {
-  const tool = {
-    id: "quantity",
-    name: "set_cart_quantity",
-    status: "pending",
-    arguments: { lineKey: "line-one", quantity: 2 },
-  };
-  const ctx = await setup(t, {
-    state: {
-      conversation: { ...engagedConversation([]), busy: true, tools: [tool] },
-      approval: {
-        invocationId: tool.id,
-        title: "Change this quantity?",
-        details: ["Bedroom blind"],
-      },
-    },
-  });
-  assert.ok(ctx.container.querySelector(".roman-tool-approval"));
-  assert.equal(ctx.container.querySelector(".roman-reply-activity"), null);
-  assert.doesNotMatch(ctx.container.textContent, /Updating your cart/);
-  ctx.update({
-    approval: null,
-    conversation: {
-      ...engagedConversation([]),
-      busy: true,
-      tools: [{ ...tool, status: "running" }],
-    },
-  });
-  await until(
-    () =>
-      ctx.container.querySelector(".roman-reply-activity")?.textContent ===
-      "Updating your cart…",
-    "Confirmed running action had no feedback",
-  );
+test("requested cart work shows activity until its result arrives", async (t) => {
+  const tool = { id: "quantity", name: "set_cart_quantity", status: "pending", arguments: { lineKey: "line-one", quantity: 2 } };
+  const ctx = await setup(t, { state: { conversation: { ...engagedConversation([]), busy: true, tools: [tool] } } });
+  assert.equal(ctx.container.querySelector(".roman-reply-activity").textContent, "Updating your cart…");
   ctx.update({ conversation: engagedConversation([]) });
-  await until(
-    () => !ctx.container.querySelector(".roman-reply-activity"),
-    "Completed cart work retained activity",
-  );
+  await until(() => !ctx.container.querySelector(".roman-reply-activity"), "Completed cart work retained activity");
 });
 
 test("End removes progress before acknowledgement and does not restore it after cleanup", async (t) => {
@@ -4242,15 +4030,6 @@ test("End removes progress before acknowledgement and does not restore it after 
     "Roman is replying…",
   );
   ctx.container.querySelector(".roman-end-chat").click();
-  await until(
-    () => ctx.container.querySelector(".roman-dialog-primary"),
-    "Confirmation missing",
-  );
-  assert.ok(
-    ctx.container.querySelector(".roman-reply-activity"),
-    "Merely opening confirmation must not interrupt the reply",
-  );
-  ctx.container.querySelector(".roman-dialog-primary").click();
   await until(
     () =>
       ctx.container.querySelector(".roman-end-chat")?.textContent === "Ending…",

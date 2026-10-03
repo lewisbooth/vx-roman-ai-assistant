@@ -1128,17 +1128,6 @@
     @apply mb-[4px] block text-[11px] text-[#797366];
   }
 
-  .roman-tool-approval {
-    @apply mx-[16px] my-[8px] shrink-0 text-[15px] leading-[1.5];
-    width: min(calc(100% - 32px), 780px);
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  .roman-tool-approval h2 {
-    @apply m-0 text-[17px] font-semibold;
-  }
-
   .roman-message-queue {
     @apply mb-[10px] rounded-[18px] border border-solid border-[#6e203630] bg-[#f7f5ef] p-[12px] text-[14px];
     max-height: min(200px, 24dvh);
@@ -1177,22 +1166,6 @@
 
   .roman-queued-message button:is(:hover, :focus-visible) {
     @apply bg-[#6e20360d];
-  }
-
-  .roman-approval-details {
-    @apply max-h-[160px] overflow-y-auto;
-  }
-
-  .roman-approval-details p {
-    @apply my-[8px];
-  }
-
-  .roman-approval-actions {
-    @apply justify-end;
-  }
-
-  .roman-approval-actions button:last-child {
-    @apply border-[#4e0e0e] bg-[#4e0e0e] text-white;
   }
 
   .roman-composer form {

@@ -20,10 +20,8 @@ import { Timeline } from "./chat/Timeline";
 import { Welcome } from "./chat/Welcome";
 import { VoiceControls } from "./chat/VoiceControls";
 import { ReplyActivity } from "./chat/ReplyActivity";
-import { ToolApproval } from "./chat/ToolApproval";
 import { ProductStage } from "./chat/ProductStage";
 import { CartStage } from "./chat/CartStage";
-import { EndChatDialog } from "./chat/EndChatDialog";
 import { BrandedDialog } from "./chat/BrandedDialog";
 import { CartAddedNotice } from "./chat/CartAddedNotice";
 import { useCart } from "./chat/useCart";
@@ -158,7 +156,6 @@ function Assistant({
       showView("chat");
   }, [state.conversation, showView]);
   const [ending, setEnding] = useState(false);
-  const [confirmEnd, setConfirmEnd] = useState(false);
   const [microphoneDenied, setMicrophoneDenied] = useState(false);
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
@@ -205,7 +202,6 @@ function Assistant({
   const suspended = state.availability === "suspended";
   useEffect(() => {
     if (suspended) {
-      setConfirmEnd(false);
       setMicrophoneDenied(false);
       setStartError(null);
       setEndError(null);
@@ -213,7 +209,7 @@ function Assistant({
   }, [suspended]);
   const messageQueue = useMessageQueue(
     session,
-    ending || confirmEnd || answering || suspended,
+    ending || answering || suspended,
   );
   const textBusy = ending || answering || messageQueue.busy;
   const chatError = state.error || startError || endError;
@@ -225,7 +221,7 @@ function Assistant({
   async function sendMessage(text: string) {
     if (session.getSnapshot().availability === "suspended")
       throw new Error("Roman is currently unavailable");
-    if (endingRef.current || state.restoring || confirmEnd)
+    if (endingRef.current || state.restoring)
       throw new Error("Wait until your conversation is ready.");
     setStartError(null);
     showView("chat");
@@ -258,8 +254,7 @@ function Assistant({
       suspended ||
       startingTopic.current ||
       endingRef.current ||
-      state.restoring ||
-      confirmEnd
+      state.restoring
     )
       return;
     startingTopic.current = true;
@@ -331,7 +326,6 @@ function Assistant({
       await session.end();
       messageQueue.clear();
       setCustomerTurnStarted(false);
-      setConfirmEnd(false);
       scrollPositions.current.chat = 0;
       showView("chat");
       setStartError(null);
@@ -350,6 +344,13 @@ function Assistant({
     }
   }
 
+  useLayoutEffect(() => {
+    if (!chatVersion) return;
+    viewport.current?.closest(".roman-content")
+      ?.querySelector<HTMLElement>('.roman-view-nav a[href="/"]')
+      ?.focus({ preventScroll: true });
+  }, [chatVersion]);
+
   async function chooseProduct(carouselId: string, product: CatalogProduct) {
     const current = session.getSnapshot();
     if (current.availability === "suspended")
@@ -357,8 +358,6 @@ function Assistant({
     if (
       endingRef.current ||
       current.restoring ||
-      confirmEnd ||
-      current.approval ||
       microphoneDenied ||
       current.conversation?.status !== "active"
     )
@@ -515,11 +514,9 @@ function Assistant({
               conversation={state.conversation}
               restoring={state.restoring}
               blocked={
-                confirmEnd ||
                 ending ||
                 suspended ||
-                microphoneDenied ||
-                !!state.approval
+                microphoneDenied
               }
             />
           }
@@ -529,10 +526,7 @@ function Assistant({
             (!suspended && (answering || state.pending || state.restoring))
           }
           ending={ending}
-          onEnd={() => {
-            setEndError(null);
-            setConfirmEnd(true);
-          }}
+          onEnd={() => void endChat()}
         />
         <div className="roman-conversation">
           <div className="roman-workspace">
@@ -545,7 +539,7 @@ function Assistant({
                 selectedTitle={selectedProduct.title}
                 hidden={view !== "chat"}
                 onMessage={sendMessage}
-                disabled={suspended || ending || state.restoring || confirmEnd}
+                disabled={suspended || ending || state.restoring}
               />
             )}
             <div className="roman-dialogue">
@@ -683,8 +677,6 @@ function Assistant({
                       productsDisabled={
                         suspended ||
                         ending ||
-                        confirmEnd ||
-                        !!state.approval ||
                         microphoneDenied ||
                         state.conversation?.status !== "active"
                       }
@@ -708,7 +700,7 @@ function Assistant({
                   ) : (
                     <Welcome
                       logoUrl={brandLogoUrl(logoUrl, true)}
-                      busy={suspended || ending || state.restoring || confirmEnd}
+                      busy={suspended || ending || state.restoring}
                       onStart={(text) => void startTopic(text)}
                     />
                   )}
@@ -734,13 +726,6 @@ function Assistant({
                   Back to the conversation <span aria-hidden="true">↓</span>
                 </button>
               )}
-              {state.approval && (
-                <ToolApproval
-                  approval={state.approval}
-                  session={session}
-                  disabled={suspended}
-                />
-              )}
               {voiceIdleWarning && (
                 <p className="roman-voice-idle-warning" role="alert">
                   Voice will end soon due to inactivity. Speak or reply to keep
@@ -750,7 +735,7 @@ function Assistant({
               <Composer
                 key={chatVersion}
                 busy={textBusy}
-                disabled={suspended || ending || state.restoring || confirmEnd}
+                disabled={suspended || ending || state.restoring}
                 unavailable={suspended}
                 queuedMessages={
                   <MessageQueue
@@ -790,14 +775,6 @@ function Assistant({
             </div>
           </div>
         </div>
-        {confirmEnd && (
-          <EndChatDialog
-            pending={ending}
-            error={endError}
-            onCancel={() => setConfirmEnd(false)}
-            onConfirm={() => void endChat()}
-          />
-        )}
         {microphoneDenied && (
           <BrandedDialog
             title="Microphone access is off"
