@@ -34,15 +34,22 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function setup(
   t,
-  { initialized = true, items = [line("123:a"), line("123:b", 2)] } = {},
+  {
+    initialized = true,
+    items = [line("123:a"), line("123:b", 2)],
+    quantityTag = "quantity-input",
+  } = {},
 ) {
+  const quantityControl = (key, quantity) => quantityTag === "quantity-select"
+    ? `<quantity-select key="${key}"><select>${[1, 2, 4, 6].map(value => `<option value="${value}"${quantity === value ? " selected" : ""}>${value}</option>`).join("")}</select></quantity-select>`
+    : `<quantity-input key="${key}"><input type="number" min="1" max="10" step="1" value="${quantity}"></quantity-input>`;
   const dom = new JSDOM(
     `<!doctype html><body><app-provider><main id="main"><cart-sections section-id="cart">
       <form id="cart" data-cart-form>
         <cart-remove-toggle key="123:a"><span><button>Remove first</button></span></cart-remove-toggle>
-        <quantity-input key="123:a"><input type="number" min="1" max="10" step="1" value="1"></quantity-input>
+        ${quantityControl("123:a", 1)}
         <cart-remove-toggle key="123:b"><button type="button">Remove second</button></cart-remove-toggle>
-        <quantity-input key="123:b"><input type="number" min="1" max="10" step="1" value="2"></quantity-input>
+        ${quantityControl("123:b", 2)}
       </form>
     </cart-sections></main></app-provider></body>`,
     {
@@ -123,10 +130,33 @@ function setup(
         }
       },
     );
+    // The captured HD cart bundle uses a light-DOM select cached at connection,
+    // with a bubbling change listener on its quantity-select custom element.
+    window.customElements.define(
+      "quantity-select",
+      class extends window.HTMLElement {
+        get lineItemKey() {
+          return this.getAttribute("key");
+        }
+        connectedCallback() {
+          this.select = this.querySelector("select");
+          this.addEventListener("change", (event) => {
+            assert.equal(event.target, this.select);
+            calls.push({
+              kind: "quantity",
+              owner: this,
+              key: this.lineItemKey,
+              quantity: Number(this.select.value),
+              cart: this.cart,
+            });
+          });
+        }
+      },
+    );
   }
   const owners = [
     ...document.querySelectorAll(
-      "cart-sections, cart-remove-toggle, quantity-input",
+      "cart-sections, cart-remove-toggle, quantity-input, quantity-select",
     ),
   ];
   const listeners = new Set();
@@ -357,6 +387,83 @@ test("abort, navigation and shared deadline stop remaining removals after the fi
       assert.equal(env.calls.length, 1);
       assert.equal(env.hasDeadline(), false);
       assert.equal(env.listeners.size, 0);
+    });
+  }
+});
+
+test("quantity-select uses the offered value and requires its exact line and owner confirmation", async (t) => {
+  const env = setup(t, { quantityTag: "quantity-select" });
+  const owner = env.owner("quantity-select", "123:b");
+  const action = env.actions.setCartQuantity("123:b", 4, env.controller.signal);
+  await flush();
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].owner, owner);
+  assert.equal(env.calls[0].key, "123:b");
+  assert.equal(env.calls[0].quantity, 4);
+  assert.equal(owner.querySelector("select").value, "4");
+  assert.equal(env.owner("quantity-select").querySelector("select").value, "1");
+  assert.equal(env.nativeSubmissions(), 0);
+  env.update(owner, cart([line("123:a", 4), line("123:b", 2)]));
+  assert.equal(env.hasDeadline(), true, "The same variant's other line cannot confirm this change");
+  env.update(env.owner("quantity-select"), cart([line("123:a"), line("123:b", 4)]));
+  assert.equal(env.hasDeadline(), true, "A different native owner cannot confirm this change");
+  env.update(owner, cart([line("123:a"), line("123:b", 4)]));
+  assert.equal((await action).status, "updated");
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.listeners.size, 0);
+  assert.equal(env.hasDeadline(), false);
+});
+
+test("quantity-select rejects unavailable and ambiguous values without changing the control", async (t) => {
+  for (const reason of ["not-offered", "disabled-option", "disabled-optgroup", "aria-disabled-option", "duplicate-value"]) {
+    await t.test(reason, async (t) => {
+      const env = setup(t, { quantityTag: "quantity-select" });
+      const select = env.owner("quantity-select").querySelector("select");
+      const option = select.querySelector('option[value="4"]');
+      if (reason === "not-offered") option.remove();
+      if (reason === "disabled-option") option.disabled = true;
+      if (reason === "aria-disabled-option") option.setAttribute("aria-disabled", "true");
+      if (reason === "disabled-optgroup") {
+        const group = env.document.createElement("optgroup");
+        group.disabled = true;
+        option.replaceWith(group);
+        group.append(option);
+      }
+      if (reason === "duplicate-value") select.append(option.cloneNode(true));
+      await assert.rejects(
+        env.actions.setCartQuantity("123:a", 4, env.controller.signal),
+        /allowed range/,
+      );
+      assert.equal(select.value, "1");
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
+test("quantity-select requires an initialized, current, enabled single native select", async (t) => {
+  for (const reason of ["uninitialized", "missing-select", "duplicate-select", "multiple", "disabled", "disabled-fieldset", "inert", "stale", "wrong-property-key"]) {
+    await t.test(reason, async (t) => {
+      const env = setup(t, { initialized: reason !== "uninitialized", quantityTag: "quantity-select" });
+      const owner = env.owner("quantity-select");
+      const select = owner.querySelector("select");
+      if (reason === "missing-select") select.remove();
+      if (reason === "duplicate-select") owner.append(select.cloneNode(true));
+      if (reason === "multiple") select.multiple = true;
+      if (reason === "disabled") select.disabled = true;
+      if (reason === "disabled-fieldset") {
+        const fieldset = env.document.createElement("fieldset");
+        fieldset.disabled = true;
+        select.replaceWith(fieldset);
+        fieldset.append(select);
+      }
+      if (reason === "inert") owner.setAttribute("inert", "");
+      if (reason === "stale") owner.cart.items.pop();
+      if (reason === "wrong-property-key") Object.defineProperty(owner, "lineItemKey", { value: "123:b" });
+      const result = await env.actions.setCartQuantity("123:a", 4, env.controller.signal);
+      assert.equal(result.status, "needs_cart_page");
+      assert.equal(select.value, "1");
+      assert.equal(env.calls.length, 0);
     });
   }
 });

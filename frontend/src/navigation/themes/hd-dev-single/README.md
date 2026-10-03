@@ -17,4 +17,4 @@ The current Home and Cart use conflicting `cart-sections`, `quantity-select` and
 
 The collection filters cache `#collection` in their constructor. Shared page insertion keeps incoming custom elements inactive until the new collection is in the document, allowing the theme to remove its loading blur normally.
 
-Live product and populated-cart behavior remain unverified. Compare configuration, pricing, payments and cart transitions with normal navigation. Keep confirmed differences in this folder and reuse existing hooks where behavior matches. See the [frontend README](../../../../README.md) for checks, diagnostic logging and publishing.
+Quantity updates use the existing registered `quantity-select` on the product-page drawer or standalone cart, avoiding a page transition. Both live component implementations were verified in isolated Chromium contexts with synthetic cart data and intercepted writes; customer cart mutation and full checkout remain outside that check. Keep confirmed theme differences here and reuse shared hooks where behavior matches. See the [frontend README](../../../../README.md) for checks, diagnostic logging and publishing.

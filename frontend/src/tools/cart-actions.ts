@@ -196,7 +196,7 @@ async function runAction(
       ? "cart-sections"
       : action.kind === "remove"
         ? "cart-remove-toggle"
-        : "quantity-input";
+        : "quantity-input, quantity-select";
   const candidates = Array.from(provider.querySelectorAll(selector)).filter(
     (element): element is CartElement =>
       registered(element) &&
@@ -248,6 +248,32 @@ async function runAction(
       } finally {
         control.removeEventListener("click", preventNative);
       }
+    });
+  }
+
+  if (owner.localName === "quantity-select") {
+    const selects = owner.querySelectorAll<HTMLSelectElement>("select");
+    if (
+      selects.length !== 1 ||
+      selects[0].multiple ||
+      selects[0].matches(":disabled") ||
+      selects[0].closest('[inert], [aria-disabled="true"]')
+    )
+      return needsCartPage;
+    const select = selects[0];
+    const options = Array.from(select.options).filter(
+      (option) => option.value === String(action.quantity),
+    );
+    if (
+      options.length !== 1 ||
+      options[0].disabled ||
+      options[0].closest('optgroup:disabled, [aria-disabled="true"]')
+    )
+      throw new Error("That quantity is outside this cart line's allowed range.");
+    return await observeAction(owner, action, signal, () => {
+      // The theme's select change handler owns its debounce and cart update.
+      select.value = options[0].value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
     });
   }
 
