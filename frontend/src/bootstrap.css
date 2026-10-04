@@ -15,8 +15,10 @@
     all: initial;
     color-scheme: light;
     position: relative;
-    z-index: 2147483647;
     @apply font-roman;
+  }
+  :host(roman-ai-assistant) {
+    z-index: 2147483647;
   }
   *,
   *::before,
