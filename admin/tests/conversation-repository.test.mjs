@@ -45,6 +45,52 @@ function loadRepository() {
   return module.exports;
 }
 
+async function captureProbeQueries(run) {
+  // A dedicated client excludes delayed logs from fixture transactions. The
+  // end marker drains the engine's FIFO SQL-log queue, whose delivery can lag
+  // Prisma's query promise. No application query or transaction log is filtered.
+  const probeDatabase = new PrismaClient({
+    datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+    log: [{ emit: "event", level: "query" }],
+  });
+  const probeQueries = [];
+  const marker = `SELECT 1 /* probe-end-${randomUUID()} */`;
+  let resolveMarker;
+  const markerObserved = new Promise((resolve) => {
+    resolveMarker = resolve;
+  });
+  probeDatabase.$on("query", ({ query }) => {
+    if (query === marker) resolveMarker();
+    else probeQueries.push(query);
+  });
+  let timeout;
+  try {
+    await probeDatabase.$connect();
+    const previousDatabase = global.prismaGlobal;
+    let probeRepository;
+    try {
+      global.prismaGlobal = probeDatabase;
+      probeRepository = loadRepository();
+    } finally {
+      global.prismaGlobal = previousDatabase;
+    }
+    await run(probeRepository);
+    await Promise.race([
+      Promise.all([probeDatabase.$queryRawUnsafe(marker), markerObserved]),
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("Prisma query-log end marker was not delivered")),
+          5_000,
+        );
+      }),
+    ]);
+    return probeQueries;
+  } finally {
+    clearTimeout(timeout);
+    await probeDatabase.$disconnect();
+  }
+}
+
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "roman-conversations-"));
   database = new PrismaClient({
@@ -105,62 +151,66 @@ after(async () => {
 });
 
 test("healthy version probes do not write or read transcript contents at the caption bound", async () => {
-  const { conversationId: id } = await repository.createConversation(
-    shop,
-    origin,
-  );
-  const voiceId = randomUUID();
-  await database.voiceSession.create({
-    data: {
-      id: voiceId,
-      conversationId: id,
-      clientId: randomUUID(),
-      status: "active",
-      leaseExpiresAt: new Date(Date.now() + 45_000),
-    },
+  let id;
+  const probeQueries = await captureProbeQueries(async (probeRepository) => {
+    // Create the live-session fixture after this repository instance starts.
+    ({ conversationId: id } = await repository.createConversation(shop, origin));
+    const voiceId = randomUUID();
+    await database.voiceSession.create({
+      data: {
+        id: voiceId,
+        conversationId: id,
+        clientId: randomUUID(),
+        status: "active",
+        leaseExpiresAt: new Date(Date.now() + 45_000),
+      },
+    });
+    await database.conversationMessage.createMany({
+      data: Array.from({ length: 20 }, (_, sequence) => ({
+        id: randomUUID(),
+        conversationId: id,
+        requestId: randomUUID(),
+        sequence,
+        role: "assistant",
+        status: "complete",
+        partsJson: '[{"type":"text","text":"**Synthetic** reply."}]',
+      })),
+    });
+    await database.voiceTranscript.createMany({
+      data: Array.from({ length: 1100 }, (_, index) => ({
+        id: randomUUID(),
+        voiceId,
+        conversationId: id,
+        providerEventId: `fixture-${index}`,
+        sequence: index + 20,
+        role: "assistant",
+        text: "Synthetic caption. ",
+        startMs: index * 100,
+        endMs: index * 100 + 90,
+      })),
+    });
+    for (let index = 0; index < 20; index++)
+      assert.equal(await probeRepository.getReadRevision(id, true), 0);
   });
-  await database.conversationMessage.createMany({
-    data: Array.from({ length: 20 }, (_, sequence) => ({
-      id: randomUUID(),
-      conversationId: id,
-      requestId: randomUUID(),
-      sequence,
-      role: "assistant",
-      status: "complete",
-      partsJson: '[{"type":"text","text":"**Synthetic** reply."}]',
-    })),
-  });
-  await database.voiceTranscript.createMany({
-    data: Array.from({ length: 1100 }, (_, index) => ({
-      id: randomUUID(),
-      voiceId,
-      conversationId: id,
-      providerEventId: `fixture-${index}`,
-      sequence: index + 20,
-      role: "assistant",
-      text: "Synthetic caption. ",
-      startMs: index * 100,
-      endMs: index * 100 + 90,
-    })),
-  });
-  queries.length = 0;
-  for (let index = 0; index < 20; index++)
-    assert.equal(await repository.getReadRevision(id, true), 0);
   assert.equal(
-    queries.length,
+    probeQueries.length,
     60,
     "each read uses three bounded metadata selects",
   );
-  assert.ok(queries.every((query) => /^SELECT\b/.test(query)));
   assert.ok(
-    queries.every(
+    probeQueries.every((query) => /^SELECT\b/.test(query)),
+    probeQueries.join("\n"),
+  );
+  assert.ok(
+    probeQueries.every(
       (query) => !/VoiceTranscript|ToolInvocation|partsJson|"text"/.test(query),
     ),
   );
-  queries.length = 0;
-  await repository.failPending(id);
-  assert.equal(queries.length, 1);
-  assert.match(queries[0], /^SELECT\b/);
+  const recoveryQueries = await captureProbeQueries((probeRepository) =>
+    probeRepository.failPending(id),
+  );
+  assert.equal(recoveryQueries.length, 1, recoveryQueries.join("\n"));
+  assert.match(recoveryQueries[0], /^SELECT\b/);
 });
 
 test("version probes recover stale replies and voices once, then remain read-only", async () => {
@@ -194,9 +244,17 @@ test("version probes recover stale replies and voices once, then remain read-onl
   assert.equal(recovered.busy, false);
   assert.equal(recovered.voice.status, "failed");
   assert.equal(recovered.messages[1].status, "failed");
-  queries.length = 0;
-  assert.equal(await repository.getReadRevision(id, true), recovered.revision);
-  assert.ok(queries.every((query) => /^SELECT\b/.test(query)));
+  const probeQueries = await captureProbeQueries(async (probeRepository) => {
+    assert.equal(
+      await probeRepository.getReadRevision(id, true),
+      recovered.revision,
+    );
+  });
+  assert.equal(probeQueries.length, 3, probeQueries.join("\n"));
+  assert.ok(
+    probeQueries.every((query) => /^SELECT\b/.test(query)),
+    probeQueries.join("\n"),
+  );
   await assert.rejects(repository.getReadRevision(randomUUID(), true), {
     status: 404,
   });
