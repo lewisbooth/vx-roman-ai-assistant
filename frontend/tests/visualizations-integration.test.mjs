@@ -194,6 +194,30 @@ test("new photo saves before product selection, publishes immediate normalized p
   assert.equal(ctx.container.querySelector(".roman-chat").getAttribute("data-welcome-theme"), null, "Gallery never inherits the burgundy welcome");
 });
 
+test("a slow discovery message retains only the persisted photo after a no-product upload", async (t) => {
+  let finishSend;
+  let sendFinished = false;
+  const pending = new Promise((resolve) => { finishSend = resolve; });
+  const ctx = await setup(t, {onSend: async () => { await pending; sendFinished = true; }});
+  ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
+  const picker = ctx.dialog().querySelector('[type="file"]');
+  Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
+  picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
+  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
+  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => ctx.xhrs.length === 1, "Upload did not start");
+  ctx.completeUpload();
+  try {
+    await until(() => ctx.sent.length === 1 && ctx.container.querySelector(".roman-inline-window"), "Saved window did not hand off to discovery");
+    await delay(30);
+    assert.equal(sendFinished, false, "Discovery transport should still be blocked");
+    assert.equal(ctx.container.querySelectorAll(".roman-inline-window").length, 1);
+    assert.equal(ctx.container.querySelector(".roman-local-media"), null, "Queued slow discovery must not retain the optimistic upload card");
+    assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
+  } finally { finishSend(); await delay(0); }
+});
+
 test("saved photo rename is committed once and lost generation acknowledgements recover the original job without another paid start", async (t) => {
   const ctx = await setup(t, {active: true, saved: true, loseStart: true});
   ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
