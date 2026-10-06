@@ -197,10 +197,13 @@ async function completeTurn(
   const cached = readGuideSession(id, origin, initialPage);
   const boundLibrary = readBoundLibrarySource(id, origin, initialPage);
   const libraryBindings = new Map<string, NonNullable<typeof initialPage>>();
+  const productGuidePages = new Map<string, NonNullable<typeof initialPage>>();
   if (boundLibrary)
     libraryBindings.set(boundLibrary.source.sourceCallId, boundLibrary);
   let libraryFinished = false;
-  let readGuides: Parameters<GuideReuse["read"]>[0] | undefined;
+  let readGuides:
+    | (Parameters<GuideReuse["read"]>[0] & { pageId: string })
+    | undefined;
   try {
     const reply = await generateReply(
       history,
@@ -210,9 +213,25 @@ async function completeTurn(
       signal,
       async (callId, name, input) => {
         await assertServiceAvailable();
-        return name === "set_measurements" || name === "get_measurements"
-          ? executeMeasurementTool(id, assistantId, callId, name, input)
-          : requestBrowserTool(id, assistantId, callId, name, input, signal);
+        if (name === "set_measurements" || name === "get_measurements")
+          return executeMeasurementTool(id, assistantId, callId, name, input);
+        const before = name === "get_product_guides"
+          ? latestProductPage((await getSnapshot(id)).messages)
+          : undefined;
+        signal.throwIfAborted();
+        const result = await requestBrowserTool(
+          id, assistantId, callId, name, input, signal,
+        );
+        if (before && "productPath" in result &&
+            result.productPath === before.productPath) {
+          const current = await getSnapshot(id);
+          signal.throwIfAborted();
+          const after = latestProductPage(current.messages);
+          if (active.get(id) === turn && current.status === "active" &&
+              after?.pageId === before.pageId)
+            productGuidePages.set(callId, before);
+        }
+        return result;
       },
       turn.voiceId ? "voice" : "text",
       async (usage) => {
@@ -227,7 +246,10 @@ async function completeTurn(
       {
         cached,
         read: (context) => {
-          if (!signal.aborted && active.get(id) === turn) readGuides = context;
+          const page = productGuidePages.get(context.sourceCallId);
+          if (!signal.aborted && active.get(id) === turn &&
+              page?.productPath === context.productPath)
+            readGuides = { ...context, pageId: page.pageId };
         },
         clear: () => {
           if (active.get(id) !== turn) return;
@@ -302,14 +324,14 @@ async function completeTurn(
           cached.pageId === page?.pageId
             ? cached.expiresAt
             : Date.now() + GUIDE_SESSION_TTL_MS;
-        // Navigation during this reply is a cache miss, never a new binding
-        // for older evidence. The next stable-PDP read can populate the cache.
+        // A fresh destination read can establish its own episode after
+        // navigation; leaving that episode still invalidates the source.
         if (
           !signal.aborted &&
           active.get(id) === turn &&
           current.status === "active" &&
           page?.productPath === readGuides.productPath &&
-          page.pageId === initialPage?.pageId &&
+          page.pageId === readGuides.pageId &&
           expiresAt > Date.now()
         )
           saveGuideSession(id, {

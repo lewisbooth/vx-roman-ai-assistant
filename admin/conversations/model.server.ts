@@ -514,12 +514,19 @@ export async function generateReply(
       text = "";
       try {
         signal.throwIfAborted();
+        const guideInput = guides.context();
+        // Compaction covers the whole request. Keep ephemeral originals out of
+        // its checkpoint; durable text can compact on a later guide-free round.
+        const compactionEnabled = !!memory &&
+          !guideInput.some((item) => "content" in item && Array.isArray(item.content) &&
+            item.content.some((part) => part.type === "input_file")) &&
+          shouldCompactContext(durableInput);
         onDiagnostic?.({
           type: "request", ordinal: ++requestOrdinal, model,
           inputItems: durableInput.length,
           durableInputBytes: Buffer.byteLength(JSON.stringify(durableInput), "utf8"),
           checkpoint: durableInput.some((item) => item.type === "compaction"),
-          compactionEnabled: !!memory && shouldCompactContext(durableInput),
+          compactionEnabled,
           allowedTools: tools.length, cacheMode: "implicit",
         });
         const stream = await client.responses.create(
@@ -533,11 +540,11 @@ export async function generateReply(
                 : ROMAN_TEXT_PROMPT,
             input: [
               ...prefix,
-              ...guides.context(),
+              ...guideInput,
               ...resumeInput,
               ...durableInput,
             ],
-            ...(memory && shouldCompactContext(durableInput)
+            ...(compactionEnabled
               ? {
                   context_management: [
                     {

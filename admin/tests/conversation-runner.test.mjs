@@ -3227,6 +3227,122 @@ test("a routine measuring reply retains prior-read authority without attaching P
   assert.equal(env.calls.finishes[2].result.cachedGuideSource, undefined);
 });
 
+test("a fresh destination guide read survives an ordinary question and avoids rediscovery on the next turn", async () => {
+  const env = setup();
+  const id = "11111111-1111-4111-8111-111111111111";
+  const destinationPageId = "44444444-4444-4444-8444-444444444444";
+  let count = 0;
+  env.mock.assistantId = () =>
+    `33333333-3333-4333-8333-${String(++count).padStart(12, "0")}`;
+  const page = (id, path) => ({
+    id, role: "context", status: "complete", text: "",
+    extraParts: [{type: "page_view", version: 1, path, title: "Synthetic page", occurredAt: "2026-09-17T10:00:00Z"}],
+  });
+  env.rows.set(id, {
+    status: "active", revision: 0, tools: [],
+    messages: [page("22222222-2222-4222-8222-222222222222", "/products/another-blind")],
+  });
+  env.mock.executeTool = async (_id, _assistantId, _callId, name) => {
+    if (name === "navigate") {
+      env.rows.get(id).messages.push(page(destinationPageId, guidePath));
+      return {status: "navigated", path: guidePath, title: "Shade"};
+    }
+    assert.equal(name, "get_product_guides");
+    return guideResult();
+  };
+  env.streams.push(
+    events(completed("", {output: [catalogCall("select-destination", "navigate", {path: guidePath})]})),
+    events(completed("", {output: [guideLookup("destination-read", ["measuring"])]})),
+    events(completed("", {output: [questionCall({question: "Does the window have a handle?", answers: ["Yes", "No"]})]})),
+  );
+  await env.api.startTurn(id, firstInput);
+  await flush();
+  assert.equal(env.calls.finishes.length, 1);
+  const saved = env.api.readGuideSession(id, guideOrigin, {
+    productPath: guidePath, pageId: destinationPageId,
+  });
+  assert.equal(saved.sourceCallId, "destination-read");
+  assert.equal(saved.sourceAssistantId, env.calls.finishes[0].assistantId);
+  assert.deepEqual([...saved.kinds], ["measuring"]);
+  assert.equal(env.calls.guideReads.length, 1);
+
+  env.streams.push(events(completed("", {output: [measurementCall()]})));
+  await env.api.startTurn(id, secondInput);
+  await flush();
+  assert.equal(env.calls.finishes.length, 2);
+  assert.equal(env.calls.requests.length, 4, "continuation needs one model request, with no discovery round");
+  assert.deepEqual(env.calls.browserTools.map((call) => call[3]), ["navigate", "get_product_guides"]);
+  assert.equal(env.calls.guideReads.length, 1);
+  assert.deepEqual(guideFiles(env.calls.requests[3].input), []);
+  assert.equal(env.calls.finishes[1].result.questionPresentation.sourceCallId, "destination-read");
+  assert.equal(env.calls.finishes[1].result.cachedGuideSource.sourceAssistantId, saved.sourceAssistantId);
+  assert.deepEqual(env.logs, []);
+});
+
+test("fresh guide reuse rejects changing episodes, mismatched products and failed discovery", async (t) => {
+  for (const change of ["during-discovery", "during-file-read", "wrong-product", "lookup-failed"])
+    await t.test(change, async () => {
+      const env = setup();
+      const id = "11111111-1111-4111-8111-111111111111";
+      const initialPageId = "22222222-2222-4222-8222-222222222222";
+      const returnedId = "44444444-4444-4444-8444-444444444444";
+      env.mock.assistantId = () => "33333333-3333-4333-8333-333333333333";
+      const page = (id, path) => ({
+        id, role: "context", status: "complete", text: "",
+        extraParts: [{type: "page_view", version: 1, path, title: "Synthetic page", occurredAt: "2026-09-17T10:00:00Z"}],
+      });
+      env.rows.set(id, {
+        status: "active", revision: 0, tools: [], messages: [page(initialPageId, guidePath)],
+      });
+      const leaveReturn = () => env.rows.get(id).messages.push(
+        page("55555555-5555-4555-8555-555555555555", "/cart"), page(returnedId, guidePath),
+      );
+      env.mock.executeTool = async () => {
+        if (change === "lookup-failed") throw new Error("Synthetic lookup failure");
+        if (change === "during-discovery") leaveReturn();
+        return {...guideResult(), ...(change === "wrong-product" ? {productPath: "/products/another-blind"} : {})};
+      };
+      if (change === "during-file-read")
+        env.mock.readGuides = async (result) => {
+          leaveReturn();
+          return {status: "ready", sources: result.guides, files: result.guides.map(({kind}) => syntheticGuideFile(kind))};
+        };
+      env.streams.push(
+        events(completed("", {output: [guideLookup("fresh-read", ["measuring"])]})),
+        events(completed("", {output: [questionCall()]})),
+      );
+      await env.api.startTurn(id, firstInput);
+      await flush();
+      assert.equal(env.calls.finishes.length, 1);
+      assert.equal(env.api.readGuideSession(id, guideOrigin, {
+        productPath: guidePath,
+        pageId: change.startsWith("during-") ? returnedId : initialPageId,
+      }), undefined);
+    });
+});
+
+test("ending during fresh guide discovery cannot bind its later result", async () => {
+  const env = setup();
+  const id = "11111111-1111-4111-8111-111111111111";
+  const pageId = "22222222-2222-4222-8222-222222222222";
+  env.mock.assistantId = () => "33333333-3333-4333-8333-333333333333";
+  env.rows.set(id, {
+    status: "active", revision: 0, tools: [],
+    messages: [{id: pageId, role: "context", status: "complete", text: "", extraParts: [{type: "page_view", version: 1, path: guidePath, title: "Shade", occurredAt: "2026-09-17T10:00:00Z"}]}],
+  });
+  const gate = deferred();
+  env.mock.executeTool = async () => gate.promise;
+  env.streams.push(events(completed("", {output: [guideLookup("pending-read", ["measuring"])]})));
+  await env.api.startTurn(id, firstInput);
+  await flush();
+  assert.equal(env.calls.browserTools.length, 1);
+  await env.api.endTurn(id);
+  gate.resolve(guideResult());
+  await flush();
+  assert.equal(env.api.readGuideSession(id, guideOrigin, {productPath: guidePath, pageId}), undefined);
+  assert.equal(env.calls.guideReads.length, 0);
+});
+
 test("prior-read authority supports voice numeric resume without PDFs, rediscovery or another model round", async () => {
   const env = setup();
   const activities = [];
@@ -3765,7 +3881,7 @@ test("ending or leaving and returning during guide completion cannot populate a 
       if (change === "end")
         env.mock.snapshot = async (id) => {
           const value = env.snapshot(id);
-          await gate.promise;
+          if (env.calls.finishes.length) await gate.promise;
           return value;
         };
       else
@@ -6905,8 +7021,8 @@ test("an unsolicited third historical read is rejected before retrieval", async 
   assert.equal(env.calls.browserTools.length, 0);
 });
 
-test("guide PDFs alone do not trigger compaction while long durable guide conversations can compact", async () => {
-  for (const longHistory of [false, true]) {
+test("original guide PDFs defer compaction even when durable text is eligible", async () => {
+  for (const mode of ["text", "voice"]) for (const longHistory of [false, true]) {
     const env = setup();
     env.mock.readGuides = async () => ({
       status: "ready", sources: guideResult(["measuring"]).guides,
@@ -6917,14 +7033,85 @@ test("guide PDFs alone do not trigger compaction while long durable guide conver
       events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })),
     );
     await memoryReply(env, {
+      mode,
       history: [{ role: "user", text: longHistory ? "Long durable history. ".repeat(1500) : "Help me measure." }],
       execute: async () => guideResult(["measuring"]),
     });
     assert.equal(guideFiles(env.calls.requests[1].input).length, 1);
     assert.ok(guideFiles(env.calls.requests[1].input)[0].file_data.length > 60000);
-    for (const request of env.calls.requests)
-      assert.equal(!!request.input.context_management, longHistory);
+    assert.equal(guideFiles(env.calls.requests[1].input)[0].detail, "high");
+    assert.deepEqual(guideFiles(env.calls.requests[1].input)[0].prompt_cache_breakpoint, { mode: "explicit" });
+    assert.equal(!!env.calls.requests[0].input.context_management, longHistory);
+    assert.equal(env.calls.requests[1].input.context_management, undefined);
+    assert.deepEqual(env.calls.requests[1].input.tools, env.calls.requests[0].input.tools);
+    assert.equal(env.calls.guideReads.length, 1);
   }
+});
+
+test("a later guide-free turn can compact durable text while retaining prior-read measuring authority", async () => {
+  for (const mode of ["text", "voice"]) {
+    const env = setup(), cached = guideSession(["measuring"]), diagnostics = [];
+    env.streams.push(events(completed("", { output: [measurementCall({
+      ...measurementSelection, memoryUpdate: null,
+    })] })));
+    const reply = await env.api.generateReply(
+      [{ role: "assistant", text: "The established guide method is wall to wall at the top, without deductions. ".repeat(400) }],
+      () => {}, new AbortController().signal,
+      () => assert.fail("Prior-read authority does not need another native read"),
+      mode, undefined, guideOrigin, undefined, undefined,
+      {
+        cached,
+        read: () => assert.fail("No new PDF read expected"),
+        clear: () => assert.fail("No navigation expected"),
+      },
+      undefined, undefined, "medium", { memo: {}, throughSequence: 11, checkpoints: [] },
+      undefined, undefined, (event) => diagnostics.push(event),
+    );
+    assert.equal(env.calls.requests.length, 1);
+    assert.deepEqual(guideFiles(env.calls.requests[0].input), []);
+    assert.deepEqual(env.calls.requests[0].input.context_management, [{ type: "compaction", compact_threshold: 24000 }]);
+    assert.equal(diagnostics.find((event) => event.type === "request").compactionEnabled, true);
+    assert.equal(reply.questionPresentation.sourceCallId, cached.sourceCallId);
+    assert.equal(reply.cachedGuideSource.sourceAssistantId, cached.sourceAssistantId);
+    assert.deepEqual(plain(reply.questionPresentation.measurement), {
+      instructions: measurementSelection.instructions, productPath: guidePath,
+      label: measurementSelection.label, unit: measurementSelection.unit,
+    });
+    assert.equal(env.calls.guideReads.length, 0);
+    assert.equal(env.calls.browserTools.length, 0);
+  }
+});
+
+test("selected library originals also defer compaction without changing their exact source binding", async () => {
+  const env = setup(), library = libraryContext(), diagnostics = [];
+  const selected = [library.result.guides[0].id];
+  env.streams.push(
+    events(completed("", { output: [catalogCall("library-discovery", "discover_guides", { library: "blinds" })] })),
+    events(completed("", { output: [catalogCall("library-original", "read_library_guides", {
+      discoveryId: library.inventory.discoveryId, guideIds: selected, refresh: false,
+    })] })),
+    events(completed("", { output: [measurementCall({ ...measurementSelection, memoryUpdate: null })] })),
+  );
+  const executions = [];
+  const reply = await env.api.generateReply(
+    [{ role: "user", text: "Long durable conversation. ".repeat(1500) }],
+    () => {}, new AbortController().signal,
+    async (id, name) => { executions.push([id, name]); return library.result; },
+    "text", undefined, guideOrigin, undefined, undefined, undefined, library.reuse,
+    undefined, "medium", { memo: {}, throughSequence: 10, checkpoints: [] },
+    undefined, undefined, (event) => diagnostics.push(event),
+  );
+  assert.deepEqual(executions, [["library-discovery", "discover_guides"]]);
+  assert.equal(env.calls.requests.length, 3);
+  assert.deepEqual(diagnostics.filter((event) => event.type === "request").map((event) => event.compactionEnabled), [true, true, false]);
+  assert.ok(env.calls.requests.slice(0, 2).every(({ input }) => input.context_management));
+  assert.equal(env.calls.requests[2].input.context_management, undefined);
+  assert.deepEqual(guideFiles(env.calls.requests[2].input), [{
+    ...syntheticGuideFile(selected[0]), prompt_cache_breakpoint: { mode: "explicit" },
+  }]);
+  assert.deepEqual(plain(reply.questionPresentation.librarySource.source.guideIds), selected);
+  assert.equal(reply.questionPresentation.librarySource.productPath, guidePath);
+  assert.equal(reply.cachedGuideSource, undefined);
 });
 
 test("model-specific history loads only when needed and is reused across that model's tool rounds", async () => {
