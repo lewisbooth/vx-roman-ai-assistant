@@ -16,6 +16,10 @@ The loading bar intentionally animates regardless of the browser's reduced-motio
 
 ## Develop, build and publish
 
+Visualization entry uses the existing chat and media owners. With a verified open PDP, the home tile enters Roman's product-selection question; without one it opens the save-window-first interface. The camera always opens upload directly. A future native PDP integration can render a `button` with `data-roman-visualize-product="/products/the-current-product"`: an actual click opens Roman and its upload interface, validates the current native product form/title, and waits for matching advisor activation before enabling generation. This round does not alter vx-visualizer. Product identity is frozen when the modal opens; later product/page changes cannot silently substitute it. URL parameters and caller-supplied titles are not launch authority.
+
+Question `navigationActions` can show a direct View Cart shortcut alongside a pending choice or measurement. It changes only the memory-router view: no answer/customer turn is sent, and returning to Chat retains the original question and numeric draft. A normal View Cart choice also navigates directly. Saved-photo cards send a neutral selection; named photo quick answers select the owned current-picker photo before delivery to Roman. The advisor still interprets genuine unpaused preview intent from recent context, with newer pauses taking precedence.
+
 Follow the [root setup](../README.md), then run commands from the repository root:
 
 ```powershell
