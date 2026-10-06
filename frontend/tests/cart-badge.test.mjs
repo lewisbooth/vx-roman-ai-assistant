@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { historySnapshot } from "./helpers/history-snapshot.mjs";
+import { installGalleryFixture, mediaSessionFixture } from "./helpers/gallery-fixture.mjs";
 
 const bundle = await build({
   stdin: {
@@ -97,6 +98,7 @@ function setup(t, { open = true, restored = false, endExpected = false, brokenSn
         },
       }),
     );
+  installGalleryFixture(window);
   let page = { url: window.location.href, pending: false, error: null };
   let state = {
     conversation: restored
@@ -119,6 +121,7 @@ function setup(t, { open = true, restored = false, endExpected = false, brokenSn
   state.conversation = historySnapshot(state.conversation);
   if (brokenSnapshot) state.conversation.history = undefined;
   const session = {
+    ...mediaSessionFixture,
     getSnapshot: () => state,
     subscribe: (fn) => {
       sessionListeners.add(fn);
@@ -161,8 +164,9 @@ function setup(t, { open = true, restored = false, endExpected = false, brokenSn
       unmount();
     }
   };
-  t.after(() => {
+  t.after(async () => {
     dispose();
+    await delay(0);
     window.close();
     if (brokenSnapshot) {
       assert.ok(errors.some(error => /reading 'entries'/.test(error?.message ?? "")));

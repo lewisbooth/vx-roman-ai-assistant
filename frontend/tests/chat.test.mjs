@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { historySnapshot } from "./helpers/history-snapshot.mjs";
+import { installGalleryFixture, mediaSessionFixture } from "./helpers/gallery-fixture.mjs";
 
 const bundle = await build({
   stdin: {
@@ -71,6 +72,7 @@ async function setup(t, options = {}) {
   const errors = [];
   window.console.error = (...args) => errors.push(args);
   options.beforeImport?.(window);
+  installGalleryFixture(window);
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanChatTest = RomanChatTest;`,
   );
@@ -102,6 +104,7 @@ async function setup(t, options = {}) {
   };
   state.conversation = historySnapshot(state.conversation);
   const session = {
+    ...mediaSessionFixture,
     getSnapshot: () => state,
     subscribe: (listener) => {
       listeners.add(listener);
@@ -188,8 +191,9 @@ async function setup(t, options = {}) {
     onReady: () => {},
     onError: (error) => errors.push(error),
   });
-  t.after(() => {
+  t.after(async () => {
     dispose();
+    await delay(0);
     window.close();
   });
   await until(() => container.querySelector(".roman-chat") || errors.length, "Chat did not mount");
@@ -448,7 +452,9 @@ test("welcome uses original assets and actionable tiles without Settings or deve
   const { container } = await setup(t);
   const tiles = [...container.querySelectorAll(".roman-welcome-tile")];
   assert.equal(tiles.length, 4);
-  assert.ok(tiles.every((tile) => !tile.disabled && tile.type === "button"));
+  assert.ok(tiles.every((tile) => tile.type === "button"));
+  assert.equal(tiles[1].disabled, true, "Image upload waits for its independent feature bootstrap");
+  assert.ok(tiles.filter((_, index) => index !== 1).every((tile) => !tile.disabled));
   assert.deepEqual(
     tiles.map((tile) => tile.querySelector(".roman-tile-title").textContent),
     [
@@ -677,14 +683,15 @@ test("an unconfirmed first message remains visibly retryable in the queue withou
   );
 });
 
-test("each welcome tile starts a normal text conversation without clearing the composer's draft", async (t) => {
+test("the conversation welcome tiles start normal text conversations without clearing the composer's draft", async (t) => {
   const starters = [
     "Help me measure my windows for blinds.",
-    "I'd like to visualize blinds in my room. Start by asking me to upload a room photo, then help me choose a blind. Image generation isn't available yet.",
+    null,
     "Help me find blinds that suit my room and style.",
     "Help me find no-drill blinds for my home.",
   ];
-  for (const [index, starter] of starters.entries())
+  for (const [index, starter] of starters.entries()) {
+    if (!starter) continue;
     await t.test(String(index), async (t) => {
       let accept;
       const accepted = new Promise((resolve) => {
@@ -740,6 +747,7 @@ test("each welcome tile starts a normal text conversation without clearing the c
       );
       assert.deepEqual(ctx.errors, []);
     });
+  }
 });
 
 test("distinct welcome and composer inputs queue in their original order", async (t) => {
@@ -833,7 +841,7 @@ test("welcome tiles queue during pending work or unavailable voice but restorati
       if (name === "restoring") assert.equal(tiles.length, 0);
       else {
         assert.equal(tiles.length, 4);
-        assert.ok(tiles.every((tile) => !tile.disabled));
+        assert.ok(tiles.filter((_, index) => index !== 1).every((tile) => !tile.disabled));
         tiles[0].click();
         await until(
           () => ctx.container.querySelector(".roman-queued-message"),
@@ -909,7 +917,7 @@ test("voice startup and greeting keep welcome tiles until a customer chooses a t
           ...ctx.container.querySelectorAll(".roman-welcome-tile"),
         ];
         assert.equal(tiles.length, 4);
-        assert.ok(tiles.every((tile) => !tile.disabled));
+        assert.ok(tiles.filter((_, index) => index !== 1).every((tile) => !tile.disabled));
         assert.equal(ctx.input(), null);
         assert.equal(form.querySelectorAll("button").length, 1);
         assert.ok(form.querySelector('[aria-label="End voice"]'));

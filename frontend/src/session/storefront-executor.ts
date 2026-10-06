@@ -64,6 +64,7 @@ import {
   type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
+import type { VisualizationPreparation, ProductImageRole } from "../../../shared/visualizations";
 
 export type BrowserToolResult =
   | CatalogResult
@@ -284,9 +285,11 @@ export function createStorefrontExecutor(
     const cached = productGalleries.get(pageUrl);
     if (cached && cached.expiresAt > Date.now())
       return cached.gallery ?? catalogGallery(pageUrl);
-    return enqueue(
-      "image",
-      async (signal) => {
+    return enqueue("image", (signal) => loadGalleryNow(pageUrl, signal), signal);
+  }
+
+  // Runs inside the owner's existing operation. Never enqueue recursively.
+  async function loadGalleryNow(pageUrl: string, signal: AbortSignal) {
         const cached = productGalleries.get(pageUrl);
         if (cached && cached.expiresAt > Date.now())
           return cached.gallery ?? catalogGallery(pageUrl);
@@ -311,9 +314,21 @@ export function createStorefrontExecutor(
           productGalleries.delete(url);
         }
         return gallery ?? catalogGallery(pageUrl);
-      },
-      signal,
-    );
+  }
+
+  function prepareVisualizationProduct(path: string, signal: AbortSignal): Promise<VisualizationPreparation> {
+    const pageUrl = productImagePageUrl(path);
+    return enqueue("foreground", async (signal) => {
+      requireCurrentStore();
+      const gallery = await loadGalleryNow(pageUrl, signal);
+      const items = gallery?.items.filter((item) => item.kind === "product").slice(0, 4) ?? [];
+      if (!items.length) throw new Error("This blind has no usable product images.");
+      return { productPath: new URL(pageUrl).pathname, references: items.map((item) => {
+        const clue = `${item.alt} ${new URL(item.src).pathname}`;
+        const role: ProductImageRole = /detail|close.?up|swatch|fabric/i.test(clue) ? "detail" : /room|lifestyle|installation|window/i.test(clue) ? "installation" : "unknown";
+        return { url: item.zoomSrc || item.src, role, alt: item.alt.slice(0, 200) };
+      }) };
+    }, signal);
   }
 
   async function fetchCatalog(
@@ -685,6 +700,7 @@ export function createStorefrontExecutor(
       return image && productImageWidth(image.src, maxWidth);
     },
     loadProductGallery,
+    prepareVisualizationProduct,
     dispose() {
       disposed = true;
       for (const job of jobs) {

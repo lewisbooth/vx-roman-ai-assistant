@@ -1,6 +1,6 @@
 import { useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { MAX_MESSAGE_LENGTH } from "../../../shared/conversation";
-import { StartVoiceButton } from "./VoiceControls";
+import { StartVoiceButton, UploadImageButton } from "./VoiceControls";
 
 type ComposerProps = {
   busy: boolean;
@@ -12,6 +12,7 @@ type ComposerProps = {
   onClearError?: () => void;
   onSend: (message: string) => Promise<void>;
   onStartVoice?: () => Promise<void>;
+  onUpload?: () => void;
 };
 
 export function Composer({
@@ -24,6 +25,7 @@ export function Composer({
   onClearError,
   onSend,
   onStartVoice,
+  onUpload,
 }: ComposerProps) {
   const id = useId();
   const [message, setMessage] = useState("");
@@ -90,15 +92,32 @@ export function Composer({
         data-unavailable={unavailable || undefined}
       >
         {unavailable ? (
-          <div className="roman-unavailable-bar" role="status">
-            Roman is currently unavailable
+          <div
+            className="roman-composer-unavailable"
+            data-upload={!!onUpload || undefined}
+          >
+            <div className="roman-unavailable-bar" role="status">
+              Roman is currently unavailable
+            </div>
+            {onUpload && <UploadImageButton onUpload={onUpload} />}
           </div>
-        ) : voiceControls || (
+        ) : voiceControls ? (
+          <div
+            className="roman-composer-voice"
+            data-upload={!!onUpload || undefined}
+          >
+            {voiceControls}
+            {onUpload && <UploadImageButton onUpload={onUpload} />}
+          </div>
+        ) : (
           <>
             <label htmlFor={id} className="sr-only">
               Message Roman
             </label>
-            <div className="roman-composer-field">
+            <div
+              className="roman-composer-field"
+              data-upload={!!onUpload || undefined}
+            >
               <textarea
                 ref={textarea}
                 data-roman-composer
@@ -123,40 +142,51 @@ export function Composer({
                 placeholder="Ask Roman anything..."
                 disabled={disabled}
               />
-              {message.trim() ? (
-                <button
-                  type="submit"
-                  className="roman-composer-action"
-                  aria-label={sendLabel}
-                  disabled={sendDisabled || !message.trim()}
-                >
-                  <span className="roman-action-label" aria-hidden="true">
-                    {sendLabel}
-                  </span>
-                  <span className="roman-action-icon" aria-hidden="true">
-                    <svg
-                      width="22"
-                      height="22"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <path d="m21 3-6.5 18-4-7.5L3 9.5 21 3Z" />
-                      <path d="m10.5 13.5 5-5" />
-                    </svg>
-                  </span>
-                </button>
-              ) : (
-                onStartVoice && (
-                  <StartVoiceButton
-                    onStart={onStartVoice}
-                    disabled={disabled || sending || busy}
+              <div
+                className="roman-composer-actions"
+                data-upload={!!onUpload || undefined}
+              >
+                {message.trim() ? (
+                  <button
+                    type="submit"
+                    className="roman-composer-action"
+                    aria-label={sendLabel}
+                    disabled={sendDisabled || !message.trim()}
+                  >
+                    <span className="roman-action-label" aria-hidden="true">
+                      {sendLabel}
+                    </span>
+                    <span className="roman-action-icon" aria-hidden="true">
+                      <svg
+                        width="22"
+                        height="22"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="m21 3-6.5 18-4-7.5L3 9.5 21 3Z" />
+                        <path d="m10.5 13.5 5-5" />
+                      </svg>
+                    </span>
+                  </button>
+                ) : (
+                  onStartVoice && (
+                    <StartVoiceButton
+                      onStart={onStartVoice}
+                      disabled={disabled || sending || busy}
+                    />
+                  )
+                )}
+                {onUpload && (
+                  <UploadImageButton
+                    onUpload={onUpload}
+                    hidden={!!message.trim()}
                   />
-                )
-              )}
+                )}
+              </div>
             </div>
           </>
         )}

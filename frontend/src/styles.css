@@ -3,6 +3,7 @@
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @import "./chat/product-stage.css";
 @import "./chat/welcome-theme.css";
+@import "./visualizations/visualizations.css";
 @source "./app.tsx";
 @source "./chat";
 
@@ -1184,6 +1185,41 @@
     @apply relative min-w-0 flex-1;
   }
 
+  .roman-composer-field[data-upload] textarea {
+    padding-right: 100px;
+  }
+
+  .roman-composer-actions {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 44px;
+    height: 44px;
+  }
+
+  .roman-composer-actions[data-upload] {
+    width: 92px;
+  }
+
+  .roman-composer-actions[data-upload] > .roman-composer-action:not(.roman-upload-image) {
+    right: 48px;
+  }
+
+  .roman-composer-voice,
+  .roman-composer-unavailable {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .roman-composer-voice[data-upload] .roman-voice-bar {
+    width: calc(100% - 48px);
+  }
+
+  .roman-composer-unavailable[data-upload] .roman-unavailable-bar {
+    padding-right: 52px;
+  }
+
   .roman-composer textarea {
     @apply block h-[44px] w-full resize-none overflow-y-auto rounded-[22px] border-0 bg-transparent py-[11px] pr-[52px] pl-[12px] text-[16px] leading-[22px] text-[#402b2b] placeholder:text-[#797366];
     font-family: inherit;
@@ -1226,10 +1262,34 @@
       opacity 160ms ease;
   }
 
+  .roman-upload-image {
+    width: 44px;
+  }
+
+  .roman-upload-image .roman-action-label {
+    position: absolute;
+    bottom: 52px;
+    right: 0;
+    max-width: none;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: #4e0e0e;
+    color: #f7f5ef;
+    pointer-events: none;
+    transform: translateY(4px);
+    transition: opacity 160ms ease, transform 160ms ease;
+  }
+
   .roman-composer-action:focus-visible .roman-action-label {
     max-width: 130px;
     padding-left: 16px;
     opacity: 1;
+  }
+
+  .roman-upload-image:focus-visible .roman-action-label {
+    max-width: none;
+    padding-left: 12px;
+    transform: translateY(0);
   }
 
   @media (hover: hover) {
@@ -1237,6 +1297,12 @@
       max-width: 130px;
       padding-left: 16px;
       opacity: 1;
+    }
+
+    .roman-upload-image:hover .roman-action-label {
+      max-width: none;
+      padding-left: 12px;
+      transform: translateY(0);
     }
   }
 

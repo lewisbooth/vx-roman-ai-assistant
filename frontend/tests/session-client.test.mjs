@@ -79,6 +79,7 @@ function setup(
   t,
   {
     saved,
+    gallery,
     url = "https://hd-dev-single.myshopify.com/",
     executor,
     mediaOptions,
@@ -96,6 +97,8 @@ function setup(
   window.AbortSignal = globalThis.AbortSignal;
   if (saved)
     window.sessionStorage.setItem("roman:conversation", JSON.stringify(saved));
+  if (gallery)
+    window.localStorage.setItem("roman-gallery-v1", JSON.stringify(gallery));
   if (savedVoice !== undefined)
     window.sessionStorage.setItem("roman:voice", savedVoice);
   const calls = [];
@@ -335,6 +338,38 @@ test("recovery refresh waits for an in-flight message before reading the convers
   await until(() => ctx.calls.length === 3, "Accepted message was not refreshed");
   assert.equal(ctx.calls[2].init.method, "GET");
   ctx.respond(2, pending);
+});
+
+test("a rejected Gallery capability does not discard or block an independent chat", async (t) => {
+  const ctx = setup(t);
+  const gallery = { ownerId: "22222222-2222-4222-8222-222222222222", token: "g".repeat(43), apiBaseUrl: "https://roman.example/api/gallery" };
+  ctx.window.localStorage.setItem("roman-gallery-v1", JSON.stringify(gallery));
+  const sending = ctx.client.sendMessage("Hello");
+  assert.deepEqual(ctx.calls[0].body.gallery, { ownerId: gallery.ownerId, token: gallery.token });
+  ctx.respond(0, { error: { message: "Gallery authorization failed." } }, 401);
+  await until(() => ctx.calls.length === 2, "Independent chat bootstrap was not retried");
+  assert.deepEqual(ctx.calls[1].body, {});
+  ctx.respond(1, { ...access, conversation: empty });
+  await until(() => ctx.calls.length === 3, "First chat message was blocked by Gallery");
+  ctx.respond(2, pending);
+  await sending;
+  assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
+  assert.equal(JSON.parse(ctx.window.localStorage.getItem("roman-gallery-v1")).ownerId, gallery.ownerId);
+});
+
+test("a conflicting Gallery capability preserves the existing chat during restoration", async (t) => {
+  const gallery = { ownerId: "22222222-2222-4222-8222-222222222222", token: "g".repeat(43), apiBaseUrl: "https://roman.example/api/gallery" };
+  const ctx = setup(t, { saved: access, gallery });
+  assert.deepEqual(ctx.calls[0].body.gallery, { ownerId: gallery.ownerId, token: gallery.token });
+  ctx.respond(0, { error: { message: "This chat is linked to a different gallery or has ended." } }, 409);
+  await until(() => ctx.calls.length === 2, "Conflicting Gallery blocked chat restoration");
+  assert.deepEqual(ctx.calls[1].body, { conversationId, token: access.token });
+  ctx.respond(1, { ...access, conversation: complete });
+  await until(() => ctx.calls.length === 3, "Restored chat was not refreshed");
+  ctx.respond(2, complete);
+  await until(() => !ctx.client.getSnapshot().restoring, "Chat restore did not finish");
+  assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
+  assert.equal(JSON.parse(ctx.window.localStorage.getItem("roman-gallery-v1")).ownerId, gallery.ownerId);
 });
 
 test("session creation is lazy and first send uses the signed proxy then the authorized backend", async (t) => {

@@ -300,3 +300,37 @@ test("voice takes over the whole bar and preserves an unsent text draft until it
   assert.deepEqual(ctx.calls, ["A voice follow-up I am typing"]);
   assert.equal(ctx.container.querySelector('[aria-label="End voice"]'), null);
 });
+
+test("upload remains available while Roman works, hides for typed text and shares the unchanged form during voice", async (t) => {
+  let uploads = 0;
+  const ctx = setup(t, {busy: true, onUpload: () => uploads++, onStartVoice: async () => {}});
+  const textarea = ctx.input();
+  const form = textarea.closest("form");
+  const camera = () => ctx.container.querySelector("[data-roman-upload]");
+  assert.equal(camera().disabled, false);
+  assert.equal(camera().hidden, false);
+  camera().click();
+  assert.equal(uploads, 1);
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.input(), textarea);
+  assert.equal(form.querySelector(".roman-composer-actions").dataset.upload, "true");
+  await ctx.type("A typed message");
+  assert.equal(ctx.input(), textarea);
+  assert.equal(camera().hidden, true);
+  assert.equal(form.querySelector(".roman-composer-actions").dataset.upload, "true");
+  assert.ok(ctx.send());
+  ctx.render({voice: {status: "active", muted: false, error: null}});
+  assert.equal(ctx.container.querySelector("form"), form);
+  assert.equal(camera().hidden, false);
+  assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));
+  assert.equal(ctx.input(), null);
+  camera().click();
+  assert.equal(uploads, 2);
+  assert.deepEqual(ctx.voiceCalls, []);
+  ctx.render({voice: {status: "idle", muted: false, error: null}, unavailable: true, disabled: true});
+  assert.equal(camera().disabled, false);
+  camera().click();
+  assert.equal(uploads, 3);
+  assert.equal(ctx.container.querySelector("form"), form);
+  assert.equal(ctx.container.querySelectorAll("form").length, 1);
+});

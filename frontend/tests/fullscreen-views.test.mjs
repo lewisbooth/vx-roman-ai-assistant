@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { historySnapshot } from "./helpers/history-snapshot.mjs";
+import { installGalleryFixture, mediaSessionFixture } from "./helpers/gallery-fixture.mjs";
 
 const bundle = await build({
   stdin: {
@@ -130,6 +131,7 @@ async function setup(t, initial = {}, options = {}) {
       }),
     };
   };
+  installGalleryFixture(window);
   window.eval(`${bundle.outputFiles[0].text};window.ViewsTest=ViewsTest;`);
   const container = window.document
     .querySelector("roman-ai-assistant")
@@ -155,6 +157,7 @@ async function setup(t, initial = {}, options = {}) {
   const calls = [];
   state.conversation = historySnapshot(state.conversation);
   const session = {
+    ...mediaSessionFixture,
     getSnapshot: () => state,
     subscribe(listener) {
       listeners.add(listener);
@@ -199,8 +202,9 @@ async function setup(t, initial = {}, options = {}) {
     disposed = true;
     dispose();
   }
-  t.after(() => {
+  t.after(async () => {
     unmount();
+    await delay(0);
     window.close();
     assert.deepEqual(errors, []);
   });
@@ -905,7 +909,7 @@ test("voice startup and Roman's opening retain live home tiles until customer sp
   assert.equal(ctx.container.querySelector('[type="submit"]'), null);
   assert.equal(
     ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
-    4,
+    3,
   );
   assert.equal(ctx.container.querySelector(".roman-timeline"), null);
 
@@ -922,7 +926,7 @@ test("voice startup and Roman's opening retain live home tiles until customer sp
   assert.equal(ctx.container.querySelector("textarea"), null);
   assert.equal(
     ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
-    4,
+    3,
   );
   assert.equal(ctx.container.querySelector(".roman-timeline"), null);
 
@@ -1056,7 +1060,7 @@ test("restored customer conversation opens the transcript and ending it restores
   assert.equal(ctx.container.querySelector(".roman-timeline"), null);
   assert.equal(
     ctx.container.querySelectorAll(".roman-welcome-tile:not(:disabled)").length,
-    4,
+    3,
   );
   assert.equal(ctx.container.querySelector("textarea"), null);
   assert.ok(ctx.container.querySelector('[aria-label="End voice"]'));

@@ -13,7 +13,7 @@ const tiles = [
     image: "roman-tile-visualize.png",
     width: 76,
     starter:
-      "I'd like to visualize blinds in my room. Start by asking me to upload a room photo, then help me choose a blind. Image generation isn't available yet.",
+      "I'd like to visualize blinds in my room.",
   },
   {
     title: "Find your style",
@@ -35,10 +35,12 @@ export function Welcome({
   logoUrl,
   busy,
   onStart,
+  onVisualize,
 }: {
   logoUrl: string;
   busy: boolean;
   onStart: (message: string) => void;
+  onVisualize?: () => void;
 }) {
   const assetUrl = (name: string) =>
     new URL(name, new URL(logoUrl, window.location.href)).href;
@@ -60,9 +62,9 @@ export function Welcome({
           <button
             key={tile.title}
             type="button"
-            disabled={busy}
+            disabled={busy || (tile.title === "Visualize in room" && !onVisualize)}
             className="roman-welcome-tile"
-            onClick={() => onStart(tile.starter)}
+            onClick={() => tile.title === "Visualize in room" ? onVisualize?.() : onStart(tile.starter)}
           >
             <span className="roman-tile-art" aria-hidden="true">
               <img

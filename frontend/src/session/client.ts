@@ -1,4 +1,5 @@
 import { parseCheckoutCall } from "../../../shared/checkout";
+import { GALLERY_STORAGE_KEY, isMediaId, isMediaPart, isWindowPhotoDto } from "../../../shared/visualizations";
 import {
   MAX_MESSAGE_LENGTH,
   CONVERSATION_HISTORY_PAGE_SIZE,
@@ -327,6 +328,8 @@ function snapshot(value: unknown): value is ConversationSnapshot {
     new Set(value.historyUpdates.map(entry => entry.sequence)).size === value.historyUpdates.length &&
     record(value.current) &&
     typeof value.current.hasCustomerReply === "boolean" &&
+    (value.current.galleryEnabled === undefined || typeof value.current.galleryEnabled === "boolean") &&
+    (value.current.selectedWindow === undefined || value.current.selectedWindow === null || isWindowPhotoDto(value.current.selectedWindow)) &&
     (value.current.pendingQuestion === null || validQuestionPart(value.current.pendingQuestion)) &&
     (value.current.activeProduct === null || (record(value.current.activeProduct) &&
       typeof value.current.activeProduct.path === "string" && /^\/products\/[a-z0-9][a-z0-9-]*$/i.test(value.current.activeProduct.path) &&
@@ -366,6 +369,7 @@ function validMessage(message: unknown): message is ConversationMessage {
                   part.productChoice === undefined &&
                   validVoiceInput(part.voiceInput)))) ||
               (part.type === "guides" && validGuidePart(part)) ||
+              (part.type === "media" && isMediaPart(part)) ||
               (part.type === "question" && validQuestionPart(part)) ||
               (part.type === "voice_event" &&
                 message.role === "context" &&
@@ -794,19 +798,30 @@ export function createConversationClient(
 
   async function requestBootstrap(resume: ConversationCredential | null) {
     const requestedEpoch = epoch;
+    let gallery: { ownerId: string; token: string } | undefined;
+    try {
+      const stored: unknown = JSON.parse(window.localStorage.getItem(GALLERY_STORAGE_KEY) ?? "null");
+      if (record(stored) && isMediaId(stored.ownerId) && typeof stored.token === "string" && /^[A-Za-z0-9_-]{43}$/.test(stored.token)) gallery = { ownerId: stored.ownerId, token: stored.token };
+    } catch { /* Gallery persistence is optional; its owner reports storage availability. */ }
     const url = new URL("/apps/roman/bootstrap", window.location.origin);
     url.searchParams.set("storefront_origin", window.location.origin);
-    const result = await request(url.href, {
+    const sendBootstrap = (includeGallery: boolean) => request(url.href, {
       method: "POST",
       mode: "same-origin",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        resume
-          ? { conversationId: resume.conversationId, token: resume.token }
-          : {},
-      ),
+      body: JSON.stringify({ ...(resume ? { conversationId: resume.conversationId, token: resume.token } : {}), ...(includeGallery && gallery ? { gallery } : {}) }),
     });
+    let result: unknown;
+    try { result = await sendBootstrap(true); }
+    catch (error) {
+      // A rejected Gallery capability must not invalidate the independent chat.
+      // Keep it saved so its owner can surface recovery rather than lose photos.
+      // On resume, a Gallery ownership conflict is also independent of chat.
+      const galleryRejected = error instanceof SessionRequestError && (error.status === 401 || !!resume && error.status === 409);
+      if (!gallery || !galleryRejected || requestedEpoch !== epoch || disposed) throw error;
+      result = await sendBootstrap(false);
+    }
     if (requestedEpoch !== epoch || disposed)
       throw new SessionRequestError("The conversation has changed.");
     if (
@@ -2041,6 +2056,34 @@ export function createConversationClient(
   window.addEventListener("pagehide", onPageHide);
 
   return {
+    noteMediaActivity() {
+      if (!voiceId || disposed || ending || state.voice.status !== "active") return;
+      const version = ++voiceActivityVersion;
+      update({ voiceIdleWarningAt: null });
+      void rawApi(`/voice/${voiceId}/media-activity`, { clientId }).then((result) => {
+        if (version === voiceActivityVersion && record(result)) update({ voiceIdleWarningAt: voiceIdleWarningAt(result.idleRemainingMs) });
+      }).catch(() => {
+        // The next ordinary heartbeat reconciles the deadline; no photo/job
+        // failure can suspend chat or restart a voice connection.
+        console.warn("[Roman] Photo activity could not renew the voice idle deadline.");
+      });
+    },
+    async ensureMediaConversation() {
+      if (disposed || ending) throw new Error("Wait for End Chat to finish.");
+      if (!access) await bootstrap(resumeAccess);
+      await journeyQueue;
+      if (!access || ending || disposed) throw new Error("Start a chat before saving a photo.");
+      return { conversationId: access.conversationId, conversationToken: access.token };
+    },
+    async refreshMediaContext() {
+      if (!access || ending || disposed) return;
+      await api();
+      schedulePoll();
+    },
+    prepareVisualizationProduct(path, signal) {
+      if (!executor || disposed) return Promise.reject(new Error("Roman has been removed."));
+      return executor.prepareVisualizationProduct(path, signal);
+    },
     sendVoiceAnswer,
     getSnapshot: () => state,
     loadOlderHistory,

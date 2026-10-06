@@ -5,6 +5,7 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { voiceMedia } from "./helpers/voice-media.mjs";
 import { historySnapshot } from "./helpers/history-snapshot.mjs";
+import { installGalleryFixture } from "./helpers/gallery-fixture.mjs";
 
 function wire(body) {
   if (body?.conversation) return { ...body, conversation: wire(body.conversation) };
@@ -92,8 +93,10 @@ function setup(t, initialTime = 0) {
   host.attachShadow({ mode: "open" }).append(panel);
   const runtimes = [];
   const themes = [];
-  t.after(() => {
+  t.after(async () => {
     for (const runtime of runtimes) runtime.dispose();
+    // React's passive cleanup and queued microtasks still need a live document.
+    await delay(0);
     window.close();
   });
   return {
@@ -103,6 +106,7 @@ function setup(t, initialTime = 0) {
     themes,
     timers,
     mount(loadingStartedAt) {
+      installGalleryFixture(window);
       const runtime = window.RomanAssistant.mountAssistant(
         host,
         container,

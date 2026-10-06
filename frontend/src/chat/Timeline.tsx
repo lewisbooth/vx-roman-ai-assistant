@@ -11,6 +11,8 @@ import { voiceCaptionText } from "../../../shared/voice-transcript";
 import type { CatalogProduct } from "../../../shared/catalog";
 import { productChoiceText } from "../../../shared/product-choice";
 import { useReplyReveal } from "./useReplyReveal";
+import type { ReactNode } from "react";
+import type { MediaPart } from "../../../shared/visualizations";
 
 export function Timeline({
   messages,
@@ -23,6 +25,7 @@ export function Timeline({
   voice = false,
   onAnswer,
   onChooseProduct,
+  renderMedia,
 }: {
   messages: readonly ConversationMessage[];
   session: ConversationClient;
@@ -37,6 +40,7 @@ export function Timeline({
     carouselId: string,
     product: CatalogProduct,
   ) => Promise<void>;
+  renderMedia?: (part: MediaPart) => ReactNode;
 }) {
   const reveal = useReplyReveal(messages, onContentChange);
   // Keep the current question below every widget and later journey event.
@@ -52,6 +56,7 @@ export function Timeline({
           part.type !== "navigation" &&
           part.type !== "guides",
       )
+      .filter((part) => part.type !== "media" || (part.kind !== "renamed" && part.kind !== "outcome"))
       .filter((part) => part.type !== "voice" || voiceCaptionText(part.text));
     return [
       ...(parts.length || message.status === "failed"
@@ -199,6 +204,7 @@ export function Timeline({
                       </p>
                     </div>
                   );
+                if (part.type === "media") return <div key={index} className="roman-inline-media">{renderMedia?.(part)}</div>;
                 return (
                   <ProductCards
                     key={part.invocationId}

@@ -40,6 +40,7 @@ import type { ConversationClient } from "./session/types";
 import { liveSnapshotMessages } from "./session/live-messages";
 import { persistWelcomeState } from "./welcome-state";
 import { brandLogoUrl } from "./brand-logo";
+import { useVisualizations, committedMediaIntent } from "./visualizations/useVisualizations";
 import {
   isQuestionAnswer,
   currentQuestion,
@@ -106,6 +107,7 @@ function Assistant({
   // An optimistic text/tile reply counts immediately, as does customer speech.
   const observedCustomerReply =
     state.conversation?.current?.hasCustomerReply ||
+    committedMediaIntent(state.conversation) ||
     !!messages?.some(
       (message) =>
         message.role === "user" &&
@@ -495,6 +497,12 @@ function Assistant({
     followConversation,
   ]);
 
+  const visualization = useVisualizations({
+    session, conversation: state.conversation, view,
+    onCustomerIntent: () => { setCustomerTurnStarted(true); following.current = true; },
+    sendMessage, showChat: () => showView("chat"),
+  });
+
   return (
     <RomanViewContext.Provider value={showView}>
       <div
@@ -643,18 +651,7 @@ function Assistant({
                 {view !== "chat" && (
                   <div className="roman-secondary-view">
                     {view === "cart" && <CartStage {...cart} />}
-                    {view === "gallery" && (
-                      <section
-                        className="roman-gallery"
-                        aria-label="Your gallery"
-                      >
-                        <h2>Your gallery</h2>
-                        <p>
-                          Your room photos and Roman’s visualizations will live
-                          here.
-                        </p>
-                      </section>
-                    )}
+                    {view === "gallery" && visualization.galleryView}
                   </div>
                 )}
                 <div className="roman-chat-history" hidden={view !== "chat"}>
@@ -696,14 +693,17 @@ function Assistant({
                       voice={localVoice || waitingForVoice}
                       onAnswer={answerQuestion}
                       onChooseProduct={chooseProduct}
+                      renderMedia={visualization.renderMedia}
                     />
                   ) : (
                     <Welcome
                       logoUrl={brandLogoUrl(logoUrl, true)}
                       busy={suspended || ending || state.restoring}
                       onStart={(text) => void startTopic(text)}
+                      onVisualize={visualization.enabled ? () => visualization.openUpload() : undefined}
                     />
                   )}
+                  {visualization.localCards}
                 </div>
                 {(hasCustomerReply || view !== "chat") && (
                   <ReplyActivity
@@ -771,6 +771,7 @@ function Assistant({
                 onStartVoice={
                   !localVoice && !waitingForVoice ? startVoice : undefined
                 }
+                onUpload={visualization.enabled ? () => visualization.openUpload() : undefined}
               />
             </div>
           </div>
@@ -791,6 +792,7 @@ function Assistant({
             </button>
           </BrandedDialog>
         )}
+        {visualization.dialogs}
       </div>
     </RomanViewContext.Provider>
   );

@@ -8,6 +8,7 @@ import type { CatalogResult, CatalogProduct } from "../../../shared/catalog";
 import type { MeasurementToolResult } from "../../../shared/measurements";
 import type { LiveVoice, VoiceClientState } from "../../../shared/voice";
 import type { ProductGallerySnapshot } from "../tools/product-image";
+import type { VisualizationPreparation } from "../../../shared/visualizations";
 
 export interface ConversationClientState {
   availability: "available" | "degraded" | "suspended";
@@ -29,6 +30,12 @@ export interface ConversationClientState {
 }
 
 export interface ConversationClient {
+  noteMediaActivity(): void;
+  /** Obtains an audit identity without a customer text or advisor completion. */
+  ensureMediaConversation(): Promise<{ conversationId: string; conversationToken: string }>;
+  refreshMediaContext(): Promise<void>;
+  /** Accepted image work survives End Chat; the executor still bounds its own lifetime. */
+  prepareVisualizationProduct(path: string, signal: AbortSignal): Promise<VisualizationPreparation>;
   getSnapshot(): ConversationClientState;
   subscribe(listener: () => void): () => void;
   /** Polls public service availability while the assistant is visible. */

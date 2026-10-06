@@ -1,6 +1,44 @@
 import type { VoiceClientState } from "../../../shared/voice";
 import type { ConversationClient } from "../session/types";
 
+export function UploadImageButton({
+  onUpload,
+  hidden = false,
+}: {
+  onUpload: () => void;
+  hidden?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className="roman-composer-action roman-upload-image"
+      data-roman-upload
+      aria-label="Upload image"
+      hidden={hidden}
+      onClick={onUpload}
+    >
+      <span className="roman-action-label" aria-hidden="true">
+        Upload image
+      </span>
+      <span className="roman-action-icon" aria-hidden="true">
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z" />
+          <circle cx="12" cy="13" r="4" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
 export function StartVoiceButton({
   onStart,
   disabled,

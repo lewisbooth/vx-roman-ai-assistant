@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { historySnapshot } from "./helpers/history-snapshot.mjs";
+import { installGalleryFixture, mediaSessionFixture } from "./helpers/gallery-fixture.mjs";
 
 const bundle = await build({
   stdin: {
@@ -84,6 +85,7 @@ async function setup(t, initial = {}, options = {}) {
     assert.equal(new URL(url).pathname, "/cart.js");
     return { ok: true, json: async () => ({ currency: "GBP", item_count: 0, total_price: 0, items: [] }) };
   };
+  installGalleryFixture(window);
   const errors = [];
   window.console.error = (...args) => errors.push(args);
   window.eval(`${bundle.outputFiles[0].text};window.WelcomeThemeTest=WelcomeThemeTest;`);
@@ -108,6 +110,7 @@ async function setup(t, initial = {}, options = {}) {
   };
   const calls = [];
   const session = {
+    ...mediaSessionFixture,
     getSnapshot: () => state,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     clearError() {},
@@ -130,7 +133,7 @@ async function setup(t, initial = {}, options = {}) {
     onReady: () => {},
     onError: (error) => errors.push(error),
   });
-  t.after(() => { dispose(); window.close(); assert.deepEqual(errors, []); });
+  t.after(async () => { dispose(); await delay(0); window.close(); assert.deepEqual(errors, []); });
   await until(() => container.querySelector(".roman-chat") || errors.length, "Assistant did not mount");
   assert.deepEqual(errors, []);
   const tab = (name) => [...container.querySelectorAll(".roman-view-nav a")].find((a) => a.textContent === name);
