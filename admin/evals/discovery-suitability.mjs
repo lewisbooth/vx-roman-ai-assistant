@@ -253,6 +253,87 @@ suitabilityCases.push(
   },
 );
 
+const paneCatalog = [
+  catalogProduct(
+    7300,
+    "Synthetic Glass Rail Privacy Roller Blind",
+    "A light-filtering roller blind for office privacy, designed as a separate blind on each window glass pane. Included adhesive rails mount directly to the glass without drilling. The fitting does not depend on frame material or glazing beads; it does not span the whole window recess.",
+  ),
+  catalogProduct(
+    7301,
+    "Synthetic Pane Privacy Cellular Blind",
+    "A cellular honeycomb blind for office privacy and filtered daylight. Each blind mounts directly to an individual window glass pane with included adhesive rails, without drilling or frame/bead compatibility requirements. It is not a whole-opening recess blind.",
+  ),
+  catalogProduct(
+    7302,
+    "Synthetic Cotton White Privacy Roller Blind",
+    "A light-filtering roller blind for office privacy, mounted across the whole window opening with standard screw-fixed recess brackets. No individual-pane, glass or frame fitting is offered.",
+  ),
+  catalogProduct(
+    7303,
+    "Synthetic Grey Privacy Venetian Blind",
+    "An adjustable aluminium Venetian blind for office privacy, installed with standard screw-fixed wall or recess brackets across the whole opening. Not designed to attach separately to window panes or their frames.",
+  ),
+  catalogProduct(
+    7304,
+    "Synthetic Soft Privacy Roller Blind",
+    "A roller blind with soft filtered light and office privacy. The catalog does not identify its mounting method or support for separate blinds on individual panes.",
+  ),
+  catalogProduct(
+    7305,
+    "Synthetic Clip Privacy Cellular Blind",
+    "A privacy cellular blind for individual window panes with no-drill clips. Requires uPVC frames with compatible rubber glazing beads; it cannot use glass adhesive rails or recess brackets.",
+  ),
+];
+const paneHistory = [
+  { role: "user", text: "Help me find blinds that suit my room and style." },
+  { role: "assistant", text: "Which room are they for?" },
+  { role: "user", text: "Office" },
+  { role: "assistant", text: "What kind of opening are you covering?" },
+  { role: "user", text: "Several panes" },
+  { role: "assistant", text: "How would you like the panes covered?" },
+  { role: "user", text: "Separate blinds on each pane" },
+  { role: "assistant", text: "What matters most for this room?" },
+  { role: "user", text: "Privacy" },
+  { role: "assistant", text: "Does avoiding drilling matter to you?" },
+  { role: "user", text: "Not sure" },
+  { role: "assistant", text: "What colours or patterns appeal to you?" },
+  { role: "user", text: "Open to ideas" },
+];
+const individualPane = /(?:individual|each|separate)[^.]{0,45}(?:pane|panel|glass)|(?:pane|glass|frame)[- ](?:fit|mount)/i;
+const paneCase = {
+  history: paneHistory,
+  fixtureProducts: paneCatalog,
+  eligibleIds: [7300, 7301].map((id) => "gid://shopify/Product/" + id),
+  queryRequirements: [/privacy/i],
+  opening: individualPane,
+  minQueries: 1,
+  maxQueries: 3,
+  answeredFittingPreference: true,
+};
+suitabilityCases.push(
+  { ...paneCase, name: "individual-panes-uncertain-drilling" },
+  {
+    ...paneCase,
+    name: "individual-panes-roller-refinement",
+    history: [
+      ...paneHistory,
+      { role: "assistant", text: "Here are roller and cellular blinds with fittings for individual glass panes. Which style would you like to explore?" },
+      { role: "user", text: "Roller blinds" },
+    ],
+    eligibleIds: ["gid://shopify/Product/7300"],
+    queryRequirements: [/privacy/i, /roller/i],
+    maxQueries: 1,
+  },
+  {
+    ...paneCase,
+    name: "individual-panes-unknown-frame-compatibility",
+    fixtureProducts: paneCatalog.filter(({ id }) => !paneCase.eligibleIds.includes(id)),
+    eligibleIds: [],
+    compatibilityUnresolved: true,
+  },
+);
+
 /** Judge behavior and evidence, without requiring any exact generated sentence. */
 export function gradeSuitabilityReply(sample, fixture, reply, mode = "text") {
   const failures = [];
@@ -268,15 +349,19 @@ export function gradeSuitabilityReply(sample, fixture, reply, mode = "text") {
   const queries = fixture.operations
     .filter((operation) => operation.name === "search_products")
     .flatMap((operation) => operation.queries);
-  check(fixture.attempts === 2, "Discovery must use two completions");
+  const focusedCompatibility = sample.compatibilityUnresolved &&
+    selected.length === 0 && !!question && !question.measurement &&
+    /frame|glaz|bead|uPVC/i.test([question.question, ...(question.answers ?? [])].join(" "));
+  const compatibilityBeforeSearch = focusedCompatibility && fixture.operations.length === 0;
+  check(fixture.attempts === (compatibilityBeforeSearch ? 1 : 2), "Discovery must use two completions, or one for a necessary compatibility question before searching");
   check(
-    fixture.operations.length === 1 &&
-      fixture.operations[0].name === "search_products",
+    compatibilityBeforeSearch ||
+      (fixture.operations.length === 1 && fixture.operations[0].name === "search_products"),
     "Discovery must use one catalogue operation without guides or navigation",
   );
   check(
-    queries.length >= (sample.minQueries ?? 1) &&
-      queries.length <= (sample.maxQueries ?? 1),
+    compatibilityBeforeSearch ||
+      (queries.length >= (sample.minQueries ?? 1) && queries.length <= (sample.maxQueries ?? 1)),
     "Query count did not match broad discovery or the chosen family",
   );
   check(
@@ -306,6 +391,20 @@ export function gradeSuitabilityReply(sample, fixture, reply, mode = "text") {
     !!question && !question.measurement,
     "Missing ordinary follow-up question",
   );
+  if (sample.answeredFittingPreference) {
+    const wording = question?.question ?? "";
+    const answers = question?.answers ?? [];
+    const repeatsPreference =
+      /drill|make holes|regular fitting/i.test(wording) &&
+      /prefer|avoid|matter|important|mind|comfortable|happy|okay|\bok\b|want/i.test(wording);
+    const repeatsAlternatives =
+      answers.some((answer) => noDrill.test(answer)) &&
+      answers.some((answer) => /regular|drill(?:ing)? (?:is )?(?:fine|okay|ok)|don.t mind/i.test(answer));
+    check(
+      !repeatsPreference && !repeatsAlternatives,
+      "An answered uncertain fitting preference was asked again",
+    );
+  }
   if (sample.minFamilies) {
     const families = new Set(
       selected.map((id) => sample.productFamilies[id]).filter(Boolean),
@@ -379,7 +478,9 @@ export function gradeSuitabilityReply(sample, fixture, reply, mode = "text") {
       "Verified family synonyms were denied as matches or required an unnecessary category switch",
     );
   }
-  if (!sample.eligibleIds.length) {
+  if (sample.compatibilityUnresolved) {
+    check(focusedCompatibility, "Unknown pane-fit compatibility needs a focused physical-fit question without unverified cards");
+  } else if (!sample.eligibleIds.length) {
     check(
       /no |not |cannot|can.t|couldn.t|haven.t found|none|unable/i.test(
         message ?? "",

@@ -29,6 +29,10 @@ const id = (value) => "gid://shopify/Product/" + value;
 const nurseryQuery = (family) =>
   `no-drill blackout ${family} for standard rectangular window recess`;
 const queriesFor = (sample) => {
+  if (sample.name === "individual-panes-uncertain-drilling" || sample.compatibilityUnresolved)
+    return ["privacy roller blinds for individual glass panes", "privacy cellular blinds mounted on each pane"];
+  if (sample.name === "individual-panes-roller-refinement")
+    return ["privacy roller blinds for individual window panes"];
   if (sample.name === "explicit-bifold-switch")
     return ["no-drill textured pleated blinds for bifold panels"];
   if (sample.name === "wood-frame-glass-fit")
@@ -54,7 +58,9 @@ function successfulReply(sample) {
       ? "These options suit the requested fitting and light control."
       : "I haven't found an option that meets those requirements.",
     presentation: { productIds: sample.eligibleIds },
-    questionPresentation: sample.categoryQuestion
+    questionPresentation: sample.compatibilityUnresolved
+      ? { question: "Are the window frames uPVC with rubber glazing beads?", answers: ["Yes", "No", "I'm not sure"] }
+      : sample.categoryQuestion || sample.answeredFittingPreference
       ? {
           question: "Which style appeals to you?",
           answers: ["Roller blinds", "Cellular blinds", "Keep exploring"],
@@ -380,5 +386,59 @@ test("direct glass-fit requests retain actual frame compatibility and cannot sil
     const reply = successfulReply(sample);
     reply.presentation.productIds = [id(incompatibleId)];
     failsWith(sample, fixtureFor(sample), reply, /ineligible or unverified/);
+  }
+});
+
+test("individual-pane discovery and family refinement retain coverage in every query", () => {
+  for (const name of ["individual-panes-uncertain-drilling", "individual-panes-roller-refinement"]) {
+    const sample = byName(name);
+    const reply = successfulReply(sample);
+    assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample), reply), []);
+    const queries = queriesFor(sample);
+    queries[queries.length - 1] = "office privacy roller blinds for standard window recess";
+    failsWith(sample, fixtureFor(sample, queries), reply, /current opening/);
+    for (const product of sample.fixtureProducts.filter(({ id }) => !sample.eligibleIds.includes(id))) {
+      const incompatible = { ...reply, presentation: { productIds: [product.id] } };
+      failsWith(sample, fixtureFor(sample), incompatible, /ineligible or unverified/);
+    }
+  }
+});
+
+test("uncertain fitting is an answered preference, while a new compatibility question is distinct", () => {
+  const sample = byName("individual-panes-uncertain-drilling");
+  for (const mode of ["text", "voice"]) {
+    for (const question of [
+      { question: "Would you prefer to avoid drilling?", answers: ["Yes", "No", "Not sure"] },
+      { question: "How should these be fitted?", answers: ["No-drill", "Regular fitting is fine", "Not sure"] },
+    ]) {
+      const reply = { ...successfulReply(sample), questionPresentation: question };
+      if (mode === "voice") reply.text += " " + question.question;
+      assert.ok(gradeSuitabilityReply(sample, fixtureFor(sample), reply, mode).some((failure) => /asked again/.test(failure)));
+    }
+    // The uncertainty check must not mistake evidence-based physical compatibility
+    // for a repeated preference. This is grader calibration, not a required next step.
+    const question = {
+      question: "For the no-drill clip fitting, are your frames uPVC with rubber glazing beads?",
+      answers: ["Yes", "No", "I'm not sure"],
+    };
+    const reply = { ...successfulReply(sample), questionPresentation: question };
+    if (mode === "voice") reply.text += " " + question.question;
+    assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample), reply, mode), []);
+  }
+});
+
+test("unknown direct-mount compatibility allows one focused question before or after search, with no unsuitable cards", () => {
+  const sample = byName("individual-panes-unknown-frame-compatibility");
+  for (const mode of ["text", "voice"]) {
+    const reply = successfulReply(sample);
+    if (mode === "voice") reply.text += " " + reply.questionPresentation.question;
+    for (const fixture of [fixtureFor(sample), { attempts: 1, operations: [] }])
+      assert.deepEqual(gradeSuitabilityReply(sample, fixture, reply, mode), []);
+    for (const product of sample.fixtureProducts) {
+      const unverified = { ...reply, presentation: { productIds: [product.id] } };
+      assert.ok(gradeSuitabilityReply(sample, fixtureFor(sample), unverified, mode).some((failure) => /ineligible or unverified/.test(failure)));
+    }
+    reply.questionPresentation = { question: "Does avoiding drilling matter to you?", answers: ["No-drill", "Regular fitting is fine", "Not sure"] };
+    assert.ok(gradeSuitabilityReply(sample, fixtureFor(sample), reply, mode).some((failure) => /asked again/.test(failure)));
   }
 });

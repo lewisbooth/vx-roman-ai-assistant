@@ -29,6 +29,7 @@ node admin/evals/discovery.mjs --live
 node admin/evals/discovery.mjs --live --flow
 node admin/evals/discovery.mjs --live --flow --case=pleated-category-refinement,pleated-no-eligible,explicit-bifold-switch --max-requests=12
 node admin/evals/discovery.mjs --live --flow --case=nursery-ready-for-cards,pleated-cellular-refinement,wood-frame-recess,wood-frame-glass-fit --max-requests=16
+node admin/evals/discovery.mjs --live --flow --case=individual-panes-uncertain-drilling,individual-panes-roller-refinement,individual-panes-unknown-frame-compatibility --max-requests=12
 node admin/evals/discovery.mjs --live --flow --case=current-product-offer,current-product-accept-answer,current-product-accept-card,current-product-accept-name,current-product-decline --max-requests=24
 node admin/evals/discovery.mjs --live --flow --case=current-product-style-start,current-product-find-start,current-product-explore-start,current-product-no-drill-start --max-requests=8
 ```
@@ -59,6 +60,8 @@ The nursery and mounting regressions use a mixed catalog with verified recess te
 - `wood-frame-glass-fit`: an explicit direct glass-fitting request still requires actual frame compatibility. None of the catalog's products fits this wooden-frame request; expect no cards and alternatives before changing the mounting requirement.
 
 All these cases retain exclusions for wrong opening, drilling, wrong opacity, unsupported fitting or construction family. Fixture/grader checks accept varied wording and inspect selected IDs, batched operation counts, query constraints and question topics. Run them without provider access with `node --test admin/tests/discovery-evaluation.test.mjs`; the importable fixtures and grader live in `discovery-suitability.mjs` and are also included in `npm test`.
+
+Individual-pane cases retain separate-pane coverage through broad discovery and roller refinement after the customer has answered "Not sure" about drilling. Ordinary recess, unspecified-mount and unverified frame-dependent products are excluded; an answered uncertainty does not trigger the same generic fitting question again. A separate case permits one focused frame/glazing compatibility question with no unverified cards when no frame-independent option qualifies. The 2026-10-06 Medium run passed all six text/voice briefing samples, with two completions and one synthetic catalogue operation each (12 provider requests; 4.55–5.85s server-ready). These are backend behavioral samples, not real catalogue or audible voice tests.
 
 Read the saved outputs as well as the assertions. These tests exercise advisor orchestration and synthetic suitability judgment; they do not prove real Shopify relevance, fitting compatibility, image loading or audible GPT-Live delivery. Runtime tests separately cover execution, partial failure, cancellation, persistence and mutation safeguards.
 
