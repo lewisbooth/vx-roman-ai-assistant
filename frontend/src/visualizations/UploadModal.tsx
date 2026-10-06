@@ -1,6 +1,6 @@
 import { useId, useRef, useState, type FormEvent } from "react";
 import { windowTitle, type WindowPhotoDto } from "../../../shared/visualizations";
-import type { ImageSource } from "../../../shared/visualizations/ImageComparison";
+import type { ImageSource, ImageResolver } from "../../../shared/visualizations/ImageComparison";
 import { PrivateImage } from "./PrivateImage";
 import { VisualizationDialog } from "../../../shared/visualizations/VisualizationDialog";
 import { WindowCard } from "./WindowCard";
@@ -9,7 +9,7 @@ import { LoadMoreSentinel } from "./LoadMoreSentinel";
 export interface UploadDraft {
   file: File | null;
   window: WindowPhotoDto | null;
-  preview: ImageSource;
+  preview: ImageResolver;
   title: string;
   cleanup: boolean;
   consent: boolean;

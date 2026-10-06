@@ -1,13 +1,22 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 
-export type ImageSource = string | null | Promise<string | null>;
+/** Private consumers own a lease with idempotent release; public/admin URLs remain borrowed. */
+export interface ImageLease { url: string; release: () => void }
+export type ImageValue = string | ImageLease | null;
+export type ImageSource = ImageValue | Promise<ImageValue>;
+export type ImageResolver = ImageSource | (() => ImageSource);
+export const imageUrl = (value: ImageValue) => typeof value === "string" ? value : value?.url ?? null;
+export const releaseImage = (value: ImageValue) => { if (value && typeof value !== "string") value.release(); };
 
-/** The caller retains authenticated URLs; presentation never fetches private media. */
-export async function preloadImage(source: ImageSource, signal: AbortSignal): Promise<string | null> {
+/** The resolver supplies authorized media; presentation only decodes and owns its lease. */
+export async function preloadImage(source: ImageResolver, signal: AbortSignal): Promise<ImageValue> {
   let image: HTMLImageElement | undefined;
-  const cancel = () => image?.removeAttribute("src");
+  let value: ImageValue = null;
+  let retained = false;
+  const cancel = () => { image?.removeAttribute("src"); releaseImage(value); signal.removeEventListener("abort", cancel); };
   try {
-    const url = await source;
+    value = await (typeof source === "function" ? source() : source);
+    const url = imageUrl(value);
     if (!url || signal.aborted) return null;
     image = new Image();
     image.decoding = "async";
@@ -15,33 +24,39 @@ export async function preloadImage(source: ImageSource, signal: AbortSignal): Pr
     signal.addEventListener("abort", cancel, { once: true });
     image.src = url;
     await image.decode();
-    return !signal.aborted && image.naturalWidth > 0 ? url : null;
+    retained = !signal.aborted && image.naturalWidth > 0;
+    return retained ? value : null;
   } catch {
     return null;
   } finally {
-    signal.removeEventListener("abort", cancel);
+    image = undefined;
+    // A decoded half must still release promptly if the other half is pending.
+    if (!retained) { signal.removeEventListener("abort", cancel); releaseImage(value); }
   }
 }
 
 /** Shared customer/admin comparison, preserving source framing and touch scroll. */
 export function ImageComparison({ before, after, width = 1, height = 1 }: {
-  before: ImageSource;
-  after: ImageSource;
+  before: ImageResolver;
+  after: ImageResolver;
   width?: number;
   height?: number;
 }) {
-  const [images, setImages] = useState<{ before: string | null; after: string | null; beforeSource: ImageSource; afterSource: ImageSource } | null>(null);
+  const [images, setImages] = useState<{ before: string | null; after: string | null; beforeSource: ImageResolver; afterSource: ImageResolver } | null>(null);
   const [split, setSplit] = useState(50);
   const drag = useRef<{ id: number; x: number; y: number; touch: boolean } | null>(null);
   useEffect(() => {
     const abort = new AbortController();
+    let held: ImageValue[] = [];
     setImages(null);
     setSplit(50);
     void Promise.all([preloadImage(before, abort.signal), preloadImage(after, abort.signal)])
       .then(([original, result]) => {
-        if (!abort.signal.aborted) setImages({ before: original, after: result, beforeSource: before, afterSource: after });
+        if (abort.signal.aborted) { releaseImage(original); releaseImage(result); return; }
+        held = [original, result];
+        setImages({ before: imageUrl(original), after: imageUrl(result), beforeSource: before, afterSource: after });
       });
-    return () => abort.abort();
+    return () => { abort.abort(); held.forEach(releaseImage); };
   }, [before, after]);
   const move = (event: PointerEvent<HTMLDivElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();

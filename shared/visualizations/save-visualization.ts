@@ -1,6 +1,7 @@
 export interface VisualizationAsset {
   url: string;
   blob: Blob;
+  release?: () => void;
 }
 
 /** Call with already loaded bytes during the customer's click for native sharing. */

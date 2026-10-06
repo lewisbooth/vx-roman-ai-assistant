@@ -1,20 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { ImageComparison, type ImageSource } from "./ImageComparison";
+import { ImageComparison, type ImageResolver } from "./ImageComparison";
 import { VisualizationDialog } from "./VisualizationDialog";
 import { saveVisualization, type VisualizationAsset } from "./save-visualization";
 
 /** Customer and admin share one result viewer; the caller owns authorized media. */
 export function VisualizationViewer({ title, before, after, width, height, resultAsset, filename, onClose }: {
   title: string;
-  before: ImageSource;
-  after: ImageSource;
+  before: ImageResolver;
+  after: ImageResolver;
   width: number;
   height: number;
-  resultAsset: Promise<VisualizationAsset | null>;
+  resultAsset: Promise<VisualizationAsset | null> | (() => Promise<VisualizationAsset | null>);
   filename: string;
   onClose: () => void;
 }) {
-  const [loaded, setLoaded] = useState<{ request: Promise<VisualizationAsset | null>; asset: VisualizationAsset } | null>(null);
+  const [loaded, setLoaded] = useState<{ request: typeof resultAsset; asset: VisualizationAsset } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const mounted = useRef(false);
@@ -22,12 +22,14 @@ export function VisualizationViewer({ title, before, after, width, height, resul
     mounted.current = true;
     setLoaded(null); setError(null);
     let disposed = false;
-    void resultAsset.then((value) => {
-      if (disposed) return;
+    let held: VisualizationAsset | null = null;
+    void (typeof resultAsset === "function" ? resultAsset() : resultAsset).then((value) => {
+      if (disposed) { value?.release?.(); return; }
+      held = value;
       setLoaded(value ? { request: resultAsset, asset: value } : null);
       if (!value) setError("The image is unavailable. Please close and try again.");
     }).catch(() => { if (!disposed) setError("The image is unavailable. Please close and try again."); });
-    return () => { disposed = true; mounted.current = false; };
+    return () => { disposed = true; mounted.current = false; held?.release?.(); };
   }, [resultAsset]);
   const asset = loaded?.request === resultAsset ? loaded.asset : null;
   const download = async () => {

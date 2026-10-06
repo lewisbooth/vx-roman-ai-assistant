@@ -128,7 +128,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
   };
   const selectForReview = (photo: WindowPhotoDto) => {
     activity(); fileVersion.current++; setDraftError(null);
-    setDraft((current) => { if (!attempts.some((attempt) => attempt.draft.file === current.file && current.file)) release(current); return {file: null, window: photo, preview: client.windowSource(photo), title: photo.title, cleanup: photo.cleanup, consent: true, width: photo.width, height: photo.height}; });
+    setDraft((current) => { if (!attempts.some((attempt) => attempt.draft.file === current.file && current.file)) release(current); return {file: null, window: photo, preview: () => client.windowSource(photo), title: photo.title, cleanup: photo.cleanup, consent: true, width: photo.width, height: photo.height}; });
     setModal(true);
   };
   const selectFile = async (file: File) => {
@@ -222,7 +222,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     catch (error) { setMediaError(error instanceof Error ? error.message : "Your visualization status could not be checked."); }
   };
   const openViewer = (job: VisualizationJobDto) => { activity(); setViewer(job); };
-  const viewerMedia = useMemo(() => viewer ? {before: client.beforeSource(viewer), after: client.resultSource(viewer), resultAsset: client.resultAsset(viewer)} : null, [client, viewer]);
+  const viewerMedia = useMemo(() => viewer ? {before: () => client.beforeSource(viewer), after: () => client.resultSource(viewer), resultAsset: () => client.resultAsset(viewer)} : null, [client, viewer]);
   const renderMedia = (part: MediaPart): ReactNode => {
     const missing = (label: string) => referenceError === sourceVersion ? `${label} could not load. Open Gallery to retry.` : loadedReferences !== sourceVersion ? `Loading your ${label.toLowerCase()}…` : `${label} removed.`;
     if (part.kind === "renamed" || part.kind === "outcome") return null;

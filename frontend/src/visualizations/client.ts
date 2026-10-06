@@ -1,5 +1,6 @@
 import { GALLERY_STORAGE_KEY, isMediaId, isWindowPhotoDto as photo, isVisualizationJobDto as job, type GalleryCredential, type GallerySnapshot, type MediaPart, type VisualizationJobDto, type WindowPhotoDto } from "../../../shared/visualizations";
 import type { ConversationClient } from "../session/types";
+import type { ImageLease } from "../../../shared/visualizations/ImageComparison";
 
 type State = GallerySnapshot & { loading: boolean; error: string | null; persistent: boolean };
 const STORAGE_KEY = GALLERY_STORAGE_KEY;
@@ -24,8 +25,10 @@ export function createGalleryClient(session: ConversationClient) {
   const preparing = new Set<string>();
   const failedPreparations = new Set<string>();
   const uncertainUploads = new Set<string>();
-  const assets = new Map<string, { url: string; blob: Blob }>();
-  const assetRequests = new Map<string, { promise: Promise<{ url: string; blob: Blob } | null>; controller: AbortController }>();
+  // Cache compressed bytes only: eviction cannot revoke a mounted consumer's URL.
+  const assets = new Map<string, Blob>();
+  const assetRequests = new Map<string, { promise: Promise<Blob | null>; controller: AbortController }>();
+  const leases = new Map<string, ImageLease & { key: string; blob: Blob }>();
   let timer: number | undefined;
   let refreshing: Promise<void> | undefined;
   const clientId = crypto.randomUUID();
@@ -129,7 +132,8 @@ export function createGalleryClient(session: ConversationClient) {
   }
   const invalidate = (ids: string[]) => {
     for (const [key, request] of assetRequests) if (ids.some((id) => key.endsWith(`/${id}`))) request.controller.abort();
-    for (const [key, asset] of assets) if (ids.some((id) => key.endsWith(`/${id}`))) { URL.revokeObjectURL(asset.url); assets.delete(key); }
+    for (const key of assets.keys()) if (ids.some((id) => key.endsWith(`/${id}`))) assets.delete(key);
+    for (const lease of leases.values()) if (ids.some((id) => lease.key.endsWith(`/${id}`))) lease.release();
   };
   async function asset(type: "window" | "before" | "result", id: string) {
     await initialize();
@@ -145,14 +149,29 @@ export function createGalleryClient(session: ConversationClient) {
       if (!response.ok || !response.headers.get("content-type")?.startsWith("image/jpeg")) return null;
       const blob = await response.blob();
       if (disposed || controller.signal.aborted || blob.size > 10 * 1024 * 1024) return null;
-      const value = { url: URL.createObjectURL(blob), blob };
-      assets.set(key, value);
-      let total = [...assets.values()].reduce((sum, item) => sum + item.blob.size, 0);
-      for (const [oldKey, old] of assets) { if (assets.size <= 12 && total <= 32 * 1024 * 1024) break; if (oldKey === key) continue; total -= old.blob.size; URL.revokeObjectURL(old.url); assets.delete(oldKey); }
-      return value;
+      assets.set(key, blob);
+      let total = [...assets.values()].reduce((sum, item) => sum + item.size, 0);
+      for (const [oldKey, old] of assets) { if (assets.size <= 12 && total <= 32 * 1024 * 1024) break; if (oldKey === key) continue; total -= old.size; assets.delete(oldKey); }
+      return blob;
     })().catch(() => null).finally(() => assetRequests.delete(key));
     assetRequests.set(key, { promise: request, controller });
     return request;
+  }
+  async function acquire(type: "window" | "before" | "result", id: string) {
+    const blob = await asset(type, id);
+    if (!blob || disposed) return null;
+    // Visible-band consumers release promptly. Bound their retained URLs/bytes
+    // separately from the LRU; never evict a URL an image is still using.
+    const activeBlobs = new Set([...leases.values()].map((lease) => lease.blob));
+    activeBlobs.add(blob);
+    if (leases.size >= 64 || [...activeBlobs].reduce((sum, item) => sum + item.size, 0) > 64 * 1024 * 1024) return null;
+    const url = URL.createObjectURL(blob);
+    const lease = { key: `${type}/${id}`, blob, url, release: () => {
+      if (!leases.delete(url)) return;
+      URL.revokeObjectURL(url);
+    } };
+    leases.set(url, lease);
+    return lease;
   }
   function onVisibility() { if (!document.hidden && access && state.visualizations.some(pending)) void refresh().catch(() => undefined); }
   document.addEventListener("visibilitychange", onVisibility);
@@ -171,10 +190,10 @@ export function createGalleryClient(session: ConversationClient) {
       }
       schedule();
     },
-    windowSource: (item: WindowPhotoDto) => asset("window", item.id).then((value) => value?.url ?? null),
-    resultSource: (item: VisualizationJobDto) => asset("result", item.id).then((value) => value?.url ?? null),
-    beforeSource: (item: VisualizationJobDto) => asset("before", item.id).then((value) => value?.url ?? null),
-    resultAsset: (item: VisualizationJobDto) => asset("result", item.id),
+    windowSource: (item: WindowPhotoDto) => acquire("window", item.id),
+    resultSource: (item: VisualizationJobDto) => acquire("result", item.id),
+    beforeSource: (item: VisualizationJobDto) => acquire("before", item.id),
+    resultAsset: (item: VisualizationJobDto) => acquire("result", item.id),
     async loadWindows() { if (state.nextWindowsCursor) await refresh(state.nextWindowsCursor); },
     async loadVisualizations() { if (state.nextVisualizationsCursor) await refresh(undefined, state.nextVisualizationsCursor); },
     async select(item: WindowPhotoDto) { const conversation = await link(); const value = await api("select", { ...conversation, windowId: item.id }); if (!photo(value)) throw new Error("The window could not be selected."); await session.refreshMediaContext(); return value; },
@@ -238,7 +257,7 @@ export function createGalleryClient(session: ConversationClient) {
       await session.refreshMediaContext();
       return value;
     },
-    dispose() { disposed = true; lifetime.abort(); window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); for (const value of assets.values()) URL.revokeObjectURL(value.url); assets.clear(); listeners.clear(); },
+    dispose() { disposed = true; lifetime.abort(); window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); for (const lease of leases.values()) lease.release(); assets.clear(); listeners.clear(); },
   };
 }
 export type GalleryClient = ReturnType<typeof createGalleryClient>;

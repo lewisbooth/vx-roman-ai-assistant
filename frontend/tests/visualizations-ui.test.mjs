@@ -15,11 +15,12 @@ const bundle = await build({
       import {UploadModal} from './frontend/src/visualizations/UploadModal';
       import {WindowCard} from './frontend/src/visualizations/WindowCard';
       import {PrivateImage} from './frontend/src/visualizations/PrivateImage';
+      import {VisualizationViewer} from './shared/visualizations/VisualizationViewer';
       import {estimatedGenerationProgress} from './frontend/src/visualizations/VisualizationCard';
       export {saveVisualization, estimatedGenerationProgress};
       export function mount(target, kind) {
         const root=createRoot(target);
-        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,image:PrivateImage}[kind];
+        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,image:PrivateImage,viewer:VisualizationViewer}[kind];
         return {render(props){flushSync(()=>root.render(<Component {...props}/>));},dispose(){flushSync(()=>root.unmount());}};
       }
     `,
@@ -95,6 +96,53 @@ test("comparison keeps its reserved canvas and disables the slider if either ima
   assert.equal(mount.querySelector('[role="slider"]'), null);
   assert.match(mount.textContent, /unavailable/);
   assert.equal(mount.firstElementChild.style.aspectRatio, "800 / 600");
+});
+
+test("comparison releases replaced private image leases while retaining the displayed pair", async (t) => {
+  const {mount, api} = setup(t, "comparison");
+  const active = new Set(); let count = 0;
+  const source = () => { const url = `/private-${++count}.jpg`; active.add(url); return {url, release: () => active.delete(url)}; };
+  api.render({before: source, after: source});
+  await delay(25);
+  assert.equal(active.size, 2);
+  for (const image of mount.querySelectorAll("img")) assert.ok(active.has(image.getAttribute("src")));
+  api.render({before: "/borrowed-before.jpg", after: "/borrowed-after.jpg"});
+  await delay(25);
+  assert.equal(active.size, 0);
+  assert.equal(mount.querySelector('[role="slider"]').getAttribute("aria-valuenow"), "50");
+});
+
+test("closing a comparison releases its loaded half without waiting for the other source", async (t) => {
+  const {api} = setup(t, "comparison");
+  const active = new Set();
+  const lease = (url) => { active.add(url); return {url, release: () => active.delete(url)}; };
+  let resolve;
+  const pending = new Promise((done) => { resolve = done; });
+  api.render({before: () => lease("/before.jpg"), after: () => pending});
+  await delay(15);
+  assert.equal(active.size, 1);
+  api.render({before: "/replacement-before.jpg", after: "/replacement-after.jpg"});
+  await delay(15);
+  assert.equal(active.size, 0, "loaded half should release even while the other request is pending");
+  resolve(lease("/late-after.jpg"));
+  await delay(15);
+  assert.equal(active.size, 0, "late response must release without being rendered");
+});
+
+test("fullscreen viewer owns image and download leases and releases them when replaced", async (t) => {
+  const {window, mount, api} = setup(t, "viewer");
+  const active = new Set(); let count = 0;
+  const source = () => { const url = `/private-${++count}.jpg`; active.add(url); return {url, release: () => active.delete(url)}; };
+  const result = () => Promise.resolve({...source(), blob: new window.Blob(["fixture"], {type: "image/jpeg"})});
+  const props = {title: "Kitchen", width: 600, height: 800, filename: "kitchen.jpg", onClose() {}};
+  api.render({...props, before: source, after: source, resultAsset: result});
+  await delay(25);
+  assert.equal(active.size, 3);
+  assert.equal(mount.querySelector(".roman-visualization-save").disabled, false);
+  api.render({...props, before: "/before.jpg", after: "/after.jpg", resultAsset: Promise.resolve(null)});
+  await delay(25);
+  assert.equal(active.size, 0);
+  assert.equal(mount.querySelector(".roman-visualization-save").disabled, true);
 });
 
 test("private Gallery images resolve only near view and release decoded pixels offscreen", async (t) => {
