@@ -627,6 +627,44 @@ test("deletion while the provider is running cannot publish late pixels or relea
   );
 });
 
+test("selected-product previews include older results and exclude other owners, products and unavailable images", async () => {
+  const f = await fixture();
+  const base = await api.startVisualization(f.owner, f.conversation.id, f.input);
+  const original = await database.visualizationJob.findUniqueOrThrow({ where: { id: base.id } });
+  const clone = (overrides = {}) => {
+    const id = randomUUID();
+    return database.visualizationJob.create({ data: {
+      ...original, id, requestId: id, status: "completed", resultKey: `${id}.jpg`,
+      createdAt: new Date(), ...overrides,
+    } });
+  };
+  const older = await clone({ createdAt: new Date("2025-01-01T00:00:00Z") });
+  for (let i = 0; i < 25; i++) await clone({ productPath: "/products/another-blind" });
+  const newer = await clone();
+  await clone({ deletedAt: new Date() });
+  await clone({ status: "generating" });
+  await clone({ resultKey: null });
+  const otherOwner = await fixture();
+  await database.visualizationJob.update({ where: { id: base.id }, data: { status: "failed" } });
+  await database.visualizationJob.create({ data: {
+    ...original, id: randomUUID(), ownerId: otherOwner.owner.id,
+    windowId: otherOwner.photo.id, conversationId: otherOwner.conversation.id,
+    requestId: randomUUID(), status: "completed", resultKey: "other-owner.jpg",
+  } });
+  const firstPage = await api.gallerySnapshot(f.owner.id);
+  assert.ok(!firstPage.visualizations.some((job) => job.id === older.id));
+  const selected = await api.productVisualizations(f.owner.id, productPath);
+  assert.equal(selected.productPath, productPath);
+  assert.deepEqual(selected.visualizations.map((job) => job.id), [newer.id, older.id]);
+  assert.ok(selected.visualizations.every((job) => job.resultAvailable));
+  assert.ok(!JSON.stringify(selected).includes("resultKey"));
+  for (const invalid of [null, "https://other.example/products/test-roman-blind", "/products/test-roman-blind?x=1", "/products/" + "a".repeat(256)])
+    await assert.rejects(api.productVisualizations(f.owner.id, invalid), errorStatus(400));
+  await database.windowPhoto.update({ where: { id: f.photo.id }, data: { deletedAt: new Date() } });
+  assert.deepEqual((await api.productVisualizations(f.owner.id, productPath)).visualizations, []);
+  assert.equal(calls.length, 0);
+});
+
 test("storage failure after a known successful receipt remains failed with the provider cost intact", async () => {
   const f = await fixture();
   const brokenRoot = path.join(directory, "not-a-directory");

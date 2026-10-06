@@ -12,6 +12,7 @@ import {
   visualizationsEnabled,
 } from "./config.server";
 import { normalizeRoomPhoto } from "./image.server";
+import { parseProductPath } from "../../shared/product-path";
 import {
   isMediaId,
   isMediaPart,
@@ -199,6 +200,26 @@ export async function gallerySnapshot(
     nextWindowsCursor: nextCursor(photos),
     nextVisualizationsCursor: nextCursor(jobs),
   };
+}
+/** Product media must include older previews without loading every Gallery page. */
+export async function productVisualizations(ownerId: string, input: unknown) {
+  let productPath: string;
+  try { productPath = parseProductPath(input); }
+  catch { throw new ConversationError(400, "Use a canonical /products/handle path."); }
+  const jobs = await prisma.visualizationJob.findMany({
+    where: {
+      ownerId,
+      productPath,
+      status: "completed",
+      resultKey: { not: null },
+      deletedAt: null,
+      window: { ownerId, deletedAt: null, uploadStatus: "ready" },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    // The existing owner quota bounds metadata; image bytes are fetched on view.
+    take: 500,
+  });
+  return { productPath, visualizations: jobs.map(jobDto) };
 }
 export async function galleryCapacity(
   tx: Prisma.TransactionClient,

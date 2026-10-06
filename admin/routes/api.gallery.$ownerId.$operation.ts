@@ -3,7 +3,7 @@ import prisma from "../db.server";
 import { handleJsonRequest, readJsonObject } from "../conversations/http.server";
 import { ConversationError } from "../conversations/errors.server";
 import { authenticateGallery, linkGalleryConversation } from "../visualizations/auth.server";
-import { deleteVisualization, deleteWindow, gallerySnapshot, jobDto, photoDto, ownedJob, renameWindow, saveWindow, selectWindow, uploadStatus } from "../visualizations/repository.server";
+import { deleteVisualization, deleteWindow, gallerySnapshot, jobDto, photoDto, ownedJob, productVisualizations, renameWindow, saveWindow, selectWindow, uploadStatus } from "../visualizations/repository.server";
 import { claimPreparation, completePreparation, recoverImageJobs, startVisualization } from "../visualizations/jobs.server";
 import { isMediaId, type VisualizationPreparation } from "../../shared/visualizations";
 
@@ -19,6 +19,7 @@ export function loader({ request, params }: LoaderFunctionArgs) {
     const query = new URL(request.url).searchParams;
     switch (params.operation) {
       case "list": return gallerySnapshot(owner.id, query.get("windowsCursor"), query.get("jobsCursor"));
+      case "product-visualizations": return productVisualizations(owner.id, query.get("productPath"));
       case "job": return jobDto(await ownedJob(owner.id, query.get("id") ?? ""));
       case "upload-status": return uploadStatus(owner.id, query.get("requestId") ?? "");
       case "request-status": {
