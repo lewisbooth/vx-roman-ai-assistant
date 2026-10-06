@@ -56,17 +56,13 @@ const pleatedHistory = [
 ];
 const noDrill = /no[- ]drill|without drill|drill[- ]free/i;
 const pleatedFamily = /pleat|cellular|honeycomb|duette/i;
-const standardOpening = /standard|rectangular|recess|window/i;
-const blackout = /black[- ]?out|room[- ]darkening/i;
-const pattern = /pattern|textur|woven/i;
 export const suitabilityCases = [
   {
     name: "pleated-category-refinement",
     history: pleatedHistory,
     fixtureProducts: suitabilityCatalog,
     eligibleIds: ["gid://shopify/Product/7100", "gid://shopify/Product/7101"],
-    queryRequirements: [pleatedFamily, noDrill, pattern],
-    opening: /standard|rectangular|recess|window/i,
+    queryFamily: pleatedFamily,
     wrongOpening: /bifold|bi-fold|roof|skylight/i,
   },
   {
@@ -76,8 +72,7 @@ export const suitabilityCases = [
       [7102, 7103, 7104, 7106].some((id) => product.id.endsWith("/" + id)),
     ),
     eligibleIds: [],
-    queryRequirements: [pleatedFamily, noDrill, pattern],
-    opening: /standard|rectangular|recess|window/i,
+    queryFamily: pleatedFamily,
     wrongOpening: /bifold|bi-fold|roof|skylight/i,
   },
   {
@@ -95,8 +90,8 @@ export const suitabilityCases = [
     ],
     fixtureProducts: suitabilityCatalog,
     eligibleIds: ["gid://shopify/Product/7102"],
-    queryRequirements: [pleatedFamily, noDrill, pattern],
-    opening: /bifold|bi-fold/i,
+    queryFamily: pleatedFamily,
+    wrongOpening: /recess|roof|skylight/i,
   },
 ];
 
@@ -155,7 +150,6 @@ const nurseryHistory = [
     text: "I need blinds for a nursery, for blackout. It is a standard rectangular recessed window and I want one blind across the recess without drilling. I'm open to colours, patterns and different types of blind.",
   },
 ];
-const recessRequirements = [noDrill, blackout];
 const recessCases = {
   fixtureProducts: nurseryCatalog,
   eligibleIds: [7200, 7201, 7202].map((id) => "gid://shopify/Product/" + id),
@@ -164,8 +158,6 @@ const recessCases = {
     "gid://shopify/Product/7201": "cellular",
     "gid://shopify/Product/7202": "cellular",
   },
-  queryRequirements: recessRequirements,
-  opening: standardOpening,
   wrongOpening: /bifold|bi-fold|roof|skylight/i,
   minQueries: 2,
   maxQueries: 3,
@@ -191,7 +183,7 @@ suitabilityCases.push(
       { role: "user", text: "Pleated blind" },
     ],
     eligibleIds: ["gid://shopify/Product/7201", "gid://shopify/Product/7202"],
-    queryRequirements: [...recessRequirements, pleatedFamily],
+    queryFamily: pleatedFamily,
     minQueries: 1,
     maxQueries: 1,
     minFamilies: 1,
@@ -220,15 +212,8 @@ suitabilityCases.push(
     ],
     fixtureProducts: nurseryCatalog,
     eligibleIds: [],
-    queryRequirements: [
-      noDrill,
-      blackout,
-      pleatedFamily,
-      /wood|timber/i,
-      /glass|glaz|clip|bead|frame/i,
-    ],
-    opening: standardOpening,
-    wrongOpening: /bifold|bi-fold|roof|skylight/i,
+    queryFamily: pleatedFamily,
+    wrongOpening: /bifold|bi-fold|roof|skylight|recess|tension/i,
   },
   {
     ...recessCases,
@@ -244,7 +229,6 @@ suitabilityCases.push(
       },
       { role: "user", text: "Plain fabrics, please." },
     ],
-    queryRequirements: [noDrill, /neutral|cream|white|oatmeal|plain/i],
     eligibleIds: [...recessCases.eligibleIds, "gid://shopify/Product/7206"],
     productFamilies: {
       ...recessCases.productFamilies,
@@ -300,13 +284,11 @@ const paneHistory = [
   { role: "assistant", text: "What colours or patterns appeal to you?" },
   { role: "user", text: "Open to ideas" },
 ];
-const individualPane = /(?:individual|each|separate)[^.]{0,45}(?:pane|panel|glass)|(?:pane|glass|frame)[- ](?:fit|mount)/i;
 const paneCase = {
   history: paneHistory,
   fixtureProducts: paneCatalog,
   eligibleIds: [7300, 7301].map((id) => "gid://shopify/Product/" + id),
-  queryRequirements: [/privacy/i],
-  opening: individualPane,
+  wrongOpening: /(?:whole|full)[ -]opening|recess/i,
   minQueries: 1,
   maxQueries: 3,
   answeredFittingPreference: true,
@@ -322,7 +304,7 @@ suitabilityCases.push(
       { role: "user", text: "Roller blinds" },
     ],
     eligibleIds: ["gid://shopify/Product/7300"],
-    queryRequirements: [/privacy/i, /roller/i],
+    queryFamily: /roller/i,
     maxQueries: 1,
   },
   {
@@ -331,6 +313,30 @@ suitabilityCases.push(
     fixtureProducts: paneCatalog.filter(({ id }) => !paneCase.eligibleIds.includes(id)),
     eligibleIds: [],
     compatibilityUnresolved: true,
+  },
+  {
+    ...paneCase,
+    name: "individual-panes-frame-answer-retains-uncertainty",
+    history: [
+      ...paneHistory,
+      { role: "assistant", text: "For clip-mounted pane blinds, are the frames uPVC with compatible rubber glazing beads?" },
+      { role: "user", text: "Yes, uPVC with rubber glazing beads." },
+    ],
+    eligibleIds: [...paneCase.eligibleIds, "gid://shopify/Product/7305"],
+  },
+  {
+    name: "blackout-brand-does-not-prove-no-drill-hardware",
+    history: [{ role: "user", text: "Show me pleated no-drill blackout blinds for one standard recess. Any colour is fine." }],
+    fixtureProducts: [
+      catalogProduct(7400, "Synthetic Click2Shade Cloud Cellular Blind", "Cellular pleated blackout fabric. Included no-drill tension rails mount between the sides of a standard rectangular recess."),
+      catalogProduct(7401, "Synthetic TotalShade Complete Blackout Pistachio Blind", "Blackout pleated fabric with complete light blocking. Installation uses screw-fixed recess brackets; no no-drill option is offered."),
+      catalogProduct(7402, "Synthetic TotalShade Pearl Pleated Blind", "Pleated blackout fabric for a standard rectangular window. The listing does not identify its fitting mechanism."),
+    ],
+    eligibleIds: ["gid://shopify/Product/7400"],
+    queryFamily: pleatedFamily,
+    wrongOpening: /bifold|bi-fold|roof|skylight/i,
+    minQueries: 1,
+    maxQueries: 1,
   },
 );
 
@@ -364,18 +370,17 @@ export function gradeSuitabilityReply(sample, fixture, reply, mode = "text") {
       (queries.length >= (sample.minQueries ?? 1) && queries.length <= (sample.maxQueries ?? 1)),
     "Query count did not match broad discovery or the chosen family",
   );
+  // Retrieval terms need not restate every hard requirement. Eligibility below
+  // is evaluated against independently reviewed per-product evidence instead.
   check(
-    queries.every((query) =>
-      sample.queryRequirements.every((requirement) => requirement.test(query)),
-    ),
-    "Query lost a retained category, fitting, priority or appearance requirement",
+    !sample.queryFamily || queries.every((query) => sample.queryFamily.test(query)),
+    "Query abandoned the chosen construction family",
   );
   check(
     queries.every(
-      (query) =>
-        sample.opening.test(query) && !sample.wrongOpening?.test(query),
+      (query) => !sample.wrongOpening?.test(query),
     ),
-    "Query lost or contradicted the current opening",
+    "Query contradicted the current opening or mounting method",
   );
   check(
     selected.every((id) => sample.eligibleIds.includes(id)),

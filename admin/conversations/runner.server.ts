@@ -280,6 +280,7 @@ async function completeTurn(
       turn.resumeQuestion || !initial.current?.galleryEnabled
         ? undefined
         : await createVisualizationTurn(id, assistantId, signal),
+      (event) => metrics.diagnostic(event),
     );
     signal.throwIfAborted();
     await assertServiceAvailable();
@@ -349,6 +350,7 @@ async function completeTurn(
   } finally {
     if (signal.aborted && outcome !== "complete") outcome = "cancelled";
     console.info("[Roman] Advisor turn metrics.", {
+      conversationId: id, assistantId, requestId: turn.requestId,
       mode: turn.voiceId ? "voice" : "text",
       outcome,
       ...metrics.snapshot(),

@@ -482,6 +482,22 @@ test("duplicate PDF links share one download while source, file and input arrays
   assert.deepEqual(plain(result.source.guideIds), [guideId(1), guideId(2)]);
 });
 
+test("independent selected originals download in one bounded batch and preserve source order", async () => {
+  const complete = new Map();
+  const state = setup((url) => new Promise((resolve) => complete.set(url, resolve)));
+  const saved = state.save();
+  const reading = state.read(saved, [guideId(1), guideId(2)]);
+  await setImmediate();
+  assert.equal(state.calls.length, 2, "Both verified independent files started before either completed.");
+  for (const guide of discovery().guides.slice(0, 2).reverse()) complete.get(guide.url)(response());
+  const result = await reading;
+  assert.equal(result.status, "ready");
+  assert.deepEqual(plain(result.guides.map(({ id }) => id)), [guideId(1), guideId(2)]);
+  assert.deepEqual(plain(result.files.map(({ filename }) => filename)), [1, 2].map((id) => `${guideId(id)}.pdf`));
+  assert.deepEqual(plain(result.source.guideIds), [guideId(1), guideId(2)]);
+  assert.equal(state.timers.size, 0);
+});
+
 test("caller cancellation after a successful first file throws instead of returning partial guidance", async () => {
   const controller = new AbortController();
   const reason = new Error("Customer ended this turn");

@@ -100,17 +100,24 @@ test("completed-pair grading rejects conversion homework, repeated confirmation,
   const incomplete = { ...fixture, operations: fixture.operations.filter(({ name }) => name !== "apply_measurements") };
   assert.ok(gradeConfigurationReply(mixed, incomplete, valid).some(reason => /not applied/.test(reason)));
   const stale = { ...fixture, operations: fixture.operations.slice(0, -1) };
+  assert.deepEqual(gradeConfigurationReply(mixed, stale, valid), []);
+  stale.operations = structuredClone(stale.operations);
+  delete stale.operations.at(-1).result.configuration;
   assert.ok(gradeConfigurationReply(mixed, stale, valid).some(reason => /settled quote/.test(reason)));
 });
 
-test("the fresh configuration supplied in history can validate entry but cannot substitute for the settled reread", async () => {
+test("prior native constraints validate entry while mutation poststate supplies the actual entered pair and settled quote", async () => {
   const fixture = createConfigurationFixture(mixed);
   const productPath = fixture.productPath;
   const input = { productPath, ...mixed.expected, kind: "order", mount: "recess" };
   parseMeasurementToolResult(await fixture.execute("save", "set_measurements", input));
-  parseApplyMeasurementsResult(await fixture.execute("apply", "apply_measurements", { productPath }));
   const reply = completedReply(mixed);
   assert.ok(gradeConfigurationReply(mixed, fixture, reply).some(reason => /settled quote/.test(reason)));
+  const applied = await fixture.execute("apply", "apply_measurements", { productPath });
+  parseApplyMeasurementsResult(applied);
+  parseProductConfigurationResult("get_product_configuration", applied.configuration);
+  assert.deepEqual(gradeConfigurationReply(mixed, fixture, reply), []);
+  assert.deepEqual(fixture.operations.map(({ name }) => name), ["set_measurements", "apply_measurements"]);
   const final = await fixture.execute("reread", "get_product_configuration", { productPath });
   parseProductConfigurationResult("get_product_configuration", final);
   assert.deepEqual(gradeConfigurationReply(mixed, fixture, reply), []);

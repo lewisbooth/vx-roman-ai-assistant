@@ -14,7 +14,7 @@ const bundle = await build({
     import {createAssistantRouter} from './frontend/src/app';
     export function mount(target,props){const router=createAssistantRouter(props),root=createRoot(target);
       root.render(<StrictMode><RouterProvider router={router}/></StrictMode>);
-      return ()=>{root.unmount();router.dispose();};}
+      const dispose=()=>{root.unmount();router.dispose();}; dispose.navigate=(...args)=>router.navigate(...args); return dispose;}
   `, loader: "tsx", resolveDir: cwd() },
   bundle: true, write: false, platform: "browser", format: "iife", globalName: "MediaIntegration", jsx: "automatic",
   define: { "process.env.NODE_ENV": '"development"' },
@@ -38,9 +38,12 @@ async function until(condition, message) {
 }
 
 async function setup(t, options = {}) {
-  const dom = new JSDOM("<!doctype html><roman-ai-assistant></roman-ai-assistant>", {url: "https://shop.example/products/background", runScripts: "outside-only", pretendToBeVisual: true});
+  const nativeProduct = options.nativeProduct ?? (options.active ? {path: "/products/linen", title: "Linen blind"} : null);
+  const nativeMarkup = nativeProduct ? `<app-provider><main id="main"><main-product update-url="true" product-url="${nativeProduct.path}"><h1>${nativeProduct.title}</h1><dynamic-pricing><form data-dynamic-pricing-form></form></dynamic-pricing></main-product></main></app-provider>` : "";
+  const dom = new JSDOM(`<!doctype html>${nativeMarkup}<roman-ai-assistant></roman-ai-assistant>`, {url: "https://shop.example" + (nativeProduct?.path ?? "/products/background"), runScripts: "outside-only", pretendToBeVisual: true});
   const {window} = dom;
   Object.assign(window, {Request, Response, Headers});
+  if (nativeProduct) window.document.body.classList.add("template-product");
   window.document.documentElement.setAttribute("data-roman-open", "");
   window.matchMedia = () => ({matches: false, addEventListener() {}, removeEventListener() {}});
   window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
@@ -64,7 +67,7 @@ async function setup(t, options = {}) {
   };
   const errors = [], calls = [], sent = [], activity = [], listeners = new Set();
   window.console.error = (...args) => errors.push(args);
-  let state = {conversation: options.active ? conversation({active: true}) : null, pending: !!options.pending, restoring: false, error: null, voice: {status: options.voice ? "active" : "idle", muted: false, error: null}};
+  let state = {conversation: options.conversation ?? (options.active ? conversation({active: true}) : null), pending: !!options.pending, restoring: false, error: null, voice: {status: options.voice ? "active" : "idle", muted: false, error: null}};
   let windows = options.saved ? [photo()] : [], visualizations = options.jobs ?? [], historicalJobs = options.productJobs ?? [], pendingParts = [];
   let loseStart = !!options.loseStart, loseStatus = !!options.loseStart, loseUploadStatus = !!options.loseUpload;
   const update = (patch) => { state = {...state, ...patch}; listeners.forEach((listener) => listener()); };
@@ -147,6 +150,7 @@ async function setup(t, options = {}) {
   const setText = async (input, text) => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text); input.dispatchEvent(new window.Event("input", {bubbles: true})); await delay(0); };
   const loaded = async () => { await until(() => dialog()?.querySelector(".roman-photo-preview img"), "Review preview did not load"); dialog().querySelector(".roman-photo-preview img").dispatchEvent(new window.Event("load")); await delay(0); };
   return {window, container, session, update, calls, sent, xhrs, activity, camera, dialog, setText, loaded,
+    launchProduct(path) { return dispose.navigate("/", {state: {visualizeProduct: path, requestId: window.crypto.randomUUID()}}); },
     completeUpload(loseAck = false) { windows = [photo()]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
     async selectTab(name) { const tab = [...container.querySelectorAll(".roman-view-nav a")].find((item) => item.textContent === name); tab.click(); await until(() => tab.getAttribute("aria-current") === "page", "Gallery did not become active"); },
     setCompletedJob() { visualizations = [{...job(), status: "completed", resultAvailable: true, completedAt: new Date().toISOString()}]; },
@@ -217,6 +221,88 @@ test("camera and visualizer welcome open the same non-conversational modal while
   assert.equal(ctx.container.querySelector(".roman-composer form"), form);
   assert.deepEqual(ctx.sent, []);
   assert.equal(ctx.calls.filter((call) => call.path === "/apps/roman/gallery").length, 1, "StrictMode must not duplicate bootstrap");
+});
+
+test("the home visualization tile asks Roman about the verified open product while the camera stays direct", async (t) => {
+  const ctx = await setup(t, {nativeProduct: {path: "/products/background", title: "Background blind"}});
+  [...ctx.container.querySelectorAll(".roman-welcome-tile")].find((tile) => tile.textContent.includes("Visualize in room")).click();
+  await until(() => ctx.sent.length === 1, "Tile did not enter the canonical advisor");
+  assert.match(ctx.sent[0], /visualize/);
+  assert.equal(ctx.dialog(), null);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  ctx.camera().click(); await until(ctx.dialog, "Camera did not remain direct");
+  assert.equal(ctx.sent.length, 1);
+});
+
+test("explicit PDP entry opens upload directly and waits for matching activation without adopting a later product", async (t) => {
+  const ctx = await setup(t, {saved: true, nativeProduct: {path: "/products/background", title: "Background blind"}});
+  await ctx.launchProduct("/products/background"); await until(ctx.dialog, "Explicit PDP launch did not open upload");
+  await until(() => ctx.sent.length === 1, "Existing advisor activation was not requested");
+  assert.match(ctx.sent[0], /Background blind.*photo setup only.*Do not create a preview yet/);
+  assert.doesNotMatch(ctx.sent[0], /\/products\//);
+  ctx.dialog().querySelector('.roman-window-choice').click(); await ctx.loaded();
+  const submit = () => ctx.dialog().querySelector('[type="submit"]');
+  assert.equal(submit().disabled, true);
+  const active = conversation({active: true}); active.current.activeProduct = {path: "/products/background", title: "Background blind"};
+  ctx.update({conversation: active}); await until(() => !submit().disabled, "Matching activation did not enable preview");
+  ctx.update({conversation: conversation({active: true})}); await until(() => submit().disabled, "Product switch did not protect frozen preview");
+  assert.match(ctx.dialog().textContent, /Visualizing Background blind/);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  ctx.dialog().querySelector('[aria-label="Close"]').click(); await delay(0);
+  await ctx.launchProduct("/products/unverified"); await delay(0);
+  assert.equal(ctx.dialog(), null);
+  assert.equal(ctx.sent.length, 1);
+});
+
+test("named saved-photo quick answers select verified ownership before the advisor receives a neutral answer", async (t) => {
+  const question = {type: "question", version: 1, invocationId: questionId, question: "Which saved window?", answers: ["Kitchen window"]};
+  const history = conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}, question]});
+  history.current.pendingQuestion = question;
+  const ctx = await setup(t, {active: true, saved: true, conversation: history});
+  const answer = () => [...ctx.container.querySelectorAll(".roman-question button")].find((button) => button.textContent === "Kitchen window");
+  await until(() => answer() && !answer().disabled, "Photo question did not become usable");
+  answer().click(); await until(() => ctx.sent.length === 1, "Named answer did not continue");
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 1);
+  assert.equal(ctx.session.getSnapshot().conversation.current.selectedWindow.id, windowId);
+  assert.equal(ctx.sent[0], "Kitchen window");
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+});
+
+test("saved-photo cards submit neutral selection rather than implicitly requesting a new paid job", async (t) => {
+  const ctx = await setup(t, {active: true, saved: true, conversation: conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "preview"}]})});
+  await until(() => ctx.container.querySelector(".roman-window-carousel .roman-window-choice"), "Saved window card did not load");
+  ctx.container.querySelector(".roman-window-carousel .roman-window-choice").click();
+  await until(() => ctx.sent.length === 1, "Selection did not enter chat");
+  assert.match(ctx.sent[0], /selection alone is not a request for a new preview/);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+});
+
+test("late named-photo selection after End Chat cannot send an answer into a new conversation", async (t) => {
+  let finish; const selected = new Promise((resolve) => {finish = resolve;});
+  const question = {type: "question", version: 1, invocationId: questionId, question: "Which saved window?", answers: ["Kitchen window"]};
+  const history = conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}, question]}); history.current.pendingQuestion = question;
+  const ctx = await setup(t, {active: true, saved: true, conversation: history, onSelect: () => selected});
+  const answer = () => [...ctx.container.querySelectorAll(".roman-question button")].find((button) => button.textContent === "Kitchen window");
+  await until(() => answer() && !answer().disabled, "Photo question not ready"); answer().click();
+  await until(() => ctx.calls.some((call) => call.path.endsWith("/select")), "Selection did not start");
+  await ctx.session.end(); finish(); await delay(20);
+  assert.deepEqual(ctx.sent, []);
+  assert.equal(ctx.session.getSnapshot().conversation, null);
+});
+
+test("sample Cart navigation preserves a pending numeric question, its draft and source without a customer turn", async (t) => {
+  const question = {type: "question", version: 1, invocationId: questionId, question: "What is the recess width?", answers: [], measurement: {productPath: "/products/linen", label: "Width", unit: "cm", instructions: "Use the smallest of three recess readings."}, navigationActions: [{label: "View Cart", view: "cart"}]};
+  const history = conversation({active: true, parts: [question]}); history.current.pendingQuestion = question;
+  const ctx = await setup(t, {active: true, conversation: history});
+  const shortcut = () => [...ctx.container.querySelectorAll(".roman-question button")].find((button) => button.textContent === "View Cart");
+  await until(() => shortcut() && !shortcut().disabled, "Cart shortcut did not become usable");
+  const input = ctx.container.querySelector(".roman-measurement-field input"); await ctx.setText(input, "150");
+  shortcut().click(); await until(() => ctx.container.querySelector('.roman-view-nav a[href="/cart"]').getAttribute("aria-current") === "page", "Cart did not open");
+  await ctx.selectTab("Chat");
+  assert.equal(ctx.container.querySelector(".roman-measurement-field input"), input);
+  assert.equal(input.value, "150");
+  assert.deepEqual(ctx.session.getSnapshot().conversation.current.pendingQuestion, question);
+  assert.deepEqual(ctx.sent, []);
 });
 
 test("new photo saves before product selection, publishes immediate normalized progress and survives End Chat", async (t) => {

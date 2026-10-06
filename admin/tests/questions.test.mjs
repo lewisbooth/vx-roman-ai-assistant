@@ -29,6 +29,20 @@ const {
 } = module.exports;
 const selection = { question: "Which room?", answers: ["Bedroom", "Kitchen"] };
 
+test("Cart navigation survives choice, measurement and historical part parsing without becoming a measurement answer", () => {
+  const navigationActions = [{label: "View Cart", view: "cart"}];
+  assert.deepEqual(parseQuestionCall({message: "Sample added.", productIds: [], ...selection, navigationActions}).navigationActions, navigationActions);
+  const parsed = parseMeasurementQuestionCall({...measurementCall, navigationActions});
+  assert.deepEqual(parsed.navigationActions, navigationActions);
+  assert.equal(isQuestionAnswer(parsed, "View Cart"), false);
+  const part = {type: "question", version: 1, invocationId: randomUUID(), ...parsed};
+  delete part.message; delete part.productIds;
+  assert.deepEqual(parseQuestionPart(part), part);
+  assert.equal(parseQuestionSelection(selection).navigationActions, undefined);
+  for (const invalid of [[{label: "View Cart", view: "checkout"}], [{label: "Buy", view: "cart"}], [...navigationActions, ...navigationActions], [{...navigationActions[0], extra: true}], null])
+    assert.throws(() => parseQuestionSelection({...selection, navigationActions: invalid}));
+});
+
 test("question selection is bounded, normalized and plain text with distinct answers", () => {
   assert.deepEqual(
     parseQuestionSelection({

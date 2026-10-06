@@ -646,6 +646,7 @@ function modelHistory(
     ? {
         question: pending.question,
         answers: pending.answers,
+        ...(pending.navigationActions ? { navigationActions: pending.navigationActions } : {}),
         ...(pending.measurement ? { measurement: pending.measurement } : {}),
       }
     : undefined;
@@ -729,6 +730,7 @@ function modelHistory(
                     text: `Roman question: ${JSON.stringify({
                       question: part.question,
                       answers: part.answers,
+                      ...(part.navigationActions ? { navigationActions: part.navigationActions } : {}),
                       ...(part.measurement
                         ? { measurement: part.measurement }
                         : {}),
@@ -2077,6 +2079,7 @@ export async function finishTurn(
         selection = parseQuestionSelection({
           question: selected.question,
           answers: selected.answers,
+          ...(selected.navigationActions ? { navigationActions: selected.navigationActions } : {}),
           ...(selected.measurement !== undefined
             ? { measurement: selected.measurement }
             : {}),

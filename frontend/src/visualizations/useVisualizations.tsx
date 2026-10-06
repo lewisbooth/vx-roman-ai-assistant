@@ -11,6 +11,8 @@ import { VisualizationGallery } from "./VisualizationGallery";
 import { VisualizationCard } from "./VisualizationCard";
 import { WindowCard, WindowCarousel } from "./WindowCard";
 import type { ProductGalleryPreview } from "../chat/product-gallery-media";
+import type { QuestionPart } from "../../../shared/questions";
+import { isCurrentProduct } from "../tools/product-controls";
 
 const emptyDraft = (): UploadDraft => ({file: null, window: null, preview: null, title: "", cleanup: true, consent: false});
 type UploadAttempt = {
@@ -39,6 +41,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
   const client = useMemo(() => createGalleryClient(session), [session]);
   const gallery = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [modal, setModal] = useState(false);
+  const [modalProduct, setModalProduct] = useState<{path: string; title: string} | undefined>();
   const [draft, setDraft] = useState<UploadDraft>(emptyDraft);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
@@ -127,10 +130,11 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     if (viewer && !gallery.loading && !gallery.visualizations.some((job) => job.id === viewer.id)) setViewer(null);
   }, [gallery.loading, gallery.visualizations, viewer]);
   const activity = () => session.noteMediaActivity?.();
-  const openUpload = (suggestedTitle?: string | null) => {
+  const openUpload = (suggestedTitle?: string | null, product?: {path: string; title: string} | null) => {
     activity();
     setDraftError(null); setMediaError(null);
     if (suggestedTitle) setDraft((current) => ({...current, title: current.title || suggestedTitle}));
+    setModalProduct(product === null ? undefined : product ?? activeProduct(session.getSnapshot().conversation));
     setModal(true);
   };
   const release = (value: UploadDraft) => {
@@ -144,10 +148,11 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       return value;
     });
   };
-  const selectForReview = (photo: WindowPhotoDto) => {
+  const selectForReview = (photo: WindowPhotoDto, preserveProduct = false) => {
     activity(); fileVersion.current++; setDraftError(null);
     setDraft((current) => { if (!attempts.some((attempt) => attempt.draft.file === current.file && current.file)) release(current); return {file: null, window: photo, preview: () => client.windowSource(photo), title: photo.title, cleanup: photo.cleanup, consent: true, width: photo.width, height: photo.height}; });
     setModal(true);
+    if (!preserveProduct) setModalProduct(activeProduct(session.getSnapshot().conversation));
   };
   const selectFile = async (file: File) => {
     activity(); const version = ++fileVersion.current;
@@ -200,7 +205,11 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       if (attempt.product) {
         const recovered = recover ? await client.recoverStart(attempt.generationId) : null;
         if (recovered) patchAttempt(attempt.requestId, {jobId: recovered.id});
-        else if (continuing()) await client.start(photo, attempt.product.path, attempt.draft.cleanup, attempt.generationId, (job) => patchAttempt(attempt.requestId, {jobId: job.id}));
+        else if (continuing()) {
+          if (activeProduct(session.getSnapshot().conversation)?.path !== attempt.product.path || !isCurrentProduct(attempt.product.path))
+            throw new Error("Return to the blind selected for this photo request before starting its preview.");
+          await client.start(photo, attempt.product.path, attempt.draft.cleanup, attempt.generationId, (job) => patchAttempt(attempt.requestId, {jobId: job.id}));
+        }
       } else {
         // A completed upload already selects the window and refreshes context.
         // Existing windows and recovered uploads still need that context when
@@ -231,16 +240,32 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       if (previous.draft.title !== input.title || previous.draft.cleanup !== input.cleanup) { setDraftError("Check the status of your previous image request before changing its details."); return; }
       setModal(false); void execute(previous, true); return;
     }
+    if (modalProduct && (activeProduct(session.getSnapshot().conversation)?.path !== modalProduct.path || !isCurrentProduct(modalProduct.path))) {
+      setDraftError("Return to the blind selected for this photo request before visualizing, or close this upload to choose another blind."); return;
+    }
     if (attempts.length >= 4) { setDraftError("Wait for one of your photo requests to finish before adding another."); return; }
     activity();
-    const attempt: UploadAttempt = {requestId: crypto.randomUUID(), generationId: crypto.randomUUID(), createdAt: new Date().toISOString(), jobId: null, conversationId: session.getSnapshot().conversation?.id ?? null, draft: {...input, title: windowTitle(input.title)}, product: session.getSnapshot().conversation?.current?.activeProduct ?? undefined, photo: input.window, progress: 0, stage: input.file ? "uploading" : "preparing", error: null};
+    const attempt: UploadAttempt = {requestId: crypto.randomUUID(), generationId: crypto.randomUUID(), createdAt: new Date().toISOString(), jobId: null, conversationId: session.getSnapshot().conversation?.id ?? null, draft: {...input, title: windowTitle(input.title)}, product: modalProduct, photo: input.window, progress: 0, stage: input.file ? "uploading" : "preparing", error: null};
     setModal(false); onCustomerIntent(); showChat(); setAttempts((values) => [...values, attempt]);
     void execute(attempt);
   };
   const chooseWindow = async (photo: WindowPhotoDto) => {
     activity(); setMediaError(null);
-    try { await client.select(photo); setSelectedWindow(photo.id); await sendMessage(`I'd like to use my saved window “${photo.title}”.`); }
+    const conversationId = session.getSnapshot().conversation?.id;
+    try {
+      await client.select(photo);
+      if (session.getSnapshot().conversation?.id !== conversationId || session.getSnapshot().conversation?.status !== "active") return;
+      setSelectedWindow(photo.id);
+      await sendMessage(`Select “${photo.title}” as my saved window photo. This selection alone is not a request for a new preview.`);
+    }
     catch (error) { setMediaError(error instanceof Error ? error.message : "Your window could not be selected."); }
+  };
+  const selectAnswerWindow = async (question: QuestionPart, answer: string) => {
+    const messages = session.getSnapshot().conversation?.messages ?? [];
+    const message = messages.find((item) => item.parts.some((part) => part.type === "question" && part.invocationId === question.invocationId));
+    const ids = message?.parts.flatMap((part) => part.type === "media" && part.kind === "windows" ? part.windowIds : []) ?? [];
+    const matches = gallery.windows.filter((photo) => ids.includes(photo.id) && photo.title === answer);
+    if (matches.length === 1) { await client.select(matches[0]); setSelectedWindow(matches[0].id); }
   };
   const checkJob = async (job: VisualizationJobDto) => {
     activity(); setMediaError(null);
@@ -269,7 +294,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       onRetry={(item) => { const photo = gallery.windows.find((row) => row.id === item.windowId); if (photo) selectForReview(photo); }} /> : <p className="roman-inline-event">{missing("Visualization")}</p>;
   };
   return {
-    enabled: gallery.enabled, openUpload, renderMedia, productPreviews,
+    enabled: gallery.enabled, openUpload, renderMedia, productPreviews, selectAnswerWindow,
     galleryView: <VisualizationGallery {...gallery} error={mediaError ?? gallery.error} selectedWindowId={selectedWindow} windowSource={client.windowSource} resultSource={client.resultSource}
       onUpload={openUpload} onSelectWindow={selectForReview}
       onRenameWindow={async (photo, title) => { activity(); await client.rename(photo, title); }}
@@ -285,8 +310,9 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       const job: VisualizationJobDto = {id: attempt.requestId, windowId: attempt.photo?.id ?? attempt.requestId, windowTitle: attempt.draft.title, productPath: attempt.product?.path ?? "", productTitle: attempt.product?.title ?? "Your room photo", status: attempt.stage === "failed" ? "unknown" : "awaiting_product", width: attempt.photo?.width ?? attempt.draft.width ?? 1024, height: attempt.photo?.height ?? attempt.draft.height ?? 1024, createdAt: attempt.createdAt, startedAt: null, completedAt: null, error: attempt.error, resultAvailable: false};
       return <div key={attempt.requestId} className="roman-local-media"><VisualizationCard job={accepted ?? job} source={attempt.draft.preview} uploadProgress={attempt.stage === "uploading" ? attempt.progress : undefined} onCheck={() => { void execute(attempt, true); }} /></div>;
     })],
-    dialogs: <>{modal && <UploadModal draft={draft} windows={gallery.windows} windowSource={client.windowSource} productTitle={conversation?.current?.activeProduct?.title}
-      onDraftChange={changeDraft} onFile={(file) => { void selectFile(file); }} onSelectWindow={selectForReview} onSubmit={submit} onClose={closeUpload}
+    dialogs: <>{modal && <UploadModal draft={draft} windows={gallery.windows} windowSource={client.windowSource} productTitle={modalProduct?.title}
+      awaitingProduct={!!modalProduct && (selectedProductPath !== modalProduct.path || !isCurrentProduct(modalProduct.path))}
+      onDraftChange={changeDraft} onFile={(file) => { void selectFile(file); }} onSelectWindow={(photo) => selectForReview(photo, true)} onSubmit={submit} onClose={closeUpload}
       error={draftError} hasMoreWindows={!!gallery.nextWindowsCursor} onLoadMoreWindows={() => { void client.loadWindows().catch(() => undefined); }} />}
       {viewer && viewerMedia && <VisualizationViewer key={viewer.id} title={`${viewer.windowTitle} · ${viewer.productTitle}`} {...viewerMedia} width={viewer.width} height={viewer.height} filename={`roman-${viewer.id}.jpg`} onClose={() => setViewer(null)} />}</>,
   };

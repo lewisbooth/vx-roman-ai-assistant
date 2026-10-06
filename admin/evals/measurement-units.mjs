@@ -159,8 +159,8 @@ export function createMeasurementUnitFixture(sample) {
           return value < limits.min || value > limits.max || Math.abs(steps - Math.round(steps)) > 1e-7;
         })) reject("Native range and precision constraints prohibit this unmodified pair.");
         applied = structuredClone(draft);
-        lastConfiguration = undefined;
-        operation.result = { status: "applied", productPath, draftUpdatedAt: draft.updatedAt, message: "The saved dimensions were entered unchanged and verified in the native form. Read the settled product configuration for its quote." };
+        lastConfiguration = read();
+        operation.result = { status: "applied", productPath, draftUpdatedAt: draft.updatedAt, configuration: structuredClone(lastConfiguration), message: "The saved dimensions were entered unchanged. The returned fresh native configuration verifies the pair and settled quote." };
       } else reject(`Measurement continuation forbids ${name}.`);
       return operation.result;
     },
@@ -188,8 +188,9 @@ export function gradeMeasurementUnitReply(sample, fixture, reply) {
     "The exact normalized order pair was not saved once in this turn.");
     check(applications.length === 1 && applications[0].result?.status === "applied", "The completed pair was not applied once in this turn.");
     const final = fixture.operations.at(-1);
-    check(final?.name === "get_product_configuration" && final.result?.configuredPrice === "GBP 93.60" && final.result.measurements.width === expected.width && final.result.measurements.height === expected.height,
-      "The entered pair and settled quote were not reread together.");
+    const configuration = final?.result?.configuration ?? (final?.name === "get_product_configuration" ? final.result : undefined);
+    check(configuration?.configuredPrice === "GBP 93.60" && configuration.measurements.width === expected.width && configuration.measurements.height === expected.height,
+      "The entered pair and settled quote lack fresh native evidence.");
     const pair = new RegExp(`\\b${expected.width}(?:\\.0+)?(?:\\s*cm)?\\s*(?:×|x|by|wide.{0,20})\\s*${expected.height}(?:\\.0+)?\\s*cm\\b`, "i");
     check(pair.test(reply.text) || (dimensionMention(reply.text, expected.width, "cm") && dimensionMention(reply.text, expected.height, "cm")), "The final recap lost an entered dimension or its unit.");
     check(/(?:£|GBP)\s*93\.60\b/.test(reply.text), "The verified configured price was not recapped.");

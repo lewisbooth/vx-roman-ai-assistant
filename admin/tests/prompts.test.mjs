@@ -250,11 +250,11 @@ test("measurement entry and explicit cart actions retain their shared tool contr
   assert.match(save.description, /customer-supplied pair and unit/);
   assert.match(
     applyMeasurementsToolDefinition.description,
-    /No separate customer confirmation/,
+    /No separate (?:customer|measurement) confirmation/,
   );
   assert.match(
     applyMeasurementsToolDefinition.description,
-    /field verification/,
+    /verified applied dimensions/,
   );
   assert.match(applyMeasurementsToolDefinition.description, /native limits/);
   assert.deepEqual(

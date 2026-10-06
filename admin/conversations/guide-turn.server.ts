@@ -44,6 +44,18 @@ export const isGuideTool = (name: string) =>
   name === "discover_guides" ||
   name === "read_library_guides";
 
+/** Missing evidence can be recovered by bounded reads, not action replay. */
+export class MissingMeasuringSourceError extends Error {
+  readonly code = "missing_measuring_source";
+
+  constructor(readonly productPath: string) {
+    super(
+      "This physical reading has no verified applicable measuring source. Complete the already-authorized matching-guide research before presenting it; do not ask permission to research or invent instructions.",
+    );
+    this.name = "MissingMeasuringSourceError";
+  }
+}
+
 export interface GuideReuse {
   cached?: GuideSession;
   read(context: {
@@ -279,9 +291,7 @@ export function createGuideTurn({
         productPath !== measurementProductPath) &&
       libraryBound?.productPath !== productPath
     )
-      throw new Error(
-        "This measurement has no verified measuring guide. Ask a safe clarification instead, without measuring instructions.",
-      );
+      throw new MissingMeasuringSourceError(productPath);
     return libraryBound?.productPath === productPath
       ? {
           sourceCallId: libraryBound.source.sourceCallId,
@@ -499,7 +509,7 @@ export function createGuideTurn({
                     ],
                 ),
               }
-            : await trackTool("get_product_guides", () =>
+            : await trackTool("read_product_guide_files", () =>
                 readProductGuideFiles(
                   {
                     ...guides,

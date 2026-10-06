@@ -2738,39 +2738,16 @@ function libraryContext() {
   return { result, source, inventory, reuse, reads, discoveries, bindings };
 }
 
-test("newly authored Finish for now choices are rejected and leave the original capabilities", async () => {
-  for (const answer of [
-    "Finish for now",
-    "  FINISH   FOR NOW!  ",
-    "Finish for now.",
-  ]) {
-    const env = setup();
-    env.streams.push(
-      events(
-        completed("", {
-          output: [questionCall({ question: "What next?", answers: [answer] })],
-        }),
-      ),
-      events(completed("I'm here to help with your next window.")),
-    );
-    const reply = await env.api.generateReply(
-      [],
-      () => {},
-      new AbortController().signal,
-    );
-    assertNextActions(reply);
-    const outcome = env.calls.requests[1].input.input.find(
-      (item) => item.type === "function_call_output",
-    );
-    assert.match(
-      JSON.parse(outcome.output).error,
-      /never a Finish for now choice/,
-    );
-    assert.equal(env.calls.browserTools.length, 0);
-    assert.ok(
-      !allowedToolNames(env.calls.requests[0].input).includes("finish_for_now"),
-    );
-  }
+test("terminal choice wording remains advisor-owned rather than an execution-loop keyword override", async () => {
+  const env = setup();
+  env.streams.push(events(completed("", {
+    output: [questionCall({ question: "What next?", answers: ["Finish for now"] })],
+  })));
+  const reply = await env.api.generateReply([], () => {}, new AbortController().signal);
+  assert.deepEqual(plain(reply.questionPresentation.answers), ["Finish for now"]);
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(env.calls.browserTools.length, 0);
+  assert.ok(!allowedToolNames(env.calls.requests[0].input).includes("finish_for_now"));
 });
 
 test("a customer stop acknowledgment retains passive capabilities without closing or taking action", async () => {
@@ -4296,7 +4273,7 @@ test("original guide prefixes and scoped cache keys survive different history an
   assert.equal(first.prompt_cache_key, second.prompt_cache_key);
   assert.match(first.prompt_cache_key, /^[a-f0-9]{64}$/);
   assert.deepEqual(first.prompt_cache_options, {
-    mode: "explicit",
+    mode: "implicit",
     ttl: "30m",
   });
   assert.notDeepEqual(first.input.slice(3), second.input.slice(3));
@@ -5187,10 +5164,6 @@ test("invalid terminal cards or question cannot publish a partial recommendation
       { productIds: Array.from({ length: 11 }, (_, i) => productGid(i + 1)) },
     ],
     ["empty question", { productIds: [productGid(123)], question: "" }],
-    [
-      "unsupported answer",
-      { productIds: [productGid(123)], answers: ["Finish for now"] },
-    ],
     ["extra fields", { productIds: [productGid(123)], title: "Forged title" }],
   ])
     await t.test(label, async () => {
@@ -6446,8 +6419,95 @@ test("a fitting-only original cannot authorize a numeric measuring input", async
     env.calls.requests[2].input.input.find(
       (i) => i.call_id === "measurement-1" && i.type === "function_call_output",
     ).output,
-    /no verified measuring guide/,
+    /no verified applicable measuring source/,
   );
+});
+
+test("missing measuring evidence permits bounded source recovery without replaying completed actions", async () => {
+  const env = setup(), executed = [], phases = [], visible = [];
+  env.streams.push(
+    events(completed("", {output: [catalogCall("empty-cart", "clear_cart", {})]})),
+    events(completed("", {output: [measurementCall()]})),
+    events(completed("", {output: [guideLookup("recovery", ["measuring"])]})),
+    events(completed("", {output: [measurementCall()]})),
+  );
+  const reply = await env.api.generateReply([], text => visible.push(text), new AbortController().signal,
+    async (id, name) => {
+      executed.push(name);
+      return name === "get_product_guides" ? guideResult(["measuring"]) : {status: "updated", message: "The cart is empty."};
+    }, "text", undefined, guideOrigin, undefined, undefined, undefined, undefined, undefined, "medium", undefined, undefined, undefined,
+    event => phases.push(event),
+  );
+  assert.deepEqual(executed, ["clear_cart", "get_product_guides"]);
+  assert.deepEqual(allowedToolNames(env.calls.requests[2].input), ["get_product_guides", "ask_question", "ask_measurement"]);
+  assert.equal(reply.questionPresentation.measurement.label, "Width");
+  assert.equal(reply.questionPresentation.sourceCallId, "recovery");
+  assert.equal(visible.length, 1, "the rejected physical reading was never displayed");
+  assert.ok(phases.some(event => event.type === "repair" && event.reason === "missing_source"));
+  assert.equal(phases.filter(event => event.type === "request").length, 4);
+});
+
+test("source recovery exhausts its read allowance and can finish with an honest source limitation", async () => {
+  const env = setup(), executed = [];
+  env.streams.push(
+    events(completed("", {output: [measurementCall()]})),
+    events(completed("", {output: [guideLookup("source-one", ["fitting"])]})),
+    events(completed("", {output: [guideLookup("source-two", ["fitting"])]})),
+    events(completed("", {output: [questionCall({message: "I couldn't verify an applicable measuring method.", question: "Would you like to explore another blind?", answers: ["Explore more blinds"]})]})),
+  );
+  const reply = await env.api.generateReply([], () => {}, new AbortController().signal, async (id, name) => {
+    executed.push(name); return guideResult(["fitting"]);
+  }, "text", undefined, guideOrigin);
+  assert.deepEqual(executed, ["get_product_guides", "get_product_guides"]);
+  assert.deepEqual(allowedToolNames(env.calls.requests[3].input), ["ask_question", "ask_measurement"]);
+  assert.equal(reply.questionPresentation.measurement, undefined);
+});
+
+test("a valid private patch on a source-rejected terminal never replaces authoritative memo during recovery", async () => {
+  const env = setup(), visible = [];
+  const memo = { "Maple/curtain": "PRIVATE_PENDING_LAYER: choose curtains after measuring the blind." };
+  const originalMemo = { ...memo };
+  const rejectedPatch = {
+    set: [{ key: "Maple/reading", text: "PRIVATE_REJECTED_TERMINAL_NOTE: physical width step was displayed." }],
+    forget: ["Maple/curtain"],
+  };
+  env.streams.push(
+    events(completed("", { output: [measurementCall({ ...measurementSelection, memoryUpdate: rejectedPatch }, "missing-source")] })),
+    events(completed("", { output: [guideLookup("recovery-source", ["measuring"])] })),
+    events(completed("", { output: [measurementCall({ ...measurementSelection, memoryUpdate: null }, "verified-reading")] })),
+  );
+  const reply = await memoryReply(env, {
+    memory: { memo, throughSequence: 10, checkpoints: [] },
+    execute: async (_id, name) => {
+      assert.equal(name, "get_product_guides");
+      return guideResult(["measuring"]);
+    },
+    onText: (text) => visible.push(text),
+  });
+  assert.deepEqual(memo, originalMemo);
+  assert.equal(reply.memoryUpdate, undefined);
+  assert.equal(reply.questionPresentation.callId, "verified-reading");
+  assert.equal(visible.length, 1);
+  for (const request of env.calls.requests.slice(1)) {
+    const authoritativeFacts = request.input.input.filter(({ role }) => role === "user");
+    assert.match(JSON.stringify(authoritativeFacts), /PRIVATE_PENDING_LAYER/);
+    assert.doesNotMatch(JSON.stringify(authoritativeFacts), /PRIVATE_REJECTED_TERMINAL_NOTE/,
+      "the rejected tool arguments remain in call history, but cannot become authoritative private notes");
+  }
+});
+
+test("read-only resumption preserves saved navigation shortcuts alongside the unanswered question", async () => {
+  const env = setup();
+  const navigationActions = [{label: "View Cart", view: "cart"}];
+  const saved = {...savedResumeQuestion(false), navigationActions};
+  env.streams.push(
+    events(completed("", {output: [questionCall({...questionSelection, navigationActions: []})]})),
+    events(completed("", {output: [questionCall({...questionSelection, navigationActions}, "restored")]})),
+  );
+  const reply = await env.api.generateReply([], () => {}, new AbortController().signal, async () => assert.fail("no browser action"), "voice", undefined, guideOrigin, saved);
+  assert.equal(reply.questionPresentation.callId, "restored");
+  assert.deepEqual(plain(reply.questionPresentation.navigationActions), navigationActions);
+  assert.match(env.calls.requests[0].input.input.find(item => item.role === "developer" && typeof item.content === "string" && item.content.startsWith("Read-only resume")).content, /navigationActions/);
 });
 
 for(const mode of ['text','voice']) for(const status of ['opened','blocked']) test('checkout returns an outcome-grounded sign-off without an answer-widget repair: '+mode+' '+status,async()=>{

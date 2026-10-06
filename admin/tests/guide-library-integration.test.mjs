@@ -905,7 +905,7 @@ test("general library guidance works without a selected product but cannot creat
   assert.equal(files(state.requests.at(-1)).length, 0);
   assert.match(
     outputs(state.requests.at(-1)).at(-1).error,
-    /no verified measuring guide/,
+    /no verified applicable measuring source/,
   );
 });
 

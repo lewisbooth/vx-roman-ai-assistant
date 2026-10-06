@@ -24,6 +24,7 @@ export function Timeline({
   productsDisabled = false,
   voice = false,
   onAnswer,
+  onNavigate,
   onChooseProduct,
   renderMedia,
 }: {
@@ -36,6 +37,7 @@ export function Timeline({
   productsDisabled?: boolean;
   voice?: boolean;
   onAnswer?: (part: QuestionPart, answer: string) => Promise<void>;
+  onNavigate?: (view: "cart") => void;
   onChooseProduct?: (
     carouselId: string,
     product: CatalogProduct,
@@ -109,6 +111,7 @@ export function Timeline({
               disabled={questionDisabled}
               voice={voice}
               onAnswer={onAnswer!}
+              onNavigate={onNavigate}
               currentTurn={rowIndex >= lastCustomer}
               revealPending={revealPending}
               historySequence={row.message.sequence}

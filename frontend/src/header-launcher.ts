@@ -14,7 +14,7 @@ export function attachHeaderLauncher(
   button.type = "button";
   button.ariaLabel = label;
   button.ariaExpanded = "false";
-  button.className = "roman-header-button";
+  button.className = "r-header";
   const image = document.createElement("img");
   image.alt = "";
   image.src = wordmarkUrl;

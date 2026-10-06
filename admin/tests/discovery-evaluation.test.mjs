@@ -29,7 +29,7 @@ const id = (value) => "gid://shopify/Product/" + value;
 const nurseryQuery = (family) =>
   `no-drill blackout ${family} for standard rectangular window recess`;
 const queriesFor = (sample) => {
-  if (sample.name === "individual-panes-uncertain-drilling" || sample.compatibilityUnresolved)
+  if (sample.name === "individual-panes-uncertain-drilling" || sample.name === "individual-panes-frame-answer-retains-uncertainty" || sample.compatibilityUnresolved)
     return ["privacy roller blinds for individual glass panes", "privacy cellular blinds mounted on each pane"];
   if (sample.name === "individual-panes-roller-refinement")
     return ["privacy roller blinds for individual window panes"];
@@ -185,21 +185,16 @@ test("pleated refinement admits evidence-backed cellular and honeycomb terms wit
   failsWith(sample, fixtureFor(sample), noMatches, /card presence/);
 });
 
-test("refinements retain blackout, no-drill, construction family and standard-opening constraints", () => {
+test("concise family queries need not repeat every goal, while cards retain all eligibility requirements", () => {
   const sample = byName("pleated-cellular-refinement");
   const reply = successfulReply(sample);
   for (const query of [
     "no-drill honeycomb blinds for a standard window recess",
     "blackout honeycomb blinds for a standard window recess",
-    "no-drill blackout roller blinds for a standard window recess",
   ]) {
-    failsWith(
-      sample,
-      fixtureFor(sample, [query]),
-      reply,
-      /retained category, fitting, priority/,
-    );
+    assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample, [query]), reply), []);
   }
+  failsWith(sample, fixtureFor(sample, ["no-drill blackout roller blinds"]), reply, /chosen construction family/);
   failsWith(
     sample,
     fixtureFor(sample, [
@@ -374,14 +369,10 @@ test("direct glass-fit requests retain actual frame compatibility and cannot sil
   const sample = byName("wood-frame-glass-fit");
   const good = successfulReply(sample);
   assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample), good), []);
-  failsWith(
-    sample,
-    fixtureFor(sample, [
-      "no-drill blackout cellular glass-fit blinds for standard windows",
-    ]),
-    good,
-    /retained category, fitting, priority/,
-  );
+  assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample, [
+    "blackout cellular glass-fit blinds",
+  ]), good), []);
+  failsWith(sample, fixtureFor(sample, ["blackout cellular recess tension blinds"]), good, /current opening or mounting/);
   for (const incompatibleId of [7200, 7201, 7202, 7205]) {
     const reply = successfulReply(sample);
     reply.presentation.productIds = [id(incompatibleId)];
@@ -389,7 +380,7 @@ test("direct glass-fit requests retain actual frame compatibility and cannot sil
   }
 });
 
-test("individual-pane discovery and family refinement retain coverage in every query", () => {
+test("individual-pane retrieval excludes contradictory openings and never admits unsupported mounting cards", () => {
   for (const name of ["individual-panes-uncertain-drilling", "individual-panes-roller-refinement"]) {
     const sample = byName(name);
     const reply = successfulReply(sample);
@@ -401,6 +392,31 @@ test("individual-pane discovery and family refinement retain coverage in every q
       const incompatible = { ...reply, presentation: { productIds: [product.id] } };
       failsWith(sample, fixtureFor(sample), incompatible, /ineligible or unverified/);
     }
+  }
+});
+
+test("a physical frame answer does not reopen the already answered uncertain drilling preference", () => {
+  const sample = byName("individual-panes-frame-answer-retains-uncertainty");
+  assert.match(sample.history.at(-1).text, /uPVC/);
+  for (const mode of ["text", "voice"]) {
+    const reply = successfulReply(sample);
+    assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample), reply, mode), []);
+    reply.questionPresentation = {
+      question: "Does avoiding drilling matter?",
+      answers: ["No-drill", "Regular fitting is fine", "Not sure"],
+    };
+    if (mode === "voice") reply.text += " " + reply.questionPresentation.question;
+    failsWith(sample, fixtureFor(sample), reply, /asked again/);
+  }
+});
+
+test("a blackout brand or neighbouring tension-fitted result does not prove the product's own no-drill mounting", () => {
+  const sample = byName("blackout-brand-does-not-prove-no-drill-hardware");
+  const reply = successfulReply(sample);
+  assert.deepEqual(gradeSuitabilityReply(sample, fixtureFor(sample, ["pleated blackout blinds"]), reply), []);
+  for (const productId of [id(7401), id(7402)]) {
+    const leaked = { ...reply, presentation: { productIds: [...sample.eligibleIds, productId] } };
+    failsWith(sample, fixtureFor(sample), leaked, /ineligible or unverified/);
   }
 });
 

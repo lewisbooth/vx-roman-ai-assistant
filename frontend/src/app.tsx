@@ -41,6 +41,7 @@ import { liveSnapshotMessages } from "./session/live-messages";
 import { persistWelcomeState } from "./welcome-state";
 import { brandLogoUrl } from "./brand-logo";
 import { useVisualizations, committedMediaIntent } from "./visualizations/useVisualizations";
+import { currentVisualizationProduct } from "./visualizations/entry";
 import {
   isQuestionAnswer,
   currentQuestion,
@@ -304,6 +305,11 @@ function Assistant({
     setAnswering(true);
     try {
       following.current = true;
+      await visualization.selectAnswerWindow(part, answer);
+      const ready = session.getSnapshot();
+      if (ready.conversation?.id !== current.conversation.id || ready.conversation?.status !== "active" ||
+          currentQuestion(ready.conversation, navigation.getSnapshot().url)?.invocationId !== part.invocationId)
+        throw new Error("This question is no longer waiting for an answer. Continue with the latest message.");
       if (current.voice.status === "active") {
         await session.sendVoiceAnswer(part.invocationId, answer);
       } else if (localVoice || waitingForVoice) {
@@ -503,6 +509,21 @@ function Assistant({
     sendMessage, showChat: () => showView("chat"),
   });
 
+  const visualizationLaunch = useRef<string>();
+  // Availability/restoration may finish after the route arrives. The transient
+  // launch ID is consumed once; ordinary render commits do not reopen a modal.
+  useEffect(() => {
+    const launch = location.state as { visualizeProduct?: unknown; requestId?: unknown } | null;
+    if (!launch || typeof launch.requestId !== "string" || typeof launch.visualizeProduct !== "string" ||
+        visualizationLaunch.current === launch.requestId || state.restoring || suspended || !visualization.enabled) return;
+    visualizationLaunch.current = launch.requestId;
+    const product = currentVisualizationProduct(launch.visualizeProduct);
+    if (!product) return;
+    visualization.openUpload(undefined, product);
+    if (selectedProduct?.path !== product.path)
+      void startTopic(`Please select the ${product.title} I'm currently viewing for photo setup only. Do not create a preview yet; I'll submit the upload form when ready.`);
+  });
+
   return (
     <RomanViewContext.Provider value={showView}>
       <div
@@ -693,6 +714,7 @@ function Assistant({
                       }
                       voice={localVoice || waitingForVoice}
                       onAnswer={answerQuestion}
+                      onNavigate={showView}
                       onChooseProduct={chooseProduct}
                       renderMedia={visualization.renderMedia}
                     />
@@ -701,7 +723,11 @@ function Assistant({
                       logoUrl={brandLogoUrl(logoUrl, true)}
                       busy={suspended || ending || state.restoring}
                       onStart={(text) => void startTopic(text)}
-                      onVisualize={visualization.enabled ? () => visualization.openUpload() : undefined}
+                      onVisualize={visualization.enabled ? () => {
+                        if (currentVisualizationProduct())
+                          void startTopic("I'd like to visualize blinds in my room.");
+                        else visualization.openUpload(undefined, null);
+                      } : undefined}
                     />
                   )}
                   {visualization.localCards}

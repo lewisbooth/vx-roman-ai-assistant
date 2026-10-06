@@ -74,12 +74,19 @@ import { readLibraryGuidesToolDefinition } from "../guides/library.server";
 import {
   createGuideTurn,
   isGuideTool,
+  MissingMeasuringSourceError,
   type GuideReuse,
   type LibraryReuse,
 } from "./guide-turn.server";
 
 export const TEXT_MODEL = PRIMARY_TEXT_MODEL;
 export const TEXT_SERVICE_TIER = "fast";
+
+/** Bounded phase facts only; never provider bodies, arguments or customer text. */
+export type ModelTurnDiagnostic =
+  | { type: "request"; ordinal: number; model: string; inputItems: number; durableInputBytes: number; checkpoint: boolean; compactionEnabled: boolean; allowedTools: number; cacheMode: "implicit" }
+  | { type: "repair"; reason: "missing_source" | "invalid_json" | "terminal_validation" | "missing_terminal" | "incomplete_terminal" }
+  | { type: "checkpoint"; status: "valid" | "rejected"; bytes: number; throughSequence: number };
 
 // The provider counts reasoning and structured tool arguments as output too.
 const OUTPUT_TOKEN_BUDGET = 8192;
@@ -297,6 +304,7 @@ export async function generateReply(
   memory?: ModelMemory,
   recallHistory?: (input: unknown, signal: AbortSignal) => Promise<unknown>,
   visualizations?: VisualizationTurn,
+  onDiagnostic?: (event: ModelTurnDiagnostic) => void,
 ): Promise<ModelReply> {
   const trackTool = async <T>(name: string, action: () => Promise<T>) => {
     onToolActivity?.(name, true);
@@ -315,6 +323,7 @@ export async function generateReply(
   const histories = new Map<string, ModelMessage[]>();
   let compactedThisTurn = false;
   let recallCalls = 0;
+  let requestOrdinal = 0;
   const appendInput = (...items: ResponseInput) => {
     input.push(...items);
     replay.push(...items.filter((item) => item.type !== "compaction"));
@@ -341,16 +350,17 @@ export async function generateReply(
   };
   const checkpoint = (model: string): ContextCheckpoint | undefined => {
     if (!memory || !compactedThisTurn) return undefined;
+    const candidate = { model, throughSequence: memory.throughSequence, input: [...input] };
+    const bytes = Buffer.byteLength(JSON.stringify(candidate), "utf8");
     try {
-      return parseCheckpoint({
-        model,
-        throughSequence: memory.throughSequence,
-        input: [...input],
-      });
+      const parsed = parseCheckpoint(candidate);
+      onDiagnostic?.({ type: "checkpoint", status: "valid", bytes, throughSequence: memory.throughSequence });
+      return parsed;
     } catch {
       // A provider-sized checkpoint must never turn a completed shopping action
       // into a failed reply. The original transcript still supplies the next call.
-      console.warn("[Roman] Context checkpoint exceeded storage bounds.");
+      onDiagnostic?.({ type: "checkpoint", status: "rejected", bytes, throughSequence: memory.throughSequence });
+      console.warn("[Roman] Context checkpoint was not persisted.", { bytes, throughSequence: memory.throughSequence });
       return undefined;
     }
   };
@@ -359,9 +369,11 @@ export async function generateReply(
   const withinToolBudget = (name: string) =>
     browserCalls < 4 ||
     (actions.configurationMode &&
-      (isConfigurationStep(name) || actions.isConfigurationCompletion(name)) &&
+      (isConfigurationStep(name) || isGuideTool(name) || actions.isConfigurationCompletion(name)) &&
       browserCalls < MAX_TURN_TOOL_CALLS);
   let answerRepair = false;
+  let sourceRecovery = false;
+  let sourceRecoveryReads = 0;
   let outputTokenBudget = OUTPUT_TOKEN_BUDGET;
   const availableProducts = new Map<string, string>();
   const guides = createGuideTurn({
@@ -444,13 +456,13 @@ export async function generateReply(
     ? [
         {
           role: "developer",
-          content: `Read-only resume of the saved question${history.some((message) => message.source === "application_state" && message.pendingQuestion) ? " in application state" : `: ${JSON.stringify({ question: resumeQuestion.question, answers: resumeQuestion.answers, ...(resumeQuestion.measurement ? { measurement: resumeQuestion.measurement } : {}) })}`}. Preserve its question, answers and measurement identity. Read only missing source evidence; no actions or new product cards.`,
+          content: `Read-only resume of the saved question${history.some((message) => message.source === "application_state" && message.pendingQuestion) ? " in application state" : `: ${JSON.stringify({ question: resumeQuestion.question, answers: resumeQuestion.answers, navigationActions: resumeQuestion.navigationActions ?? [], ...(resumeQuestion.measurement ? { measurement: resumeQuestion.measurement } : {}) })}`}. Preserve its question, answers, navigation actions and measurement identity. Read only missing source evidence; no actions or new product cards.`,
         },
       ]
     : [];
   replyRounds: for (
     let round = 0;
-    round < (actions.configurationMode ? 16 : 8) + (answerRepair ? 1 : 0);
+    round < (actions.configurationMode ? 16 : 8) + (sourceRecovery ? 3 : 0) + (answerRepair ? 1 : 0);
     round++
   ) {
     signal.throwIfAborted();
@@ -463,6 +475,8 @@ export async function generateReply(
         return false;
       if (name === "ask_question" || name === "ask_measurement") return true;
       if (answerRepair) return false;
+      if (sourceRecovery)
+        return isGuideTool(name) && sourceRecoveryReads < 2 && browserCalls < MAX_TURN_TOOL_CALLS;
       if (name === "recall_history") return recallCalls < 2;
       if (isVisualizationTool(name)) return !!visualizations?.allows();
       return withinToolBudget(name) && actions.allows(name);
@@ -494,6 +508,14 @@ export async function generateReply(
       text = "";
       try {
         signal.throwIfAborted();
+        onDiagnostic?.({
+          type: "request", ordinal: ++requestOrdinal, model,
+          inputItems: durableInput.length,
+          durableInputBytes: Buffer.byteLength(JSON.stringify(durableInput), "utf8"),
+          checkpoint: durableInput.some((item) => item.type === "compaction"),
+          compactionEnabled: !!memory && shouldCompactContext(durableInput),
+          allowedTools: tools.length, cacheMode: "implicit",
+        });
         const stream = await client.responses.create(
           {
             model,
@@ -530,7 +552,9 @@ export async function generateReply(
                 ]),
               )
               .digest("hex"),
-            prompt_cache_options: { mode: "explicit", ttl: "30m" },
+            // Keep explicit stable/PDF prefixes while permitting reuse at
+            // immutable history/tool endings before changing notes/state.
+            prompt_cache_options: { mode: "implicit", ttl: "30m" },
             include: ["reasoning.encrypted_content"],
             ...(stableTools.length
               ? {
@@ -664,6 +688,7 @@ export async function generateReply(
     await assertServiceAvailable();
     if (repairIncompleteAnswer) {
       answerRepair = true;
+      onDiagnostic?.({ type: "repair", reason: "incomplete_terminal" });
       console.warn("[Roman] Repairing incomplete reply.", {
         providerStatus: "incomplete",
         incompleteReason: "max_messages",
@@ -712,6 +737,7 @@ export async function generateReply(
       if (answerRepair)
         throw new Error("Roman did not finish with a valid answer request.");
       answerRepair = true;
+      onDiagnostic?.({ type: "repair", reason: "missing_terminal" });
       appendInput({
         role: "developer",
         content:
@@ -796,18 +822,12 @@ export async function generateReply(
                 }
               : undefined;
           if (
-            selection.answers.some((answer) =>
-              /^finish\s+for\s+now[.!]?$/i.test(answer),
-            )
-          )
-            throw new Error(
-              "Offer useful capabilities, never a Finish for now choice.",
-            );
-          if (
             resumeQuestion &&
             (selection.question !== resumeQuestion.question ||
               JSON.stringify(selection.answers) !==
                 JSON.stringify(resumeQuestion.answers) ||
+              JSON.stringify(selection.navigationActions ?? []) !==
+                JSON.stringify(resumeQuestion.navigationActions ?? []) ||
               selection.measurement?.productPath !==
                 resumeQuestion.measurement?.productPath ||
               selection.measurement?.label !==
@@ -866,7 +886,10 @@ export async function generateReply(
             throw new Error(
               "Roman did not finish with a valid answer request.",
             );
-          answerRepair = true;
+          const recoverSource = error instanceof MissingMeasuringSourceError && !sourceRecovery;
+          if (recoverSource) sourceRecovery = true;
+          else answerRepair = true;
+          onDiagnostic?.({ type: "repair", reason: recoverSource ? "missing_source" : error instanceof SyntaxError ? "invalid_json" : "terminal_validation" });
           appendInput({
             type: "function_call_output",
             call_id: call.call_id,
@@ -878,7 +901,9 @@ export async function generateReply(
                     ? error.message
                     : "Invalid answer request.",
               instruction:
-                "No answer request was displayed. Correct it once using ask_question or ask_measurement. Keep the confirmed outcome in message. Do not repeat completed work; only an answer request is available.",
+                recoverSource
+                  ? "No answer was displayed. Read only the missing applicable guide evidence (at most two source operations), then finish with ask_question or ask_measurement. Research is already authorized. Preserve completed actions; do not repeat them. If no applicable source can be verified, explain the limitation without physical instructions."
+                  : "No answer request was displayed. Correct it once using ask_question or ask_measurement. Keep the confirmed outcome in message. Do not repeat completed work; only an answer request is available.",
             }),
           });
           continue;
@@ -888,6 +913,8 @@ export async function generateReply(
         throw new Error(
           "Only an answer request can repair the completed work's reply.",
         );
+      if (sourceRecovery && (!isGuideTool(call.name) || sourceRecoveryReads >= 2))
+        throw new Error("Only bounded missing-source reads can recover this answer.");
       if (call.name === "recall_history") {
         if (!recallHistory || ++recallCalls > 2)
           throw new Error(
@@ -923,12 +950,13 @@ export async function generateReply(
         });
         continue;
       }
-      if (!execute || !withinToolBudget(call.name))
+      if (!execute || !(withinToolBudget(call.name) || (sourceRecovery && isGuideTool(call.name) && sourceRecoveryReads < 2 && browserCalls < MAX_TURN_TOOL_CALLS)))
         throw new Error(
           "Roman reached the storefront tool limit for this reply.",
         );
       browserCalls++;
       if (isGuideTool(call.name)) {
+        if (sourceRecovery) sourceRecoveryReads++;
         const result = await guides.read(call);
         if (result.resumeFailure)
           return {

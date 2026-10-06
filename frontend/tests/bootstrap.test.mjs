@@ -111,7 +111,7 @@ function setup(t, beforeImport, { url = `${origin}/`, storage = {}, header = tru
     close: () =>
       host.shadowRoot.querySelector('button[aria-label="Close assistant"]'),
     progress: () => host.shadowRoot.querySelector('[role="progressbar"]'),
-    retry: () => host.shadowRoot.querySelector("[data-roman-retry]"),
+    retry: () => host.shadowRoot.querySelector(".r-retry"),
   };
 }
 
@@ -145,6 +145,7 @@ function installRuntime(window, readiness = () => Promise.resolve()) {
           mount.open.push(open);
           if (!open) composerFocus.cancel();
         },
+        visualizeProduct: (path) => { (mount.visualizations ??= []).push(path); },
         dispose: () => {
           mount.disposed++;
           content.remove();
@@ -259,7 +260,7 @@ for (const welcome of [true, false]) {
       },
     });
     ctx.launcher().click();
-    const logo = ctx.panel().querySelector(".roman-brand");
+    const logo = ctx.panel().querySelector(".r-brand");
     const originalLogo = logo.src;
     loadingScript(ctx.document).dispatchEvent(new ctx.window.Event("error"));
     await until(() => !hidden(ctx.retry()), "loader did not expose the retry action");
@@ -434,7 +435,7 @@ function headerLauncher(document) {
 
 function headerButton(document) {
   return headerLauncher(document)?.shadowRoot?.querySelector(
-    ".roman-header-button",
+    ".r-header",
   );
 }
 
@@ -448,6 +449,33 @@ test("the production bootstrap excludes React, the app and storefront navigation
     inputs,
     /frontend\/src\/(?:main\.tsx|app\.tsx|navigation\/)/,
   );
+  assert.doesNotMatch(inputs, /frontend\/src\/(?:tools\/|visualizations\/entry)/);
+});
+
+test("a canonical PDP button click waits for runtime readiness and leaves native verification in the lazy runtime", async (t) => {
+  const readiness = deferred();
+  const ctx = setup(t, undefined, {url: `${origin}/products/native-blind`});
+  const {window, document} = ctx;
+  document.body.classList.add("template-product");
+  document.querySelector("main").innerHTML = '<main-product update-url="true" product-url="/products/native-blind"><h1>Native blind</h1><dynamic-pricing><form data-dynamic-pricing-form></form></dynamic-pricing></main-product><button data-roman-visualize-product="/products/native-blind"><span>Visualize in my room</span></button>';
+  const mounts = installRuntime(window, () => readiness.promise);
+  document.querySelector("button[data-roman-visualize-product] span").click();
+  await until(() => loadingScript(document), "Explicit launch did not open Roman");
+  loadingScript(document).dispatchEvent(new window.Event("load"));
+  await until(() => mounts.length === 1, "Runtime did not mount");
+  mounts[0].onThemeChange(true);
+  assert.equal(mounts[0].visualizations, undefined);
+  readiness.resolve();
+  await until(() => mounts[0].visualizations?.length === 1, "Launch was not delivered after readiness");
+  assert.deepEqual(mounts[0].visualizations, ["/products/native-blind"]);
+  document.querySelector("button[data-roman-visualize-product]").dataset.romanVisualizeProduct = "/products/other";
+  document.querySelector("button[data-roman-visualize-product]").click();
+  await delay(0);
+  assert.deepEqual(mounts[0].visualizations, ["/products/native-blind", "/products/other"], "The shell forwards canonical paths; the lazy runtime owns native validation");
+  document.querySelector("button[data-roman-visualize-product]").dataset.romanVisualizeProduct = "/products/native-blind?launch=true";
+  document.querySelector("button[data-roman-visualize-product]").click();
+  await delay(0);
+  assert.equal(mounts[0].visualizations.at(-1), "/products/native-blind?launch=true", "The shell does not parse page authority; the lazy runtime rejects noncanonical product paths");
 });
 
 test("the header-only shell waits for a click before requesting runtime or loading assistant images", async (t) => {
@@ -492,7 +520,7 @@ test("the header-only shell waits for a click before requesting runtime or loadi
   );
   assert.ok(document.querySelector("style[data-roman-layout]"));
   assert.equal(loadingScript(document).src, runtimeUrl);
-  assert.deepEqual(logs, ["Hello from Roman"]);
+  assert.deepEqual(logs, [], "Opening the assistant should not emit debug chatter");
   close().click();
   button.click();
   await delay(0);
@@ -988,7 +1016,7 @@ test("synchronous mount errors clear partial content and allow retry without ano
   loadingScript(document).dispatchEvent(new window.Event("load"));
   await until(() => !hidden(retry()), "mount failure did not expose Retry");
   assert.equal(
-    host.shadowRoot.querySelector("[data-roman-content]").childElementCount,
+    host.shadowRoot.querySelector(".roman-frame").childElementCount,
     0,
   );
   assert.equal(mounts.length, 0);
@@ -1282,7 +1310,7 @@ test("the actual React runtime keeps its rendered content and storefront state a
     () => mounts === 1 && hidden(progress()),
     "React content never became ready",
   );
-  const content = host.shadowRoot.querySelector("[data-roman-content]");
+  const content = host.shadowRoot.querySelector(".roman-frame");
   const heading = content.querySelector("h1");
   const conversation = content.querySelector(".roman-conversation");
   assert.ok(heading);

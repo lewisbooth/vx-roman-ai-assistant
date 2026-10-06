@@ -169,6 +169,24 @@ test("measurement input has a unit hint and useful guide instructions without st
   assert.deepEqual(ctx.calls, []);
 });
 
+test("View Cart navigates without submitting or clearing a numeric draft and does not duplicate a normal choice shortcut", (t) => {
+  const navigated = [];
+  const ctx = setup(t, {part: {...part, navigationActions: [{label: "View Cart", view: "cart"}]}, onNavigate: (view) => navigated.push(view)});
+  ctx.fill("1 1/2 in");
+  const shortcut = [...ctx.container.querySelectorAll("button")].find((button) => button.textContent === "View Cart");
+  ctx.flush(() => shortcut.click());
+  assert.deepEqual(navigated, ["cart"]);
+  assert.deepEqual(ctx.calls, []);
+  assert.equal(ctx.input().value, "1 1/2 in");
+  assert.equal(ctx.container.querySelector("section").getAttribute("aria-busy"), "false");
+  ctx.render({part: {...part, measurement: undefined, question: "Where next?", answers: ["Help me measure", "View Cart"], navigationActions: [{label: "View Cart", view: "cart"}]}});
+  const choices = [...ctx.container.querySelectorAll("button")].filter((button) => button.textContent === "View Cart");
+  assert.equal(choices.length, 1);
+  ctx.flush(() => choices[0].click());
+  assert.deepEqual(navigated, ["cart", "cart"]);
+  assert.deepEqual(ctx.calls, []);
+});
+
 test("unknown units and empty instructions leave a clean, accessible free-text field", async (t) => {
   const ctx = setup(t, {
     part: {

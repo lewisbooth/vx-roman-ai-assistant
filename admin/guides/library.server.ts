@@ -464,7 +464,6 @@ export async function readLibraryGuides(
   const guides: GuideLibraryResult["guides"] = [];
   const files: ResponseInputFile[] = [];
   const unavailable: Unavailable[] = [];
-  const refreshed = new Set<string>();
   // Keep selected hits through this bounded read, even when inserting the first
   // missing file evicts the second selected file from the two-entry cache.
   const selectedFiles = new Map(
@@ -478,34 +477,47 @@ export async function readLibraryGuides(
         entry.files.delete(guide.id);
         entry.readIds.delete(guide.id);
       }
-  for (const guide of selected) {
-    const current = guide!;
-    const cached = selectedFiles.get(current.id);
-    const loaded = cached
-      ? { status: "ready" as const, file: cached }
-      : await readGuideFile(current.url, origin, signal, {
+  // The validated selection bounds this batch to at most two originals.
+  // Independent files load together; aliases share one promise and refresh.
+  const pendingByUrl = new Map<string, ReturnType<typeof readGuideFile>>();
+  const loadedFiles = await Promise.all(
+    selected.map((guide) => {
+      const current = guide!;
+      const cached = selectedFiles.get(current.id);
+      if (cached) return { status: "ready" as const, file: cached };
+      let pending = pendingByUrl.get(current.url);
+      if (!pending) {
+        pending = readGuideFile(current.url, origin, signal, {
           filename: `${current.id}.pdf`,
-          refresh: input.refresh && !refreshed.has(current.url),
+          refresh: input.refresh,
         });
-    refreshed.add(current.url);
-    signal.throwIfAborted();
-    if (
-      entries.get(entry.discoveryId) !== entry ||
-      entry.source.expiresAt <= Date.now()
-    )
-      return { status: "unavailable", reason: "discovery_unavailable" };
+        pendingByUrl.set(current.url, pending);
+      }
+      return pending;
+    }),
+  );
+  signal.throwIfAborted();
+  if (
+    entries.get(entry.discoveryId) !== entry ||
+    entry.source.expiresAt <= Date.now()
+  )
+    return { status: "unavailable", reason: "discovery_unavailable" };
+  for (let index = 0; index < selected.length; index++) {
+    const current = selected[index]!;
+    const loaded = loadedFiles[index];
     if (loaded.status === "unavailable") {
       unavailable.push({ id: current.id, reason: loaded.reason });
       continue;
     }
     entry.files.delete(current.id);
-    entry.files.set(current.id, { ...loaded.file });
+    const file = { ...loaded.file, filename: `${current.id}.pdf` };
+    entry.files.set(current.id, file);
     entry.readIds.add(current.id);
     while (entry.files.size > 2)
       entry.files.delete(entry.files.keys().next().value!);
     touch(entry);
     guides.push({ ...current });
-    files.push({ ...loaded.file });
+    files.push({ ...file });
   }
   signal.throwIfAborted();
   touch(entry);

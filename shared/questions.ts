@@ -42,6 +42,8 @@ export interface QuestionSelection {
   answers: string[];
   /** Free-text measurement input instead of suggested answers. */
   measurement?: MeasurementQuestion;
+  /** Direct UI navigation; it never answers or retires the pending question. */
+  navigationActions?: { label: "View Cart"; view: "cart" }[];
 }
 
 /** Complete model reply; message is context, never a second question. */
@@ -69,11 +71,20 @@ const terminalProductsSchema = {
     "Ordered distinct product IDs from successful catalog results in this reply; empty when no carousel is needed.",
 } as const;
 
+const navigationActionsSchema = {
+  type: "array", minItems: 0, maxItems: 1,
+  items: { type: "object", properties: {
+    label: { type: "string", enum: ["View Cart"] },
+    view: { type: "string", enum: ["cart"] },
+  }, required: ["label", "view"], additionalProperties: false },
+  description: "Optional View Cart shortcut alongside the real pending decision or measurement. Opens Cart without an answer or advisor turn; empty when not useful.",
+} as const;
+
 export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Finish this reply atomically with a message, zero to ten verified product cards, one question and one to four clickable answers. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question. Questions and answers are plain text; message may use Markdown. Product IDs must come from successful catalog results in this reply. Returned choices request customer input and do not execute actions or grant consent.",
+    "Finish this reply atomically with a message, zero to ten verified product cards, one question and one to four clickable answers. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question. Questions and answers are plain text; message may use Markdown. Product IDs must come from successful catalog results in this reply. Returned choices request customer input and do not execute actions or grant consent. Optional navigationActions opens Cart directly without answering this question.",
   strict: true,
   parameters: {
     type: "object",
@@ -92,8 +103,9 @@ export const askQuestionToolDefinition = {
         minItems: 1,
         maxItems: 4,
       },
+      navigationActions: navigationActionsSchema,
     },
-    required: ["message", "productIds", "question", "answers"],
+    required: ["message", "productIds", "question", "answers", "navigationActions"],
     additionalProperties: false,
   },
 } as const;
@@ -102,7 +114,7 @@ export const askMeasurementToolDefinition = {
   type: "function",
   name: "ask_measurement",
   description:
-    "Finish this reply with one physical distance reading (width, drop, depth or clearance), a guide-grounded method and a free-text measurement field, plus message and zero to ten verified product cards. Only for an actual measurement: decisions, yes/no questions, research permission and source failures use ask_question. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question and the measuring method in instructions. An applicable verified measuring source for productPath is required. Unit is a display hint established by the customer, or null when unknown. Product IDs must come from successful catalog results in this reply. This requests an answer, not a saved dimension or action approval.",
+    "Finish this reply with one physical distance reading (width, drop, depth or clearance), a guide-grounded method and a free-text measurement field, plus message and zero to ten verified product cards. Only for an actual measurement: meaningful decisions, yes/no questions and source limitations use ask_question; authorized source research needs no permission question. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question and the measuring method in instructions. An applicable verified measuring source for productPath is required. Unit is a display hint established by the customer, or null when unknown. Product IDs must come from successful catalog results in this reply. This requests an answer, not a saved dimension or action approval.",
   strict: true,
   parameters: {
     type: "object",
@@ -119,6 +131,7 @@ export const askMeasurementToolDefinition = {
       productPath: productPathSchema,
       label: { type: "string", minLength: 1, maxLength: 40 },
       unit: { type: ["string", "null"], enum: ["cm", "mm", "in", null] },
+      navigationActions: navigationActionsSchema,
     },
     required: [
       "message",
@@ -128,6 +141,7 @@ export const askMeasurementToolDefinition = {
       "productPath",
       "label",
       "unit",
+      "navigationActions",
     ],
     additionalProperties: false,
   },
@@ -169,7 +183,9 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
     "question",
     "answers",
     ...(value.measurement !== undefined ? ["measurement"] : []),
+    ...(value.navigationActions !== undefined ? ["navigationActions"] : []),
   ]);
+  const navigationActions = parseQuestionNavigation(value.navigationActions);
   const question = plainText(value.question, 300);
   if (value.measurement !== undefined) {
     if (!Array.isArray(value.answers) || value.answers.length !== 0)
@@ -186,6 +202,7 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
     return {
       question,
       answers: [],
+      ...(navigationActions ? { navigationActions } : {}),
       measurement: {
         productPath: parseProductPath(measurement.productPath),
         label: plainText(measurement.label, 40),
@@ -209,7 +226,21 @@ export function parseQuestionSelection(input: unknown): QuestionSelection {
     answers.length
   )
     throw new Error("Question answers must be distinct.");
-  return { question, answers };
+  return { question, answers, ...(navigationActions ? { navigationActions } : {}) };
+}
+
+function parseQuestionNavigation(input: unknown): QuestionSelection["navigationActions"] {
+  if (input === undefined) return;
+  if (!Array.isArray(input) || input.length > 1 || input.some((item) =>
+    !item || typeof item !== "object" || Array.isArray(item) ||
+    Object.keys(item).length !== 2 || item.label !== "View Cart" || item.view !== "cart"))
+    throw new Error("Only the direct View Cart shortcut is supported.");
+  return input.length ? [{ label: "View Cart", view: "cart" }] : [];
+}
+
+/** Existing plain View Cart choices are navigation too, never synthetic answers. */
+export function questionNavigationView(answer: string): "cart" | undefined {
+  return answer.trim().toLowerCase() === "view cart" ? "cart" : undefined;
 }
 
 function questionMessage(
@@ -235,10 +266,11 @@ function questionMessage(
 
 export function parseQuestionCall(input: unknown): QuestionCall {
   const value = object(input);
-  exact(value, ["message", "productIds", "question", "answers"]);
+  exact(value, ["message", "productIds", "question", "answers", ...(value.navigationActions !== undefined ? ["navigationActions"] : [])]);
   const selection = parseQuestionSelection({
     question: value.question,
     answers: value.answers,
+    ...(value.navigationActions !== undefined ? { navigationActions: value.navigationActions } : {}),
   });
   return {
     message: questionMessage(value.message, selection.question),
@@ -257,12 +289,14 @@ export function parseMeasurementQuestionCall(input: unknown): QuestionCall {
     "productPath",
     "label",
     "unit",
+    ...(value.navigationActions !== undefined ? ["navigationActions"] : []),
   ]);
-  const { message, productIds, question, ...measurement } = value;
+  const { message, productIds, question, navigationActions, ...measurement } = value;
   const selection = parseQuestionSelection({
     question,
     answers: [],
     measurement,
+    ...(navigationActions !== undefined ? { navigationActions } : {}),
   });
   questionMessage(
     selection.measurement!.instructions,
@@ -337,6 +371,7 @@ export function parseQuestionPart(input: unknown): QuestionPart {
     "answers",
     ...(value.measurement !== undefined ? ["measurement"] : []),
     ...(value.voiceReply !== undefined ? ["voiceReply"] : []),
+    ...(value.navigationActions !== undefined ? ["navigationActions"] : []),
   ]);
   if (
     value.type !== "question" ||
@@ -348,6 +383,7 @@ export function parseQuestionPart(input: unknown): QuestionPart {
   const selection = parseQuestionSelection({
     question: value.question,
     answers: value.answers,
+    ...(value.navigationActions !== undefined ? { navigationActions: value.navigationActions } : {}),
     ...(value.measurement !== undefined
       ? { measurement: value.measurement }
       : {}),

@@ -327,7 +327,7 @@ test("an explicit matching No Remote answer permits either a fresh-read no-op or
   unchanged.operations.pop();
   assert.ok(
     gradeConfigurationReply(sample, unchanged, replyFor(sample)).some(
-      (failure) => /fresh configuration/.test(failure),
+      (failure) => /post-change configuration/.test(failure),
     ),
   );
 });
@@ -558,7 +558,7 @@ test("guide continuation fixture prevents mutations and replacement of prior-rea
   assert.equal(fixture.violations.length, 3);
 });
 
-test("grader catches the remote regression, unnecessary decisions and missing rereads", async () => {
+test("grader catches the remote regression and requires usable fresh evidence without redundant rereads", async () => {
   const unresolved = configurationCases[0];
   const { fixture } = await applyRequestedChange(unresolved);
   const generic = replyFor(configurationCases[1]);
@@ -591,9 +591,11 @@ test("grader catches the remote regression, unnecessary decisions and missing re
     [],
   );
   resolvedFixture.operations.pop();
+  assert.deepEqual(gradeConfigurationReply(resolved, resolvedFixture, replyFor(resolved)), []);
+  delete resolvedFixture.operations.at(-1).result.configuration;
   assert.ok(
     gradeConfigurationReply(resolved, resolvedFixture, replyFor(resolved)).some(
-      (failure) => /fresh configuration/.test(failure),
+      (failure) => /post-change configuration/.test(failure),
     ),
   );
   const benign = configurationCases[2];

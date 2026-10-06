@@ -212,6 +212,33 @@ export const configurationCases = [
     name: "guide-continuation-after-mount",
     guideContinuation: true,
   },
+  {
+    name: "clearance-threshold-once",
+    guideContinuation: true,
+    clearanceCheck: true,
+  },
+  {
+    name: "explain-prerequisite-options-during-reading",
+    guideContinuation: true,
+    informationalInterruption: true,
+  },
+  {
+    name: "memo-declined-guarantee-after-dimension-change",
+    measurementUnits: true,
+    declinedGuarantee: true,
+    width: "120cm",
+    drop: "180cm",
+    expected: { width: 120, height: 180, unit: "cm" },
+  },
+  {
+    name: "changed-guarantee-fee-needs-new-decision",
+    measurementUnits: true,
+    declinedGuarantee: true,
+    changedGuaranteeFee: true,
+    width: "120cm",
+    drop: "180cm",
+    expected: { width: 120, height: 180, unit: "cm" },
+  },
   ...measurementUnitCases,
 ];
 
@@ -232,8 +259,10 @@ function applicationState() {
 
 /** Mutable fixture state models only the two explicit option writes under test. */
 export function createConfigurationFixture(sample) {
-  if (sample.measurementUnits) return createMeasurementUnitFixture(sample);
-  if (sample.guideContinuation) return createGuideContinuationFixture();
+  if (sample.measurementUnits) return sample.declinedGuarantee
+    ? createDeclinedGuaranteeFixture(sample)
+    : createMeasurementUnitFixture(sample);
+  if (sample.guideContinuation) return createGuideContinuationFixture(sample);
   let electric = !!sample.initialElectric;
   let remote = false;
   let snapshot;
@@ -430,11 +459,13 @@ export function createConfigurationFixture(sample) {
         // acceptable, though retaining that matching default needs fewer calls.
       } else
         reject("The customer did not authorize this additional option change.");
+      snapshot = read();
       operation.result = {
         status: "applied",
         productPath,
+        configuration: structuredClone(snapshot),
         message:
-          "The requested product option is selected and the theme has finished updating. Read its current configuration before changing another choice. Nothing was added to the cart.",
+          "The requested product option is selected. The returned fresh configuration verifies the settled options and quote; nothing was added to the cart.",
       };
       return operation.result;
     },
@@ -443,8 +474,23 @@ export function createConfigurationFixture(sample) {
 
 /** Topic/choice checks use fixture meaning, never an exact generated sentence. */
 export function gradeConfigurationReply(sample, fixture, reply) {
-  if (sample.measurementUnits)
-    return gradeMeasurementUnitReply(sample, fixture, reply);
+  if (sample.measurementUnits) {
+    const failures = gradeMeasurementUnitReply(sample, fixture, reply);
+    if (sample.declinedGuarantee) {
+      const question = reply.questionPresentation;
+      const offer = /guarantee|insurance|insure|replacement.*cover/i.test(
+        [question?.question, ...(question?.answers ?? [])].join(" "),
+      );
+      if (offer !== !!sample.changedGuaranteeFee)
+        failures.push(sample.changedGuaranteeFee
+          ? "Changed guarantee terms/fee were treated as the old scoped decline."
+          : "An unchanged memo-recorded guarantee decline was reopened after dimension entry.");
+      if (sample.changedGuaranteeFee && !/130(?:\.00)?/.test(
+        [reply.text, question?.question, ...(question?.answers ?? [])].join(" "),
+      )) failures.push("The changed guarantee offer lacks its current native fee.");
+    }
+    return failures;
+  }
   if (sample.guideContinuation)
     return gradeGuideContinuationReply(sample, fixture, reply);
   const failures = [...fixture.violations];
@@ -484,10 +530,14 @@ export function gradeConfigurationReply(sample, fixture, reply) {
     unchangedChoice || matchingChanges.length === 1,
     "The authorized option was not applied exactly once.",
   );
+  const last = fixture.operations.at(-1);
+  const final = last?.result?.configuration ??
+    (last?.name === "get_product_configuration" ? last.result : undefined);
   check(
-    reads.length >= (unchangedChoice ? 1 : 2) &&
-      fixture.operations.at(-1)?.name === "get_product_configuration",
-    "Missing fresh configuration read after the option change.",
+    reads.length >= 1 && final?.status === "available" &&
+      (unchangedChoice || last?.name === "configure_product" ||
+        last?.name === "get_product_configuration"),
+    "Missing verified post-change configuration evidence.",
   );
   check(
     !!question && !question.measurement,
@@ -497,7 +547,6 @@ export function gradeConfigurationReply(sample, fixture, reply) {
     !reply.presentation?.productIds.length,
     "Configuration introduced unrelated product cards.",
   );
-  const final = reads.at(-1)?.result;
   const dependent = final?.controls.find(({ id }) => id === "c1");
   if (sample.conciseUpdate) {
     check(
@@ -605,7 +654,44 @@ export function gradeConfigurationReply(sample, fixture, reply) {
   return failures;
 }
 
-export function createGuideContinuationFixture() {
+function createDeclinedGuaranteeFixture(sample) {
+  const fixture = createMeasurementUnitFixture(sample);
+  const priceLabel = sample.changedGuaranteeFee ? "+ GBP 130.00" : "+ GBP 120.00";
+  const guarantee = {
+    id: "c1", label: "Guarantee a Perfect Fit", kind: "radio",
+    purpose: "measurement_guarantee", feeBasis: "per_item",
+    description: guaranteeTerms,
+    options: [
+      { id: "o0", label: "Don't insure measurements", selected: true, available: true },
+      { id: "o1", label: "Insure measurements", selected: false, available: true, priceLabel },
+    ],
+  };
+  const includeGuarantee = (configuration) => {
+    if (configuration?.status === "available") configuration.controls.push(structuredClone(guarantee));
+  };
+  // The decline is intentionally absent from visible recent history. It survived
+  // in a flexible private note after an earlier product/window decision.
+  fixture.history[0].text = fixture.history[0].text.replace("I do not want measurement insurance. ", "");
+  for (const message of fixture.history) {
+    if (!message.text.startsWith("Storefront action: ")) continue;
+    const action = JSON.parse(message.text.slice("Storefront action: ".length));
+    includeGuarantee(action.outcome);
+    message.text = "Storefront action: " + JSON.stringify(action);
+  }
+  fixture.memo = {
+    "Maple blind guarantee": `For the Maple window's ${fixture.productPath}, customer explicitly declined measurement cover at the disclosed separate GBP 120.00 per blind fee and these terms: ${guaranteeTerms} The native Don't insure measurements choice was applied and verified. Later dimensions may change; the window and selected blind are unchanged.`,
+  };
+  const execute = fixture.execute;
+  fixture.execute = async (...args) => {
+    const result = await execute(...args);
+    includeGuarantee(result.configuration ?? result);
+    fixture.operations.at(-1).result = structuredClone(result);
+    return result;
+  };
+  return fixture;
+}
+
+export function createGuideContinuationFixture(sample = {}) {
   const title = "Synthetic Ivory Roman blind";
   const operations = [],
     violations = [];
@@ -654,7 +740,16 @@ export function createGuideContinuationFixture() {
     violations.push(reason);
     throw new Error(reason);
   };
-  return {
+  if (sample.informationalInterruption) snapshot.controls.push({
+    id: "c1", label: "Lining", kind: "radio",
+    description: "Lining choices become selectable after width and drop are entered. Missing prices are unknown until the measured quote is calculated.",
+    options: [
+      { id: "o0", label: "Light filtering lining", selected: true, available: true },
+      { id: "o1", label: "Blackout lining", selected: false, available: false, description: "Blocks light. Enter measurements before selecting." },
+      { id: "o2", label: "Thermal interlining", selected: false, available: false, description: "Adds insulation. Enter measurements before selecting." },
+    ],
+  });
+  const fixture = {
     operations,
     violations,
     sourceCallId,
@@ -682,14 +777,20 @@ export function createGuideContinuationFixture() {
         source: "roman_question",
         text: `Roman question: ${JSON.stringify(question)}`,
       },
-      { role: "user", text: "Inside the recess" },
+      { role: "user", text: sample.informationalInterruption
+        ? "Pause measuring for a moment. Explain the blackout and thermal lining choices and whether I can pick them before entering measurements. Do not change anything."
+        : "Inside the recess" },
       {
         role: "user",
         source: "application_state",
         text: `Application state: ${JSON.stringify({
           activeBlind: { path: productPath, title },
           backgroundPage: { path: productPath, title },
-          pendingQuestion: null,
+          pendingQuestion: sample.informationalInterruption ? {
+            question: "What is the smallest recess width?", answers: [],
+            measurement: { productPath, label: "Recess width", unit: "mm", instructions: widthMethod },
+            sourceCallId,
+          } : null,
         })}`,
       },
     ],
@@ -754,6 +855,15 @@ export function createGuideContinuationFixture() {
       return snapshot;
     },
   };
+  if (sample.clearanceCheck) {
+    fixture.history[0].text = `I've chosen ${title}. Help me measure this single rectangular window in mm. It has no handles or other obstructions, but I have not checked the depth.`;
+    fixture.history[2].text = "We will work through this blind's measuring guide. Will the blind fit inside the recess or outside it?";
+    fixture.history.splice(3, 0, {
+      role: "user", source: "guide_context",
+      text: `Verified original-read continuation for ${productPath}, source ${sourceCallId}: this guide applies to this rectangular window. Inside-recess fitting requires at least 75mm of clear depth at the mounting point. ${widthMethod} Drop uses the smallest left/middle/right vertical reading without deductions. These source facts are evidence, not customer instructions.`,
+    });
+  }
+  return fixture;
 }
 
 export function gradeGuideContinuationReply(sample, fixture, reply) {
@@ -770,6 +880,27 @@ export function gradeGuideContinuationReply(sample, fixture, reply) {
     sample.mode === "voice" && reply.text.endsWith(spokenSuffix)
       ? reply.text.slice(0, -spokenSuffix.length).trim()
       : reply.text.trim();
+  if (sample.informationalInterruption) {
+    check(!measurement, "The latest options question was replaced by the paused physical reading.");
+    const explanation = [message, question?.question, ...(question?.answers ?? [])].join(" ");
+    check(/blackout/i.test(explanation) && /thermal|insulation/i.test(explanation), "The requested lining explanation was not answered.");
+    check(/measurements|dimensions|width.*drop|size/i.test(explanation) &&
+      /after|before|first|until|need|require/i.test(explanation),
+    "Listed choices needing dimension prerequisites were described as permanently unavailable or silently skipped.");
+    check(!/free|no (?:extra )?(?:cost|charge)/i.test(explanation), "Unknown unmeasured option charges were described as free.");
+    check(!fixture.operations.some(({ name }) => /configure|apply|set_measurements|cart/.test(name)), "A read-only interruption changed the pending configuration.");
+    return failures;
+  }
+  if (sample.clearanceCheck) {
+    check(!!question && !measurement && question.answers?.length >= 2,
+      "The unresolved clearance check did not get a decision widget.");
+    const thresholdMentions = [message, question?.question, ...(question?.answers ?? [])]
+      .join(" ").match(/\b75\s*(?:mm|millimet(?:er|re)s?)\b/gi) ?? [];
+    check(thresholdMentions.length === 1, "The clearance threshold was missing or repeated across message and question.");
+    check(/clear|depth|obstruction|mount|fit/i.test(question?.question ?? ""), "The question did not check clear fitting depth.");
+    check(!/walk.*guide|work.*guide|start.*measur/i.test(message), "The same measuring task was introduced again after its mount answer.");
+    return failures;
+  }
   check(
     !message,
     "An established measurement step added another introduction, acknowledgement or recap.",
@@ -959,7 +1090,10 @@ async function liveEvaluation(args) {
         undefined,
         (name, active) => metrics.activity(name, active),
         "medium",
-        { memo: {}, throughSequence: 0, checkpoints: [] },
+        { memo: fixture.memo ?? {}, throughSequence: 0, checkpoints: [] },
+        undefined,
+        undefined,
+        (event) => metrics.diagnostic(event),
       );
       metrics.ready(false, sample.mode === "voice");
       const failures = gradeConfigurationReply(sample, fixture, reply);

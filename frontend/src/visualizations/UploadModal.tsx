@@ -18,7 +18,7 @@ export interface UploadDraft {
 }
 
 export function UploadModal({ draft, windows, productTitle, windowSource, onDraftChange, onFile, onSelectWindow,
-  onSubmit, onClose, error, busy = false, hasMoreWindows = false, onLoadMoreWindows }: {
+  onSubmit, onClose, error, busy = false, awaitingProduct = false, hasMoreWindows = false, onLoadMoreWindows }: {
   draft: UploadDraft;
   windows: readonly WindowPhotoDto[];
   productTitle?: string | null;
@@ -30,6 +30,7 @@ export function UploadModal({ draft, windows, productTitle, windowSource, onDraf
   onClose: () => void;
   error?: string | null;
   busy?: boolean;
+  awaitingProduct?: boolean;
   hasMoreWindows?: boolean;
   onLoadMoreWindows?: () => void;
 }) {
@@ -48,6 +49,7 @@ export function UploadModal({ draft, windows, productTitle, windowSource, onDraf
       const title = windowTitle(draft.title);
       if (!readable || !reviewing) throw new Error("Choose a readable room photo.");
       if (!draft.consent) throw new Error("Please consent to processing and storing this image.");
+      if (awaitingProduct) throw new Error("The selected blind must be open in Roman before starting this preview.");
       setValidation(null);
       onSubmit({ ...draft, title });
     } catch (reason) { setValidation(reason instanceof Error ? reason.message : "Check your photo and window name."); }
@@ -84,7 +86,8 @@ export function UploadModal({ draft, windows, productTitle, windowSource, onDraf
             <span>I consent to processing and storing this image <small>(required)</small><small>We will only use your image for the purpose of visualizing our products. Your image will not be shared publicly.</small></span>
           </label>}
           {productTitle && <p className="roman-photo-product">Visualizing {productTitle}</p>}
-          <button type="submit" className="roman-media-button roman-media-primary" disabled={busy || !draft.title.trim() || !draft.consent || !readable}>
+          {awaitingProduct && <p role="status" className="roman-photo-product">Open the selected blind in Roman to start its preview. You can prepare your photo now.</p>}
+          <button type="submit" className="roman-media-button roman-media-primary" disabled={busy || awaitingProduct || !draft.title.trim() || !draft.consent || !readable}>
             {productTitle ? "Visualize in your room" : draft.window ? "Use this window" : "Save window"}
           </button>
           <p className="roman-media-disclaimer">AI preview only. Colour, fit and scale may differ from the finished product.</p>

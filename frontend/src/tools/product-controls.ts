@@ -1,11 +1,14 @@
-export function isCurrentProduct(productPath: string): boolean {
+export function currentProductPath(): string | undefined {
   const match =
     /^(?:\/[a-z]{2}(?:-[a-z]{2})?)?(?:\/collections\/[^/]+)?\/products\/([^/]+)\/?$/i.exec(
       window.location.pathname,
     );
+  return match ? `/products/${match[1]}` : undefined;
+}
+
+export function isCurrentProduct(productPath: string): boolean {
   return (
-    !!match &&
-    `/products/${match[1]}` === productPath &&
+    currentProductPath() === productPath &&
     document.body.classList.contains("template-product") &&
     !new URL(window.location.href).searchParams.has("line")
   );

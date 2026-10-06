@@ -115,3 +115,17 @@ test("a cancellation snapshot includes active work once without resetting or mut
   assert.equal(result.modelMs, 15);
   assert.equal(result.inputTokens, null);
 });
+
+test("phase diagnostics identify repair and checkpoint bounds without recording customer or tool content", () => {
+  const {metrics} = setup();
+  metrics.diagnostic({type: "request", ordinal: 1, model: "gpt-6-luna", inputItems: 100, durableInputBytes: 90000, checkpoint: true, compactionEnabled: false, allowedTools: 3, cacheMode: "implicit"});
+  metrics.diagnostic({type: "repair", reason: "missing_source"});
+  metrics.diagnostic({type: "checkpoint", status: "rejected", bytes: 600000, throughSequence: 99});
+  const first = metrics.snapshot();
+  assert.equal(first.phases[1].reason, "missing_source");
+  assert.equal(first.phases[2].bytes, 600000);
+  first.phases.pop();
+  for (let i = 0; i < 80; i++) metrics.diagnostic({type: "repair", reason: "terminal_validation"});
+  assert.equal(metrics.snapshot().phases.length, 64);
+  assert.doesNotMatch(JSON.stringify(metrics.snapshot()), /instructions|arguments|PRIVATE/);
+});

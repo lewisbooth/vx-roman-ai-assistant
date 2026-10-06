@@ -33,9 +33,9 @@
   }
 }
 @layer components {
-  .roman-header-button,
+  .r-header,
   .roman-close,
-  .roman-retry {
+  .r-retry {
     @apply inline-flex cursor-pointer items-center justify-center rounded-[999px];
     color: inherit;
   }
@@ -43,7 +43,7 @@
     display: inline-flex;
     flex-shrink: 0;
   }
-  .roman-header-button {
+  .r-header {
     --fill: #fff;
     margin-left: 12px;
     padding: 0 12px 0 16px;
@@ -59,20 +59,20 @@
           #4e0e0e 80%
         )
         100% 0 / 300% 100% border-box;
-    animation: roman-header-shine 3s linear infinite;
+    animation: r-shine 3s linear infinite;
     border: 2px solid transparent;
     border-radius: var(--button-radius);
   }
-  .roman-header-button img {
+  .r-header img {
     display: block;
     width: 96px;
     margin-bottom: 3px;
   }
-  .roman-header-button[aria-expanded="true"] {
+  .r-header[aria-expanded="true"] {
     --fill: #4e0e0e;
     color: #f7f5ef;
   }
-  @keyframes roman-header-shine {
+  @keyframes r-shine {
     to {
       background-position:
         0 0,
@@ -92,7 +92,7 @@
       radial-gradient(ellipse at 6% 100%, #19030370, transparent 75%),
       #4e0e0e;
   }
-  .roman-panel[data-welcome-theme] .roman-track {
+  .roman-panel[data-welcome-theme] .r-track {
     background: #f7f5ef33;
   }
   .roman-close {
@@ -102,29 +102,29 @@
   .roman-frame {
     @apply relative h-full overflow-clip;
   }
-  .roman-loading {
+  .r-loading {
     @apply absolute inset-0 z-[1] flex flex-col items-center justify-center px-[24px] pb-[56px];
   }
-  .roman-brand {
+  .r-brand {
     @apply h-[75px] w-[178px] object-contain;
   }
-  .roman-track {
+  .r-track {
     @apply mt-[38px] h-[4px] w-[159px] overflow-hidden rounded-[999px] bg-roman-border;
   }
-  .roman-progress {
+  .r-progress {
     @apply h-full w-2/3 rounded-[999px];
     background: currentColor;
-    animation: roman-loading 1.2s ease-in-out infinite alternate;
+    animation: r-load 1.2s ease-in-out infinite alternate;
   }
-  .roman-error {
+  .r-error {
     @apply mt-[24px] text-center text-[16px];
     line-height: 1.4;
   }
-  .roman-retry {
+  .r-retry {
     @apply mt-[16px] min-h-[44px] bg-transparent px-[24px] text-[16px];
   }
   /* Explicit borders and outlines avoid @property dependencies in Shadow DOM. */
-  .roman-retry {
+  .r-retry {
     border: 1px solid currentColor;
   }
   button:focus-visible {
@@ -133,7 +133,7 @@
   }
   @media (hover: hover) {
     .roman-close:hover,
-    .roman-retry:hover {
+    .r-retry:hover {
       background-color: #4e0e0e0d;
     }
   }
@@ -141,7 +141,7 @@
 [hidden] {
   display: none !important;
 }
-@keyframes roman-loading {
+@keyframes r-load {
   from {
     transform: translateX(-80%);
   }

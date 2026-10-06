@@ -15,6 +15,7 @@ import { createAssistantViewport } from "./assistant-viewport";
 import { createStorefrontScroll } from "./storefront-scroll";
 import { createStorefrontCartNotification } from "./storefront-cart-notification";
 import styles from "./styles.css?inline";
+import { currentVisualizationProduct } from "./visualizations/entry";
 import viewportStyles from "./assistant-viewport.css?inline";
 
 // Reopening or remounting on this document must not restart the loading delay.
@@ -118,6 +119,10 @@ export function mountAssistant(
     ready,
     focus() {
       if (!disposed && sidebarOpen) composerFocus.focus();
+    },
+    visualizeProduct(productPath) {
+      if (disposed || !sidebarOpen || !currentVisualizationProduct(productPath)) return;
+      void router!.navigate("/", { state: { visualizeProduct: productPath, requestId: window.crypto.randomUUID() } });
     },
     setOpen(open) {
       if (!disposed) {

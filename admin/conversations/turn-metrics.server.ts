@@ -1,5 +1,6 @@
 import type { ModelUsageUpdate } from "../usage/contracts";
 import { performance } from "node:perf_hooks";
+import type { ModelTurnDiagnostic } from "./model.server";
 
 /** Bounded, content-free measurements of one advisor turn; no transcript or tool args. */
 export class TurnMetrics {
@@ -9,6 +10,11 @@ export class TurnMetrics {
   private readonly tools = new Map<string, { calls: number; durationMs: number }>();
   private cardsReadyMs?: number;
   private briefingReadyMs?: number;
+  private readonly phases: ModelTurnDiagnostic[] = [];
+
+  diagnostic(event: ModelTurnDiagnostic) {
+    if (this.phases.length < 64) this.phases.push(event);
+  }
 
   usage(value: ModelUsageUpdate) {
     const previous = this.attempts.get(value.id);
@@ -61,6 +67,7 @@ export class TurnMetrics {
       tools: Object.fromEntries([...tools].map(([name, value]) => [name, { ...value, durationMs: Math.round(value.durationMs) }])),
       cardsReadyMs: this.cardsReadyMs ?? null,
       briefingReadyMs: this.briefingReadyMs ?? null,
+      phases: [...this.phases],
     };
   }
 }

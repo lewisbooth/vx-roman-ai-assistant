@@ -56,12 +56,12 @@ export interface VisualizationPreparation {
   references: VisualizationReference[];
 }
 export type PhotoPresentation =
-  | { kind: "windows"; windowIds: string[] }
+  | { kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview" }
   | { kind: "upload"; suggestedTitle: string | null };
 export type MediaPart =
   | { type: "media"; version: 1; kind: "window"; windowId: string; title: string; customerIntent: boolean }
   | { type: "media"; version: 1; kind: "visualization"; jobId: string; customerIntent: boolean }
-  | { type: "media"; version: 1; kind: "windows"; windowIds: string[] }
+  | { type: "media"; version: 1; kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview" }
   | { type: "media"; version: 1; kind: "upload"; suggestedTitle: string | null }
   | { type: "media"; version: 1; kind: "renamed"; windowId: string; previousTitle: string; title: string }
   | { type: "media"; version: 1; kind: "outcome"; jobId: string; status: VisualizationStatus };
@@ -90,10 +90,11 @@ export function parsePhotoPresentation(value: unknown): PhotoPresentation | null
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid photo presentation.");
   const v = value as Record<string, unknown>;
-  if (v.kind === "windows" && Object.keys(v).length === 2 && Array.isArray(v.windowIds) &&
+  if (v.kind === "windows" && Object.keys(v).length === (v.purpose === undefined ? 2 : 3) &&
+      (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview") && Array.isArray(v.windowIds) &&
       v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) &&
       new Set(v.windowIds).size === v.windowIds.length)
-    return { kind: "windows", windowIds: v.windowIds };
+    return { kind: "windows", windowIds: v.windowIds, ...(v.purpose !== undefined ? { purpose: v.purpose as "selection" | "preview" } : {}) };
   if (v.kind === "upload" && Object.keys(v).length === 2 &&
       (v.suggestedTitle === null || typeof v.suggestedTitle === "string"))
     return { kind: "upload", suggestedTitle: v.suggestedTitle === null ? null : windowTitle(v.suggestedTitle) };
@@ -106,7 +107,7 @@ export function isMediaPart(value: unknown): value is MediaPart {
   const exact = (keys: string[]) => Object.keys(v).length === keys.length + 3 && Object.keys(v).every((key) => ["type", "version", "kind", ...keys].includes(key));
   if (v.kind === "window") return exact(["windowId", "title", "customerIntent"]) && isMediaId(v.windowId) && titleValid(v.title) && typeof v.customerIntent === "boolean";
   if (v.kind === "visualization") return exact(["jobId", "customerIntent"]) && isMediaId(v.jobId) && typeof v.customerIntent === "boolean";
-  if (v.kind === "windows") return exact(["windowIds"]) && Array.isArray(v.windowIds) && v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) && new Set(v.windowIds).size === v.windowIds.length;
+  if (v.kind === "windows") return exact(["windowIds", ...(v.purpose !== undefined ? ["purpose"] : [])]) && (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview") && Array.isArray(v.windowIds) && v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) && new Set(v.windowIds).size === v.windowIds.length;
   if (v.kind === "upload") return exact(["suggestedTitle"]) && (v.suggestedTitle === null || titleValid(v.suggestedTitle));
   if (v.kind === "renamed") return exact(["windowId", "title", "previousTitle"]) && isMediaId(v.windowId) && titleValid(v.title) && titleValid(v.previousTitle);
   return v.kind === "outcome" && exact(["jobId", "status"]) && isMediaId(v.jobId) && VISUALIZATION_STATUSES.includes(v.status as VisualizationStatus);
@@ -117,7 +118,7 @@ export function isCustomerMediaIntent(part: MediaPart): boolean {
 export const photoPresentationSchema = {
   anyOf: [
     { type: "null" },
-    { type: "object", properties: { kind: { type: "string", enum: ["windows"] }, windowIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 } }, required: ["kind", "windowIds"], additionalProperties: false },
+    { type: "object", properties: { kind: { type: "string", enum: ["windows"] }, windowIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 }, purpose: { type: "string", enum: ["selection", "preview"], description: "Picker context only, never generation permission. Preview requires a real unpaused customer request; neutral list/select/rename uses selection." } }, required: ["kind", "windowIds", "purpose"], additionalProperties: false },
     { type: "object", properties: { kind: { type: "string", enum: ["upload"] }, suggestedTitle: { type: ["string", "null"], maxLength: 100 } }, required: ["kind", "suggestedTitle"], additionalProperties: false },
   ],
 } as const;

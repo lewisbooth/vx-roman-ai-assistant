@@ -27,6 +27,7 @@ let loadingStartedAt: number | undefined;
 
 const visibilityKey = "roman:sidebar-open";
 const startError = "Roman could not start. Retry.";
+const focusOptions = { preventScroll: true };
 let storageUnavailable = false;
 
 function savedState(value?: string, key = visibilityKey): string | null {
@@ -38,7 +39,7 @@ function savedState(value?: string, key = visibilityKey): string | null {
   } catch {
     storageUnavailable = true;
     console.warn(
-      "[Roman] No storage; open state won't persist.",
+      "[Roman] Storage failed.",
     );
     return null;
   }
@@ -50,7 +51,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
   if (download) {
     if (download.url !== url)
       return Promise.reject(
-        new Error("Roman was updated. Refresh to continue."),
+        new Error("Roman changed. Refresh."),
       );
     return download.promise;
   }
@@ -58,19 +59,17 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
   const promise = new Promise<RuntimeModule>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = url;
-    script.async = true;
     script.dataset.romanRuntime = "";
     const finish = (error?: Error) => {
-      window.clearTimeout(timeout);
-      script.onload = null;
-      script.onerror = null;
+      clearTimeout(timeout);
+      script.onload = script.onerror = null;
       if (error) {
         failed = true;
         script.remove();
         reject(error);
       } else resolve(window.RomanAssistant!);
     };
-    const timeout = window.setTimeout(
+    const timeout = setTimeout(
       () => finish(new Error("Roman timed out. Retry.")),
       15000,
     );
@@ -82,7 +81,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       );
     script.onerror = () =>
       finish(
-        new Error("Check your connection, then retry Roman."),
+        new Error("Connection failed. Retry Roman."),
       );
     try {
       document.head.append(script);
@@ -117,12 +116,31 @@ class RomanAssistant extends HTMLElement {
   #themeKnown = false;
   #state: "idle" | "loading" | "ready" | "error" = "idle";
   #generation = 0;
+  #visualizationPath?: string;
+  #onVisualizationClick = (event: MouseEvent) => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest<HTMLButtonElement>("button[data-roman-visualize-product]");
+    const path = button?.dataset.romanVisualizeProduct;
+    if (!path || button!.disabled) return;
+    event.preventDefault();
+    this.#visualizationPath = path;
+    this.#setOpen(true);
+    this.#launchVisualization();
+  };
+
+  #launchVisualization() {
+    if (this.#state !== "ready" || !this.#visualizationPath) return;
+    const path = this.#visualizationPath;
+    this.#visualizationPath = undefined;
+    // Native PDP identity and canonical paths are validated by the lazy runtime.
+    this.#runtime!.visualizeProduct(path);
+  }
   #onPageShow = (event: PageTransitionEvent) => {
     if (event.persisted) this.#restore();
   };
-  #onFocus = (event: FocusEvent) => {
+  #onFocus = (event: Event) => {
     if (this.#open && !event.composedPath().includes(this.#panel!))
-      this.#closeButton?.focus({ preventScroll: true });
+      this.#closeButton?.focus(focusOptions);
   };
 
   #restore() {
@@ -140,18 +158,15 @@ class RomanAssistant extends HTMLElement {
     const shadow = this.shadowRoot ?? this.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = styles;
-    const toggle = () => {
-      console.log("Hello from Roman");
-      this.#setOpen(!this.#open);
-    };
     shadow.replaceChildren(style);
     this.#headerLauncher = attachHeaderLauncher(
       style,
-      toggle,
+      () => this.#setOpen(!this.#open),
       this.dataset.wordmarkUrl || "",
       this.dataset.label || APP_NAME,
     );
     window.addEventListener("pageshow", this.#onPageShow);
+    document.addEventListener("click", this.#onVisualizationClick);
     this.#restore();
   }
 
@@ -165,23 +180,23 @@ class RomanAssistant extends HTMLElement {
     panel.className = "roman-panel";
     // Static markup only. Theme-provided URLs are assigned as DOM properties.
     panel.innerHTML = `
-<div data-roman-content class=roman-frame hidden></div>
-<div data-roman-loading class=roman-loading>
-<img class=roman-brand alt="Roman by SelectBlinds">
-<div class=roman-track role=progressbar aria-label="Loading Roman"><div class=roman-progress></div></div>
-<p class=roman-error role=alert hidden></p>
-<button data-roman-retry class=roman-retry type=button hidden>Retry</button>
+<div class=roman-frame hidden></div>
+<div class=r-loading>
+<img class=r-brand alt="Roman by SelectBlinds">
+<div class=r-track role=progressbar aria-label="Loading Roman"><div class=r-progress></div></div>
+<p class=r-error role=alert hidden></p>
+<button class=r-retry type=button hidden>Retry</button>
 </div>
-<button class=roman-close type=button aria-label="Close assistant"><span aria-hidden=true>×</span></button>`;
+<button class=roman-close type=button aria-label="Close assistant">×</button>`;
     const query = panel.querySelector.bind(panel);
-    this.#logo = query<HTMLImageElement>(".roman-brand")!;
+    this.#logo = query<HTMLImageElement>(".r-brand")!;
     this.#panel = panel;
     this.#closeButton = query<HTMLButtonElement>(".roman-close")!;
-    this.#content = query<HTMLDivElement>("[data-roman-content]")!;
-    this.#loading = query<HTMLDivElement>("[data-roman-loading]")!;
-    this.#progress = query<HTMLDivElement>("[role=progressbar]")!;
-    this.#error = query<HTMLParagraphElement>("[role=alert]")!;
-    this.#retryButton = query<HTMLButtonElement>("[data-roman-retry]")!;
+    this.#content = query<HTMLDivElement>(".roman-frame")!;
+    this.#loading = query<HTMLDivElement>(".r-loading")!;
+    this.#progress = query<HTMLDivElement>(".r-track")!;
+    this.#error = query<HTMLParagraphElement>(".r-error")!;
+    this.#retryButton = query<HTMLButtonElement>(".r-retry")!;
     this.#closeButton.addEventListener("click", () => this.#setOpen(false));
     this.#retryButton.addEventListener("click", () => void this.#start(true));
     panel.addEventListener("keydown", (event) => {
@@ -225,24 +240,24 @@ class RomanAssistant extends HTMLElement {
     document.documentElement.toggleAttribute("data-roman-open", open);
     if (open) {
       document.head.append(this.#layout!);
-      document.addEventListener("focusin", this.#onFocus);
     } else {
       this.#layout?.remove();
-      document.removeEventListener("focusin", this.#onFocus);
     }
+    document[open ? "addEventListener" : "removeEventListener"]("focusin", this.#onFocus);
   }
 
   #setOpen(open: boolean, focus = true) {
     if (!this.isConnected || this.#open === open) return;
     focus ||= !open && !!this.#panel?.contains(this.shadowRoot!.activeElement);
     this.#open = open;
+    if (!open) this.#visualizationPath = undefined;
     savedState(open ? "1" : "0");
     if (open && !this.#panel) this.#createPanel();
     this.#showPanel();
     this.#headerLauncher?.setOpen(open);
     this.#runtime?.setOpen(open);
     if (open) {
-      this.#closeButton?.focus({ preventScroll: true });
+      this.#closeButton?.focus(focusOptions);
       this.#runtime?.focus();
     } else if (focus) this.#headerLauncher?.focus();
     if (open && this.#state === "idle") void this.#start();
@@ -266,7 +281,7 @@ class RomanAssistant extends HTMLElement {
         !this.dataset.logoUrl ||
         (!import.meta.env.DEV && !this.dataset.scriptUrl)
       )
-        throw new Error("Roman's assets are missing. Refresh and retry.");
+        throw new Error("Roman assets missing. Refresh.");
       const module = await loadRuntime(this.dataset.scriptUrl || "", retry);
       if (!this.isConnected || generation !== this.#generation) return;
       const runtime = module.mountAssistant(
@@ -284,6 +299,7 @@ class RomanAssistant extends HTMLElement {
       this.#loading!.hidden = true;
       this.#panel!.ariaBusy = "false";
       runtime.focus();
+      this.#launchVisualization();
     } catch (error) {
       if (!this.isConnected || generation !== this.#generation) return;
       this.#runtime?.dispose();
@@ -305,6 +321,8 @@ class RomanAssistant extends HTMLElement {
       if (this.isConnected) return;
       ++this.#generation;
       window.removeEventListener("pageshow", this.#onPageShow);
+      document.removeEventListener("click", this.#onVisualizationClick);
+      this.#visualizationPath = undefined;
       document.removeEventListener("focusin", this.#onFocus);
       this.#headerLauncher?.dispose();
       this.#headerLauncher = undefined;

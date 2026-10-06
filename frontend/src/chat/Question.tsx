@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import {
   formatMeasurementAnswer,
   MAX_QUESTION_ANSWER_LENGTH,
+  questionNavigationView,
   type QuestionPart,
 } from "../../../shared/questions";
 
@@ -11,6 +12,7 @@ export function Question({
   disabled,
   voice,
   onAnswer,
+  onNavigate,
   currentTurn = false,
   revealPending = false,
   historySequence,
@@ -21,6 +23,7 @@ export function Question({
   disabled: boolean;
   voice: boolean;
   onAnswer: (part: QuestionPart, answer: string) => Promise<void>;
+  onNavigate?: (view: "cart") => void;
   currentTurn?: boolean;
   /** Reserve the actual wrapped panel without exposing unanswered controls early. */
   revealPending?: boolean;
@@ -59,6 +62,8 @@ export function Question({
 
   async function answer(value: string) {
     if (!active || controlsDisabled || sending.current) return;
+    const view = questionNavigationView(value);
+    if (view && onNavigate) { onNavigate(view); return; }
     sending.current = true;
     const root = panel.current?.getRootNode() as
       Document | ShadowRoot | undefined;
@@ -190,6 +195,13 @@ export function Question({
               {value}
             </button>
           ))}
+        </div>
+      )}
+      {!!onNavigate && !!part.navigationActions?.length && (
+        <div className="roman-action-buttons">
+          {part.navigationActions.filter((action) => !part.answers.some((answer) => questionNavigationView(answer) === action.view)).map((action) =>
+            <button key={action.view} type="button" disabled={controlsDisabled || pending} onClick={() => onNavigate(action.view)}>{action.label}</button>,
+          )}
         </div>
       )}
       <p className="roman-question-hint">
