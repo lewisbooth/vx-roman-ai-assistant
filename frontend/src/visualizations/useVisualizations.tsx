@@ -197,7 +197,12 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
         }
       }
       release(attempt.draft);
-      if (mounted.current) { setAttempts((values) => values.filter((item) => item.requestId !== attempt.requestId)); setDraft((current) => (attempt.draft.file && current.file === attempt.draft.file) || (attempt.draft.window && current.window?.id === attempt.draft.window.id) ? emptyDraft() : current); }
+      if (mounted.current) {
+        setAttempts((values) => values.filter((item) => item.requestId !== attempt.requestId));
+        // A late acknowledgement still releases its file, but cannot clear a
+        // new chat's review of the same saved window.
+        setDraft((current) => continuing() && ((attempt.draft.file && current.file === attempt.draft.file) || (attempt.draft.window && current.window?.id === attempt.draft.window.id)) ? emptyDraft() : current);
+      }
     } catch (error) {
       patchAttempt(attempt.requestId, {stage: "failed", error: error instanceof Error ? error.message : "Your image request could not finish. Please check its status before trying again."});
     } finally { running.current.delete(attempt.requestId); }

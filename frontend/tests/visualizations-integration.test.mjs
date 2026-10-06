@@ -81,6 +81,7 @@ async function setup(t, options = {}) {
     if (operation === "references") return respond({windows: windows.filter((item) => body.windowIds.includes(item.id)), visualizations: visualizations.filter((item) => body.jobIds.includes(item.id))});
     if (operation === "select") {
       update({conversation: {...state.conversation, current: {...state.conversation.current, selectedWindow: windows.find((item) => item.id === body.windowId)}}});
+      await options.onSelect?.();
       return respond(windows.find((item) => item.id === body.windowId));
     }
     if (operation === "rename") {
@@ -256,6 +257,28 @@ test("End Chat during an accepted photo upload preserves the photo without silen
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
   await ctx.selectTab("Gallery");
   assert.match(ctx.container.querySelector(".roman-gallery").textContent, /Kitchen window/);
+});
+
+test("late selection acknowledgement after End Chat cannot clear a new review of the same saved window", async (t) => {
+  let finishSelection;
+  const selected = new Promise((resolve) => { finishSelection = resolve; });
+  const ctx = await setup(t, {saved: true, onSelect: () => selected});
+  ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
+  await until(() => ctx.dialog().querySelector(".roman-window-choice"), "Saved window missing");
+  ctx.dialog().querySelector(".roman-window-choice").click(); await ctx.loaded();
+  ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => ctx.calls.some((call) => call.path.endsWith("/select")), "Selection did not start");
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
+  ctx.camera().click(); await until(ctx.dialog, "New upload dialog missing");
+  await until(() => ctx.dialog().querySelector(".roman-window-choice"), "Saved window missing after End Chat");
+  ctx.dialog().querySelector(".roman-window-choice").click(); await ctx.loaded();
+  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Next room");
+  finishSelection(); await delay(40);
+  assert.ok(ctx.dialog().querySelector(".roman-photo-preview img"), "Old selection completion must not clear the new window review");
+  assert.equal(ctx.dialog().querySelector('[type="text"]').value, "Next room");
+  assert.deepEqual(ctx.sent, [], "Old selection must not start discovery after End Chat");
+  assert.equal(ctx.session.getSnapshot().conversation, null);
 });
 
 test("inline visualization and full screen comparison appear before text reveal and quick answers, with no implicit customer turn", async (t) => {
