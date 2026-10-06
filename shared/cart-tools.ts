@@ -492,7 +492,9 @@ export function parseCartResult(
             "unsupported",
             "handed_off",
           ]
-        : ["updated", "needs_cart_page", "handed_off"];
+        : name === "remove_from_cart"
+          ? ["updated", "unsupported", "needs_cart_page", "handed_off"]
+          : ["updated", "needs_cart_page", "handed_off"];
   if (
     !states.concat("cancelled", "uncertain").includes(String(value.status)) ||
     !text(value.message, 500)

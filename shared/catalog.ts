@@ -16,11 +16,21 @@ export interface CatalogMessage {
 export const MAX_CATALOG_CANDIDATES = 30;
 export const MAX_CATALOG_RESULT_BYTES = 120 * 1024;
 
+const catalogQueryErrors = [
+  "request_failed",
+  "invalid_response",
+  "timeout",
+  "rate_limited",
+  "unauthorized",
+  "service_unavailable",
+] as const;
+export type CatalogQueryError = (typeof catalogQueryErrors)[number];
+
 export interface CatalogQueryOutcome {
   query: string;
   status: "succeeded" | "failed";
   productIds: string[];
-  error?: "request_failed" | "invalid_response" | "timeout";
+  error?: CatalogQueryError;
 }
 
 export interface CatalogResult {
@@ -432,9 +442,7 @@ export function parseCatalogQueryOutcomes(
     if (outcome.status === "failed") {
       if (
         ids.length ||
-        !["request_failed", "invalid_response", "timeout"].includes(
-          String(outcome.error),
-        )
+        !catalogQueryErrors.some((error) => error === outcome.error)
       )
         invalid(
           path,

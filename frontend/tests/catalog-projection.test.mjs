@@ -131,6 +131,41 @@ test("empty and failed batch outcomes remain distinct and the serialized payload
   assert.throws(() => parseCatalogResult(result, origin), /at most 120 KiB/);
 });
 
+test("query failures accept bounded historical and HTTP categories without remote diagnostics", () => {
+  const origin = "https://hd-dev-multi.myshopify.com";
+  const failed = {
+    query: "blinds",
+    status: "failed",
+    productIds: [],
+    error: "request_failed",
+  };
+  const result = (outcome) => ({ products: [], messages: [], queries: [outcome] });
+  for (const error of [
+    "request_failed",
+    "invalid_response",
+    "timeout",
+    "rate_limited",
+    "unauthorized",
+    "service_unavailable",
+  ]) {
+    const expected = result({ ...failed, error });
+    assert.deepEqual(parseCatalogResult(expected, origin), expected);
+  }
+  for (const outcome of [
+    { ...failed, error: "HTTP 429 PRIVATE_BODY" },
+    { ...failed, error: { toString: () => "request_failed" } },
+    { ...failed, error: undefined },
+    { ...failed, error: "rate_limited", message: "PRIVATE_BODY" },
+    { ...failed, error: "unauthorized", url: "PRIVATE_URL" },
+    { ...failed, error: "service_unavailable", httpStatus: 503 },
+    { ...failed, status: "succeeded", error: "rate_limited" },
+  ])
+    assert.throws(
+      () => parseCatalogResult(result(outcome), origin),
+      /invalid catalog response/,
+    );
+});
+
 const origin = "https://hd-dev-multi.myshopify.com";
 const id = "gid://shopify/Product/123";
 const url = `${origin}/products/cordless-shade`;

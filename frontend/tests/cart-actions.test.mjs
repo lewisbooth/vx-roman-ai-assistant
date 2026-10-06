@@ -331,6 +331,100 @@ test("notification removal submits one exact native batch and retains another co
   assert.equal(JSON.stringify(result).includes("_insurance_group"), false);
 });
 
+test("notification removal includes samples and explicit covers in one scoped native update", async (t) => {
+  const [first, firstCover] = linkedBlind("123:a", "cover:a", 1, "a");
+  first.properties._warranty_group = "warranty-a";
+  const warranty = line("warranty:a", 1, {
+    product_type: "Warranty",
+    properties: { _associated_product_id: "123", _group_id: "a", _warranty_group: "warranty-a" },
+  });
+  const [second, secondCover] = linkedBlind("123:b", "cover:b", 2, "b");
+  const [retained, retainedCover] = linkedBlind("123:c", "cover:c", 3, "c");
+  const sample = line("sample:a", 1, { product_type: "Sample", variant_id: 456, properties: {} });
+  const otherSample = line("sample:b", 1, { product_type: "Sample", variant_id: 789 });
+  const retainedSample = line("sample:c", 1, { product_type: "Sample", variant_id: 987, properties: null });
+  const env = setup(t, {
+    items: [first, firstCover, warranty, sample, second, secondCover, otherSample, retained, retainedCover, retainedSample],
+    removeKeys: [],
+    notification: true,
+  });
+  const action = env.actions.removeFromCart([
+    firstCover.key, first.key, warranty.key, sample.key, second.key, secondCover.key, otherSample.key,
+  ], env.controller.signal);
+  await flush();
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].kind, "notification-remove");
+  assert.deepEqual(Array.from(env.calls[0].keys), [
+    first.key, firstCover.key, warranty.key, sample.key, second.key, secondCover.key, otherSample.key,
+  ]);
+  assert.equal(new Set(env.calls[0].keys).size, env.calls[0].keys.length);
+  env.update(env.notification(), cart([retained, retainedCover, retainedSample]));
+  const result = await action;
+  assert.equal(result.status, "updated");
+  assert.deepEqual(result.cart.items.map((item) => [item.lineKey, item.quantity]), [
+    [retained.key, 3], [retainedCover.key, 3], [retainedSample.key, 1],
+  ]);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.hasDeadline(), false);
+  assert.equal(env.listeners.size, 0);
+});
+
+test("standalone sample removal normalizes empty native properties and preserves unrelated cover", async (t) => {
+  for (const properties of [undefined, null, {}]) {
+    await t.test(String(properties), async (t) => {
+      const sample = line("sample", 1, { product_type: "Sample", properties });
+      const cover = line("cover", 1, { product_type: "Insurance", properties: { _insurance_type: "cart" } });
+      const env = setup(t, { items: [sample, cover], removeKeys: [], notification: true });
+      const action = env.actions.removeFromCart([sample.key], env.controller.signal);
+      await flush();
+      assert.deepEqual(Array.from(env.calls[0].keys), [sample.key]);
+      env.update(env.notification(), cart([cover]));
+      assert.equal((await action).status, "updated");
+      assert.equal(env.calls.length, 1);
+    });
+  }
+});
+
+test("sample removal verifies identities across key rotation and preserves retained quantities", async (t) => {
+  const sample = line("sample:a", 1, { product_type: "Sample", variant_id: 456, properties: {} });
+  const retained = line("sample:b", 2, { product_type: "Sample", variant_id: 789, properties: {} });
+  const env = setup(t, { items: [sample, retained], removeKeys: [], notification: true });
+  const action = env.actions.removeFromCart([sample.key], env.controller.signal);
+  await flush();
+  env.update(env.notification(), cart([{ ...sample, key: "sample:rotated" }, retained]));
+  assert.equal(env.hasDeadline(), true, "a requested sample surviving with a new key is not removed");
+  env.update(env.notification(), cart([{ ...retained, quantity: 1 }]));
+  assert.equal(env.hasDeadline(), true, "retained sample quantity must not change");
+  env.update(env.notification(), cart([{ ...retained, key: "sample:retained-rotated", properties: null }]));
+  assert.equal((await action).status, "updated");
+  assert.equal(env.calls.length, 1);
+});
+
+test("native sample and explicit cover preflight failures never submit a smaller batch", async (t) => {
+  const [parent, cover] = linkedBlind("123:a", "cover:a", 1, "a");
+  const retained = line("retained", 1, { product_type: "Product", properties: { _group_id: "retained" } });
+  const sample = line("sample:a", 1, { product_type: "Sample", variant_id: 456, properties: {} });
+  for (const [name, items, keys] of [
+    ["cover without requested parent", [parent, cover, retained], [cover.key]],
+    ["mismatched requested cover", [parent, { ...cover, properties: { ...cover.properties, _associated_product_id: "987" } }, retained], [parent.key, cover.key]],
+    ["malformed requested parent link", [parent, { ...cover, parent_relationship: {} }, retained], [parent.key, cover.key]],
+    ["ambiguous sample identity", [sample, { ...sample, key: "sample:duplicate" }, retained], [sample.key]],
+    ["invalid sample properties", [{ ...sample, properties: [] }, retained], [sample.key]],
+    ["sample with native parent", [{ ...sample, parent_relationship: { parent_key: retained.key } }, retained], [sample.key]],
+    ["sample with native child", [sample, { ...cover, parent_relationship: { parent_key: sample.key } }, retained], [sample.key]],
+  ]) {
+    await t.test(name, async (t) => {
+      const env = setup(t, { items, removeKeys: [], notification: true });
+      const result = await env.actions.removeFromCart(keys, env.controller.signal);
+      assert.equal(result.status, "unsupported");
+      assert.match(result.message, /No cart change was submitted/);
+      assert.equal(env.calls.length, 0);
+      assert.equal(env.requests(), 1);
+      assert.equal(env.hasDeadline(), false);
+    });
+  }
+});
+
 test("native batch removal waits for selected identities to disappear and retained lines to survive", async (t) => {
   const [first, firstCover] = linkedBlind("123:a", "cover:a", 1, "a");
   const [second, secondCover] = linkedBlind("123:b", "cover:b", 2, "b");
@@ -392,7 +486,11 @@ test("native removal rejects unknown links and mixed controls before any write",
       const env = setup(t, { items, removeKeys, notification: true });
       const action = env.actions.removeFromCart([first.key, second.key], env.controller.signal);
       if (removeKeys.length) assert.equal((await action).status, "needs_cart_page");
-      else await assert.rejects(action, /linked cart line/);
+      else {
+        const result = await action;
+        assert.equal(result.status, "unsupported");
+        assert.match(result.message, /linked cart line/);
+      }
       assert.equal(env.calls.length, 0);
       assert.equal(env.requests(), 1);
     });
@@ -953,7 +1051,9 @@ test("batch removal serializes native controls, keeps unrelated cover, and repor
 
 test("a stale second requested key fails preflight before any mutation", async (t) => {
   const env = setup(t);
-  await assert.rejects(env.actions.removeFromCart(["123:a", "missing:key"], env.controller.signal), /no longer exists/);
+  const result = await env.actions.removeFromCart(["123:a", "missing:key"], env.controller.signal);
+  assert.equal(result.status, "unsupported");
+  assert.match(result.message, /no longer exists/);
   assert.equal(env.calls.length, 0);
   assert.equal(env.requests(), 1);
   assert.equal(env.hasDeadline(), false);
@@ -1361,9 +1461,8 @@ test("invalid quantities and stale line keys are rejected before mutation", asyn
     /current cart lineKeys/,
   );
   assert.equal(env.requests(), 0);
-  await assert.rejects(
-    env.actions.removeFromCart(["123:missing"], env.controller.signal),
-    /no longer exists/,
-  );
+  const result = await env.actions.removeFromCart(["123:missing"], env.controller.signal);
+  assert.equal(result.status, "unsupported");
+  assert.match(result.message, /no longer exists/);
   assert.equal(env.calls.length, 0);
 });

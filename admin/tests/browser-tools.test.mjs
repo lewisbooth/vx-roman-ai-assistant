@@ -687,6 +687,44 @@ test("partial search failures preserve successful candidates and are not a faile
   });
 });
 
+test("HTTP search categories survive durable completion without turning partial success into failure", async (t) => {
+  for (const error of ["rate_limited", "unauthorized", "service_unavailable"]) {
+    await t.test(error, async () => {
+      const env = setup();
+      env.mock.toolArguments = { queries: ["roller", "roman"] };
+      const pending = env.api.requestBrowserTool(
+        "conversation-1",
+        "assistant-1",
+        "batch-http-partial",
+        "search_products",
+        env.mock.toolArguments,
+        new AbortController().signal,
+      );
+      await flush();
+      const result = {
+        products: [product],
+        messages: [],
+        queries: [
+          { query: "roller", status: "succeeded", productIds: [product.id] },
+          { query: "roman", status: "failed", productIds: [], error },
+        ],
+      };
+      await env.api.submitBrowserToolResult(
+        "conversation-1",
+        "invocation-1",
+        claim,
+        result,
+      );
+      assert.deepEqual(plain(await pending), result);
+      assert.equal(env.calls.fail.length, 0);
+      assert.deepEqual(plain(env.calls.complete[0][3]), {
+        productIds: [product.id],
+        catalogQueries: result.queries,
+      });
+    });
+  }
+});
+
 test("a rejected claim or persistence failure does not release the waiter", async () => {
   const env = setup();
   let resolved = false;

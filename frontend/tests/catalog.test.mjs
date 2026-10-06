@@ -241,6 +241,207 @@ test("failed and malformed queries keep successful siblings without exposing pro
   assert.doesNotMatch(JSON.stringify(result), /SECRET|attacker/);
 });
 
+test("HTTP failures retain safe categories alongside successful candidates without retrying", async (t) => {
+  const { api, controller, requests } = setup(t, (request) => {
+    const query = request.body.params.arguments.catalog.query;
+    if (query === "good")
+      return response(request, {
+        structuredContent: {
+          products: [{ id: productId, title: "Good", handle: "good" }],
+        },
+      });
+    return {
+      ok: false,
+      status: query === "limited" ? 429 : 403,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: request.body.id,
+        error: {
+          message: "SECRET_PROVIDER_BODY https://upstream.example/private",
+          data: { content: "PRIVATE_CONTENT", continue_url: "PRIVATE_URL" },
+        },
+      }),
+    };
+  });
+  const result = plain(
+    await api.searchProducts(
+      ["good", "limited", "denied"],
+      controller.signal,
+      profile,
+    ),
+  );
+  assert.deepEqual(result.queries, [
+    { query: "good", status: "succeeded", productIds: [productId] },
+    {
+      query: "limited",
+      status: "failed",
+      productIds: [],
+      error: "rate_limited",
+    },
+    {
+      query: "denied",
+      status: "failed",
+      productIds: [],
+      error: "unauthorized",
+    },
+  ]);
+  assert.equal(result.products.length, 1);
+  assert.equal(requests.length, 3, "each query is dispatched once");
+  assert.equal(new Set(requests.map(({ init }) => init.signal)).size, 1);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|PRIVATE|upstream/);
+});
+
+test("HTTP status determines the search category even with unusable or misleading bodies", async (t) => {
+  for (const [status, error] of [
+    [401, "unauthorized"],
+    [403, "unauthorized"],
+    [429, "rate_limited"],
+    [500, "service_unavailable"],
+    [502, "service_unavailable"],
+    [503, "service_unavailable"],
+    [504, "service_unavailable"],
+    [404, "request_failed"],
+    [422, "request_failed"],
+  ]) {
+    await t.test(`HTTP ${status}`, async (t) => {
+      const { api, controller, requests } = setup(t, (request) => ({
+        ok: false,
+        status,
+        json: async () => {
+          if (status % 2) throw new SyntaxError("<html>PRIVATE_BODY</html>");
+          // A plausible success or a body saying "rate limited" cannot override HTTP.
+          return {
+            jsonrpc: "2.0",
+            id: request.body.id,
+            result: { structuredContent: { products: [] } },
+            debug: "rate limited PRIVATE_URL",
+          };
+        },
+      }));
+      const result = plain(
+        await api.searchProducts(["blinds"], controller.signal, profile),
+      );
+      assert.deepEqual(result, {
+        products: [],
+        messages: [],
+        queries: [{ query: "blinds", status: "failed", productIds: [], error }],
+      });
+      assert.equal(requests.length, 1);
+    });
+  }
+});
+
+test("a successful empty search and unavailable service stay distinct in the same batch", async (t) => {
+  const { api, controller } = setup(t, (request) => {
+    if (request.body.params.arguments.catalog.query === "empty")
+      return response(request, { structuredContent: { products: [] } });
+    return { ok: false, status: 503 };
+  });
+  const result = plain(
+    await api.searchProducts(["empty", "unavailable"], controller.signal, profile),
+  );
+  assert.deepEqual(result.queries, [
+    { query: "empty", status: "succeeded", productIds: [] },
+    {
+      query: "unavailable",
+      status: "failed",
+      productIds: [],
+      error: "service_unavailable",
+    },
+  ]);
+});
+
+test("malformed successful responses are invalid results rather than empty matches", async (t) => {
+  for (const [name, reply] of [
+    [
+      "non-JSON",
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("PRIVATE_BODY");
+        },
+      }),
+    ],
+    [
+      "wrong request ID",
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ jsonrpc: "2.0", id: -1, result: {} }),
+      }),
+    ],
+    [
+      "missing products",
+      (request) => response(request, { structuredContent: { products: null } }),
+    ],
+    [
+      "invalid structured content",
+      (request) => response(request, { structuredContent: null }),
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const { api, controller } = setup(t, reply);
+      assert.deepEqual(
+        plain(await api.searchProducts(["blinds"], controller.signal, profile)),
+        {
+          products: [],
+          messages: [],
+          queries: [
+            {
+              query: "blinds",
+              status: "failed",
+              productIds: [],
+              error: "invalid_response",
+            },
+          ],
+        },
+      );
+    });
+  }
+});
+
+test("a protocol business error does not imply an HTTP category from remote wording", async (t) => {
+  const { api, controller } = setup(t, (request) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      jsonrpc: "2.0",
+      id: request.body.id,
+      error: { message: "Rate limited: unauthorized PRIVATE_URL" },
+    }),
+  }));
+  const result = plain(
+    await api.searchProducts(["blinds"], controller.signal, profile),
+  );
+  assert.deepEqual(result.queries, [
+    {
+      query: "blinds",
+      status: "failed",
+      productIds: [],
+      error: "request_failed",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /Rate limited|PRIVATE_URL/);
+});
+
+test("caller cancellation during an HTTP failure rejects the batch instead of reporting empty failures", async (t) => {
+  const { api, controller, requests } = setup(t, () => ({
+    ok: false,
+    status: 429,
+    json: async () => {
+      controller.abort(new Error("Cancelled by customer"));
+      throw new SyntaxError("PRIVATE_BODY");
+    },
+  }));
+  await assert.rejects(
+    api.searchProducts(["roller", "roman", "venetian"], controller.signal, profile),
+    (error) => error === controller.signal.reason,
+  );
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every(({ init }) => init.signal.aborted));
+});
+
 test("the shared deadline ends unfinished queries and preserves completed results", async (t) => {
   const { api, controller, window, requests } = setup(t, (request) => {
     if (request.body.params.arguments.catalog.query === "quick")

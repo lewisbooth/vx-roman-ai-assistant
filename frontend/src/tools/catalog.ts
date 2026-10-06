@@ -3,6 +3,7 @@ import {
   normalizeCatalogResult,
   parseCatalogResult,
   type CatalogProduct,
+  type CatalogQueryError,
   type CatalogQueryOutcome,
   type CatalogResult,
 } from "../../../shared/catalog";
@@ -11,6 +12,22 @@ import { parseCatalogCall } from "../../../shared/catalog-tools";
 type CatalogTool = "search_catalog" | "get_product" | "lookup_catalog";
 
 const MAX_CATALOG_RESPONSE_BYTES = 1024 * 1024;
+
+class CatalogRequestError extends Error {
+  constructor(
+    readonly code: CatalogQueryError,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function httpErrorCode(status: number): CatalogQueryError {
+  if (status === 401 || status === 403) return "unauthorized";
+  if (status === 429) return "rate_limited";
+  if (status >= 500 && status <= 599) return "service_unavailable";
+  return "request_failed";
+}
 
 async function readCatalogEnvelope(
   response: Response,
@@ -112,7 +129,10 @@ function readCatalog(result: Record<string, unknown>): Record<string, unknown> {
       }
     }
   }
-  throw new Error("Shopify returned an invalid catalog response.");
+  throw new CatalogRequestError(
+    "invalid_response",
+    "Shopify returned an invalid catalog response.",
+  );
 }
 
 async function callCatalog(
@@ -154,10 +174,12 @@ async function callCatalog(
   } catch {
     signal.throwIfAborted();
     if (!response.ok)
-      throw new Error(
+      throw new CatalogRequestError(
+        httpErrorCode(response.status),
         `Shopify catalog request failed (HTTP ${response.status}).`,
       );
-    throw new Error(
+    throw new CatalogRequestError(
+      "invalid_response",
       "Shopify catalog did not return JSON. Check storefront access.",
     );
   }
@@ -170,19 +192,26 @@ async function callCatalog(
       "error" in envelope
         ? `: ${protocolError(envelope.error)}`
         : ".";
-    throw new Error(
+    throw new CatalogRequestError(
+      httpErrorCode(response.status),
       `Shopify catalog request failed (HTTP ${response.status})${detail}`,
     );
   }
   if (!isObject(envelope) || envelope.jsonrpc !== "2.0" || envelope.id !== id)
-    throw new Error("Shopify returned an invalid catalog protocol response.");
+    throw new CatalogRequestError(
+      "invalid_response",
+      "Shopify returned an invalid catalog protocol response.",
+    );
   if ("error" in envelope) {
     throw new Error(
       `Shopify catalog request failed: ${protocolError(envelope.error)}`,
     );
   }
   if (!isObject(envelope.result))
-    throw new Error("Shopify returned an invalid catalog protocol response.");
+    throw new CatalogRequestError(
+      "invalid_response",
+      "Shopify returned an invalid catalog protocol response.",
+    );
   if (envelope.result.isError === true)
     throw new Error(
       "Shopify could not run the catalog tool. Check Roman's published agent profile and storefront access.",
@@ -222,7 +251,10 @@ async function searchQuery(
     agentProfileUrl,
   );
   if (!Array.isArray(data.products))
-    throw new Error("Shopify returned a catalog response without products.");
+    throw new CatalogRequestError(
+      "invalid_response",
+      "Shopify returned a catalog response without products.",
+    );
   // Return public catalog data only, excluding the negotiated payment metadata.
   return {
     products: data.products,
@@ -288,14 +320,18 @@ export async function searchProducts(
                 productIds: result.products.map(({ id }) => id),
               },
             };
-          } catch {
+          } catch (error) {
             signal.throwIfAborted();
             return {
               outcome: {
                 query,
                 status: "failed",
                 productIds: [],
-                error: timedOut ? "timeout" : "request_failed",
+                error: timedOut
+                  ? "timeout"
+                  : error instanceof CatalogRequestError
+                    ? error.code
+                    : "request_failed",
               },
             };
           }

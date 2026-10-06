@@ -304,6 +304,17 @@ test("cart results contain only bounded public fields and preserve uncertainty",
   );
 });
 
+test("known removal preflight failures retain their no-submission outcome", () => {
+  const result = {
+    status: "unsupported",
+    message: "A requested linked cover cannot be verified. No cart change was submitted.",
+  };
+  assert.deepEqual(parseCartResult("remove_from_cart", result), result);
+  assert.throws(() => parseCartResult("remove_from_cart", { ...result, cart }));
+  for (const name of ["set_cart_quantity", "clear_cart", "add_to_cart"])
+    assert.throws(() => parseCartResult(name, result));
+});
+
 test("cart projects supplied product types without guessing relationships or permitting private fields", () => {
   const typed = {...cart, items: [{...cart.items[0], productType: "Insurance"}]};
   assert.deepEqual(parseCartResult("get_cart", typed), typed);
