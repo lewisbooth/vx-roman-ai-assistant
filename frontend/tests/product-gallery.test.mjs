@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { cwd } from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
@@ -55,6 +56,19 @@ function setup(t, { reduced = false } = {}) {
   const { window } = dom;
   const animations = [];
   const resizeObservers = [];
+  const intersectionObservers = [];
+  window.IntersectionObserver = class {
+    constructor(callback) {
+      this.callback = callback;
+      intersectionObservers.push(this);
+    }
+    observe(element) {
+      this.element = element;
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
+  };
   window.ResizeObserver = class {
     constructor(callback) {
       this.callback = callback;
@@ -171,6 +185,11 @@ function setup(t, { reduced = false } = {}) {
     captured,
     animations,
     resizeObservers,
+    intersect: () => {
+      for (const observer of intersectionObservers)
+        if (!observer.disconnected && observer.element?.isConnected)
+          observer.callback([{ isIntersecting: true }]);
+    },
     click,
     key,
     pointer,
@@ -180,6 +199,35 @@ function setup(t, { reduced = false } = {}) {
     current: () =>
       shadow.querySelector(".roman-gallery-viewport [data-current] img")?.src,
   };
+}
+
+async function until(predicate, description) {
+  for (let count = 0; count < 50; count++) {
+    if (predicate()) return;
+    await delay(5);
+  }
+  assert.fail(description);
+}
+
+function visualization(id = "kitchen") {
+  const leases = new Set();
+  const opened = [];
+  let serial = 0;
+  const preview = {
+    kind: "visualization",
+    id: `visualization:${id}`,
+    alt: "AI preview for Kitchen window",
+    width: 864,
+    height: 1152,
+    sourceKey: `${id}:result`,
+    source: () => {
+      const url = `blob:https://shop.example/${id}-${++serial}`;
+      leases.add(url);
+      return Promise.resolve({ url, release: () => leases.delete(url) });
+    },
+    onOpen: () => opened.push(id),
+  };
+  return { preview, leases, opened };
 }
 
 test("gallery bounds loaded images to the current slide and its immediate neighbours without loading zoom media", (t) => {
@@ -633,4 +681,156 @@ test("pinching, pointer cancellation and lost mouse buttons release capture with
   assert.equal(ctx.current(), items[0].src);
   assert.equal(ctx.animations.length, 0);
   assert.equal(ctx.shadow.querySelector("dialog"), null);
+});
+
+test("a completed preview joins the gallery without replacing the customer's native image selection", async (t) => {
+  const ctx = setup(t);
+  const { preview } = visualization();
+  ctx.view.render(items);
+  ctx.click('[aria-label="Show image 2: detail view"]');
+  ctx.view.render([...items, preview]);
+  assert.equal(ctx.current(), items[1].src);
+  const choice = ctx.shadow.querySelector(
+    '[aria-label="Show image 4: AI preview for Kitchen window"]',
+  );
+  assert.ok(choice, "The named window preview is reachable from the thumbnail strip");
+  const star = choice.querySelector(".roman-gallery-preview-star");
+  assert.ok(star, "The preview thumbnail carries its AI star marker");
+  assert.equal(star.getAttribute("aria-hidden"), "true");
+  ctx.click('[aria-label="Show image 4: AI preview for Kitchen window"]');
+  ctx.intersect();
+  await until(() => ctx.current()?.startsWith("blob:"), "Preview image did not resolve");
+  assert.equal(
+    ctx.shadow.querySelector(".roman-gallery-viewport [data-current] img").alt,
+    preview.alt,
+  );
+  assert.match(
+    ctx.shadow.querySelector(".roman-gallery-enlarge").getAttribute("aria-label"),
+    /AI preview for Kitchen window/,
+  );
+  ctx.view.render([...items.map((item) => ({ ...item })), { ...preview }]);
+  assert.equal(choice.getAttribute("aria-pressed"), "true");
+  assert.ok(ctx.current()?.startsWith("blob:"), "Repeated snapshots preserve preview selection");
+});
+
+test("a preview-only gallery retains its named AI thumbnail while a single native image stays compact", async (t) => {
+  const ctx = setup(t);
+  const { preview, opened } = visualization();
+  ctx.view.render([items[0]]);
+  assert.equal(ctx.shadow.querySelector(".roman-gallery-thumbnails"), null);
+  ctx.view.render([preview]);
+  ctx.intersect();
+  await until(() => ctx.current()?.startsWith("blob:"), "The only preview did not resolve");
+  const thumbnail = ctx.shadow.querySelector(
+    '.roman-gallery-thumbnails [aria-label="Show image 1: AI preview for Kitchen window"]',
+  );
+  assert.ok(thumbnail, "An AI-only gallery still identifies its preview through a thumbnail");
+  assert.equal(thumbnail.getAttribute("aria-pressed"), "true");
+  assert.ok(thumbnail.querySelector(".roman-gallery-preview-star"));
+  assert.equal(ctx.shadow.querySelector(".roman-gallery-controls"), null, "A one-image gallery needs no paging controls");
+  assert.match(
+    ctx.shadow.querySelector(".roman-gallery-enlarge").getAttribute("aria-label"),
+    /AI preview for Kitchen window/,
+  );
+  ctx.click(".roman-gallery-enlarge");
+  assert.deepEqual(opened, ["kitchen"]);
+  ctx.view.render([items[0]]);
+  assert.equal(ctx.shadow.querySelector(".roman-gallery-thumbnails"), null);
+});
+
+test("a mobile expanded preview opens its viewer only from the enlarge button", async (t) => {
+  const ctx = setup(t);
+  const { preview, opened } = visualization();
+  ctx.view.render([items[0], preview], { allowZoom: false });
+  assert.equal(ctx.shadow.querySelector(".roman-gallery-enlarge"), null, "Native zoom stays disabled in mobile expansion");
+  ctx.click('[aria-label="Show image 2: AI preview for Kitchen window"]');
+  ctx.intersect();
+  await until(() => ctx.current()?.startsWith("blob:"), "Mobile preview image did not resolve");
+  for (const detail of [1, 2]) ctx.click(".roman-gallery-viewport [data-current] img", detail);
+  ctx.key(".roman-gallery-viewport", "Enter");
+  assert.deepEqual(opened, [], "Image surface interactions do not compete with swiping");
+  ctx.click(".roman-gallery-enlarge");
+  assert.deepEqual(opened, ["kitchen"]);
+  assert.equal(ctx.shadow.querySelector("dialog"), null, "The caller owns the comparison viewer");
+});
+
+test("continuous mouse dragging and touch swiping include completed previews", async (t) => {
+  const ctx = setup(t);
+  const { preview, opened } = visualization();
+  ctx.view.render([items[0], items[1], preview]);
+  ctx.click('[aria-label="Show image 2: detail view"]');
+  ctx.intersect();
+  await delay(10);
+  const incoming = ctx.shadow.querySelector(".roman-gallery-track").lastElementChild.querySelector("img");
+  assert.ok(incoming?.src.startsWith("blob:"), "Private preview loads before the gesture reaches it");
+  ctx.pointer("pointerdown", 220);
+  ctx.pointer("pointermove", 100);
+  assert.equal(ctx.current(), items[1].src, "Selection remains native while the drag is in progress");
+  ctx.pointer("pointerup", 100);
+  assert.equal(ctx.current(), items[1].src, "Selection waits for the settle animation");
+  ctx.finish();
+  await until(() => ctx.current()?.startsWith("blob:"), "Drag did not select the private preview");
+  assert.equal(ctx.shadow.querySelector(".roman-gallery-viewport [data-current] img"), incoming, "The incoming loaded preview node is preserved");
+  ctx.pointer("pointerdown", 100, 20, "touch");
+  ctx.pointer("pointermove", 220, 22, "touch");
+  ctx.pointer("pointerup", 220, 22, "touch");
+  ctx.finish();
+  assert.equal(ctx.current(), items[1].src);
+  assert.deepEqual(opened, [], "Neither drag nor swipe opens the comparison viewer");
+});
+
+test("native enlargement filters private previews and maps navigation back to native IDs", (t) => {
+  const ctx = setup(t);
+  const { preview, opened } = visualization();
+  ctx.view.render([items[0], preview, items[1], items[2]]);
+  ctx.click('[aria-label="Show image 3: detail view"]');
+  ctx.click(".roman-gallery-enlarge");
+  const dialog = ctx.shadow.querySelector("dialog");
+  assert.equal(dialog.querySelector("[data-current] img").src, items[1].zoomSrc);
+  assert.equal(dialog.querySelector('[role="status"]').textContent, "2 / 3");
+  assert.equal(dialog.querySelectorAll(".roman-private-image").length, 0, "Native zoom mounts only native high-resolution media");
+  ctx.key("dialog", "ArrowLeft");
+  assert.equal(dialog.querySelector("[data-current] img").src, items[0].zoomSrc);
+  assert.equal(ctx.current(), items[0].src);
+  ctx.key("dialog", "ArrowLeft");
+  assert.equal(dialog.querySelector("[data-current] img").src, items[2].zoomSrc);
+  assert.equal(ctx.current(), items[2].src, "Filtered zoom indices map to original gallery item identities");
+  assert.deepEqual(opened, []);
+});
+
+test("private preview leases release when the preview is removed or the gallery unmounts", async (t) => {
+  const ctx = setup(t);
+  const { preview, leases } = visualization();
+  ctx.view.render([items[0], preview]);
+  ctx.intersect();
+  await until(() => leases.size > 0, "Preview did not acquire any private image leases");
+  ctx.click('[aria-label="Show image 2: AI preview for Kitchen window"]');
+  await until(() => ctx.current()?.startsWith("blob:"), "Preview selection did not resolve");
+  ctx.view.render([items[0]]);
+  await until(() => leases.size === 0, "Removed preview retained its private image leases");
+  assert.equal(ctx.current(), items[0].src);
+  ctx.view.render([items[0], preview]);
+  ctx.intersect();
+  await until(() => leases.size > 0, "Restored preview did not acquire a fresh image lease");
+  ctx.dispose();
+  await until(() => leases.size === 0, "Gallery removal retained private image leases");
+});
+
+test("late private preview responses release their leases after removal", async (t) => {
+  const ctx = setup(t);
+  const { preview, leases } = visualization();
+  const waiting = [];
+  preview.source = () => new Promise((resolve) => waiting.push(resolve));
+  ctx.view.render([items[0], preview]);
+  ctx.intersect();
+  await until(() => waiting.length > 0, "Private image request did not begin");
+  ctx.view.render([items[0]]);
+  for (const [index, resolve] of waiting.entries()) {
+    const url = `blob:https://shop.example/late-${index}`;
+    leases.add(url);
+    resolve({ url, release: () => leases.delete(url) });
+  }
+  await until(() => leases.size === 0, "A removed private preview retained a late image lease");
+  assert.equal(ctx.current(), items[0].src);
+  assert.equal(ctx.shadow.querySelector('img[src^="blob:"]'), null);
 });

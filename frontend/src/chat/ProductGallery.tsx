@@ -1,7 +1,17 @@
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { ProductGalleryImage } from "../tools/product-image";
+import { PrivateImage } from "../visualizations/PrivateImage";
 
 import { GalleryViewport } from "./GalleryViewport";
+import type { ProductGalleryMedia } from "./product-gallery-media";
+
+export function ProductPreviewStar() {
+  return (
+    <svg className="roman-gallery-preview-star" viewBox="108.5 1.9 10.9 10.8" aria-hidden="true">
+      <path d="M113.709 12.5805C113.607 11.9816 113.34 11.3366 112.907 10.6456C112.474 9.94534 111.857 9.29577 111.055 8.69688C110.263 8.09798 109.47 7.71561 108.678 7.54977V6.9693C109.461 6.78503 110.212 6.44412 110.931 5.94658C111.659 5.43982 112.267 4.83171 112.755 4.12226C113.253 3.39437 113.57 2.6757 113.709 1.96624H114.289C114.372 2.42693 114.538 2.90144 114.787 3.38977C115.035 3.86888 115.353 4.32957 115.74 4.77183C116.137 5.20487 116.579 5.59645 117.067 5.94658C117.795 6.46255 118.537 6.80345 119.292 6.9693V7.54977C118.785 7.65112 118.26 7.85843 117.717 8.17169C117.182 8.48496 116.685 8.85812 116.224 9.29116C115.763 9.71499 115.386 10.1619 115.091 10.6318C114.658 11.3228 114.391 11.9724 114.289 12.5805H113.709Z" />
+    </svg>
+  );
+}
 
 function Arrow({ next = false }: { next?: boolean }) {
   return (
@@ -106,7 +116,7 @@ export function ProductGallery({
   hidden = false,
   allowZoom = true,
 }: {
-  items: readonly ProductGalleryImage[];
+  items: readonly ProductGalleryMedia[];
   title: string;
   pending?: boolean;
   hidden?: boolean;
@@ -121,6 +131,8 @@ export function ProductGallery({
     items.findIndex((item) => item.id === selectedId),
   );
   const image = items[index];
+  const nativeImages = items.filter((item): item is ProductGalleryImage => item.kind !== "visualization");
+  const nativeIndex = Math.max(0, nativeImages.findIndex((item) => item.id === image?.id));
   const move = (direction: number) => {
     if (items.length)
       setSelectedId(
@@ -128,7 +140,7 @@ export function ProductGallery({
       );
   };
   useLayoutEffect(() => {
-    const feature = items.find((item) => item.kind === "feature");
+    const feature = items.find((item): item is ProductGalleryImage => item.kind === "feature");
     const signature = feature && `${feature.id}:${feature.src}`;
     if (feature && signature && signature !== previousFeature.current)
       setSelectedId(feature.id);
@@ -146,7 +158,7 @@ export function ProductGallery({
       strip.scrollLeft = left + selected.offsetWidth - strip.clientWidth;
   }, [index, items]);
   useLayoutEffect(() => {
-    if (hidden || !image || !allowZoom) setZoom(false);
+    if (hidden || !image || !allowZoom || image.kind === "visualization") setZoom(false);
   }, [hidden, image, allowZoom]);
   const keys = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (!items.length) return;
@@ -173,13 +185,13 @@ export function ProductGallery({
               title={title}
               move={move}
             />
-            {allowZoom && (
+            {(allowZoom || image.kind === "visualization") && (
               <button
                 type="button"
                 className="roman-gallery-enlarge"
                 aria-label={`Enlarge image ${index + 1} of ${items.length}: ${image.alt || title}`}
                 onKeyDown={keys}
-                onClick={() => setZoom(true)}
+                onClick={() => image.kind === "visualization" ? image.onOpen() : setZoom(true)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
@@ -201,7 +213,6 @@ export function ProductGallery({
         )}
       </div>
       {items.length > 1 && (
-        <>
           <div className="roman-gallery-controls">
             <button
               type="button"
@@ -221,6 +232,8 @@ export function ProductGallery({
               <Arrow next />
             </button>
           </div>
+      )}
+      {(items.length > 1 || image?.kind === "visualization") && (
           <div
             ref={thumbnails}
             className="roman-gallery-thumbnails"
@@ -235,24 +248,24 @@ export function ProductGallery({
                 aria-pressed={position === index}
                 onClick={() => setSelectedId(item.id)}
               >
-                <img
-                  src={item.thumbnailSrc}
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
-                  draggable={false}
-                />
+                {item.kind === "visualization" ? (
+                  <>
+                    <PrivateImage source={item.source} sourceKey={item.sourceKey} alt="" />
+                    <ProductPreviewStar />
+                  </>
+                ) : (
+                  <img src={item.thumbnailSrc} alt="" loading="lazy" decoding="async" draggable={false} />
+                )}
               </button>
             ))}
           </div>
-        </>
       )}
-      {zoom && allowZoom && !hidden && image && (
+      {zoom && allowZoom && !hidden && image && image.kind !== "visualization" && (
         <GalleryZoom
-          items={items}
+          items={nativeImages}
           title={title}
-          index={index}
-          move={move}
+          index={nativeIndex}
+          move={(direction) => setSelectedId(nativeImages[(nativeIndex + direction + nativeImages.length) % nativeImages.length].id)}
           close={() => setZoom(false)}
         />
       )}

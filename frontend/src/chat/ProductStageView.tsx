@@ -6,8 +6,9 @@ import {
   useState,
 } from "react";
 import type { readProductConfigurationDisplay } from "../tools/product-configuration";
-import type { ProductGalleryImage } from "../tools/product-image";
-import { ProductGallery } from "./ProductGallery";
+import { PrivateImage } from "../visualizations/PrivateImage";
+import type { ProductGalleryMedia } from "./product-gallery-media";
+import { ProductGallery, ProductPreviewStar } from "./ProductGallery";
 
 type ProductDetails = {
   title: string;
@@ -174,7 +175,7 @@ function ExpandedProduct({
   onAction,
   disabled,
 }: ProductDetails & {
-  gallery: readonly ProductGalleryImage[];
+  gallery: readonly ProductGalleryMedia[];
   pending: boolean;
   close: () => void;
 }) {
@@ -264,7 +265,7 @@ export function ProductStageView({
   onAction,
   disabled,
 }: ProductDetails & {
-  gallery: readonly ProductGalleryImage[];
+  gallery: readonly ProductGalleryMedia[];
   pending: boolean;
   hidden: boolean;
 }) {
@@ -303,7 +304,12 @@ export function ProductStageView({
     >
       {compact ? (
         <div className="roman-product-stage-image roman-product-thumbnail">
-          {thumbnail && (
+          {thumbnail?.kind === "visualization" ? (
+            <>
+              <PrivateImage source={thumbnail.source} sourceKey={thumbnail.sourceKey} alt={thumbnail.alt} />
+              <ProductPreviewStar />
+            </>
+          ) : thumbnail && (
             <img
               key={thumbnail.src}
               src={thumbnail.thumbnailSrc}

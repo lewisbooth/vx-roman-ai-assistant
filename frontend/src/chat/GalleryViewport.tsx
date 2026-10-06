@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import type { ProductGalleryImage } from "../tools/product-image";
+import { PrivateImage } from "../visualizations/PrivateImage";
+import { galleryMediaKey, type ProductGalleryMedia } from "./product-gallery-media";
 
 /** A bounded image track shared by the product pane and its enlarged view. */
 export function GalleryViewport({
@@ -9,7 +10,7 @@ export function GalleryViewport({
   zoom = false,
   move,
 }: {
-  items: readonly ProductGalleryImage[];
+  items: readonly ProductGalleryMedia[];
   index: number;
   title: string;
   zoom?: boolean;
@@ -23,7 +24,7 @@ export function GalleryViewport({
   const signature = JSON.stringify([
     index,
     zoom,
-    items.map(({ id, src, zoomSrc }) => [id, src, zoomSrc]),
+    items.map((image) => galleryMediaKey(image, zoom)),
   ]);
 
   useLayoutEffect(() => {
@@ -210,7 +211,7 @@ export function GalleryViewport({
           const image = items[(index + position + items.length) % items.length];
           return (
             <div
-              key={`${image.id}:${image.src}:${zoom ? image.zoomSrc : ""}${items.length === 2 && position === -1 ? ":copy" : ""}`}
+              key={`${galleryMediaKey(image, zoom)}${items.length === 2 && position === -1 ? ":copy" : ""}`}
               className="roman-gallery-slide"
               data-current={position === 0 || undefined}
               aria-hidden={position !== 0 || undefined}
@@ -229,12 +230,14 @@ function GalleryImage({
   title,
   zoom,
 }: {
-  image: ProductGalleryImage;
+  image: ProductGalleryMedia;
   title: string;
   zoom: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const [zoomFailed, setZoomFailed] = useState(false);
+  if (image.kind === "visualization")
+    return <PrivateImage source={image.source} sourceKey={image.sourceKey} alt={image.alt} lazy={false} />;
   if (failed)
     return (
       <span className="roman-product-stage-placeholder">Image unavailable</span>

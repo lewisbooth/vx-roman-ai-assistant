@@ -1,6 +1,7 @@
 import { GALLERY_STORAGE_KEY, isMediaId, isWindowPhotoDto as photo, isVisualizationJobDto as job, type GalleryCredential, type GallerySnapshot, type MediaPart, type VisualizationJobDto, type WindowPhotoDto } from "../../../shared/visualizations";
 import type { ConversationClient } from "../session/types";
 import type { ImageLease } from "../../../shared/visualizations/ImageComparison";
+import { parseProductPath } from "../../../shared/product-path";
 
 type State = GallerySnapshot & { loading: boolean; error: string | null; persistent: boolean };
 const STORAGE_KEY = GALLERY_STORAGE_KEY;
@@ -31,13 +32,14 @@ export function createGalleryClient(session: ConversationClient) {
   const leases = new Map<string, ImageLease & { key: string; blob: Blob }>();
   let timer: number | undefined;
   let refreshing: Promise<void> | undefined;
+  let productRead: { path: string; promise: Promise<void>; controller: AbortController; excluded: Set<string> } | undefined;
   const clientId = crypto.randomUUID();
   const update = (patch: Partial<State>) => { if (!disposed) { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); } };
   function saved() { try { const value: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null"); return credential(value) ? value : null; } catch { update({ persistent: false }); return null; } }
   function persist(value: GalleryCredential) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(value)); } catch { update({ persistent: false }); } }
   async function readJson(url: string, init: RequestInit = {}) {
     if (disposed) throw new Error("Roman has been removed.");
-    const response = await fetch(url, { ...init, cache: "no-store", redirect: "error", signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)]) });
+    const response = await fetch(url, { ...init, cache: "no-store", redirect: "error", signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000), ...(init.signal ? [init.signal] : [])]) });
     if (disposed) throw new Error("Roman has been removed.");
     const value: unknown = await response.json();
     if (!response.ok) throw new Error(record(value) && record(value.error) && typeof value.error.message === "string" ? value.error.message : "Your image request could not be completed.");
@@ -67,12 +69,12 @@ export function createGalleryClient(session: ConversationClient) {
     }
     return boot;
   }
-  async function api(operation: string, body?: unknown) {
+  async function api(operation: string, body?: unknown, signal?: AbortSignal) {
     if (disposed) throw new Error("Roman has been removed.");
     if (!access) await initialize();
     if (disposed) throw new Error("Roman has been removed.");
     if (!access) throw new Error("Your gallery is unavailable.");
-    return readJson(`${access.apiBaseUrl}/${access.ownerId}/${operation}`, { method: body === undefined ? "GET" : "POST", mode: "cors", credentials: "omit", headers: { Authorization: `Bearer ${access.token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return readJson(`${access.apiBaseUrl}/${access.ownerId}/${operation}`, { method: body === undefined ? "GET" : "POST", mode: "cors", credentials: "omit", signal, headers: { Authorization: `Bearer ${access.token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   }
   async function link() {
     if (disposed) throw new Error("Roman has been removed.");
@@ -131,6 +133,11 @@ export function createGalleryClient(session: ConversationClient) {
     return promise;
   }
   const invalidate = (ids: string[]) => {
+    if (productRead) for (const id of ids) {
+      // This set belongs only to the one in-flight read, not durable history.
+      if (productRead.excluded.size >= 600) productRead.controller.abort();
+      else productRead.excluded.add(id);
+    }
     for (const [key, request] of assetRequests) if (ids.some((id) => key.endsWith(`/${id}`))) request.controller.abort();
     for (const key of assets.keys()) if (ids.some((id) => key.endsWith(`/${id}`))) assets.delete(key);
     for (const lease of leases.values()) if (ids.some((id) => lease.key.endsWith(`/${id}`))) lease.release();
@@ -179,6 +186,41 @@ export function createGalleryClient(session: ConversationClient) {
     getSnapshot: () => state,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     initialize, refresh, link,
+    async loadProductVisualizations(input: string) {
+      const productPath = parseProductPath(input);
+      if (productRead?.path === productPath) return productRead.promise;
+      productRead?.controller.abort();
+      const controller = new AbortController();
+      const excluded = new Set<string>();
+      const operation = async () => {
+        await initialize();
+        if (controller.signal.aborted) return;
+        const known = new Map(state.visualizations.filter((item) => item.productPath === productPath && item.status === "completed").map((item) => [item.id, item]));
+        const liveAtStart = new Set(state.liveVisualizationIds);
+        const value = await api(`product-visualizations?${new URLSearchParams({ productPath })}`, undefined, controller.signal);
+        if (!record(value) || value.productPath !== productPath || !Array.isArray(value.visualizations) || value.visualizations.length > 500 || !value.visualizations.every((item) => job(item) && item.productPath === productPath && item.status === "completed" && item.resultAvailable) || new Set(value.visualizations.map((item) => item.id)).size !== value.visualizations.length) throw new Error("Roman received invalid product previews.");
+        // A replacement selection cancels this read; scoped exclusions prevent
+        // restoring images from responses captured before their deletion.
+        if (disposed || controller.signal.aborted) return;
+        const live = new Set(state.liveVisualizationIds);
+        const incoming = (value.visualizations as VisualizationJobDto[]).filter((item) => !excluded.has(item.id) && !excluded.has(item.windowId) && (!liveAtStart.has(item.id) || live.has(item.id)));
+        const ids = new Set(incoming.map((item) => item.id));
+        const stale = state.visualizations.filter((item) => known.get(item.id) === item && !ids.has(item.id));
+        invalidate(stale.map((item) => item.id));
+        // Preserve pending jobs and completions published while this read was
+        // in flight. This read never prepares products or schedules polling.
+        const staleIds = new Set(stale.map((item) => item.id));
+        const completedWhileReading = state.visualizations.filter((item) => item.productPath === productPath && item.status === "completed" && known.get(item.id) !== item);
+        update({ visualizations: merge(merge(state.visualizations.filter((item) => !staleIds.has(item.id)), incoming), completedWhileReading).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 500), error: null });
+      };
+      const promise = operation().catch((error: unknown) => {
+        if (controller.signal.aborted || disposed) return;
+        update({ error: error instanceof Error ? error.message : "Your product previews could not be loaded." });
+        throw error;
+      }).finally(() => { if (productRead?.promise === promise) productRead = undefined; });
+      productRead = { path: productPath, promise, controller, excluded };
+      return promise;
+    },
     async loadReferences(parts: readonly MediaPart[]) {
       const windowIds = [...new Set(parts.flatMap((part) => part.kind === "window" ? [part.windowId] : part.kind === "windows" ? part.windowIds : []))];
       const jobIds = [...new Set(parts.flatMap((part) => part.kind === "visualization" ? [part.jobId] : []))];
@@ -257,7 +299,7 @@ export function createGalleryClient(session: ConversationClient) {
       await session.refreshMediaContext();
       return value;
     },
-    dispose() { disposed = true; lifetime.abort(); window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); for (const lease of leases.values()) lease.release(); assets.clear(); listeners.clear(); },
+    dispose() { disposed = true; productRead?.controller.abort(); lifetime.abort(); window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); for (const lease of leases.values()) lease.release(); assets.clear(); listeners.clear(); },
   };
 }
 export type GalleryClient = ReturnType<typeof createGalleryClient>;

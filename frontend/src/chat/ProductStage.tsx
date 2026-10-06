@@ -20,6 +20,7 @@ import {
   type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { ProductStageView } from "./ProductStageView";
+import type { ProductGalleryPreview } from "./product-gallery-media";
 
 function productPath(url: string): string | undefined {
   try {
@@ -95,6 +96,7 @@ export function ProductStage({
   session,
   selectedPath,
   selectedTitle,
+  previews = [],
   hidden = false,
   onMessage,
   disabled = false,
@@ -103,6 +105,7 @@ export function ProductStage({
   session: Pick<ConversationClient, "loadProductGallery">;
   selectedPath: string;
   selectedTitle: string;
+  previews?: readonly ProductGalleryPreview[];
   hidden?: boolean;
   onMessage: (message: string) => Promise<void>;
   disabled?: boolean;
@@ -286,7 +289,7 @@ export function ProductStage({
       startingPrice={display?.startingPrice ?? null}
       configuration={configuration ?? null}
       pricePending={!!configuration && !!display?.updating}
-      gallery={gallery}
+      gallery={[...gallery, ...previews]}
       pending={page.pending}
       hidden={hidden}
       disabled={disabled}

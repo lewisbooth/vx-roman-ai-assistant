@@ -351,6 +351,7 @@
     padding: 2px;
   }
   .roman-gallery-thumbnails button {
+    position: relative;
     width: 56px;
     height: 56px;
     flex: 0 0 56px;
@@ -372,6 +373,18 @@
     display: block;
     object-fit: cover;
     border-radius: 7px;
+  }
+  .roman-gallery-thumbnails .roman-gallery-preview-star,
+  .roman-product-thumbnail .roman-gallery-preview-star {
+    position: absolute;
+    right: 3px;
+    top: 3px;
+    width: 15px;
+    height: 15px;
+    fill: #c59745;
+    stroke: none;
+    filter: drop-shadow(0 1px 1px #0008);
+    pointer-events: none;
   }
   .roman-gallery-zoom {
     box-sizing: border-box;
@@ -475,6 +488,9 @@
 .roman-product-thumbnail img {
   display: block;
   object-fit: cover;
+}
+.roman-gallery-viewport .roman-private-image img {
+  object-fit: contain;
 }
 .roman-product-expanded {
   position: fixed;

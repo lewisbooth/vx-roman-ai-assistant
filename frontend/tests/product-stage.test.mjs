@@ -14,7 +14,7 @@ const bundle = await build({
       import { ProductStage } from './frontend/src/chat/ProductStage';
       function Stage({navigation, session, onMessage}) {
         const page = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot);
-        return page.selectedPath ? <ProductStage key={page.selectedPath} navigation={navigation} session={session} selectedPath={page.selectedPath} selectedTitle="Selected blind" hidden={page.hidden} disabled={page.disabled} onMessage={onMessage} /> : null;
+        return page.selectedPath ? <ProductStage key={page.selectedPath} navigation={navigation} session={session} selectedPath={page.selectedPath} selectedTitle="Selected blind" previews={page.previews} hidden={page.hidden} disabled={page.disabled} onMessage={onMessage} /> : null;
       }
       export function mount(container, navigation, session, onMessage) {
         const root = createRoot(container);
@@ -78,6 +78,7 @@ async function setup(
     loadGallery,
     hidden = false,
     mobile = false,
+    previews = [],
     onMessage,
   } = {},
 ) {
@@ -139,6 +140,7 @@ async function setup(
     pending: false,
     error: null,
     selectedPath: "/products/linen",
+    previews,
     hidden,
   };
   const listeners = new Set();
@@ -233,6 +235,37 @@ async function setup(
     },
   };
 }
+
+test("mobile expanded product includes private previews without changing its compact native image or configuration", async (t) => {
+  let opened = 0, acquired = 0, released = 0;
+  const preview = {kind: "visualization", id: "visualization:room", sourceKey: "room:result", alt: "AI preview for Kitchen window", width: 864, height: 1152,
+    source: async () => { acquired++; let done = false; return {url: "blob:https://shop.example/room", release() { if (!done) { done = true; released++; } }}; }, onOpen() { opened++; }};
+  const ctx = await setup(t, {mobile: true, previews: [preview]});
+  const native = ctx.container.querySelector(".roman-product-thumbnail img").src;
+  const quote = ctx.container.querySelector(".roman-product-stage-price").textContent;
+  assert.equal(ctx.container.querySelector(".roman-gallery-preview-star"), null, "Native compact image should stay unchanged");
+  ctx.container.querySelector('[aria-label="Expand selected product"]').click();
+  await until(() => ctx.container.querySelector(".roman-product-expanded .roman-gallery-preview-star"), "Expanded mobile gallery should append the marked room preview");
+  ctx.container.querySelector('.roman-product-expanded [aria-label*="Show image 2: AI preview"]').click();
+  await until(() => ctx.container.querySelector('.roman-product-expanded .roman-gallery-enlarge[aria-label*="AI preview for Kitchen window"]'), "Preview should expose its own enlarge action");
+  ctx.container.querySelector(".roman-product-expanded .roman-gallery-enlarge").click();
+  assert.equal(opened, 1);
+  assert.equal(ctx.container.querySelector(".roman-gallery-zoom"), null);
+  assert.equal(ctx.container.querySelector(".roman-product-thumbnail img").src, native);
+  assert.equal(ctx.container.querySelector(".roman-product-stage > .roman-product-stage-content .roman-product-stage-price").textContent, quote);
+  assert.deepEqual(ctx.messages, []);
+  ctx.dispose(); await delay(0);
+  assert.equal(released, acquired, "All expanded private consumers should release on removal");
+});
+
+test("a preview-only compact mobile fallback retains the Roman star and window label", async (t) => {
+  const preview = {kind: "visualization", id: "visualization:room", sourceKey: "room:result", alt: "AI preview for Kitchen window", width: 864, height: 1152,
+    source: async () => ({url: "blob:https://shop.example/room", release() {}}), onOpen() {}};
+  const ctx = await setup(t, {mobile: true, initialPath: "/cart", previews: [preview]});
+  await until(() => ctx.container.querySelector(".roman-product-thumbnail img"), "Saved preview fallback should resolve its private consumer");
+  assert.equal(ctx.container.querySelector(".roman-product-thumbnail img").alt, "AI preview for Kitchen window");
+  assert.ok(ctx.container.querySelector(".roman-product-thumbnail .roman-gallery-preview-star"));
+});
 
 test("stage uses the canonical PDP gallery, live quote and supported current selections", async (t) => {
   const { container } = await setup(t);

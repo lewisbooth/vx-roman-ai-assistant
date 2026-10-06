@@ -65,10 +65,10 @@ async function setup(t, options = {}) {
   const errors = [], calls = [], sent = [], activity = [], listeners = new Set();
   window.console.error = (...args) => errors.push(args);
   let state = {conversation: options.active ? conversation({active: true}) : null, pending: !!options.pending, restoring: false, error: null, voice: {status: options.voice ? "active" : "idle", muted: false, error: null}};
-  let windows = options.saved ? [photo()] : [], visualizations = [], pendingParts = [];
+  let windows = options.saved ? [photo()] : [], visualizations = options.jobs ?? [], historicalJobs = options.productJobs ?? [], pendingParts = [];
   let loseStart = !!options.loseStart, loseStatus = !!options.loseStart, loseUploadStatus = !!options.loseUpload;
   const update = (patch) => { state = {...state, ...patch}; listeners.forEach((listener) => listener()); };
-  const snapshot = () => ({enabled: true, liveWindowIds: windows.map((item) => item.id), liveVisualizationIds: visualizations.map((item) => item.id), windows, visualizations, nextWindowsCursor: null, nextVisualizationsCursor: null});
+  const snapshot = () => ({enabled: options.enabled ?? true, liveWindowIds: windows.map((item) => item.id), liveVisualizationIds: [...new Set([...visualizations, ...historicalJobs].map((item) => item.id))], windows, visualizations, nextWindowsCursor: null, nextVisualizationsCursor: historicalJobs.length ? "older-page" : null});
   const respond = (value) => new Response(JSON.stringify(value), {headers: {"Content-Type": "application/json"}});
   window.fetch = async (url, init = {}) => {
     const parsed = new URL(String(url)), path = parsed.pathname, body = init.body ? JSON.parse(init.body) : null;
@@ -78,6 +78,11 @@ async function setup(t, options = {}) {
     const operation = path.split("/").at(-1);
     if (operation === "link") return respond({});
     if (operation === "list") return respond(snapshot());
+    if (operation === "product-visualizations") {
+      await options.onProductRead?.();
+      const productPath = parsed.searchParams.get("productPath");
+      return respond({productPath, visualizations: [...new Map([...historicalJobs, ...visualizations].map((item) => [item.id, item])).values()].filter((item) => item.productPath === productPath && item.status === "completed" && item.resultAvailable)});
+    }
     if (operation === "references") return respond({windows: windows.filter((item) => body.windowIds.includes(item.id)), visualizations: visualizations.filter((item) => body.jobIds.includes(item.id))});
     if (operation === "select") {
       update({conversation: {...state.conversation, current: {...state.conversation.current, selectedWindow: windows.find((item) => item.id === body.windowId)}}});
@@ -106,6 +111,7 @@ async function setup(t, options = {}) {
     }
     if (operation === "job") return respond(visualizations[0]);
     if (operation === "delete-window") { windows = []; visualizations = []; return respond({}); }
+    if (operation === "delete-job") { visualizations = visualizations.filter((item) => item.id !== body.jobId); historicalJobs = historicalJobs.filter((item) => item.id !== body.jobId); return respond({}); }
     if (path.includes("/media/")) return new Response(new Uint8Array([1, 2]), {headers: {"Content-Type": "image/jpeg"}});
     assert.fail(`Unexpected media operation: ${path}`);
   };
@@ -134,7 +140,8 @@ async function setup(t, options = {}) {
   const dispose = window.MediaIntegration.mount(container, {logoUrl: "/logo.svg", session,
     navigation: {getSnapshot: () => page, subscribe: () => () => {}, navigate: async () => {}}, onReady() {}, onError: (error) => errors.push(error)});
   t.after(async () => { dispose(); await delay(0); window.close(); assert.deepEqual(errors, []); });
-  await until(() => container.querySelector("[data-roman-upload]"), "Independent Gallery bootstrap did not enable the camera");
+  if (options.enabled === false) await until(() => calls.some((call) => call.path.endsWith("/product-visualizations")), "Read-only Gallery did not load product metadata");
+  else await until(() => container.querySelector("[data-roman-upload]"), "Independent Gallery bootstrap did not enable the camera");
   const camera = () => container.querySelector("[data-roman-upload]");
   const dialog = () => container.querySelector(".roman-visualization-dialog");
   const setText = async (input, text) => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text); input.dispatchEvent(new window.Event("input", {bubbles: true})); await delay(0); };
@@ -145,6 +152,57 @@ async function setup(t, options = {}) {
     setCompletedJob() { visualizations = [{...job(), status: "completed", resultAvailable: true, completedAt: new Date().toISOString()}]; },
   };
 }
+
+test("restored product previews include previous Gallery pages and remain readable with generation disabled", async (t) => {
+  const completed = {...job(), status: "completed", completedAt: "2026-10-06T12:00:01Z", resultAvailable: true};
+  const unrelated = {...completed, id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", productPath: "/products/other", productTitle: "Other blind"};
+  const ctx = await setup(t, {active: true, saved: true, enabled: false, productJobs: [completed, unrelated]});
+  await until(() => ctx.container.querySelector('.roman-gallery-thumbnails [aria-label*="AI preview for Kitchen window"]'), "The selected product did not receive its older private preview");
+  assert.equal(ctx.camera(), null);
+  assert.equal(ctx.container.querySelectorAll(".roman-gallery-preview-star").length, 1);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/product-visualizations")).length, 1, "StrictMode and metadata arrival should not repeat the lookup");
+  assert.equal(ctx.session.getSnapshot().conversation.current.activeProduct.path, "/products/linen");
+  assert.deepEqual(ctx.sent, []);
+  ctx.container.querySelector('.roman-gallery-enlarge').click();
+  await until(() => ctx.dialog()?.classList.contains("roman-visualization-fullscreen"), "Private preview did not open the A/B viewer");
+  assert.match(ctx.dialog().querySelector("h2").textContent, /Kitchen window.*Linen blind/);
+  ctx.dialog().querySelector('[aria-label="Close"]').click();
+  await delay(0);
+  assert.equal(ctx.dialog(), null);
+});
+
+test("newly completed and removed previews update the selected gallery without another product lookup", async (t) => {
+  const ctx = await setup(t, {active: true, saved: true});
+  await until(() => ctx.calls.some((call) => call.path.endsWith("/product-visualizations")), "Initial optional read did not run");
+  const active = ctx.session.getSnapshot().conversation.current.activeProduct;
+  ctx.setCompletedJob();
+  await ctx.selectTab("Gallery");
+  await until(() => ctx.container.querySelector(".roman-gallery .roman-visualization-card"), "Gallery refresh did not publish the completed preview");
+  await ctx.selectTab("Chat");
+  await until(() => ctx.container.querySelector('.roman-gallery-thumbnails [aria-label*="AI preview"]'), "Completed preview did not reach the product pane");
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/product-visualizations")).length, 1);
+  assert.deepEqual(ctx.session.getSnapshot().conversation.current.activeProduct, active);
+  await ctx.selectTab("Gallery");
+  ctx.container.querySelector('.roman-gallery .roman-visualization-card .roman-media-delete').click();
+  await until(() => !ctx.container.querySelector(".roman-gallery .roman-visualization-card"), "Deleted preview stayed in Gallery");
+  await ctx.selectTab("Chat");
+  assert.equal(ctx.container.querySelector('.roman-gallery-thumbnails [aria-label*="AI preview"]'), null);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/product-visualizations")).length, 1);
+});
+
+test("an optional preview read failure retries once when Gallery is opened and leaves chat available", async (t) => {
+  let fail = true;
+  const completed = {...job(), status: "completed", completedAt: "2026-10-06T12:00:01Z", resultAvailable: true};
+  const ctx = await setup(t, {active: true, saved: true, productJobs: [completed], onProductRead: () => { if (fail) { fail = false; throw new Error("Product metadata temporarily unavailable"); } }});
+  await until(() => ctx.calls.some((call) => call.path.endsWith("/product-visualizations")), "Optional preview read did not run");
+  await delay(10);
+  assert.equal(ctx.container.querySelector("textarea").disabled, false);
+  await ctx.selectTab("Gallery");
+  await until(() => ctx.calls.filter((call) => call.path.endsWith("/product-visualizations")).length === 2 && ctx.container.querySelector(".roman-gallery .roman-visualization-card"), "Opening Gallery did not retry the failed preview read");
+  await delay(25);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/product-visualizations")).length, 2);
+  assert.equal(ctx.container.querySelector('.roman-gallery [role="alert"]'), null);
+});
 
 test("camera and visualizer welcome open the same non-conversational modal while voice and pending chat retain their state", async (t) => {
   const ctx = await setup(t, {voice: true, pending: true});

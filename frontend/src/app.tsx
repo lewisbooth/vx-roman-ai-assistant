@@ -545,6 +545,7 @@ function Assistant({
                 navigation={navigation}
                 selectedPath={selectedProduct.path}
                 selectedTitle={selectedProduct.title}
+                previews={visualization.productPreviews}
                 hidden={view !== "chat"}
                 onMessage={sendMessage}
                 disabled={suspended || ending || state.restoring}

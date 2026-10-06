@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { ConversationSnapshot } from "../../../shared/conversation";
+import { activeProduct } from "../../../shared/active-product";
 import { isCustomerMediaIntent, windowTitle, type MediaPart, type VisualizationJobDto, type WindowPhotoDto } from "../../../shared/visualizations";
 import { imageCanvasForPhoto } from "../../../shared/visualizations/image-canvas";
 import { VisualizationViewer } from "../../../shared/visualizations/VisualizationViewer";
@@ -9,6 +10,7 @@ import { UploadModal, type UploadDraft } from "./UploadModal";
 import { VisualizationGallery } from "./VisualizationGallery";
 import { VisualizationCard } from "./VisualizationCard";
 import { WindowCard, WindowCarousel } from "./WindowCard";
+import type { ProductGalleryPreview } from "../chat/product-gallery-media";
 
 const emptyDraft = (): UploadDraft => ({file: null, window: null, preview: null, title: "", cleanup: true, consent: false});
 type UploadAttempt = {
@@ -44,12 +46,14 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
   const [viewer, setViewer] = useState<VisualizationJobDto | null>(null);
   const [selectedWindow, setSelectedWindow] = useState<string | null>(null);
   const currentWindowId = conversation?.current?.selectedWindow?.id ?? null;
+  const selectedProductPath = activeProduct(conversation)?.path ?? null;
   const urls = useRef(new Set<string>());
   const mounted = useRef(false);
   const fileVersion = useRef(0);
   const running = useRef(new Set<string>());
   const previousConversation = useRef(conversation?.id);
   const advisorStarted = useRef(new Set<string>());
+  const failedProductRead = useRef<string | null>(null);
   const sourceVersion = JSON.stringify(conversation?.messages.flatMap((message) => message.parts.filter((part) => part.type === "media")) ?? []);
   const [loadedReferences, setLoadedReferences] = useState("[]");
   const [referenceError, setReferenceError] = useState<string | null>(null);
@@ -99,12 +103,26 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     if (view !== "gallery") return;
     let disposed = false;
     const parts = JSON.parse(sourceVersion) as MediaPart[];
-    void Promise.all([client.refresh(), parts.length ? client.loadReferences(parts) : Promise.resolve()]).then(() => {
+    void Promise.all([client.refresh(), parts.length ? client.loadReferences(parts) : Promise.resolve()]).then(async () => {
       if (!disposed) { setLoadedReferences(sourceVersion); setReferenceError(null); }
+      if (!disposed && selectedProductPath && failedProductRead.current === selectedProductPath) {
+        await client.loadProductVisualizations(selectedProductPath);
+        if (!disposed) failedProductRead.current = null;
+      }
     }).catch(() => { if (!disposed) setReferenceError(sourceVersion); });
     return () => { disposed = true; };
-  }, [client, view, sourceVersion]);
+  }, [client, view, sourceVersion, selectedProductPath]);
   useEffect(() => { setSelectedWindow(currentWindowId); }, [currentWindowId]);
+  useEffect(() => {
+    if (!selectedProductPath) return;
+    let disposed = false;
+    // Existing previews stay readable when generation is disabled. This
+    // optional lookup is independent of model turns and Gallery pagination.
+    void client.loadProductVisualizations(selectedProductPath).then(() => {
+      if (!disposed) failedProductRead.current = null;
+    }).catch(() => { if (!disposed) failedProductRead.current = selectedProductPath; });
+    return () => { disposed = true; };
+  }, [client, selectedProductPath]);
   useEffect(() => {
     if (viewer && !gallery.loading && !gallery.visualizations.some((job) => job.id === viewer.id)) setViewer(null);
   }, [gallery.loading, gallery.visualizations, viewer]);
@@ -230,6 +248,9 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     catch (error) { setMediaError(error instanceof Error ? error.message : "Your visualization status could not be checked."); }
   };
   const openViewer = (job: VisualizationJobDto) => { activity(); setViewer(job); };
+  const productPreviews = useMemo<ProductGalleryPreview[]>(() => gallery.visualizations
+    .filter((job) => job.productPath === selectedProductPath && job.status === "completed" && job.resultAvailable)
+    .map((job) => ({kind: "visualization", id: `visualization:${job.id}`, alt: `AI preview for ${job.windowTitle}`, width: job.width, height: job.height, sourceKey: `${job.id}:result`, source: () => client.resultSource(job), onOpen: () => { session.noteMediaActivity?.(); setViewer(job); }})), [client, gallery.visualizations, selectedProductPath, session]);
   const viewerMedia = useMemo(() => viewer ? {before: () => client.beforeSource(viewer), after: () => client.resultSource(viewer), resultAsset: () => client.resultAsset(viewer)} : null, [client, viewer]);
   const renderMedia = (part: MediaPart): ReactNode => {
     const missing = (label: string) => referenceError === sourceVersion ? `${label} could not load. Open Gallery to retry.` : loadedReferences !== sourceVersion ? `Loading your ${label.toLowerCase()}…` : `${label} removed.`;
@@ -248,7 +269,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       onRetry={(item) => { const photo = gallery.windows.find((row) => row.id === item.windowId); if (photo) selectForReview(photo); }} /> : <p className="roman-inline-event">{missing("Visualization")}</p>;
   };
   return {
-    enabled: gallery.enabled, openUpload, renderMedia,
+    enabled: gallery.enabled, openUpload, renderMedia, productPreviews,
     galleryView: <VisualizationGallery {...gallery} error={mediaError ?? gallery.error} selectedWindowId={selectedWindow} windowSource={client.windowSource} resultSource={client.resultSource}
       onUpload={openUpload} onSelectWindow={selectForReview}
       onRenameWindow={async (photo, title) => { activity(); await client.rename(photo, title); }}
