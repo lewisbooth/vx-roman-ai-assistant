@@ -8,6 +8,10 @@ import {
   estimateVoiceUsage,
 } from "../pricing/estimate.server";
 import { MODEL_PRICES } from "../pricing/rates.server";
+import {
+  estimateImageUsage,
+  parseImageRateSnapshot,
+} from "../pricing/image-estimate.server";
 import { getShopCostSummary } from "./costs.server";
 import type {
   ConversationInspection,
@@ -158,6 +162,7 @@ export async function getConversationInspection(
       select: {
         ...conversationSummary,
         origin: true,
+        galleryOwnerId: true,
         messages: { orderBy: { sequence: "asc" } },
         voiceTranscripts: { orderBy: { sequence: "asc" } },
         toolInvocations: {
@@ -191,9 +196,88 @@ export async function getConversationInspection(
             error: true,
           },
         },
+        imageAttempts: {
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            jobId: true,
+            ordinal: true,
+            model: true,
+            status: true,
+            createdAt: true,
+            completedAt: true,
+            errorCode: true,
+            textInputTokens: true,
+            textCachedInputTokens: true,
+            imageInputTokens: true,
+            imageCachedInputTokens: true,
+            imageOutputTokens: true,
+            usageValid: true,
+            rateSnapshotJson: true,
+          },
+        },
+        windowPhotos: {
+          select: {
+            id: true,
+            conversationId: true,
+            title: true,
+            width: true,
+            height: true,
+            uploadStatus: true,
+            deletedAt: true,
+          },
+        },
+        visualizationJobs: {
+          select: {
+            id: true,
+            windowTitle: true,
+            productTitle: true,
+            width: true,
+            height: true,
+            status: true,
+            error: true,
+            resultKey: true,
+            deletedAt: true,
+            window: { select: { deletedAt: true } },
+          },
+        },
       },
     });
     if (!row) return null;
+    const messages = conversationTimeline(row).filter(
+      (message) => message.parts.length > 0 || message.status === "failed",
+    );
+    // A named photo can be reused after End Chat. Resolve only exact saved
+    // references belonging to this conversation's Gallery owner.
+    const referencedWindowIds = messages.flatMap((message) =>
+      message.parts.flatMap((part) =>
+        part.type === "media"
+          ? part.kind === "window" || part.kind === "renamed"
+            ? [part.windowId]
+            : part.kind === "windows"
+              ? part.windowIds
+              : []
+          : [],
+      ),
+    );
+    const reusedWindows =
+      row.galleryOwnerId && referencedWindowIds.length
+        ? await transaction.windowPhoto.findMany({
+            where: {
+              ownerId: row.galleryOwnerId,
+              id: { in: [...new Set(referencedWindowIds)] },
+            },
+            select: {
+              id: true,
+              conversationId: true,
+              title: true,
+              width: true,
+              height: true,
+              uploadStatus: true,
+              deletedAt: true,
+            },
+          })
+        : [];
     const cost = emptyCostSummary();
     const modelUsage = row.modelUsage.map((usage) => {
       const estimate = estimateModelUsage(usage);
@@ -215,11 +299,24 @@ export async function getConversationInspection(
         closedAt: voice.closedAt?.toISOString() ?? null,
       };
     });
+    const imageAttempts = row.imageAttempts.map(
+      ({ rateSnapshotJson, usageValid, ...attempt }) => {
+        const estimate = estimateImageUsage(
+          { ...attempt, usageValid },
+          parseImageRateSnapshot(rateSnapshotJson),
+        );
+        addCost(cost, "image", estimate);
+        return {
+          ...attempt,
+          cost: estimate,
+          createdAt: attempt.createdAt.toISOString(),
+          completedAt: attempt.completedAt?.toISOString() ?? null,
+        };
+      },
+    );
     return {
       conversation: { ...listItem(row), origin: row.origin },
-      messages: conversationTimeline(row).filter(
-        (message) => message.parts.length > 0 || message.status === "failed",
-      ),
+      messages,
       tools: row.toolInvocations.map((tool) => ({
         ...tool,
         createdAt: tool.createdAt.toISOString(),
@@ -227,6 +324,37 @@ export async function getConversationInspection(
       })),
       modelUsage,
       voiceSessions,
+      imageAttempts,
+      windows: [
+        ...new Map(
+          [...row.windowPhotos, ...reusedWindows].map((photo) => [
+            photo.id,
+            photo,
+          ]),
+        ).values(),
+      ].map((photo) => ({
+        id: photo.id,
+        title: photo.title,
+        width: photo.width,
+        height: photo.height,
+        available: !photo.deletedAt && photo.uploadStatus === "ready",
+        deletable: photo.conversationId === id && !photo.deletedAt,
+      })),
+      visualizations: row.visualizationJobs.map((job) => ({
+        id: job.id,
+        windowTitle: job.windowTitle,
+        productTitle: job.productTitle,
+        width: job.width,
+        height: job.height,
+        status: job.status,
+        error: job.error,
+        available:
+          job.status === "completed" &&
+          !!job.resultKey &&
+          !job.deletedAt &&
+          !job.window.deletedAt,
+        deleted: !!job.deletedAt || !!job.window.deletedAt,
+      })),
       usage: await usageSummary(transaction, shop, id),
       cost,
     };

@@ -60,7 +60,17 @@ const runnerBundle = await build({
       name: "runner-lifecycle-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /(?:availability|model|repository|browser-tools|service)\.server$/ },
+          { filter: /visualizations\/tools\.server$/ },
+          (args) => ({ path: args.path, namespace: "gallery-disabled" }),
+        );
+        build.onLoad({ filter: /.*/, namespace: "gallery-disabled" }, () => ({
+          contents: "export const createVisualizationTurn=async()=>undefined;",
+        }));
+        build.onResolve(
+          {
+            filter:
+              /(?:availability|model|repository|browser-tools|service)\.server$/,
+          },
           (args) => ({ path: args.path, namespace: "stub" }),
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, ({ path }) => ({
@@ -70,13 +80,13 @@ const runnerBundle = await build({
               ? `export const assertServiceAvailable=async()=>{};
                  export const isServiceSuspended=()=>false;
                  export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";`
-            : path.endsWith("browser-tools.server")
-              ? `export const requestBrowserTool=()=>{throw new Error("Unexpected browser call")};`
-              : path.endsWith("service.server")
-                ? `export const executeMeasurementTool=()=>{throw new Error("Unexpected measurement call")};`
-                : path.includes("usage")
-                  ? `export const recordModelUsage=()=>{};`
-                  : `export const beginTurn=(...args)=>mock.begin(...args);
+              : path.endsWith("browser-tools.server")
+                ? `export const requestBrowserTool=()=>{throw new Error("Unexpected browser call")};`
+                : path.endsWith("service.server")
+                  ? `export const executeMeasurementTool=()=>{throw new Error("Unexpected measurement call")};`
+                  : path.includes("usage")
+                    ? `export const recordModelUsage=()=>{};`
+                    : `export const beginTurn=(...args)=>mock.begin(...args);
          export const getSnapshot=(...args)=>mock.snapshot(...args);
          export const finishTurn=(...args)=>mock.finish(...args);
          export const failPending=()=>{};

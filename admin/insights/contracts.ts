@@ -1,5 +1,11 @@
 import type { ConversationMessage } from "../../shared/conversation";
-import type { CostEstimate, CostSummary, ModelPrice } from "../pricing/contracts";
+import type {
+  CostEstimate,
+  CostSummary,
+  ImageCostEstimate,
+  ImageTokenUsage,
+  ModelPrice,
+} from "../pricing/contracts";
 
 export interface UsageSummary {
   inputTokens: number | null;
@@ -79,6 +85,41 @@ export interface ConversationInspection {
   }[];
   modelUsage: InspectedModelUsage[];
   voiceSessions: InspectedVoiceSession[];
+  imageAttempts: InspectedImageAttempt[];
+  windows: InspectedWindow[];
+  visualizations: InspectedVisualization[];
   usage: UsageSummary;
   cost: CostSummary;
+}
+
+export interface InspectedWindow {
+  id: string;
+  title: string;
+  width: number;
+  height: number;
+  available: boolean;
+  deletable: boolean;
+}
+export interface InspectedVisualization {
+  id: string;
+  windowTitle: string;
+  productTitle: string;
+  width: number;
+  height: number;
+  status: string;
+  error: string | null;
+  available: boolean;
+  deleted: boolean;
+}
+
+export interface InspectedImageAttempt extends ImageTokenUsage {
+  id: string;
+  jobId: string;
+  ordinal: number;
+  model: string;
+  status: string;
+  createdAt: string;
+  completedAt: string | null;
+  errorCode: string | null;
+  cost: ImageCostEstimate;
 }

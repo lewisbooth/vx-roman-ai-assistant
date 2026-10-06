@@ -30,6 +30,14 @@ const bundle = await build({
       name: "http-boundaries",
       setup(build) {
         build.onResolve(
+          { filter: /visualizations\/auth\.server$/ },
+          (args) => ({ path: args.path, namespace: "gallery-auth" }),
+        );
+        build.onLoad({ filter: /.*/, namespace: "gallery-auth" }, () => ({
+          contents:
+            "export const authorizeGallery=(...args)=>mock.galleryAuthorize(...args); export const linkGalleryConversation=(...args)=>mock.galleryLink(...args);",
+        }));
+        build.onResolve(
           {
             filter:
               /(?:shopify|repository|runner|browser-tools|service|availability)\.server$/,
@@ -41,23 +49,23 @@ const bundle = await build({
             ? `export const assertServiceAvailable=()=>mock.assertAvailable();
                export const getAvailabilityStatus=()=>mock.status;`
             : args.path.endsWith("shopify.server")
-            ? "export const authenticate={public:{appProxy:(request)=>mock.proxy(request)}};"
-            : args.path.endsWith("service.server")
-              ? `export const stopConversationVoice=(...args)=>mock.stopVoice(...args);
+              ? "export const authenticate={public:{appProxy:(request)=>mock.proxy(request)}};"
+              : args.path.endsWith("service.server")
+                ? `export const stopConversationVoice=(...args)=>mock.stopVoice(...args);
                  export const noteVoicePageView=(...args)=>mock.voicePage(...args);`
-              : args.path.endsWith("repository.server")
-                ? `export const authorizeCredential=(...args)=>mock.authorize(...args);
+                : args.path.endsWith("repository.server")
+                  ? `export const authorizeCredential=(...args)=>mock.authorize(...args);
               export const createConversation=(...args)=>mock.create(...args);
               export const getSnapshot=(...args)=>mock.snapshot(...args);
               export const getHistoryPage=(...args)=>mock.history(...args);
               export const appendJourney=(...args)=>mock.journey(...args);
               export const claimToolInvocation=(...args)=>mock.claim(...args);
               export const conversationApiBaseUrl=()=>mock.apiBaseUrl;`
-                : args.path.endsWith("browser-tools.server")
-                  ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`.concat(
-                      `export const claimBrowserTool=(...args)=>mock.claim(...args);`,
-                    )
-                  : `export const endTurn=(...args)=>mock.end(...args);
+                  : args.path.endsWith("browser-tools.server")
+                    ? `export const submitBrowserToolResult=(...args)=>mock.result(...args);`.concat(
+                        `export const claimBrowserTool=(...args)=>mock.claim(...args);`,
+                      )
+                    : `export const endTurn=(...args)=>mock.end(...args);
               export const startTurn=(...args)=>mock.start(...args);
               export const readConversation=(...args)=>mock.read(...args);`,
         }));
@@ -96,15 +104,23 @@ function setup() {
     result: [],
     voiceStops: [],
     voicePages: [],
+    galleryAuthorizations: [],
+    galleryLinks: [],
   };
   let now = Date.now();
   let api;
   const mock = {
+    galleryAuthorize: async (...args) => {
+      calls.galleryAuthorizations.push(args);
+      return { id: REQUEST_ID, shop: SHOP, origin: ORIGIN };
+    },
+    galleryLink: async (...args) => {
+      calls.galleryLinks.push(args);
+    },
     apiBaseUrl: "https://roman.example/api/conversations",
     status: "available",
     assertAvailable: () => {
-      if (mock.status === "suspended")
-        throw new api.ServiceUnavailableError();
+      if (mock.status === "suspended") throw new api.ServiceUnavailableError();
     },
     stopVoice: async (...args) => {
       calls.voiceStops.push(args);
@@ -150,7 +166,16 @@ function setup() {
       };
     },
     snapshot: async () => SNAPSHOT,
-    history: async (id, before) => ({ id, revision: 3, history: { start: Math.max(0, before - 256), end: before, before: Math.max(0, before - 256) || null, entries: [] } }),
+    history: async (id, before) => ({
+      id,
+      revision: 3,
+      history: {
+        start: Math.max(0, before - 256),
+        end: before,
+        before: Math.max(0, before - 256) || null,
+        entries: [],
+      },
+    }),
     journey: async (...args) => {
       calls.journey.push(args);
       return { ...SNAPSHOT, revision: 1 };
@@ -576,6 +601,48 @@ test("bootstrap resumes the same scoped credential and uses the current API base
   assert.equal(result.apiBaseUrl, env.mock.apiBaseUrl);
 });
 
+test("bootstrap links a saved gallery before returning fresh or resumed conversation state", async () => {
+  for (const saved of [false, true]) {
+    const env = setup();
+    const response = await run(
+      env.api.bootstrap,
+      bootstrapRequest({
+        body: json({
+          ...(saved ? { conversationId: ID, token: TOKEN } : {}),
+          gallery: { ownerId: REQUEST_ID, token: TOKEN },
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(env.calls.galleryAuthorizations)),
+      [[REQUEST_ID, TOKEN, ORIGIN, SHOP]],
+    );
+    assert.equal(env.calls.galleryLinks.length, 1);
+    assert.equal(env.calls.galleryLinks[0][1], ID);
+    assert.equal(env.calls.galleryLinks[0][2], TOKEN);
+    assert.equal(env.calls.create, saved ? 0 : 1);
+    assert.equal(env.calls.start.length, 0);
+  }
+});
+
+test("a rejected saved gallery cannot create a new chat or start a customer turn", async () => {
+  const env = setup();
+  env.mock.galleryAuthorize = async () => {
+    throw new env.api.ConversationError(401, "Gallery authorization failed.");
+  };
+  const response = await run(
+    env.api.bootstrap,
+    bootstrapRequest({
+      body: json({ gallery: { ownerId: REQUEST_ID, token: TOKEN } }),
+    }),
+  );
+  assert.equal(response.status, 401);
+  assert.equal(env.calls.create, 0);
+  assert.equal(env.calls.galleryLinks.length, 0);
+  assert.equal(env.calls.start.length, 0);
+});
+
 test("bootstrap cannot resume another shop's conversation", async () => {
   const env = setup();
   env.mock.authorize = async () => ({
@@ -785,6 +852,9 @@ test("bootstrap rejects mixed, partial and oversized credential bodies", async (
     { conversationId: ID },
     { conversationId: ID, token: TOKEN, shop: SHOP },
     { conversationId: ID, token: "x".repeat(44) },
+    { gallery: null },
+    { gallery: { ownerId: REQUEST_ID } },
+    { gallery: { ownerId: REQUEST_ID, token: TOKEN, shop: SHOP } },
   ])
     assert.equal(
       (await run(env.api.bootstrap, bootstrapRequest({ body: json(value) })))

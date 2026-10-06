@@ -31,6 +31,13 @@ const bundle = await build({
       name: "runner-boundaries",
       setup(build) {
         build.onResolve(
+          { filter: /visualizations\/tools\.server$/ },
+          (args) => ({ path: args.path, namespace: "gallery-disabled" }),
+        );
+        build.onLoad({ filter: /.*/, namespace: "gallery-disabled" }, () => ({
+          contents: "export const createVisualizationTurn=async()=>undefined;",
+        }));
+        build.onResolve(
           {
             filter:
               /availability\.server$|repository\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/(?:files|library)\.server$|^openai$/,
@@ -46,9 +53,8 @@ const bundle = await build({
         );
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
           resolveDir: process.cwd(),
-          contents:
-            args.path.endsWith("availability.server")
-              ? `export const PRIMARY_TEXT_MODEL="gpt-6-luna";
+          contents: args.path.endsWith("availability.server")
+            ? `export const PRIMARY_TEXT_MODEL="gpt-6-luna";
                 export const FALLBACK_TEXT_MODEL="gpt-5.6-luna";
                 export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";
                 export const onServiceSuspended=()=>()=>{};
@@ -57,7 +63,7 @@ const bundle = await build({
                 export const textModelForRequest=async()=>"gpt-6-luna";
                 export const reportPrimaryUnavailable=async()=>{};
                 export const reportFallbackUnavailable=async()=>{};`
-              : args.path === "openai"
+            : args.path === "openai"
               ? `export default class OpenAI {
               static APIError = class APIError extends Error {};
               static APIConnectionError = class APIConnectionError extends OpenAI.APIError {};
@@ -1404,7 +1410,14 @@ function catalogCall(
     type: "function_call",
     call_id: callId,
     name,
-    arguments: typeof args === "string" ? args : JSON.stringify((name === "ask_question" || name === "ask_measurement") ? {productIds:[],...args} : args),
+    arguments:
+      typeof args === "string"
+        ? args
+        : JSON.stringify(
+            name === "ask_question" || name === "ask_measurement"
+              ? { productIds: [], ...args }
+              : args,
+          ),
   };
 }
 
@@ -5355,7 +5368,6 @@ test("provider failure or cancellation before terminal completion cannot return 
       assert.deepEqual(observed, []);
     });
 });
-
 
 test("navigation success is passed to the model without creating product evidence", async () => {
   const env = setup();

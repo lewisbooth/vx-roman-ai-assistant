@@ -1,3 +1,4 @@
+import { createVisualizationTurn } from "../visualizations/tools.server";
 import type { GuideReuse } from "./guide-turn.server";
 import type { ModelMemory } from "./memory.server";
 import type {
@@ -276,6 +277,9 @@ async function completeTurn(
       "medium",
       memory,
       memory?.recall,
+      turn.resumeQuestion || !initial.current?.galleryEnabled
+        ? undefined
+        : await createVisualizationTurn(id, assistantId, signal),
     );
     signal.throwIfAborted();
     await assertServiceAvailable();

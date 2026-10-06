@@ -6,6 +6,18 @@ Run all commands from the repository root. Both apps share its package manifest 
 
 Admin-owned static assets live in `assets/` and are imported by the app. Vite handles their production URLs; there is no root public directory.
 
+## Private window photos and visualizations
+
+`visualizations/` owns private photo storage, normalization, product-reference fetching, durable jobs and the image provider. `OPENAI_IMAGE_API_KEY` is independent of the advisor key. Set `ROMAN_MEDIA_ROOT=/data/roman-media` in Docker; photos share the existing named `roman-ai-data` volume with SQLite, outside public assets. Back up both together. `ROMAN_VISUALIZATIONS_ENABLED` defaults to false and enables upload/generation after model and storage verification; existing photo reads and management remain independent of chat availability.
+
+Use optional `ROMAN_VISUALIZATIONS_SHOPS` (comma-separated permanent Shopify domains) for a pilot before clearing it to enable all installed stores.
+
+The signed storefront Gallery bootstrap issues a separate browser-held capability, scoped to the shop and origin, with only its hash stored. It persists across End Chat without silently inheriting conversation expiry. Every media route authenticates independently; customers fetch private bytes into bounded object URLs. Merchant transcript media routes independently authenticate Shopify Admin and shop ownership. Delete a window to delete all of its previews; accounting and deleted-image history remain.
+
+Uploads accept still JPEG, PNG and WebP up to 25MiB and 52 megapixels, strip metadata and store the donor's nearest 1K JPEG canvas. One foreground storefront operation prepares up to four exact-product references through the existing executor. Generation uses one Sunburst edit request, with one Flare continuation only for the documented unavailable-model responses without image or usage evidence. It never retries a timeout or ambiguous dispatch automatically. Provider usage is recorded before decoding or saving output; `pricing/image-estimate.server.ts` pins the dated five-component price before each physical attempt. Missing usage remains unknown; undisclosed cache counts use a labelled full-input estimate.
+
+Jobs survive End Chat. Process restart marks possibly dispatched work unknown, without another charge; awaiting product preparation remains recoverable through its one-use claim. Per browser Gallery, allow one active generation, ten starts per hour, 100 photos, 500 results and 500MiB. Four jobs, 20GiB stored/reserved and 1GiB minimum free disk bound the local service; files are never evicted to meet quotas. The embedded session transcript owns photo inspection/deletion and the shared Before/After/download viewer; there is no separate image admin page. Image costs appear in the existing session pricing area.
+
 ## Backend ownership
 
 This server and its embedded admin UI run together locally in Docker for now; the same image can run on one Azure VM later. Customer sidebar API routes also belong in this app, outside the merchant-only `/app` layout. They need their own customer/session authorization; storefront visitors do not have Shopify Admin sessions. Keep AI clients and data-access logic in server-only modules, with browser-safe request/response types shared only when needed.

@@ -3,6 +3,8 @@ import type {
   CostSummary,
   ModelPrice,
   TokenPrices,
+  ImageTokenPrices,
+  ImageCostEstimate,
 } from "./contracts";
 import {
   estimatedUsd,
@@ -12,15 +14,19 @@ import {
 } from "../insights/format";
 
 export function EstimatedCosts({ cost }: { cost: CostSummary }) {
-  const partial = cost.unpricedModelCalls > 0 || cost.unpricedVoiceSessions > 0;
+  const partial =
+    cost.unpricedModelCalls > 0 ||
+    cost.unpricedVoiceSessions > 0 ||
+    cost.unpricedImageAttempts > 0;
   const estimates: [string, number | null][] = [
     ["Total estimate", cost.totalUsd],
     ["Model calls", cost.modelUsd],
     ["Voice sessions", cost.voiceUsd],
+    ["Image generation", cost.imageUsd],
   ];
   return (
     <s-stack gap="base">
-      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {estimates.map(([label, value]) => (
           <div key={label}>
             <dt>{label}</dt>
@@ -33,7 +39,23 @@ export function EstimatedCosts({ cost }: { cost: CostSummary }) {
         Priced {cost.pricedModelCalls} of{" "}
         {cost.pricedModelCalls + cost.unpricedModelCalls} model calls and{" "}
         {cost.pricedVoiceSessions} of{" "}
-        {cost.pricedVoiceSessions + cost.unpricedVoiceSessions} voice sessions.
+        {cost.pricedVoiceSessions + cost.unpricedVoiceSessions} voice sessions
+        {cost.pricedImageAttempts + cost.unpricedImageAttempts > 0 && (
+          <>
+            {" "}
+            and {cost.pricedImageAttempts} of{" "}
+            {cost.pricedImageAttempts + cost.unpricedImageAttempts} image
+            attempts
+          </>
+        )}
+        .
+        {cost.estimatedImageAttempts > 0 && (
+          <>
+            {" "}
+            {cost.estimatedImageAttempts} image attempts use a no-cache-discount
+            estimate.
+          </>
+        )}
         {partial ? " Unpriced activity is excluded from the totals." : ""} USD
         list-price estimates use reported usage and the rate period at the start
         of each call or voice session. They are not invoices.
@@ -48,10 +70,17 @@ const reasonLabels = {
   invalid_usage: "Usage is inconsistent; cannot estimate",
 };
 
-export function CostValue({ cost }: { cost: CostEstimate }) {
+export function CostValue({
+  cost,
+}: {
+  cost: CostEstimate | ImageCostEstimate;
+}) {
   return (
     <div>
       <span>{estimatedUsd(cost.usd)}</span>
+      {"evidence" in cost && cost.evidence === "estimated" && (
+        <div className="text-xs text-gray-600">No-cache-discount estimate</div>
+      )}
       {cost.reason && (
         <div className="text-xs text-gray-600">{reasonLabels[cost.reason]}</div>
       )}
@@ -61,6 +90,51 @@ export function CostValue({ cost }: { cost: CostEstimate }) {
         </div>
       )}
     </div>
+  );
+}
+
+export function ImageCostDetails({ cost }: { cost: ImageCostEstimate }) {
+  const labels: Record<keyof ImageTokenPrices, string> = {
+    textInputPerMillion: "Uncached text input",
+    cachedTextInputPerMillion: "Cached text input",
+    imageInputPerMillion: "Uncached image input",
+    cachedImageInputPerMillion: "Cached image input",
+    imageOutputPerMillion: "Image output",
+  };
+  return (
+    <div className="space-y-2">
+      <CostValue cost={cost} />
+      <dl className="grid grid-cols-[auto_auto] gap-x-3 text-xs">
+        {cost.lines.map((line) => (
+          <div key={line.component} className="contents">
+            <dt>
+              {labels[line.component]}
+              {line.estimated ? " (assumed)" : ""}
+            </dt>
+            <dd>
+              {recordedNumber(line.tokens)} tokens · {estimatedUsd(line.usd)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function ImageRate({ prices }: { prices: ImageTokenPrices }) {
+  return (
+    <dl className="grid grid-cols-[auto_auto] gap-x-3 text-sm">
+      <dt>Text input</dt>
+      <dd>{estimatedUsd(prices.textInputPerMillion)}</dd>
+      <dt>Cached text input</dt>
+      <dd>{estimatedUsd(prices.cachedTextInputPerMillion)}</dd>
+      <dt>Image input</dt>
+      <dd>{estimatedUsd(prices.imageInputPerMillion)}</dd>
+      <dt>Cached image input</dt>
+      <dd>{estimatedUsd(prices.cachedImageInputPerMillion)}</dd>
+      <dt>Image output</dt>
+      <dd>{estimatedUsd(prices.imageOutputPerMillion)}</dd>
+    </dl>
   );
 }
 
@@ -126,6 +200,8 @@ export function PricingHistory({ prices }: { prices: readonly ModelPrice[] }) {
               <s-table-cell>
                 {price.kind === "voice" ? (
                   <span>{estimatedUsd(price.perMinute)} per minute</span>
+                ) : price.kind === "image" ? (
+                  <ImageRate prices={price.prices} />
                 ) : (
                   <div className="space-y-3">
                     <div>

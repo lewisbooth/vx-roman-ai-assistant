@@ -44,7 +44,14 @@ import {
   type ProductPresentation,
   type QuestionPresentation,
   type CachedGuideSource,
+  type WindowPresentation,
 } from "./presentation.server";
+import { photoPresentationSchema } from "../../shared/visualizations";
+import {
+  isVisualizationTool,
+  visualizationToolDefinitions,
+} from "../visualizations/tool-definitions";
+import type { VisualizationTurn } from "../visualizations/tools.server";
 import { MAX_TURN_TOOL_CALLS } from "./limits.server";
 import {
   FALLBACK_TEXT_MODEL,
@@ -199,6 +206,7 @@ export interface ModelReply {
   serviceTier?: string;
   presentation?: ProductPresentation;
   questionPresentation?: QuestionPresentation;
+  photoPresentation?: WindowPresentation;
   cachedGuideSource?: CachedGuideSource;
   memoryUpdate?: MemoryUpdate;
   contextCheckpoint?: ContextCheckpoint;
@@ -288,6 +296,7 @@ export async function generateReply(
   reasoningEffort: "low" | "medium" = "medium",
   memory?: ModelMemory,
   recallHistory?: (input: unknown, signal: AbortSignal) => Promise<unknown>,
+  visualizations?: VisualizationTurn,
 ): Promise<ModelReply> {
   const trackTool = async <T>(name: string, action: () => Promise<T>) => {
     onToolActivity?.(name, true);
@@ -311,13 +320,20 @@ export async function generateReply(
     replay.push(...items.filter((item) => item.type !== "compaction"));
   };
   const appendOutput = (output: Response["output"]) => {
-    const items = output.filter((item) =>
-      item.type === "message" || item.type === "reasoning" ||
-      item.type === "function_call" || item.type === "compaction");
+    const items = output.filter(
+      (item) =>
+        item.type === "message" ||
+        item.type === "reasoning" ||
+        item.type === "function_call" ||
+        item.type === "compaction",
+    );
     // Fallback needs every raw call and result, including calls emitted before
     // a compaction item in this response. Only the owning model uses that item.
     replay.push(...items.filter((item) => item.type !== "compaction"));
-    const compactIndex = items.reduce((latest, item, index) => item.type === "compaction" ? index : latest, -1);
+    const compactIndex = items.reduce(
+      (latest, item, index) => (item.type === "compaction" ? index : latest),
+      -1,
+    );
     if (compactIndex >= 0) {
       compactedThisTurn = true;
       input.splice(0, input.length, ...items.slice(compactIndex));
@@ -326,7 +342,11 @@ export async function generateReply(
   const checkpoint = (model: string): ContextCheckpoint | undefined => {
     if (!memory || !compactedThisTurn) return undefined;
     try {
-      return parseCheckpoint({ model, throughSequence: memory.throughSequence, input: [...input] });
+      return parseCheckpoint({
+        model,
+        throughSequence: memory.throughSequence,
+        input: [...input],
+      });
     } catch {
       // A provider-sized checkpoint must never turn a completed shopping action
       // into a failed reply. The original transcript still supplies the next call.
@@ -380,13 +400,28 @@ export async function generateReply(
         ]
       : []),
     ...(recallHistory ? [recallHistoryToolDefinition] : []),
-    ...[askQuestionToolDefinition, ...(execute ? [askMeasurementToolDefinition] : [])].map((tool) => memory ? {
+    ...(visualizations ? visualizationToolDefinitions : []),
+    ...[
+      askQuestionToolDefinition,
+      ...(execute ? [askMeasurementToolDefinition] : []),
+    ].map((tool) => ({
       ...tool,
-      parameters: { ...tool.parameters,
-        properties: { ...tool.parameters.properties, memoryUpdate: memoryUpdateSchema },
-        required: [...tool.parameters.required, "memoryUpdate"],
+      parameters: {
+        ...tool.parameters,
+        properties: {
+          ...tool.parameters.properties,
+          ...(memory ? { memoryUpdate: memoryUpdateSchema } : {}),
+          ...(visualizations
+            ? { photoPresentation: photoPresentationSchema }
+            : {}),
+        },
+        required: [
+          ...tool.parameters.required,
+          ...(memory ? ["memoryUpdate"] : []),
+          ...(visualizations ? ["photoPresentation"] : []),
+        ],
       },
-    } : tool),
+    })),
   ];
   const stableTools = resumeQuestion
     ? allTools.filter(
@@ -429,6 +464,7 @@ export async function generateReply(
       if (name === "ask_question" || name === "ask_measurement") return true;
       if (answerRepair) return false;
       if (name === "recall_history") return recallCalls < 2;
+      if (isVisualizationTool(name)) return !!visualizations?.allows();
       return withinToolBudget(name) && actions.allows(name);
     });
     let model = turnModel;
@@ -438,11 +474,17 @@ export async function generateReply(
     let repairIncompleteAnswer = false;
     for (;;) {
       if (!histories.has(model)) {
-        histories.set(model, await memory?.historyForModel?.(model) ?? history);
+        histories.set(
+          model,
+          (await memory?.historyForModel?.(model)) ?? history,
+        );
         signal.throwIfAborted();
       }
       const durableInput: ResponseInput = [
-        ...(compactedThisTurn ? [] : modelMemoryInput(histories.get(model)!, model, memory)), ...input,
+        ...(compactedThisTurn
+          ? []
+          : modelMemoryInput(histories.get(model)!, model, memory)),
+        ...input,
       ];
       const usageId = randomUUID();
       const attempt = responseUsage(usageId, "pending", undefined, model);
@@ -461,8 +503,22 @@ export async function generateReply(
               mode === "voice"
                 ? ROMAN_VOICE_BRIEFING_PROMPT
                 : ROMAN_TEXT_PROMPT,
-            input: [...prefix, ...guides.context(), ...resumeInput, ...durableInput],
-            ...(memory && shouldCompactContext(durableInput) ? { context_management: [{ type: "compaction" as const, compact_threshold: COMPACT_THRESHOLD_TOKENS }] } : {}),
+            input: [
+              ...prefix,
+              ...guides.context(),
+              ...resumeInput,
+              ...durableInput,
+            ],
+            ...(memory && shouldCompactContext(durableInput)
+              ? {
+                  context_management: [
+                    {
+                      type: "compaction" as const,
+                      compact_threshold: COMPACT_THRESHOLD_TOKENS,
+                    },
+                  ],
+                }
+              : {}),
             prompt_cache_key: createHash("sha256")
               .update(
                 JSON.stringify([
@@ -585,7 +641,14 @@ export async function generateReply(
               // Encrypted reasoning is owned by the model that produced it.
               // Function calls and confirmed results remain valid turn input.
               compactedThisTurn = false;
-              input.splice(0, input.length, ...replay.filter((item) => item.type !== "reasoning" && item.type !== "compaction"));
+              input.splice(
+                0,
+                input.length,
+                ...replay.filter(
+                  (item) =>
+                    item.type !== "reasoning" && item.type !== "compaction",
+                ),
+              );
               continue;
             }
           } else await reportFallbackUnavailable();
@@ -640,20 +703,20 @@ export async function generateReply(
           text,
           model: completed.model,
           serviceTier: completed.service_tier ?? undefined,
-          ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
+          ...(contextCheckpoint
+            ? { contextCheckpoint, requestedModel: model }
+            : {}),
         };
       }
       if (!text.trim()) throw new Error("The model returned an empty reply.");
       if (answerRepair)
         throw new Error("Roman did not finish with a valid answer request.");
       answerRepair = true;
-      appendInput(
-        {
-          role: "developer",
-          content:
-            "Finish this reply with ask_question or ask_measurement. Put the useful overview or confirmed outcome in message and the single next decision in question. No answer was displayed. Do not repeat completed work; only an answer request is available.",
-        },
-      );
+      appendInput({
+        role: "developer",
+        content:
+          "Finish this reply with ask_question or ask_measurement. Put the useful overview or confirmed outcome in message and the single next decision in question. No answer was displayed. Do not repeat completed work; only an answer request is available.",
+      });
       continue;
     }
     for (const call of toolCalls) {
@@ -673,12 +736,36 @@ export async function generateReply(
       if (call.name === "ask_question" || call.name === "ask_measurement") {
         try {
           const argumentsValue: unknown = JSON.parse(call.arguments);
-          if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue))
+          if (
+            !argumentsValue ||
+            typeof argumentsValue !== "object" ||
+            Array.isArray(argumentsValue)
+          )
             throw new Error("Invalid answer request.");
-          const { memoryUpdate: rawMemoryUpdate, ...publicAnswer } = argumentsValue as Record<string, unknown>;
+          const {
+            memoryUpdate: rawMemoryUpdate,
+            photoPresentation: rawPhotoPresentation,
+            ...publicAnswer
+          } = argumentsValue as Record<string, unknown>;
+          if (
+            rawPhotoPresentation != null &&
+            (!visualizations || resumeQuestion)
+          )
+            throw new Error(
+              "Photo presentation is not available for this reply.",
+            );
+          const photoSelection =
+            await visualizations?.validatePresentation(rawPhotoPresentation);
+          const photoPresentation = photoSelection
+            ? { ...photoSelection, callId: call.call_id }
+            : undefined;
           const memoryUpdate = parseMemoryUpdate(rawMemoryUpdate);
-          if (memoryUpdate && !memory) throw new Error("Private memory is not available for this reply.");
-          if (resumeQuestion && memoryUpdate) throw new Error("Read-only question resumption cannot change private memory.");
+          if (memoryUpdate && !memory)
+            throw new Error("Private memory is not available for this reply.");
+          if (resumeQuestion && memoryUpdate)
+            throw new Error(
+              "Read-only question resumption cannot change private memory.",
+            );
           if (memory) applyMemoryUpdate(memory.memo, memoryUpdate);
           const { message, productIds, ...selection } =
             call.name === "ask_measurement"
@@ -750,7 +837,14 @@ export async function generateReply(
           signal.throwIfAborted();
           const cachedGuideSource = guides.cachedSource();
           const answer = mode === "voice" ? spoken : message;
-          appendInput({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ displayed: true, question: selection.question }) });
+          appendInput({
+            type: "function_call_output",
+            call_id: call.call_id,
+            output: JSON.stringify({
+              displayed: true,
+              question: selection.question,
+            }),
+          });
           const contextCheckpoint = checkpoint(model);
           onText(answer);
           return {
@@ -759,9 +853,12 @@ export async function generateReply(
             serviceTier: completed.service_tier ?? undefined,
             ...(presentation ? { presentation } : {}),
             questionPresentation,
+            ...(photoPresentation ? { photoPresentation } : {}),
             ...(cachedGuideSource ? { cachedGuideSource } : {}),
             ...(memoryUpdate ? { memoryUpdate } : {}),
-            ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
+            ...(contextCheckpoint
+              ? { contextCheckpoint, requestedModel: model }
+              : {}),
           };
         } catch (error) {
           signal.throwIfAborted();
@@ -793,10 +890,37 @@ export async function generateReply(
         );
       if (call.name === "recall_history") {
         if (!recallHistory || ++recallCalls > 2)
-          throw new Error("Roman reached the history retrieval budget for this reply.");
-        const result = await recallHistory(parseRecallHistory(JSON.parse(call.arguments)), signal);
+          throw new Error(
+            "Roman reached the history retrieval budget for this reply.",
+          );
+        const result = await recallHistory(
+          parseRecallHistory(JSON.parse(call.arguments)),
+          signal,
+        );
         signal.throwIfAborted();
-        appendInput({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
+        appendInput({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(result),
+        });
+        continue;
+      }
+      if (isVisualizationTool(call.name)) {
+        if (!visualizations)
+          throw new Error("Photo tools are unavailable for this reply.");
+        const result = await trackTool(call.name, () =>
+          visualizations.execute(
+            call.call_id,
+            call.name,
+            JSON.parse(call.arguments),
+          ),
+        );
+        signal.throwIfAborted();
+        appendInput({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify(result),
+        });
         continue;
       }
       if (!execute || !withinToolBudget(call.name))

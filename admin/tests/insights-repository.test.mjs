@@ -13,7 +13,7 @@ import { build } from "esbuild";
 const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {
-    contents: `export * from './admin/insights/repository.server'; export * from './admin/insights/costs.server'; export * from './admin/pricing/estimate.server'; export * from './admin/pricing/rates.server';`,
+    contents: `export * from './admin/insights/repository.server'; export * from './admin/insights/costs.server'; export * from './admin/pricing/estimate.server'; export * from './admin/pricing/image-estimate.server'; export * from './admin/pricing/rates.server';`,
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -69,7 +69,145 @@ beforeEach(async () => {
   // Remove the large synthetic usage fixture before parent cascades; cleanup
   // should not benchmark foreign-key deletion instead of reporting reads.
   await database.modelUsage.deleteMany();
+  await database.imageGenerationAttempt.deleteMany();
+  await database.visualizationJob.deleteMany();
+  await database.windowPhoto.deleteMany();
+  await database.galleryOwner.deleteMany();
   await database.conversation.deleteMany();
+});
+
+test("image attempts are shop-scoped, retain billed failures and unknown coverage, and use pinned rates", async () => {
+  const own = await conversation();
+  const foreign = await conversation({ shop: otherShop });
+  const at = new Date("2026-10-06T12:00:00.000Z");
+  async function imageJob(conversationId, jobShop) {
+    const owner = await database.galleryOwner.create({
+      data: {
+        id: randomUUID(),
+        shop: jobShop,
+        origin: `https://${jobShop}`,
+        tokenHash: `PRIVATE-${randomUUID()}`,
+      },
+    });
+    const window = await database.windowPhoto.create({
+      data: {
+        id: randomUUID(),
+        ownerId: owner.id,
+        title: "Nursery",
+        assetKey: "PRIVATE-IMAGE-KEY",
+        sha256: randomUUID(),
+        width: 1024,
+        height: 1024,
+        bytes: 100,
+        consentVersion: "v1",
+        consentAt: at,
+        conversationId,
+        requestId: randomUUID(),
+        requestHash: randomUUID(),
+      },
+    });
+    return database.visualizationJob.create({
+      data: {
+        id: randomUUID(),
+        ownerId: owner.id,
+        windowId: window.id,
+        conversationId,
+        requestId: randomUUID(),
+        requestHash: randomUUID(),
+        windowRevision: 1,
+        windowTitle: window.title,
+        sourceAssetKey: "PRIVATE-SOURCE",
+        productPath: "/products/blackout",
+        productTitle: "Blackout",
+        cleanup: true,
+        promptVersion: "test",
+        width: 1024,
+        height: 1024,
+        deadlineAt: at,
+        deletedAt: at,
+      },
+    });
+  }
+  const job = await imageJob(own.id, shop);
+  const otherJob = await imageJob(foreign.id, otherShop);
+  const sample = {
+    model: "gpt-image-2.5-sunburst",
+    createdAt: at,
+    textInputTokens: 10,
+    textCachedInputTokens: null,
+    imageInputTokens: 20,
+    imageCachedInputTokens: null,
+    imageOutputTokens: 100,
+    usageValid: true,
+  };
+  const pinned = repository.imageRateFor(sample.model, at);
+  const estimate = repository.estimateImageUsage(sample, pinned);
+  await database.imageGenerationAttempt.create({
+    data: {
+      id: randomUUID(),
+      jobId: job.id,
+      conversationId: own.id,
+      ordinal: 1,
+      ...sample,
+      status: "storage_failed",
+      rateSnapshotJson: JSON.stringify(pinned),
+      costUsd: estimate.usd,
+      costEvidence: estimate.evidence,
+      costReason: estimate.reason,
+      errorCode: "storage_unavailable",
+    },
+  });
+  await database.imageGenerationAttempt.create({
+    data: {
+      id: randomUUID(),
+      jobId: job.id,
+      conversationId: own.id,
+      ordinal: 2,
+      ...sample,
+      model: "gpt-image-2.5-flare",
+      imageOutputTokens: null,
+      status: "unknown_outcome",
+      rateSnapshotJson: JSON.stringify(
+        repository.imageRateFor("gpt-image-2.5-flare", at),
+      ),
+      costUsd: null,
+      costEvidence: "unknown",
+      costReason: "missing_usage",
+    },
+  });
+  await database.imageGenerationAttempt.create({
+    data: {
+      id: randomUUID(),
+      jobId: otherJob.id,
+      conversationId: foreign.id,
+      ordinal: 1,
+      ...sample,
+      status: "completed",
+      rateSnapshotJson: JSON.stringify(pinned),
+      costUsd: 999,
+      costEvidence: "estimated",
+    },
+  });
+  const inspection = await repository.getConversationInspection(shop, own.id);
+  assert.equal(inspection.imageAttempts.length, 2);
+  assert.equal(inspection.cost.pricedImageAttempts, 1);
+  assert.equal(inspection.cost.unpricedImageAttempts, 1);
+  assert.equal(inspection.cost.estimatedImageAttempts, 1);
+  assert.equal(inspection.cost.imageUsd, estimate.usd);
+  assert.equal(inspection.imageAttempts.find((attempt) => attempt.ordinal === 1).errorCode, "storage_unavailable");
+  assert.doesNotMatch(
+    JSON.stringify(inspection),
+    /PRIVATE|rateSnapshotJson|credentialHash|providerRequestId/,
+  );
+  assert.equal(
+    await repository.getConversationInspection(shop, foreign.id),
+    null,
+  );
+  const overview = await repository.getShopCostSummary(shop);
+  assert.equal(overview.imageUsd, estimate.usd);
+  assert.equal(overview.pricedImageAttempts, 1);
+  assert.equal(overview.unpricedImageAttempts, 1);
+  assert.equal(overview.estimatedImageAttempts, 1);
 });
 after(async () => {
   await database?.$disconnect();
@@ -270,11 +408,15 @@ test("unknown usage remains null while measured zero remains zero", async () => 
   assert.deepEqual(result.cost, {
     modelUsd: 0,
     voiceUsd: 0,
+    imageUsd: null,
     totalUsd: 0,
     pricedModelCalls: 1,
     unpricedModelCalls: 1,
     pricedVoiceSessions: 1,
     unpricedVoiceSessions: 1,
+    pricedImageAttempts: 0,
+    unpricedImageAttempts: 0,
+    estimatedImageAttempts: 0,
   });
 });
 

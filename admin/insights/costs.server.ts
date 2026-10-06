@@ -40,6 +40,7 @@ export async function getShopCostSummary(
   const tokenBands: { when: Prisma.Sql; charges: TokenPrices }[] = [];
   const voiceBands: { when: Prisma.Sql; perMinute: number }[] = [];
   for (const price of prices) {
+    if (price.kind === "image") continue;
     if (price.kind === "voice") {
       voiceBands.push({ when: period(price), perMinute: price.perMinute });
       continue;
@@ -79,7 +80,7 @@ export async function getShopCostSummary(
     AND u."cachedInputTokens" + u."cacheWriteInputTokens" <= u."inputTokens"`;
   // Separate read statements do not hold the connection in an interactive
   // transaction while rows are transferred and priced in JavaScript.
-  const [model, voice] = await Promise.all([
+  const [model, images, voice] = await Promise.all([
     prisma.$queryRaw<TokenTotal[]>(Prisma.sql`
       SELECT CASE WHEN ${validTokens} THEN ${tokenBand} ELSE NULL END AS band,
         COUNT(*) AS count,
@@ -90,6 +91,18 @@ export async function getShopCostSummary(
       FROM "Conversation" c JOIN "ModelUsage" u ON u."conversationId" = c."id"
       WHERE c."shop" = ${shop}
       GROUP BY band`),
+    prisma.$queryRaw<
+      { evidence: string | null; count: bigint; usd: number | null }[]
+    >(Prisma.sql`
+      SELECT CASE WHEN u."usageValid" = 1
+        AND typeof(u."costUsd") IN ('integer', 'real')
+        AND u."costUsd" BETWEEN 0 AND ${Number.MAX_VALUE}
+        AND u."costEvidence" IN ('reported', 'estimated')
+        THEN u."costEvidence" ELSE NULL END AS evidence,
+        COUNT(*) AS count, TOTAL(u."costUsd") AS usd
+      FROM "Conversation" c JOIN "ImageGenerationAttempt" u ON u."conversationId" = c."id"
+      WHERE c."shop" = ${shop}
+      GROUP BY evidence`),
     prisma.$queryRaw<VoiceTotal[]>(Prisma.sql`
       SELECT CASE WHEN typeof(u."usageSeconds") IN ('integer', 'real')
         AND u."usageSeconds" BETWEEN 0 AND ${Number.MAX_VALUE}
@@ -130,7 +143,24 @@ export async function getShopCostSummary(
       summary.voiceUsd = (summary.voiceUsd ?? 0) + usd;
     }
   }
-  if (summary.modelUsd !== null || summary.voiceUsd !== null)
-    summary.totalUsd = (summary.modelUsd ?? 0) + (summary.voiceUsd ?? 0);
+  for (const row of images) {
+    const count = Number(row.count);
+    if (row.evidence === null || !Number.isFinite(row.usd))
+      summary.unpricedImageAttempts += count;
+    else {
+      summary.pricedImageAttempts += count;
+      if (row.evidence === "estimated") summary.estimatedImageAttempts += count;
+      summary.imageUsd = (summary.imageUsd ?? 0) + Number(row.usd);
+    }
+  }
+  if (
+    summary.modelUsd !== null ||
+    summary.voiceUsd !== null ||
+    summary.imageUsd !== null
+  )
+    summary.totalUsd =
+      (summary.modelUsd ?? 0) +
+      (summary.voiceUsd ?? 0) +
+      (summary.imageUsd ?? 0);
   return summary;
 }

@@ -10,12 +10,14 @@ import { ROMAN_REPLACEMENT_GUIDANCE } from "./replacement";
 import { ROMAN_RESPONSE_GUIDANCE } from "./response";
 import { ROMAN_SHOPPING_GUIDANCE } from "./shopping";
 import { ROMAN_UPSELL_GUIDANCE } from "./upsell";
+import { ROMAN_VISUALIZATION_GUIDANCE } from "./visualization";
 
 // Stable order is deliberate: one shared policy prefix for both advisor channels.
 // No per-request classifier or keyword router changes these instructions.
 export const ROMAN_KNOWLEDGE_MODULES = {
   shopping: ROMAN_SHOPPING_GUIDANCE,
   memory: ROMAN_MEMORY_GUIDANCE,
+  visualization: ROMAN_VISUALIZATION_GUIDANCE,
   discovery: ROMAN_DISCOVERY_GUIDANCE,
   replacement: ROMAN_REPLACEMENT_GUIDANCE,
   guides: ROMAN_GUIDE_GUIDANCE,

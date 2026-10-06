@@ -17,6 +17,13 @@ const bundle = await build({
       name: "guide-activity-boundaries",
       setup(build) {
         build.onResolve(
+          { filter: /visualizations\/tools\.server$/ },
+          (args) => ({ path: args.path, namespace: "gallery-disabled" }),
+        );
+        build.onLoad({ filter: /.*/, namespace: "gallery-disabled" }, () => ({
+          contents: "export const createVisualizationTurn=async()=>undefined;",
+        }));
+        build.onResolve(
           {
             filter:
               /availability\.server$|repository\.server$|model\.server$|browser-tools\.server$|measurements\/service\.server$|guides\/library\.server$/,
@@ -28,8 +35,8 @@ const bundle = await build({
             ? "export const TEXT_MODEL='synthetic'; export const generateReply=(...args)=>mock.generate(...args); export class ModelResponseError extends Error {}; export const providerFailureDiagnostics=()=>({})"
             : path.endsWith("availability.server")
               ? "export const assertServiceAvailable=async()=>{}; export const isServiceSuspended=()=>false; export const UNAVAILABLE_MESSAGE='Roman is currently unavailable';"
-            : path.endsWith("library.server")
-              ? `export const readLibraryInventory=(...args)=>{mock.libraryReads.push(args);return []};
+              : path.endsWith("library.server")
+                ? `export const readLibraryInventory=(...args)=>{mock.libraryReads.push(args);return []};
                  export const readBoundLibrarySource=()=>undefined;
                  export const readCachedLibraryDiscovery=()=>undefined;
                  export const discardLibraryTurn=(...args)=>mock.libraryDiscards.push(args);
@@ -37,13 +44,13 @@ const bundle = await build({
                  export const readLibraryGuides=()=>{throw Error('Unexpected library read')};
                  export const bindLibrarySource=()=>{throw Error('Unexpected library binding')};
                  export const clearLibrarySession=(id)=>mock.libraryClears.push(id);`
-              : path.includes("usage")
-                ? "export const recordModelUsage=async()=>{};"
-                : path.endsWith("browser-tools.server")
-                  ? "export const requestBrowserTool=()=>{throw Error('Unexpected browser action');};"
-                  : path.includes("measurements")
-                    ? "export const executeMeasurementTool=()=>{throw Error('Unexpected measurement action');};"
-                    : `export const beginTurn=(...args)=>mock.begin(...args);
+                : path.includes("usage")
+                  ? "export const recordModelUsage=async()=>{};"
+                  : path.endsWith("browser-tools.server")
+                    ? "export const requestBrowserTool=()=>{throw Error('Unexpected browser action');};"
+                    : path.includes("measurements")
+                      ? "export const executeMeasurementTool=()=>{throw Error('Unexpected measurement action');};"
+                      : `export const beginTurn=(...args)=>mock.begin(...args);
                    export const finishTurn=(...args)=>mock.finish(...args);
                    export const getSnapshot=(...args)=>mock.snapshot(...args);
                    export const getReadRevision=(id)=>mock.rows.get(id).revision;

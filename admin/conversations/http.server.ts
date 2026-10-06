@@ -158,8 +158,29 @@ export async function readJsonObject(
 }
 
 export function bootstrapInput(value: Record<string, unknown>) {
-  const keys = Object.keys(value);
-  if (keys.length === 0) return undefined;
+  let gallery: { ownerId: string; token: string } | undefined;
+  if (value.gallery !== undefined) {
+    const input = value.gallery;
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.keys(input).length !== 2 ||
+      !("ownerId" in input) ||
+      !("token" in input) ||
+      typeof input.ownerId !== "string" ||
+      !UUID_PATTERN.test(input.ownerId) ||
+      typeof input.token !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.token)
+    )
+      throw new ConversationError(400, "Send a valid saved gallery identity.");
+    gallery = { ownerId: input.ownerId, token: input.token };
+  }
+  const keys = Object.keys(value).filter((key) => key !== "gallery");
+  if (keys.length === 0)
+    return gallery
+      ? { gallery, conversationId: undefined, token: undefined }
+      : undefined;
   if (
     keys.length !== 2 ||
     !keys.includes("conversationId") ||
@@ -173,7 +194,11 @@ export function bootstrapInput(value: Record<string, unknown>) {
       400,
       "Send an empty object or the saved conversationId and token.",
     );
-  return { conversationId: value.conversationId, token: value.token };
+  return {
+    conversationId: value.conversationId,
+    token: value.token,
+    ...(gallery ? { gallery } : {}),
+  };
 }
 
 export function messageInput(value: Record<string, unknown>): SendMessageInput {

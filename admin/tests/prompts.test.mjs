@@ -11,6 +11,7 @@ const bundle = await build({
       export * from './admin/prompts/knowledge-base';
       export * from './admin/prompts/knowledge-base/shopping';
       export * from './admin/prompts/knowledge-base/memory';
+      export * from './admin/prompts/knowledge-base/visualization';
       export * from './admin/prompts/knowledge-base/discovery';
       export * from './admin/prompts/knowledge-base/replacement';
       export * from './admin/prompts/knowledge-base/guides';
@@ -72,6 +73,7 @@ const {
 const domainOwners = {
   shopping: module.exports.ROMAN_SHOPPING_GUIDANCE,
   memory: module.exports.ROMAN_MEMORY_GUIDANCE,
+  visualization: module.exports.ROMAN_VISUALIZATION_GUIDANCE,
   discovery: module.exports.ROMAN_DISCOVERY_GUIDANCE,
   replacement: module.exports.ROMAN_REPLACEMENT_GUIDANCE,
   guides: module.exports.ROMAN_GUIDE_GUIDANCE,
@@ -97,6 +99,9 @@ const domainToolNames = [
   "add_sample_to_cart",
   "set_cart_quantity",
   "open_checkout",
+  "list_windows",
+  "rename_window",
+  "create_visualization",
 ];
 
 function includesOnce(prompt, part) {

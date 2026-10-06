@@ -105,6 +105,13 @@ import {
 } from "../../shared/measurements";
 import { isStorefrontPagePath } from "../../shared/journey";
 import { projectConversationTimeline } from "../../shared/conversation-timeline";
+import {
+  isMediaPart,
+  isCustomerMediaIntent,
+  parsePhotoPresentation,
+  type PhotoPresentation,
+} from "../../shared/visualizations";
+import { visualizationsEnabled } from "../visualizations/config.server";
 import { parseVoiceEventPart, isVoiceCloseReason } from "../../shared/voice";
 import {
   parseProductGuidesCall,
@@ -137,6 +144,7 @@ import {
   type ProductPresentation,
   type QuestionPresentation,
   type CachedGuideSource,
+  type WindowPresentation,
 } from "./presentation.server";
 
 const processStartedAt = new Date();
@@ -194,6 +202,7 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
   for (const part of value) {
     if (!part || typeof part !== "object" || Array.isArray(part))
       throw new Error("Invalid stored conversation part.");
+    if (isMediaPart(part)) continue;
     if (part.type === "text" && typeof part.text === "string") {
       if (Object.keys(part).length === 2) continue;
       if (
@@ -264,7 +273,14 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
       uuidPattern.test(part.invocationId) &&
       validProductIds(part.productIds) &&
       Object.keys(part).every((key) =>
-        ["type", "version", "invocationId", "productIds", "productRefs", "voiceReply"].includes(key),
+        [
+          "type",
+          "version",
+          "invocationId",
+          "productIds",
+          "productRefs",
+          "voiceReply",
+        ].includes(key),
       ) &&
       (part.productRefs === undefined ||
         validProductRefs(part.productRefs, part.productIds)) &&
@@ -592,7 +608,10 @@ function requireActive(conversation: Conversation) {
     );
 }
 
-function modelHistory(conversation: StoredConversation, context?: Awaited<ReturnType<typeof getCurrentContext>>): ModelMessage[] {
+function modelHistory(
+  conversation: StoredConversation,
+  context?: Awaited<ReturnType<typeof getCurrentContext>>,
+): ModelMessage[] {
   const timeline = conversationTimeline(conversation);
   const pageEpisodes: ConversationPart[] = [];
   let lastPageKey: string | undefined;
@@ -611,12 +630,18 @@ function modelHistory(conversation: StoredConversation, context?: Awaited<Return
   const historicalPages = new Set(pageEpisodes.slice(0, -1));
   if (context) {
     backgroundPage = undefined;
-    for (const message of conversationTimeline({ ...conversation, messages: context.messages, voiceTranscripts: context.voiceTranscripts }))
+    for (const message of conversationTimeline({
+      ...conversation,
+      messages: context.messages,
+      voiceTranscripts: context.voiceTranscripts,
+    }))
       for (const part of message.parts)
         if (part.type === "page_view" || part.type === "navigation")
           backgroundPage = { title: part.title, path: part.path };
   }
-  const pending = context ? context.current.pendingQuestion ?? undefined : latestQuestion(timeline);
+  const pending = context
+    ? (context.current.pendingQuestion ?? undefined)
+    : latestQuestion(timeline);
   const pendingQuestion: QuestionSelection | undefined = pending
     ? {
         question: pending.question,
@@ -649,9 +674,17 @@ function modelHistory(conversation: StoredConversation, context?: Awaited<Return
         part.type !== "question" &&
         part.type !== "cart_added" &&
         part.type !== "cart_sample_added" &&
-        ((part.type !== "page_view" && part.type !== "navigation") || historicalPages.has(part)),
+        part.type !== "media" &&
+        ((part.type !== "page_view" && part.type !== "navigation") ||
+          historicalPages.has(part)),
     );
     const entries: ModelMessage[] = [
+      ...content
+        .filter((part) => part.type === "media")
+        .map((part) => ({
+          role: "user" as const,
+          text: `Application media event: ${JSON.stringify(part)}`,
+        })),
       ...(text
         ? [
             {
@@ -685,22 +718,21 @@ function modelHistory(conversation: StoredConversation, context?: Awaited<Return
         : []),
       ...(message.status === "complete"
         ? content.flatMap((part) =>
-            part.type === "question" && part.invocationId !== pending?.invocationId
+            part.type === "question" &&
+            part.invocationId !== pending?.invocationId
               ? [
                   {
                     // Widgets are application context, not examples of prose
                     // for either model to imitate. Keep their reply provenance.
                     role: "user" as const,
                     source: "roman_question" as const,
-                    text: `Roman question: ${JSON.stringify(
-                      {
-                        question: part.question,
-                        answers: part.answers,
-                        ...(part.measurement
-                          ? { measurement: part.measurement }
-                          : {}),
-                      },
-                    )}`,
+                    text: `Roman question: ${JSON.stringify({
+                      question: part.question,
+                      answers: part.answers,
+                      ...(part.measurement
+                        ? { measurement: part.measurement }
+                        : {}),
+                    })}`,
                   },
                 ]
               : [],
@@ -710,34 +742,36 @@ function modelHistory(conversation: StoredConversation, context?: Awaited<Return
         .filter((tool) => tool.assistantId === message.id)
         .map((tool) => ({
           role: "user" as const,
-          text: `Storefront action: ${JSON.stringify(
-            {
-              name: tool.name,
-              arguments: storedBrowserCall(
-                tool.name,
-                JSON.parse(tool.argumentsJson),
-              ).arguments,
-              outcome: tool.resultJson
-                ? storedActionResult(tool, JSON.parse(tool.resultJson))
-                : {
-                    error: tool.error ?? "The action result was not confirmed.",
-                  },
-              occurredAt: tool.completedAt?.toISOString(),
-            },
-          )}`,
+          text: `Storefront action: ${JSON.stringify({
+            name: tool.name,
+            arguments: storedBrowserCall(
+              tool.name,
+              JSON.parse(tool.argumentsJson),
+            ).arguments,
+            outcome: tool.resultJson
+              ? storedActionResult(tool, JSON.parse(tool.resultJson))
+              : {
+                  error: tool.error ?? "The action result was not confirmed.",
+                },
+            occurredAt: tool.completedAt?.toISOString(),
+          })}`,
         })),
     ];
     return entries.map((entry) => ({
-      ...entry, sequence: message.sourceSequence, endSequence: message.sourceEndSequence,
+      ...entry,
+      sequence: message.sourceSequence,
+      endSequence: message.sourceEndSequence,
     }));
   });
   const memo = memoryMessage(parseMemo(JSON.parse(conversation.memoJson)));
   if (memo) history.push(memo);
-  const activeBlind = context ? context.current.activeProduct ?? undefined : activeProduct({
-    status: conversation.status === "active" ? "active" : "ended",
-    messages: timeline,
-  });
-  if (backgroundPage || activeBlind || pendingQuestion)
+  const activeBlind = context
+    ? (context.current.activeProduct ?? undefined)
+    : activeProduct({
+        status: conversation.status === "active" ? "active" : "ended",
+        messages: timeline,
+      });
+  if (backgroundPage || activeBlind || pendingQuestion || context?.galleryFacts)
     history.push({
       role: "user",
       source: "application_state",
@@ -746,6 +780,7 @@ function modelHistory(conversation: StoredConversation, context?: Awaited<Return
         activeBlind: activeBlind ?? null,
         backgroundPage: backgroundPage ?? null,
         pendingQuestion: pendingQuestion ?? null,
+        ...(context?.galleryFacts ? { gallery: context.galleryFacts } : {}),
       })}`,
     });
   return history;
@@ -894,28 +929,145 @@ export async function getSnapshot(id: string): Promise<ConversationSnapshot> {
 }
 
 /** Current facts remain independent of whichever transcript pages are loaded. */
-export async function getCurrentContext(id: string, transaction: Prisma.TransactionClient = prisma) {
+export async function getCurrentContext(
+  id: string,
+  transaction: Prisma.TransactionClient = prisma,
+) {
   const where = { conversationId: id, status: "complete" };
   const [navigation, page, question, customer, caption] = await Promise.all([
-    transaction.conversationMessage.findFirst({ where: { ...where, partsJson: { contains: '"type":"navigation"' } }, orderBy: { sequence: "desc" } }),
-    transaction.conversationMessage.findFirst({ where: { ...where, OR: [{ partsJson: { contains: '"type":"navigation"' } }, { partsJson: { contains: '"type":"page_view"' } }] }, orderBy: { sequence: "desc" } }),
-    transaction.conversationMessage.findFirst({ where: { ...where, partsJson: { contains: '"type":"question"' } }, orderBy: { sequence: "desc" } }),
-    transaction.conversationMessage.findFirst({ where: { conversationId: id, role: "user" }, orderBy: { sequence: "desc" } }),
-    transaction.voiceTranscript.findFirst({ where: { conversationId: id, role: "user" }, orderBy: { sequence: "desc" } }),
+    transaction.conversationMessage.findFirst({
+      where: { ...where, partsJson: { contains: '"type":"navigation"' } },
+      orderBy: { sequence: "desc" },
+    }),
+    transaction.conversationMessage.findFirst({
+      where: {
+        ...where,
+        OR: [
+          { partsJson: { contains: '"type":"navigation"' } },
+          { partsJson: { contains: '"type":"page_view"' } },
+        ],
+      },
+      orderBy: { sequence: "desc" },
+    }),
+    transaction.conversationMessage.findFirst({
+      where: { ...where, partsJson: { contains: '"type":"question"' } },
+      orderBy: { sequence: "desc" },
+    }),
+    transaction.conversationMessage.findFirst({
+      where: { conversationId: id, role: "user" },
+      orderBy: { sequence: "desc" },
+    }),
+    transaction.voiceTranscript.findFirst({
+      where: { conversationId: id, role: "user" },
+      orderBy: { sequence: "desc" },
+    }),
   ]);
-  const conversation = await transaction.conversation.findUniqueOrThrow({ where: { id }, select: { origin: true, status: true } });
-  const messages = [...new Map([navigation, page, question, customer].filter((value): value is StoredMessage => value !== null).map((message) => [message.id, message])).values()].sort((left, right) => left.sequence - right.sequence);
+  const conversation = await transaction.conversation.findUniqueOrThrow({
+    where: { id },
+    select: {
+      origin: true,
+      status: true,
+      galleryOwnerId: true,
+      selectedWindowPhotoId: true,
+      shop: true,
+      galleryOwner: { select: { revokedAt: true } },
+    },
+  });
+  const galleryEnabled =
+    visualizationsEnabled(conversation.shop) &&
+    !!conversation.galleryOwnerId &&
+    !!conversation.galleryOwner &&
+    !conversation.galleryOwner.revokedAt;
+  const ownerId = conversation.galleryOwnerId;
+  const [selectedPhoto, windowCount, jobs, mediaIntent] = ownerId
+    ? await Promise.all([
+        conversation.selectedWindowPhotoId
+          ? transaction.windowPhoto.findFirst({
+              where: {
+                id: conversation.selectedWindowPhotoId,
+                ownerId,
+                uploadStatus: "ready",
+                deletedAt: null,
+              },
+            })
+          : null,
+        transaction.windowPhoto.count({
+          where: { ownerId, uploadStatus: "ready", deletedAt: null },
+        }),
+        transaction.visualizationJob.findMany({
+          where: { ownerId, deletedAt: null },
+          select: {
+            id: true,
+            windowId: true,
+            windowTitle: true,
+            productPath: true,
+            productTitle: true,
+            status: true,
+            error: true,
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: 3,
+        }),
+        transaction.conversationMessage.findFirst({
+          where: { ...where, partsJson: { contains: '"customerIntent":true' } },
+          orderBy: { sequence: "desc" },
+        }),
+      ])
+    : [null, 0, [], null];
+  const selectedWindow = selectedPhoto
+    ? {
+        id: selectedPhoto.id,
+        title: selectedPhoto.title,
+        revision: selectedPhoto.revision,
+        width: selectedPhoto.width,
+        height: selectedPhoto.height,
+        cleanup: selectedPhoto.cleanup,
+        createdAt: selectedPhoto.createdAt.toISOString(),
+      }
+    : null;
+  const messages = [
+    ...new Map(
+      [navigation, page, question, customer]
+        .filter((value): value is StoredMessage => value !== null)
+        .map((message) => [message.id, message]),
+    ).values(),
+  ].sort((left, right) => left.sequence - right.sequence);
   const voiceTranscripts = caption ? [caption] : [];
-  const timeline = conversationTimeline({ ...conversation, messages, voiceTranscripts });
+  const timeline = conversationTimeline({
+    ...conversation,
+    messages,
+    voiceTranscripts,
+  });
   return {
     messages,
     voiceTranscripts,
     current: {
-      activeProduct: activeProduct({ status: conversation.status === "active" ? "active" : "ended", messages: timeline }) ?? null,
+      activeProduct:
+        activeProduct({
+          status: conversation.status === "active" ? "active" : "ended",
+          messages: timeline,
+        }) ?? null,
       pendingQuestion: latestQuestion(timeline) ?? null,
-      hasCustomerReply: !!customer || !!caption,
+      hasCustomerReply:
+        !!customer ||
+        !!caption ||
+        !!(
+          mediaIntent &&
+          parts(mediaIntent, conversation.origin).some(
+            (part) => part.type === "media" && isCustomerMediaIntent(part),
+          )
+        ),
+      ...(ownerId ? { selectedWindow, galleryEnabled } : {}),
     } satisfies ConversationCurrentState,
     backgroundPage: latestProductPage(timeline),
+    galleryFacts: ownerId
+      ? {
+          enabled: galleryEnabled,
+          selectedWindow,
+          windowCount,
+          recentVisualizations: jobs,
+        }
+      : undefined,
   };
 }
 
@@ -1790,6 +1942,7 @@ export async function finishTurn(
     voiceId?: string;
     presentation?: ProductPresentation;
     questionPresentation?: QuestionPresentation;
+    photoPresentation?: WindowPresentation;
     cachedGuideSource?: CachedGuideSource;
     memoryUpdate?: MemoryUpdate;
     contextCheckpoint?: ContextCheckpoint;
@@ -1863,6 +2016,7 @@ export async function finishTurn(
       throw new ConversationError(400, "Invalid voice presentation owner.");
     let selectedProducts: ProductPresentation | undefined;
     let selectedQuestion: QuestionSelection | undefined;
+    let selectedPhotos: PhotoPresentation | null = null;
     if (result.status === "complete" && result.presentation) {
       let productIds: string[];
       try {
@@ -1969,7 +2123,63 @@ export async function finishTurn(
         throw new ConversationError(400, "Unexpected question source.");
       selectedQuestion = selection;
     }
-    // Validate every response part before writing either projection. They share
+    if (result.status === "complete" && result.photoPresentation) {
+      const { callId, ...selection } = result.photoPresentation;
+      if (
+        !visualizationsEnabled(conversation.shop) ||
+        !conversation.galleryOwnerId ||
+        typeof callId !== "string" ||
+        !callId ||
+        callId.length > 200 ||
+        callId !== result.questionPresentation?.callId ||
+        result.resumeQuestionId
+      )
+        throw new ConversationError(400, "Invalid photo presentation owner.");
+      try {
+        selectedPhotos = parsePhotoPresentation(selection);
+      } catch {
+        throw new ConversationError(400, "Invalid photo presentation.");
+      }
+      if (selectedPhotos?.kind === "windows") {
+        const verified = new Set<string>(
+          conversation.selectedWindowPhotoId
+            ? [conversation.selectedWindowPhotoId]
+            : [],
+        );
+        for (const tool of conversation.toolInvocations) {
+          if (
+            tool.assistantId !== assistantId ||
+            tool.name !== "list_windows" ||
+            tool.status !== "complete" ||
+            !tool.resultJson
+          )
+            continue;
+          const output = JSON.parse(tool.resultJson) as {
+            windows?: { id: string }[];
+          };
+          for (const photo of output.windows ?? []) verified.add(photo.id);
+        }
+        if (selectedPhotos.windowIds.some((id) => !verified.has(id)))
+          throw new ConversationError(
+            400,
+            "Photo choices need current-turn saved-window evidence.",
+          );
+        const count = await transaction.windowPhoto.count({
+          where: {
+            id: { in: selectedPhotos.windowIds },
+            ownerId: conversation.galleryOwnerId,
+            uploadStatus: "ready",
+            deletedAt: null,
+          },
+        });
+        if (count !== selectedPhotos.windowIds.length)
+          throw new ConversationError(
+            400,
+            "A selected window photo is no longer available.",
+          );
+      }
+    }
+    // Validate every response part before writing any projection. They share
     // a provider call, but retain the historical separate durable widget records.
     if (selectedProducts) {
       const childCallId = `roman:products:${createHash("sha256")
@@ -1982,7 +2192,9 @@ export async function finishTurn(
           assistantId,
           providerCallId: childCallId,
           name: "show_products",
-          argumentsJson: JSON.stringify({ productIds: selectedProducts.productIds }),
+          argumentsJson: JSON.stringify({
+            productIds: selectedProducts.productIds,
+          }),
           productIdsJson: JSON.stringify(selectedProducts.productIds),
           status: "complete",
           completedAt: new Date(),
@@ -1995,7 +2207,12 @@ export async function finishTurn(
         productIds: selectedProducts.productIds,
         productRefs: selectedProducts.productRefs,
         ...(message.role === "context" && result.voiceId
-          ? { voiceReply: { voiceId: result.voiceId, afterSequence: conversation.nextSequence } }
+          ? {
+              voiceReply: {
+                voiceId: result.voiceId,
+                afterSequence: conversation.nextSequence,
+              },
+            }
           : {}),
       });
     }
@@ -2041,6 +2258,27 @@ export async function finishTurn(
         }),
       );
     }
+    if (selectedPhotos && result.photoPresentation) {
+      const childCallId = `roman:photos:${createHash("sha256")
+        .update(JSON.stringify([assistantId, result.photoPresentation.callId]))
+        .digest("hex")}`;
+      await transaction.toolInvocation.create({
+        data: {
+          id: randomUUID(),
+          conversationId: id,
+          assistantId,
+          providerCallId: childCallId,
+          name:
+            selectedPhotos.kind === "windows"
+              ? "show_windows"
+              : "request_photo",
+          argumentsJson: JSON.stringify(selectedPhotos),
+          status: "complete",
+          completedAt: new Date(),
+        },
+      });
+      content.push({ type: "media", version: 1, ...selectedPhotos });
+    }
     const finished = await transaction.conversationMessage.updateMany({
       where: { id: assistantId, conversationId: id, status: "pending" },
       data: {
@@ -2053,26 +2291,55 @@ export async function finishTurn(
       },
     });
     if (finished.count) {
-      const nextMemo = result.status === "complete"
-        ? applyMemoryUpdate(parseMemo(JSON.parse(conversation.memoJson)), parseMemoryUpdate(result.memoryUpdate))
-        : undefined;
+      const nextMemo =
+        result.status === "complete"
+          ? applyMemoryUpdate(
+              parseMemo(JSON.parse(conversation.memoJson)),
+              parseMemoryUpdate(result.memoryUpdate),
+            )
+          : undefined;
       if (result.status === "complete" && result.contextCheckpoint) {
         const checkpoint = parseCheckpoint(result.contextCheckpoint);
-        if (checkpoint.model !== (result.requestedModel ?? result.model) || checkpoint.throughSequence >= conversation.nextSequence)
+        if (
+          checkpoint.model !== (result.requestedModel ?? result.model) ||
+          checkpoint.throughSequence >= conversation.nextSequence
+        )
           throw new ConversationError(400, "Invalid context checkpoint owner.");
         const existing = await transaction.conversationContext.findUnique({
-          where: { conversationId_model: { conversationId: id, model: checkpoint.model } },
+          where: {
+            conversationId_model: {
+              conversationId: id,
+              model: checkpoint.model,
+            },
+          },
         });
         if (!existing || existing.throughSequence <= checkpoint.throughSequence)
           await transaction.conversationContext.upsert({
-            where: { conversationId_model: { conversationId: id, model: checkpoint.model } },
-            create: { conversationId: id, model: checkpoint.model, throughSequence: checkpoint.throughSequence, inputJson: JSON.stringify(checkpoint.input) },
-            update: { throughSequence: checkpoint.throughSequence, inputJson: JSON.stringify(checkpoint.input) },
+            where: {
+              conversationId_model: {
+                conversationId: id,
+                model: checkpoint.model,
+              },
+            },
+            create: {
+              conversationId: id,
+              model: checkpoint.model,
+              throughSequence: checkpoint.throughSequence,
+              inputJson: JSON.stringify(checkpoint.input),
+            },
+            update: {
+              throughSequence: checkpoint.throughSequence,
+              inputJson: JSON.stringify(checkpoint.input),
+            },
           });
       }
       await transaction.conversation.updateMany({
         where: { id, pendingRequestId: message.requestId },
-        data: { pendingRequestId: null, revision: { increment: 1 }, ...(nextMemo ? { memoJson: JSON.stringify(nextMemo) } : {}) },
+        data: {
+          pendingRequestId: null,
+          revision: { increment: 1 },
+          ...(nextMemo ? { memoJson: JSON.stringify(nextMemo) } : {}),
+        },
       });
       await failToolInvocations(
         transaction,

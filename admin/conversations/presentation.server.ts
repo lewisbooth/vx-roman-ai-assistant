@@ -2,6 +2,9 @@ import type { ProductGuideKind } from "../../shared/product-guides";
 import { MAX_PRODUCT_CARDS } from "../../shared/conversation";
 import type { QuestionSelection } from "../../shared/questions";
 import type { BoundLibrarySource } from "../guides/library.server";
+import type { PhotoPresentation } from "../../shared/visualizations";
+
+export type WindowPresentation = PhotoPresentation & { callId: string };
 
 export interface QuestionPresentation extends QuestionSelection {
   callId: string;

@@ -34,6 +34,7 @@ const [viewBundle, routeBundle] = await Promise.all([
     globalName: "RomanInsightsTest",
     platform: "browser",
     jsx: "automatic",
+    loader: { ".css": "empty" },
     define: { "process.env.NODE_ENV": '"production"' },
   }),
   build({
@@ -48,6 +49,7 @@ const [viewBundle, routeBundle] = await Promise.all([
     write: false,
     platform: "node",
     format: "cjs",
+    loader: { ".css": "empty" },
     plugins: [
       {
         name: "inspection-route-boundaries",
@@ -139,6 +141,74 @@ function setupRoutes() {
   });
   return { ...module.exports, calls, mock };
 }
+
+test("inspection resolves current photo names and tombstones without leaking storage paths", (t) => {
+  const { render, container } = setupView(t);
+  const windowId = "8719f7a8-1239-4d0f-ae31-21ac0b466ae2";
+  const messages = [
+    {
+      id: "photo",
+      role: "context",
+      status: "complete",
+      createdAt: NOW,
+      parts: [
+        {
+          type: "media",
+          version: 1,
+          kind: "window",
+          windowId,
+          title: "Old title",
+          customerIntent: true,
+        },
+      ],
+    },
+  ];
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    conversationId: ID,
+    messages,
+    media: {
+      windows: [
+        {
+          id: windowId,
+          title: "Nursery window",
+          width: 1000,
+          height: 800,
+          available: true,
+          deletable: true,
+        },
+      ],
+      visualizations: [],
+    },
+  });
+  assert.match(container.textContent, /Nursery window/);
+  assert.doesNotMatch(container.textContent, /Old title/);
+  assert.equal(
+    container.querySelector("img").getAttribute("src"),
+    `/app/conversations/${ID}/media/window/${windowId}`,
+  );
+  assert.match(container.textContent, /Delete photo and visualizations/);
+  render("ConversationTimeline", {
+    origin: ORIGIN,
+    conversationId: ID,
+    messages,
+    media: {
+      windows: [
+        {
+          id: windowId,
+          title: "Nursery window",
+          width: 1000,
+          height: 800,
+          available: false,
+          deletable: false,
+        },
+      ],
+      visualizations: [],
+    },
+  });
+  assert.equal(container.querySelector("img"), null);
+  assert.match(container.textContent, /unavailable|deleted/i);
+});
 
 test("inspection shows the same verified guide selection using safe PDF links", (t) => {
   const { render, container } = setupView(t);
@@ -860,15 +930,19 @@ test("estimated totals distinguish partial pricing from a complete measured zero
     totalUsd: 0.000004,
     modelUsd: 0.000004,
     voiceUsd: null,
+    imageUsd: null,
     pricedModelCalls: 1,
     unpricedModelCalls: 2,
     pricedVoiceSessions: 0,
     unpricedVoiceSessions: 1,
+    pricedImageAttempts: 0,
+    unpricedImageAttempts: 0,
+    estimatedImageAttempts: 0,
   };
   render("EstimatedCosts", { cost });
   assert.deepEqual(
     [...container.querySelectorAll("dd")].map((node) => node.textContent),
-    ["USD 0.000004", "USD 0.000004", "Unavailable"],
+    ["USD 0.000004", "USD 0.000004", "Unavailable", "Unavailable"],
   );
   assert.match(container.textContent, /Partial estimate/);
   assert.match(
@@ -882,6 +956,7 @@ test("estimated totals distinguish partial pricing from a complete measured zero
       totalUsd: 0,
       modelUsd: 0,
       voiceUsd: 0,
+      imageUsd: 0,
       unpricedModelCalls: 0,
       unpricedVoiceSessions: 0,
       pricedVoiceSessions: 1,

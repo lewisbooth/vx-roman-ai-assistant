@@ -161,6 +161,14 @@ function setup(scripts, initialAvailability = "healthy") {
         onUsage,
         options.origin,
         options.resumeQuestion,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "medium",
+        undefined,
+        undefined,
+        options.visualizations,
       ),
   };
 }
@@ -168,6 +176,133 @@ const events = (...values) =>
   async function* () {
     yield* values;
   };
+
+test("saved-photo choices share the terminal response and use server tools without a browser operation", async () => {
+  const windowId = "abbf52a1-79c2-41b5-aafc-90089c6f3c34",
+    calls = [];
+  const app = setup([
+    events(
+      terminal("completed", tokens(20, 5), [
+        {
+          type: "function_call",
+          name: "list_windows",
+          call_id: "photos",
+          arguments: '{"query":null,"cursor":null}',
+        },
+      ]),
+    ),
+    events(
+      terminal("completed", tokens(25, 5), [
+        {
+          type: "function_call",
+          name: "ask_question",
+          call_id: "answer-with-photos",
+          arguments: JSON.stringify({
+            message: "",
+            productIds: [],
+            question: "Which window would you like to preview?",
+            answers: ["Upload a new photo"],
+            photoPresentation: { kind: "windows", windowIds: [windowId] },
+          }),
+        },
+      ]),
+    ),
+  ]);
+  const reply = await app.run(undefined, {
+    execute: () =>
+      assert.fail("Photo selection must not use the storefront executor"),
+    visualizations: {
+      allows: () => true,
+      execute: async (...args) => {
+        calls.push(args);
+        return { windows: [{ id: windowId, title: "Kitchen" }], total: 1 };
+      },
+      validatePresentation: async (input) => {
+        assert.equal(input.windowIds[0], windowId);
+        return input;
+      },
+    },
+  });
+  assert.equal(app.requests.length, 2);
+  assert.equal(calls.length, 1);
+  assert.equal(
+    reply.photoPresentation.callId,
+    reply.questionPresentation.callId,
+  );
+  assert.equal(reply.photoPresentation.windowIds[0], windowId);
+  const schema = app.requests[0][0].tools.find(
+    (tool) => tool.name === "ask_question",
+  ).parameters;
+  assert.ok(schema.required.includes("photoPresentation"));
+});
+
+test("a stale photo presentation repairs only the terminal answer without repeating a server action", async () => {
+  let calls = 0;
+  const base = {
+    message: "Your preview has started.",
+    productIds: [],
+    question: "Would you like to keep shopping?",
+    answers: ["Continue shopping"],
+  };
+  const app = setup([
+    events(
+      terminal("completed", tokens(20, 5), [
+        {
+          type: "function_call",
+          name: "create_visualization",
+          call_id: "start-preview",
+          arguments:
+            '{"windowId":"synthetic","productPath":"/products/blind","cleanup":null,"targetDescription":null}',
+        },
+      ]),
+    ),
+    events(
+      terminal("completed", tokens(25, 5), [
+        {
+          type: "function_call",
+          name: "ask_question",
+          call_id: "stale-photo",
+          arguments: JSON.stringify({
+            ...base,
+            photoPresentation: { kind: "windows", windowIds: ["deleted"] },
+          }),
+        },
+      ]),
+    ),
+    events(
+      terminal("completed", tokens(25, 5), [
+        {
+          type: "function_call",
+          name: "ask_question",
+          call_id: "repaired",
+          arguments: JSON.stringify({ ...base, photoPresentation: null }),
+        },
+      ]),
+    ),
+  ]);
+  const reply = await app.run(undefined, {
+    visualizations: {
+      allows: () => true,
+      execute: async () => {
+        calls++;
+        return { id: "accepted", status: "awaiting_product" };
+      },
+      validatePresentation: async (input) => {
+        if (input) throw new Error("A selected photo was deleted.");
+        return null;
+      },
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(app.requests.length, 3);
+  assert.equal(reply.photoPresentation, undefined);
+  const repair = app.requests[2][0].tool_choice.tools;
+  assert.ok(
+    repair.every(
+      (tool) => tool.name === "ask_question" || tool.name === "ask_measurement",
+    ),
+  );
+});
 
 test("a primary access rejection falls back before output and records both attempts", async () => {
   const rejection = new StubAPIError(403, "model_not_found");

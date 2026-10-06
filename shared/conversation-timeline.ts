@@ -4,6 +4,7 @@ import type {
   ConversationHistoryEntry,
 } from "./conversation";
 import { groupVoiceTranscript } from "./voice-transcript";
+import { isCustomerMediaIntent } from "./visualizations";
 
 function voiceAssociation(part: ConversationPart) {
   return part.type === "products" ||
@@ -19,7 +20,10 @@ function isBackgroundObservation(message: ConversationMessage): boolean {
     message.status !== "failed" &&
     message.parts.length > 0 &&
     message.parts.every(
-      (part) => part.type === "page_view" || part.type === "navigation",
+      (part) =>
+        part.type === "page_view" ||
+        part.type === "navigation" ||
+        (part.type === "media" && !isCustomerMediaIntent(part)),
     )
   );
 }
@@ -126,8 +130,14 @@ export function projectConversationTimeline(
       endSequence: caption.endSequence,
       message: {
         id: caption.id,
-        sourceSequence: caption.fragments.reduce((start, fragment) => Math.min(start, fragment.sequence), Infinity),
-        sourceEndSequence: caption.fragments.reduce((end, fragment) => Math.max(end, fragment.sequence), -Infinity),
+        sourceSequence: caption.fragments.reduce(
+          (start, fragment) => Math.min(start, fragment.sequence),
+          Infinity,
+        ),
+        sourceEndSequence: caption.fragments.reduce(
+          (end, fragment) => Math.max(end, fragment.sequence),
+          -Infinity,
+        ),
         role: caption.role,
         status: "complete",
         createdAt: caption.createdAt,

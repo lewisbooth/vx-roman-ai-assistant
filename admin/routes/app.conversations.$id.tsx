@@ -9,6 +9,7 @@ import {
   RecordedUsage,
   ToolActivity,
   VoiceActivity,
+  ImageActivity,
 } from "../insights/ConversationViews";
 import { recordedDate } from "../insights/format";
 import { EstimatedCosts } from "../pricing/PricingViews";
@@ -73,6 +74,11 @@ export default function ConversationDetail() {
           <ConversationTimeline
             messages={inspection.messages}
             origin={conversation.origin}
+            conversationId={conversation.id}
+            media={inspection}
+            onMediaRemoved={() => {
+              void revalidator.revalidate();
+            }}
           />
         </s-stack>
       </s-section>
@@ -84,6 +90,9 @@ export default function ConversationDetail() {
       </s-section>
       <s-section heading="Voice sessions">
         <VoiceActivity sessions={inspection.voiceSessions} />
+      </s-section>
+      <s-section heading="Image generation attempts">
+        <ImageActivity attempts={inspection.imageAttempts} />
       </s-section>
     </s-page>
   );

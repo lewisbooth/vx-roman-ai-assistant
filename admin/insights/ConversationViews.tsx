@@ -3,6 +3,7 @@ import Markdown, { type Components } from "react-markdown";
 import type { ConversationMessage, GuidePart } from "../../shared/conversation";
 import { VOICE_EVENT_LABELS } from "../../shared/voice";
 import { voiceCaptionText } from "../../shared/voice-transcript";
+import { InspectedMedia } from "./MediaViews";
 import {
   parseGuidePart,
   PRODUCT_GUIDE_LABELS,
@@ -12,7 +13,7 @@ import type {
   ConversationOverview,
   UsageSummary,
 } from "./contracts";
-import { CostValue } from "../pricing/PricingViews";
+import { CostValue, ImageCostDetails } from "../pricing/PricingViews";
 import {
   recordedDate,
   recordedNumber,
@@ -140,9 +141,15 @@ function TranscriptLink({
 export function ConversationTimeline({
   messages,
   origin,
+  media,
+  conversationId,
+  onMediaRemoved,
 }: {
   messages: ConversationMessage[];
   origin: string;
+  media?: Pick<ConversationInspection, "windows" | "visualizations">;
+  conversationId?: string;
+  onMediaRemoved?: () => void;
 }) {
   const markdownComponents = useMemo<Components>(
     () => ({
@@ -189,6 +196,16 @@ export function ConversationTimeline({
           </div>
           <div className="space-y-3 break-words">
             {message.parts.map((part, index) => {
+              if (part.type === "media")
+                return (
+                  <InspectedMedia
+                    key={index}
+                    part={part}
+                    media={media ?? { windows: [], visualizations: [] }}
+                    conversationId={conversationId ?? ""}
+                    onRemoved={onMediaRemoved}
+                  />
+                );
               if (part.type === "voice_event")
                 return <p key={index}>{VOICE_EVENT_LABELS[part.event]}</p>;
               if (part.type === "navigation")
@@ -510,6 +527,50 @@ export function VoiceActivity({
               <CostValue cost={session.cost} />
             </s-table-cell>
             <s-table-cell>{session.error || "—"}</s-table-cell>
+          </s-table-row>
+        ))}
+      </s-table-body>
+    </s-table>
+  );
+}
+
+export function ImageActivity({
+  attempts,
+}: {
+  attempts: ConversationInspection["imageAttempts"];
+}) {
+  if (attempts.length === 0)
+    return <s-paragraph>No image generation attempts recorded.</s-paragraph>;
+  return (
+    <s-table>
+      <s-table-header-row>
+        <s-table-header listSlot="primary">Model / attempt</s-table-header>
+        <s-table-header>Status / timing</s-table-header>
+        <s-table-header>Estimated cost and usage</s-table-header>
+        <s-table-header>Failure</s-table-header>
+      </s-table-header-row>
+      <s-table-body>
+        {attempts.map((attempt) => (
+          <s-table-row key={attempt.id}>
+            <s-table-cell>
+              {attempt.model}
+              <div className="text-xs text-gray-600">
+                Attempt {attempt.ordinal} · {attempt.jobId.slice(0, 8)}
+              </div>
+            </s-table-cell>
+            <s-table-cell>
+              {attempt.status}
+              <div>{recordedDate(attempt.createdAt)}</div>
+              <div>
+                {attempt.completedAt
+                  ? `${Math.max(0, (Date.parse(attempt.completedAt) - Date.parse(attempt.createdAt)) / 1000).toFixed(1)}s`
+                  : "Pending"}
+              </div>
+            </s-table-cell>
+            <s-table-cell>
+              <ImageCostDetails cost={attempt.cost} />
+            </s-table-cell>
+            <s-table-cell>{attempt.errorCode || "—"}</s-table-cell>
           </s-table-row>
         ))}
       </s-table-body>

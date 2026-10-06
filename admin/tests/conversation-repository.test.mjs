@@ -260,6 +260,188 @@ test("version probes recover stale replies and voices once, then remain read-onl
   });
 });
 
+test("saved photos stay current outside loaded history and terminal photo widgets commit atomically", async () => {
+  const envKeys = [
+    "ROMAN_VISUALIZATIONS_ENABLED",
+    "OPENAI_IMAGE_API_KEY",
+    "ROMAN_MEDIA_ROOT",
+  ];
+  const prior = envKeys.map((key) => process.env[key]);
+  process.env.ROMAN_VISUALIZATIONS_ENABLED = "true";
+  process.env.OPENAI_IMAGE_API_KEY = "synthetic-unused";
+  process.env.ROMAN_MEDIA_ROOT = directory;
+  const id = (await repository.createConversation(shop, origin)).conversationId;
+  const ownerId = randomUUID(),
+    photoId = randomUUID();
+  try {
+    await database.galleryOwner.create({
+      data: { id: ownerId, shop, origin, tokenHash: "1".repeat(64) },
+    });
+    await database.conversation.update({
+      where: { id },
+      data: {
+        galleryOwnerId: ownerId,
+        selectedWindowPhotoId: photoId,
+        nextSequence: 300,
+      },
+    });
+    await database.windowPhoto.create({
+      data: {
+        id: photoId,
+        ownerId,
+        conversationId: id,
+        requestId: randomUUID(),
+        requestHash: "synthetic",
+        title: "Kitchen window",
+        assetKey: "private-source-never-public.jpg",
+        sha256: "synthetic",
+        width: 1000,
+        height: 800,
+        bytes: 100,
+        consentVersion: "roman-window-photo-v1",
+        consentAt: new Date(),
+        uploadStatus: "ready",
+      },
+    });
+    await database.conversationMessage.createMany({
+      data: Array.from({ length: 300 }, (_, sequence) => ({
+        id: randomUUID(),
+        requestId: randomUUID(),
+        conversationId: id,
+        sequence,
+        role: "context",
+        status: "complete",
+        partsJson: JSON.stringify(
+          sequence === 0
+            ? [
+                {
+                  type: "media",
+                  version: 1,
+                  kind: "window",
+                  windowId: photoId,
+                  title: "Old title",
+                  customerIntent: true,
+                },
+              ]
+            : [],
+        ),
+        completedAt: new Date(),
+      })),
+    });
+    const snapshot = await repository.getSnapshot(id);
+    assert.ok(snapshot.history.start > 0);
+    assert.equal(snapshot.current.selectedWindow.title, "Kitchen window");
+    assert.equal(snapshot.current.galleryEnabled, true);
+    assert.equal(snapshot.current.hasCustomerReply, true);
+    assert.ok(
+      !JSON.stringify(snapshot).includes("private-source-never-public"),
+    );
+    const turn = await repository.beginTurn(id, {
+      requestId: randomUUID(),
+      text: "Show this window.",
+    });
+    const application = turn.history.find(
+      (item) => item.source === "application_state",
+    );
+    assert.match(application.text, /Kitchen window/);
+    assert.ok(!application.text.includes("private-source-never-public"));
+    const question = {
+      callId: "answer-with-window",
+      question: "Would you like a preview?",
+      answers: ["Visualize this blind"],
+    };
+    const result = {
+      status: "complete",
+      text: "Your saved window.",
+      questionPresentation: question,
+      photoPresentation: {
+        callId: question.callId,
+        kind: "windows",
+        windowIds: [photoId],
+      },
+    };
+    await assert.rejects(
+      repository.finishTurn(id, turn.assistantId, {
+        ...result,
+        photoPresentation: {
+          ...result.photoPresentation,
+          windowIds: [randomUUID()],
+        },
+        memoryUpdate: {
+          set: [{ key: "changed", text: "Must not persist" }],
+          forget: [],
+        },
+      }),
+      { status: 400 },
+    );
+    assert.equal(
+      (await database.conversation.findUniqueOrThrow({ where: { id } }))
+        .memoJson,
+      "{}",
+    );
+    assert.equal(
+      (
+        await database.conversationMessage.findUniqueOrThrow({
+          where: { id: turn.assistantId },
+        })
+      ).status,
+      "pending",
+    );
+    await database.windowPhoto.update({
+      where: { id: photoId },
+      data: { deletedAt: new Date() },
+    });
+    await assert.rejects(repository.finishTurn(id, turn.assistantId, result), {
+      status: 400,
+    });
+    assert.equal(
+      await database.toolInvocation.count({
+        where: { conversationId: id, name: "show_windows" },
+      }),
+      0,
+    );
+    await database.windowPhoto.update({
+      where: { id: photoId },
+      data: { deletedAt: null },
+    });
+    assert.equal(
+      await repository.finishTurn(id, turn.assistantId, result),
+      true,
+    );
+    const completed = await repository.getSnapshot(id);
+    const reply = completed.messages.find(
+      (message) => message.id === turn.assistantId,
+    );
+    assert.deepEqual(
+      reply.parts.filter((part) => part.type === "media"),
+      [{ type: "media", version: 1, kind: "windows", windowIds: [photoId] }],
+    );
+    const receipts = await database.toolInvocation.findMany({
+      where: { conversationId: id, assistantId: turn.assistantId },
+    });
+    assert.equal(
+      new Set(receipts.map((receipt) => receipt.providerCallId)).size,
+      2,
+    );
+    process.env.ROMAN_VISUALIZATIONS_ENABLED = "false";
+    const disabled = await repository.getSnapshot(id);
+    assert.equal(disabled.current.galleryEnabled, false);
+    assert.equal(disabled.current.hasCustomerReply, true);
+    assert.equal(disabled.current.selectedWindow.id, photoId);
+  } finally {
+    await database.windowPhoto.deleteMany({ where: { ownerId } });
+    await database.conversation.update({
+      where: { id },
+      data: { galleryOwnerId: null, selectedWindowPhotoId: null },
+    });
+    await database.galleryOwner.deleteMany({ where: { id: ownerId } });
+    envKeys.forEach((key, index) => {
+      if (prior[index] === undefined) delete process.env[key];
+      else process.env[key] = prior[index];
+    });
+  }
+});
+
 test("recovery advances the version without clearing a different current request", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
@@ -2602,7 +2784,6 @@ test("measurement questions with unknown units persist without inventing units o
   assert.equal(await database.measurementDraft.count(),0);
 });
 
-
 test("measurement questions persist verified product context and resume through the canonical text and voice history", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
@@ -2999,10 +3180,6 @@ test("guide completion and saved widgets both revalidate exact product and store
   await assert.rejects(repository.getModelHistory(id));
 });
 
-
-
-
-
 test("invalid tool arguments and results cannot persist and lookups have a per-reply bound", async () => {
   const { conversationId: id } = await repository.createConversation(
     shop,
@@ -3355,12 +3532,6 @@ async function libraryTurn(voice = false) {
   };
 }
 
-
-
-
-
-
-
 test("verified library HTML supports a product-bound numeric question without exposing source receipts", async () => {
   const value = await libraryTurn();
   assert.equal(
@@ -3500,7 +3671,6 @@ test("footer support is a durable claimed read and cannot impersonate another li
   );
 });
 
-
 test("Roman view switches persist independently of background navigation and reject mismatched views", async () => {
   const { id, tool } = await cartInvocation("show_view", { view: "cart" });
   const claim = executor();
@@ -3516,7 +3686,6 @@ test("Roman view switches persist independently of background navigation and rej
   assert.deepEqual(JSON.parse(stored.resultJson), result.outcome);
   assert.equal((await repository.getSnapshot(id)).messages.some(row => row.parts.some(part => part.type === "navigation")), false);
 });
-
 
 async function savedProductChoice() {
   const { conversationId: id } = await repository.createConversation(

@@ -1,5 +1,9 @@
 import type { LoaderFunctionArgs } from "react-router";
 import {
+  authorizeGallery,
+  linkGalleryConversation,
+} from "../visualizations/auth.server";
+import {
   authenticateBootstrap,
   authorizeStorefrontCredential,
   throttleConversationCreation,
@@ -19,9 +23,27 @@ function handle({ request }: LoaderFunctionArgs) {
   return handleJsonRequest(request, "POST", async () => {
     const { shop, origin } = await authenticateBootstrap(request);
     const input = bootstrapInput(await readJsonObject(request));
-    if (!input) {
+    const gallery = input?.gallery
+      ? await authorizeGallery(
+          input.gallery.ownerId,
+          input.gallery.token,
+          origin,
+          shop,
+        )
+      : undefined;
+    if (!input?.conversationId) {
       throttleConversationCreation(shop);
-      return createConversation(shop, origin);
+      const created = await createConversation(shop, origin);
+      if (!gallery) return created;
+      await linkGalleryConversation(
+        gallery,
+        created.conversationId,
+        created.token,
+      );
+      return {
+        ...created,
+        conversation: await getSnapshot(created.conversationId),
+      };
     }
     const credential = await authorizeStorefrontCredential(
       input.conversationId,
@@ -29,6 +51,8 @@ function handle({ request }: LoaderFunctionArgs) {
       origin,
       shop,
     );
+    if (gallery)
+      await linkGalleryConversation(gallery, credential.id, input.token);
     return {
       conversationId: credential.id,
       token: input.token,

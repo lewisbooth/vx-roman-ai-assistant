@@ -21,6 +21,7 @@ import type {
   VoiceInputReference,
 } from "./questions";
 import type { NavigationPart } from "./navigation-tool";
+import type { MediaPart, WindowPhotoDto } from "./visualizations";
 
 export interface TextPart {
   type: "text";
@@ -93,7 +94,8 @@ export type ConversationPart =
   | CartSampleAddedPart
   | PageViewPart
   | VoiceEventPart
-  | VoiceCaptionPart;
+  | VoiceCaptionPart
+  | MediaPart;
 
 export type CatalogToolName =
   "search_products" | "get_product" | "lookup_catalog";
@@ -166,6 +168,8 @@ export interface ConversationCurrentState {
   activeProduct: { path: string; title: string } | null;
   pendingQuestion: QuestionPart | null;
   hasCustomerReply: boolean;
+  selectedWindow?: WindowPhotoDto | null;
+  galleryEnabled?: boolean;
 }
 
 /** Exact public timeline inputs; grouping happens after adjacent pages merge. */
