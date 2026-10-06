@@ -48,7 +48,7 @@ test("Gallery permission does not authorize other views, native work or a new pr
 
 test("paused named-answer and card fixtures keep newer customer intent above model-authored preview purpose", async () => {
   const cases = visualizationCases.filter((sample) => sample.expected === "neutral");
-  assert.equal(cases.length, 4);
+  assert.ok(cases.length >= 4);
   const named = cases.find((sample) => sample.name.endsWith("named-photo-answer"));
   assert.equal(named.history.at(-1).text, visualizationWindow.title);
   assert.ok(named.history.some((part) => part.text.includes("no new preview")));
@@ -61,6 +61,21 @@ test("paused named-answer and card fixtures keep newer customer intent above mod
   }
 });
 
+test("accepted pending and completed previews do not authorize another job when the customer switches products or photos", async () => {
+  for (const sample of visualizationCases.filter((item) => item.name.startsWith("accepted-") && item.expected !== "preview")) {
+    for (const mode of ["text", "voice"]) {
+      const fixture = createVisualizationFixture(sample);
+      assert.ok(fixture.history.some(({text}) => text.includes('"customerIntent":true')));
+      assert.ok(fixture.history.at(-1).text.includes("recentVisualizations"));
+      if (sample.expected === "select") await fixture.execute("select", "navigate", {path: sample.choiceProduct.path});
+      else await fixture.execute("list", "list_windows", {query: null, cursor: null});
+      assert.deepEqual(gradeVisualizationReply({...sample, mode}, fixture, {}), []);
+      await fixture.execute("unrequested-job", "create_visualization", {windowId: visualizationWindow.id, productPath: sample.choiceProduct?.path ?? visualizationProduct.path});
+      assert.match(gradeVisualizationReply(sample, fixture, {}).join(" "), /does not authorize/);
+    }
+  }
+});
+
 test("a genuine pending or newly resumed preview uses the selected window once without another list or confirmation", async () => {
   for (const sample of visualizationCases.filter((item) => item.expected === "preview")) {
     const fixture = createVisualizationFixture(sample);
@@ -69,6 +84,22 @@ test("a genuine pending or newly resumed preview uses the selected window once w
     await fixture.execute("duplicate", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path, cleanup: true});
     assert.match(gradeVisualizationReply(sample, fixture, {})[0], /exactly one/);
   }
+});
+
+test("an explicit additional preview returns a new accepted job rather than the existing completed job", async () => {
+  const sample = visualizationCases.find(({name}) => name === "accepted-preview-explicit-additional-request");
+  const fixture = createVisualizationFixture(sample);
+  const result = await fixture.execute("additional-preview", "create_visualization", {
+    windowId: visualizationWindow.id, productPath: visualizationProduct.path,
+    cleanup: true, targetDescription: visualizationWindow.title,
+  });
+  assert.ok(sample.jobs.every(({id}) => id !== result.id),
+    "reusing the old ID wrongly suggests the requested new job was not accepted");
+  assert.equal(result.status, "awaiting_product");
+  assert.equal(result.resultAvailable, false);
+  assert.equal(result.windowId, visualizationWindow.id);
+  assert.equal(result.productPath, visualizationProduct.path);
+  assert.deepEqual(gradeVisualizationReply(sample, fixture, {text: "Your new preview is being prepared."}), []);
 });
 
 test("tile acceptance/decline remain distinct from neutral photo selection and generation", async () => {

@@ -36,7 +36,7 @@ node admin/evals/discovery.mjs --live --flow --case=current-product-offer,curren
 node admin/evals/discovery.mjs --live --flow --case=current-product-style-start,current-product-find-start,current-product-explore-start,current-product-no-drill-start --max-requests=8
 ```
 
-These are **billable OpenAI requests** using the private root `.env` key. History, catalogue and navigation results are synthetic; the stubs take 100ms and cannot read guides or change a real storefront. Each sample is bounded to four provider requests and 60 seconds. `--max-requests=N` also caps the entire run before each provider request. Exhaustion fails remaining samples instead of exceeding the cap.
+These are **billable OpenAI requests** using the configured primary model and private root `.env` key; unavailable primary models fail rather than silently substituting the fallback. History, catalogue and navigation results are synthetic; the stubs take 100ms and cannot read guides or change a real storefront. Each sample is bounded to four provider requests and 60 seconds. `--max-requests=N` also caps the entire run before each provider request. Exhaustion fails remaining samples instead of exceeding the cap.
 
 The default suite compares Medium and Low reasoning in text and voice briefings. `--flow` defaults to **Medium**. Use `--effort=low` or `--effort=medium` to select one effort, and `--case=name[,name]` to run specific cases. Reports, selected products, queries, responses and failures go to ignored `.agents/discovery-evaluation.json` or `.agents/discovery-flow-evaluation.json`.
 
@@ -97,3 +97,5 @@ The earlier 2026-09-29 latency sample, before expanded intake, produced:
 | Low       | Voice briefing | 2 / 1                              | 2.40s             | 17,075 / 7,142 / 0                |
 
 All four met the structural target. These are individual synthetic samples, not statistically reliable comparisons or customer-visible latency guarantees. Medium is the current demo default.
+
+Discovery fixtures also separate blackout eligibility from no-drill adhesive honeycomb construction, and check that fitting uncertainty supplied within a longer request is reused rather than asked again.

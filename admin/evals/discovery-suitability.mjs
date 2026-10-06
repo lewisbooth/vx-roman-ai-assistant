@@ -297,6 +297,11 @@ suitabilityCases.push(
   { ...paneCase, name: "individual-panes-uncertain-drilling" },
   {
     ...paneCase,
+    name: "individual-panes-long-request-uncertain-drilling",
+    history: [{ role: "user", text: "I need blinds for my office, one blind mounted on each individual glass pane. Privacy while keeping some daylight matters most. I'm not sure whether avoiding drilling matters; please keep the fitting direction open. I'm open to any colours or patterns. Show me some suitable options." }],
+  },
+  {
+    ...paneCase,
     name: "individual-panes-roller-refinement",
     history: [
       ...paneHistory,
@@ -335,6 +340,19 @@ suitabilityCases.push(
     eligibleIds: ["gid://shopify/Product/7400"],
     queryFamily: pleatedFamily,
     wrongOpening: /bifold|bi-fold|roof|skylight/i,
+    minQueries: 1,
+    maxQueries: 1,
+  },
+  {
+    name: "adhesive-honeycomb-does-not-prove-blackout",
+    history: [{ role: "user", text: "Show me blackout pleated or honeycomb blinds for my nursery's standard window. No drilling, light neutral colours; any suitable mounting method is fine." }],
+    fixtureProducts: [
+      catalogProduct(7500, "Synthetic Stick-On Ivory Honeycomb Blind", "Light-filtering pleated honeycomb fabric in ivory. Adhesive rails fit directly to the glass of ordinary nursery windows without drilling. No blackout fabric or lining is offered."),
+      catalogProduct(7501, "Synthetic Cloud Recess Cellular Blind", "Light neutral pleated honeycomb blackout fabric for nursery windows. Included tension rails fit across a standard rectangular recess without drilling, independently of the frame material."),
+      catalogProduct(7502, "Synthetic Complete Blackout Cream Pleated Blind", "Cream pleated blackout fabric for standard window recesses. Supplied brackets must be screw-fixed; no drill-free option is offered."),
+    ],
+    eligibleIds: ["gid://shopify/Product/7501"],
+    queryFamily: pleatedFamily,
     minQueries: 1,
     maxQueries: 1,
   },

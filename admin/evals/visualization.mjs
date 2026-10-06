@@ -6,6 +6,13 @@ const originalPreview = [text("user", "Show this blind in my Study window."), te
 const paused = [...originalPreview, text("user", "Just explain fitting now; no new preview."), text("assistant", "I will explain fitting and keep the preview paused.")];
 const namedPicker = text("user", `Roman question: ${JSON.stringify({question: "Which saved window?", answers: [visualizationWindow.title]})}`);
 const misleadingPicker = text("user", `Storefront history: ${JSON.stringify([{type: "media", version: 1, kind: "windows", windowIds: [visualizationWindow.id], purpose: "preview"}])}`);
+const alternateProduct = {path: "/products/synthetic-linen-roller", title: "Synthetic Linen Roller Blind"};
+const acceptedJob = (status) => ({id: "e9b59a4b-a760-4189-8c86-79e02b9ce48a", windowId: visualizationWindow.id, windowTitle: visualizationWindow.title, productPath: visualizationProduct.path, productTitle: visualizationProduct.title, status});
+const acceptedPreview = (status) => [
+  text("user", "Help me choose a blind for Study window, then visualize it."),
+  text("user", `Application media event: ${JSON.stringify({type: "media", version: 1, kind: "visualization", jobId: acceptedJob(status).id, customerIntent: true})}`),
+  text("assistant", "Your preview request is accepted and should be ready soon."),
+];
 export const visualizationCases = [
   {name: "paused-preview-named-photo-answer", expected: "neutral", requestedViews: ["gallery"], history: [...paused, text("user", "Show my saved windows."), misleadingPicker, namedPicker, text("user", visualizationWindow.title)]},
   {name: "paused-preview-photo-card", expected: "neutral", history: [...paused, misleadingPicker, text("user", `Select “${visualizationWindow.title}” as my saved window photo. This selection alone is not a request for a new preview.`)]},
@@ -14,6 +21,9 @@ export const visualizationCases = [
   {name: "pending-preview-missing-photo-resolved", expected: "preview", history: [text("user", "Show this blind in my room."), text("assistant", "Which saved window should I use?"), namedPicker, text("user", visualizationWindow.title)]},
   {name: "newer-pause-overrides-old-preview-purpose", expected: "neutral", history: [text("user", "Show this blind in my room."), misleadingPicker, text("user", "Pause the preview. Select Study window and explain the lining first.")]},
   {name: "explicit-preview-resumes-after-pause", expected: "preview", history: [...paused, text("user", "Now make a new preview of this blind in Study window.")]},
+  ...["generating", "completed"].map((status) => ({name: `accepted-${status}-preview-product-switch`, expected: "select", choiceProduct: alternateProduct, jobs: [acceptedJob(status)], history: [...acceptedPreview(status), text("user", `I'd like the ${alternateProduct.title}.`)]})),
+  {name: "accepted-preview-neutral-photo-answer", expected: "neutral", jobs: [acceptedJob("generating")], history: [...acceptedPreview("generating"), text("user", "Show my saved windows."), misleadingPicker, text("user", visualizationWindow.title)]},
+  {name: "accepted-preview-explicit-additional-request", expected: "preview", jobs: [acceptedJob("completed")], history: [...acceptedPreview("completed"), text("user", "Create one new preview of this selected blind in Study window.")]},
   {name: "explicit-pdp-preparation-with-old-selected-photo", expected: "prepare", active: false, history: [...originalPreview, text("user", `Please select the ${visualizationProduct.title} I'm currently viewing for photo setup only. Do not create a preview yet; I'll submit the upload form when ready.`)]},
   {name: "visualization-tile-open-product-offer", expected: "offer", active: false, history: [text("user", "I'd like to visualize blinds in my room.")]},
   {name: "visualization-tile-this-blind", expected: "upload", active: false, history: [text("user", "I'd like to visualize blinds in my room."), text("assistant", `Use the ${visualizationProduct.title} you're viewing, or something else?`), text("user", 'Roman question: {"question":"Use this blind or something else?","answers":["This blind","Something else"]}'), text("user", "This blind")]},
@@ -23,9 +33,10 @@ export const visualizationCases = [
 export function createVisualizationFixture(sample) {
   const calls = [], violations = [];
   const knownPhoto = !["offer", "upload", "save-first"].includes(sample.expected);
+  let activeProduct = visualizationProduct;
   return {
     calls, violations,
-    history: [...sample.history, text("user", `Application state: ${JSON.stringify({activeBlind: sample.active === false ? null : visualizationProduct, backgroundPage: visualizationProduct, gallery: {enabled: true}, selectedWindow: knownPhoto ? visualizationWindow : null})}`)],
+    history: [...sample.history, text("user", `Application state: ${JSON.stringify({activeBlind: sample.active === false ? null : visualizationProduct, backgroundPage: visualizationProduct, gallery: {enabled: true, ...(sample.jobs ? {recentVisualizations: sample.jobs} : {})}, selectedWindow: knownPhoto ? visualizationWindow : null})}`)],
     async execute(callId, name, args) {
       calls.push({callId, name, args});
       if (name === "list_windows") return {windows: [visualizationWindow], total: 1, nextCursor: null};
@@ -36,11 +47,15 @@ export function createVisualizationFixture(sample) {
         return {...visualizationWindow, title: args.title, revision: 2};
       }
       if (name === "create_visualization") {
-        if (args.windowId !== visualizationWindow.id || args.productPath !== visualizationProduct.path) violations.push("Preview identity must match the chosen photo and active product.");
-        return {id: "e9b59a4b-a760-4189-8c86-79e02b9ce48a", windowId: visualizationWindow.id, windowTitle: visualizationWindow.title, productPath: visualizationProduct.path, productTitle: visualizationProduct.title, status: "awaiting_product", resultAvailable: false};
+        if (args.windowId !== visualizationWindow.id || args.productPath !== activeProduct.path) violations.push("Preview identity must match the chosen photo and active product.");
+        return {id: "f3012cd6-98b6-456d-8f0a-862deeb36fb7", windowId: visualizationWindow.id, windowTitle: visualizationWindow.title, productPath: activeProduct.path, productTitle: activeProduct.title, status: "awaiting_product", resultAvailable: false};
       }
-      if (name === "navigate" && ["prepare", "upload"].includes(sample.expected))
-        return {status: "navigated", ...visualizationProduct, actions: {sampleAvailable: true}};
+      if (name === "navigate" && ["prepare", "upload", "select"].includes(sample.expected)) {
+        const chosen = sample.choiceProduct ?? visualizationProduct;
+        if (args.path !== chosen.path) violations.push("Select the customer's exact requested product.");
+        activeProduct = chosen;
+        return {status: "navigated", ...chosen, actions: {sampleAvailable: true}};
+      }
       violations.push(`Unexpected ${name}; these histories need no guides, dimensions, option changes or cart writes.`);
       return {error: "Unexpected synthetic operation"};
     },
@@ -58,6 +73,7 @@ export function gradeVisualizationReply(sample, fixture, reply) {
   } else if (count("create_visualization")) failures.push("Neutral selection, naming, paused intent or product entry does not authorize a paid job.");
   if (sample.expected === "rename" && count("rename_window") !== 1) failures.push("Apply the explicit rename once.");
   if (sample.expected === "prepare" && count("navigate") !== 1) failures.push("Prepare the requested exact product once, while generation waits for the upload form submission.");
+  if (sample.expected === "select" && count("navigate") !== 1) failures.push("A product switch selects the new blind once without repeating the accepted preview request.");
   if (sample.expected === "offer") {
     const answers = reply.questionPresentation?.answers ?? [];
     if (!answers.includes("This blind") || !answers.includes("Something else")) failures.push("Offer the verified open product with both This blind and Something else.");

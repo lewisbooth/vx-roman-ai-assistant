@@ -56,7 +56,7 @@ export const visualizationToolDefinitions = [
     name: "create_visualization",
     strict: true,
     description:
-      "Start an asynchronous preview only for a current explicit or unresolved unpaused customer preview request, with active selected product and a known consented window photo. Neutral list/select/rename, a photo name answer and picker purpose alone do not request generation; newer pause/cancellation wins. Requires verified photo ID and active product path; cleanup null reuses the photo preference. Optional targetDescription identifies the requested opening in a photo with several windows. Returns accepted job ID/status, not a completed image.",
+      "Start one asynchronous preview for a current explicit request or an unpaused unresolved request whose missing inputs are now supplied, with active selected product and a known consented window photo. An accepted job (including upload-interface submission) consumes that request; pending completion or a later product/photo selection does not request another. Neutral list/select/rename and picker purpose do not authorize generation; newer pause/cancellation wins. A later explicit preview is a new request. Requires verified photo ID and active product path; cleanup null reuses the photo preference. Optional targetDescription identifies the requested opening. Returns accepted job ID/status, not a completed image.",
     parameters: {
       type: "object",
       additionalProperties: false,

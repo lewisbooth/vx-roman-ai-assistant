@@ -1,6 +1,6 @@
 // Live, bounded advisor evaluation. Synthetic history/catalog/navigation only; no storefront actions.
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
@@ -25,6 +25,13 @@ if (!process.argv.includes("--live")) {
 }
 process.loadEnvFile();
 assert.ok(process.env.OPENAI_API_KEY, "Set the private root OPENAI_API_KEY.");
+// Test the configured advisor without service probes or customer database writes.
+const availability = await readFile("admin/conversations/availability.server.ts", "utf8");
+const declarations = ["PRIMARY_TEXT_MODEL", "FALLBACK_TEXT_MODEL"].map((name) => {
+  const match = availability.match(new RegExp(`export const ${name} = ("[^"\\r\\n]+");`));
+  assert.ok(match, `Cannot read current ${name}; evaluation must not choose a substitute.`);
+  return `export const ${name}=${match[1]};`;
+}).join("\n");
 await mkdir(".agents", { recursive: true });
 const file = resolve(".agents/discovery-eval-model.mjs");
 await build({
@@ -47,8 +54,7 @@ await build({
           namespace: "eval",
         }));
         builder.onLoad({ filter: /.*/, namespace: "eval" }, () => ({
-          contents: `
-      export const PRIMARY_TEXT_MODEL="gpt-6-luna", FALLBACK_TEXT_MODEL="gpt-5.6-luna";
+          contents: `${declarations}
       export const textModelForRequest=async()=>PRIMARY_TEXT_MODEL;
       export const assertServiceAvailable=async()=>{}, isServiceSuspended=()=>false;
       export const reportPrimaryUnavailable=async()=>{throw new Error("Primary model unavailable during evaluation")};

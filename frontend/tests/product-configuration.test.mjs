@@ -36,6 +36,8 @@ function setup(t) {
     },
   );
   const { window } = dom;
+  const diagnostics = [];
+  window.console.warn = (...args) => diagnostics.push(args);
   const timers = new Map();
   let timerId = 0;
   window.setTimeout = (callback, ms) => {
@@ -88,6 +90,7 @@ function setup(t) {
     form,
     tools,
     events,
+    diagnostics,
     timers,
     fire,
     signal,
@@ -568,6 +571,77 @@ test("busy, duplicate or unregistered product forms expose no configuration capa
       assert.equal(read.status, "unavailable");
       assert.equal(read.configurationId, null);
       assert.equal(read.controls.length, 0);
+      assert.deepEqual(
+        ctx.diagnostics.map(([message, { reason }]) => [message, reason]),
+        [[
+          "[Roman] Product configuration read unavailable.",
+          change === "unregistered"
+            ? "pricing_owner_unavailable"
+            : "native_form_unavailable",
+        ]],
+      );
+      assert.deepEqual(ctx.events, []);
+    });
+});
+
+test("failed native reads keep fixed diagnostics private and invalidate the previous capability", async (t) => {
+  for (const failure of ["label", "inspection", "snapshot"])
+    await t.test(failure, async (t) => {
+      const ctx = setup(t),
+        saved = ctx.read(),
+        input = ctx.form.querySelector("input[data-feature-option]"),
+        originalName = input.name;
+      if (failure === "label")
+        input.name = `${"PRIVATE-CUSTOMER".repeat(20)}##1`;
+      if (failure === "inspection")
+        Object.defineProperty(input, "name", {
+          configurable: true,
+          get() {
+            throw new Error("PRIVATE-CUSTOMER private-token");
+          },
+        });
+      if (failure === "snapshot") input.name = "PRIVATE-CUSTOMER\u0000##1";
+
+      const display = ctx.readProductConfigurationDisplay(productPath);
+      if (failure !== "snapshot") assert.equal(display, null);
+      assert.deepEqual(ctx.diagnostics, [], "Display polling must stay silent");
+      const read = ctx.read();
+      assert.equal(read.status, "unavailable");
+      assert.equal(read.configurationId, null);
+      assert.equal(read.measurements, null);
+      assert.equal(read.controls.length, 0);
+      assert.equal(
+        "reason" in read, false,
+        "The existing tool result contract is unchanged",
+      );
+      assert.equal(ctx.diagnostics.length, 1);
+      assert.equal(
+        ctx.diagnostics[0][0],
+        "[Roman] Product configuration read unavailable.",
+      );
+      assert.equal(ctx.diagnostics[0][1].reason,
+        {
+          label: "invalid_native_label",
+          inspection: "native_inspection_failed",
+          snapshot: "snapshot_validation_failed",
+        }[failure],
+      );
+      assert.doesNotMatch(JSON.stringify(read), /PRIVATE-CUSTOMER|private-token/);
+      assert.doesNotMatch(
+        JSON.stringify(ctx.diagnostics),
+        /PRIVATE-CUSTOMER|private-token|products\/blind/,
+      );
+
+      if (failure === "inspection") delete input.name;
+      input.name = originalName;
+      assert.equal((await ctx.configure(selection(saved))).status, "unsupported");
+      assert.deepEqual(
+        ctx.events, [], "A failed read must not authorize a stale change",
+      );
+      assert.equal(
+        ctx.read().status, "available",
+        "A fresh supported read remains recoverable",
+      );
     });
 });
 

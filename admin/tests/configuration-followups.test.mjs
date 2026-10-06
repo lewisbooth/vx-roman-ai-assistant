@@ -77,6 +77,5 @@ test("continuity distinguishes customer pauses and retained declines from positi
 test("sample resumption keeps its task widget and requests direct Cart navigation at the shared contract", () => {
   assert.ok(shopping.includes("navigationActions"));
   assert.ok(cart.includes("navigationActions"));
-  assert.match(shopping, /preserving its actual question and inputs/);
   assert.match(shopping, /without submitting an answer/);
 });

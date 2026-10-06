@@ -29,7 +29,7 @@ const id = (value) => "gid://shopify/Product/" + value;
 const nurseryQuery = (family) =>
   `no-drill blackout ${family} for standard rectangular window recess`;
 const queriesFor = (sample) => {
-  if (sample.name === "individual-panes-uncertain-drilling" || sample.name === "individual-panes-frame-answer-retains-uncertainty" || sample.compatibilityUnresolved)
+  if (sample.answeredFittingPreference && !sample.queryFamily || sample.compatibilityUnresolved)
     return ["privacy roller blinds for individual glass panes", "privacy cellular blinds mounted on each pane"];
   if (sample.name === "individual-panes-roller-refinement")
     return ["privacy roller blinds for individual window panes"];
@@ -57,7 +57,7 @@ function successfulReply(sample) {
     text: sample.eligibleIds.length
       ? "These options suit the requested fitting and light control."
       : "I haven't found an option that meets those requirements.",
-    presentation: { productIds: sample.eligibleIds },
+    presentation: { productIds: [...sample.eligibleIds] },
     questionPresentation: sample.compatibilityUnresolved
       ? { question: "Are the window frames uPVC with rubber glazing beads?", answers: ["Yes", "No", "I'm not sure"] }
       : sample.categoryQuestion || sample.answeredFittingPreference
@@ -106,6 +106,13 @@ test("all suitability catalogs obey the runtime schema and ground eligible IDs",
       "Every case includes an incompatible or unverified candidate",
     );
   }
+});
+
+test("light-filtering adhesive honeycomb is ineligible for a blackout request", () => {
+  const sample = byName("adhesive-honeycomb-does-not-prove-blackout");
+  const reply = successfulReply(sample);
+  reply.presentation.productIds.push(id(7500));
+  failsWith(sample, fixtureFor(sample), reply, /ineligible or unverified/);
 });
 
 test("existing and new suitability cases accept grounded selections in text and voice", () => {

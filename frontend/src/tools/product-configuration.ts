@@ -44,10 +44,28 @@ type Inspection = {
 };
 const unavailable =
   "Only the current product's supported native choices can be changed. Finish any required product-page steps, then read its configuration again.";
+type ReadFailureReason =
+  | "native_form_unavailable"
+  | "pricing_owner_unavailable"
+  | "invalid_native_label"
+  | "feature_control_limit"
+  | "configuration_control_limit"
+  | "configuration_choice_limit"
+  | "cyclic_control_dependency"
+  | "native_element_limit"
+  | "configuration_change_pending"
+  | "native_inspection_failed"
+  | "snapshot_validation_failed";
+class ConfigurationReadError extends Error {
+  constructor(readonly reason: ReadFailureReason) {
+    super(unavailable);
+  }
+}
 
 function label(value: string) {
   const result = value.replace(/\s+/gu, " ").trim();
-  if (!result || result.length > 160) throw new Error(unavailable);
+  if (!result || result.length > 160)
+    throw new ConfigurationReadError("invalid_native_label");
   return result;
 }
 function available(control: NativeControl) {
@@ -60,15 +78,20 @@ function available(control: NativeControl) {
 }
 
 function inspect(productPath: string): Inspection {
-  const form = currentProductForm(productPath),
-    pricing = form.parentElement!;
+  let form: HTMLFormElement;
+  try {
+    form = currentProductForm(productPath);
+  } catch {
+    throw new ConfigurationReadError("native_form_unavailable");
+  }
+  const pricing = form.parentElement!;
   const definition = customElements.get(pricing.localName);
   if (
     !definition ||
     !(pricing instanceof definition) ||
     !pricing.shadowRoot?.querySelector("slot")
   )
-    throw new Error(unavailable);
+    throw new ConfigurationReadError("pricing_owner_unavailable");
   // This marker is consumed by the theme's feature-selection handler. Native
   // labels alone are not authorization to mutate arbitrary product-page fields.
   const candidates = [
@@ -76,7 +99,8 @@ function inspect(productPath: string): Inspection {
       "input[data-feature-option],select:has(option[data-feature-option])",
     ),
   ];
-  if (candidates.length > 160) throw new Error(unavailable);
+  if (candidates.length > 160)
+    throw new ConfigurationReadError("feature_control_limit");
   const controls: ProductConfigurationControl[] = [],
     choices: Choice[][] = [];
   const bindings: {
@@ -118,7 +142,8 @@ function inspect(productPath: string): Inspection {
       kind: ProductConfigurationControl["kind"],
       title: string,
     ) => {
-      if (controls.length === 24) throw new Error(unavailable);
+      if (controls.length === 24)
+        throw new ConfigurationReadError("configuration_control_limit");
       const index = controls.length;
       controls.push({
         id: `c${index}`,
@@ -146,7 +171,8 @@ function inspect(productPath: string): Inspection {
         bindings[index].fieldset !== element.closest("fieldset[data-feature]")
       )
         bindings[index].ambiguous = true;
-      if (list.length === 32) throw new Error(unavailable);
+      if (list.length === 32)
+        throw new ConfigurationReadError("configuration_choice_limit");
       list.push({
         id: `o${list.length}`,
         label: title,
@@ -218,7 +244,8 @@ function inspect(productPath: string): Inspection {
     resolving = new Set<number>();
   const resolveParent = (index: number) => {
     if (resolved.has(index)) return;
-    if (resolving.has(index)) throw new Error(unavailable);
+    if (resolving.has(index))
+      throw new ConfigurationReadError("cyclic_control_dependency");
     resolving.add(index);
     const binding = bindings[index];
     if (binding.parentId !== undefined) {
@@ -295,7 +322,8 @@ function inspect(productPath: string): Inspection {
     ...form.querySelectorAll("input:not([type=hidden]),select"),
     ...(guarantee?.elements ?? []),
   ];
-  if (elements.length > 200) throw new Error(unavailable);
+  if (elements.length > 200)
+    throw new ConfigurationReadError("native_element_limit");
   const measurements = readProductMeasurements(form);
   const configuredPrice = readConfiguredProductPrice(
     form,
@@ -399,11 +427,21 @@ export function createProductConfigurationTools() {
       });
       const actions = { sampleAvailable: isSampleAvailable(productPath) };
       snapshot = null;
+      let reason: ReadFailureReason = "native_inspection_failed";
       try {
-        if (pending) throw new Error(unavailable);
-        return capture(productPath, inspect(productPath));
-      } catch {
+        if (pending)
+          throw new ConfigurationReadError("configuration_change_pending");
+        const current = inspect(productPath);
+        reason = "snapshot_validation_failed";
+        return capture(productPath, current);
+      } catch (error) {
         snapshot = null;
+        // Fixed codes only: native labels, values, URLs and thrown errors can
+        // contain customer data. Display reads stay silent while views poll.
+        console.warn("[Roman] Product configuration read unavailable.", {
+          reason:
+            error instanceof ConfigurationReadError ? error.reason : reason,
+        });
         return {
           status: "unavailable",
           productPath,
