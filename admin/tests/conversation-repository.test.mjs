@@ -348,6 +348,8 @@ test("saved photos stay current outside loaded history and terminal photo widget
       requestId: randomUUID(),
       text: "Show this window.",
     });
+    assert.equal(turn.snapshot.current.galleryEnabled, true);
+    assert.equal(turn.snapshot.current.selectedWindow.id, photoId);
     const application = turn.history.find(
       (item) => item.source === "application_state",
     );

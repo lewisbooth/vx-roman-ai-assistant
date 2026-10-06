@@ -1752,7 +1752,7 @@ export async function beginTurn(
       .map((checkpoint) => parseCheckpoint({ model: checkpoint.model, throughSequence: checkpoint.throughSequence, input: JSON.parse(checkpoint.inputJson) }));
     const history = await readHistoryForModel(transaction, updated, context, throughSequence, checkpoints, PRIMARY_TEXT_MODEL);
     return {
-      snapshot: snapshot(updated),
+      snapshot: snapshot(updated, context.current),
       assistantId,
       history,
       memory: {
