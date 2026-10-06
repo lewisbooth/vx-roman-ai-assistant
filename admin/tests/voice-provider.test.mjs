@@ -54,6 +54,7 @@ runInNewContext(promptBundle.outputFiles[0].text, {
 const {
   romanVoicePrompt,
   ROMAN_VOICE_OPENING_PROMPTS,
+  ROMAN_VOICE_OPENING_CUES,
   ROMAN_VOICE_PENDING_QUESTION_OPENING,
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
   ROMAN_VOICE_PROGRESS_CUE,
@@ -1087,7 +1088,11 @@ test("beginConversation acknowledges one fresh opening instruction before its si
   assert.equal(socket.sent.length, 2);
   assert.equal(socket.sent[1].type, "session.commentary.append");
   assert.equal(socket.sent[1].delegation_id, null);
-  assert.match(socket.sent[1].content, /initial opening instructions/);
+  assert.equal(socket.sent[1].content, ROMAN_VOICE_OPENING_CUES.newConversation);
+  assert.match(
+    socket.sent[1].content,
+    /Say this complete welcome exactly: "Hi! I'm Roman\. Where would you like to start\?"/,
+  );
   assert.equal(done, false);
   socket.event({
     type: "session.instructions.appended",
@@ -1104,6 +1109,45 @@ test("beginConversation acknowledges one fresh opening instruction before its si
     2,
     "Repeated startup cannot inject another instruction or cue",
   );
+  assert.equal(app.timers.size, 0);
+});
+
+test("a fresh voice conversation after an ended connection gets the full welcome instead of its resumed opening", async () => {
+  const app = setup();
+  const resumed = await app.connect({ history: [
+    { role: "user", text: "Help me measure my kitchen window." },
+    { role: "assistant", text: "What is the smallest recess width?" },
+  ] });
+  const earlier = app.sockets[0];
+  const continuing = resumed.beginConversation();
+  assert.match(earlier.sent[0].content, /Continue the existing text or voice conversation without a greeting/);
+  earlier.ack(0);
+  await flush();
+  assert.equal(earlier.sent[1].content, ROMAN_VOICE_OPENING_CUES.resumedConversation);
+  assert.doesNotMatch(earlier.sent[1].content, /Hi! I'm Roman/);
+  earlier.ack(1);
+  await continuing;
+  const closing = resumed.close();
+  earlier.event(ended);
+  await closing;
+
+  const fresh = await app.connect({ history: [
+    { role: "user", text: 'Storefront history: [{"type":"page_view","path":"/products/linen","title":"Linen blind"}]' },
+  ] });
+  const next = app.sockets[1];
+  const opening = fresh.beginConversation();
+  assert.match(next.sent[0].content, /Speak first using this exact welcome: "Hi! I'm Roman\. Where would you like to start\?"/);
+  next.ack(0);
+  await flush();
+  assert.equal(next.sent[1].content, ROMAN_VOICE_OPENING_CUES.newConversation);
+  assert.doesNotMatch(JSON.stringify(app.requests[1][0].session.input), /kitchen|recess width/);
+  next.ack(1);
+  await opening;
+  await fresh.beginConversation();
+  assert.equal(next.sent.length, 2, "A fresh welcome is still sent only once");
+  const finishing = fresh.close();
+  next.event(ended);
+  await finishing;
   assert.equal(app.timers.size, 0);
 });
 

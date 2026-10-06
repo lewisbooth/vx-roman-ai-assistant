@@ -55,8 +55,11 @@ Continue the existing conversation, even if this is its first voice connection. 
 
 export const ROMAN_VOICE_PENDING_QUESTION_OPENING = `Voice is opening while a saved question waits. This is a channel change, not a customer request to repeat or clarify. The application is checking that question through a read-only backend resume. Remain silent: do not greet, acknowledge, request repetition or delegate. When the verified briefing arrives, give its instructions and exact question once, directly, without a new guide introduction or preamble. Do not advance from historical context. Fresh speech, text or a clicked answer supersedes startup resumption and follows normal delegation.`;
 
-export const ROMAN_VOICE_OPENING_CUE =
-  "Begin now if neither of us has spoken in this voice connection; follow your initial opening instructions.";
+export const ROMAN_VOICE_OPENING_CUES = {
+  newConversation: `Begin now if neither of us has spoken in this voice connection. Say this complete welcome exactly: "${ROMAN_VOICE_WELCOME}" Then listen.`,
+  resumedConversation:
+    "Begin now if neither of us has spoken in this voice connection; follow your initial opening instructions.",
+} as const;
 
 export const ROMAN_VOICE_UI_INPUT_INSTRUCTION = `The following quoted context is a new customer UI request already owned by the backend. Stop unfinished speech and superseded questions. Do not greet, duplicate delegation or improvise a confirmation. Wait for its verified briefing, following your While work is pending policy for any invited progress update. Begin the result directly, without repeating progress. A newer spoken request supersedes this wait. Keep your existing voice, character and action boundaries.`;
 

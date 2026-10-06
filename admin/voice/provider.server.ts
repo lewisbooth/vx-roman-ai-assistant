@@ -14,7 +14,7 @@ import {
 import {
   romanVoicePrompt,
   ROMAN_VOICE_OPENING_PROMPTS,
-  ROMAN_VOICE_OPENING_CUE,
+  ROMAN_VOICE_OPENING_CUES,
   ROMAN_VOICE_PENDING_QUESTION_OPENING,
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
   ROMAN_VOICE_PROGRESS_CUE,
@@ -645,7 +645,9 @@ export async function createVoiceProvider(options: {
           // opening after that speech, customer input, or a concurrent stop.
           if (speechObserved || closed || closing || options.signal.aborted)
             return;
-          await append("commentary", null, ROMAN_VOICE_OPENING_CUE);
+          await append("commentary", null, resumedConversation
+            ? ROMAN_VOICE_OPENING_CUES.resumedConversation
+            : ROMAN_VOICE_OPENING_CUES.newConversation);
         })()),
       appendThinking: (text) => append("thinking", null, text),
       appendCommentary: (delegationId, text) =>

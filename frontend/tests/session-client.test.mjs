@@ -2623,6 +2623,46 @@ test("explicit End voice and End chat preserve text mode while manual voice star
   );
 });
 
+test("End chat followed by manual voice creates a fresh conversation without old credentials or a queued answer", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const earlier = await activeVoice(ctx, complete);
+  const ending = ctx.client.end();
+  assert.equal(ctx.calls[3].url, `${access.apiBaseUrl}/${conversationId}/end`);
+  ctx.respond(3, { ...complete, status: "ended", revision: 4 });
+  await ending;
+  assert.equal(ctx.client.getSnapshot().conversation, null);
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+  assert.equal(ctx.media.peers[0].closed, true);
+
+  const starting = ctx.client.startVoice();
+  await until(() => ctx.calls.length === 5, "Fresh voice did not bootstrap");
+  assert.match(ctx.calls[4].url, /\/apps\/roman\/bootstrap\?/);
+  assert.deepEqual(ctx.calls[4].body, {}, "End chat cannot resume the previous conversation");
+  const nextId = "44444444-4444-4444-8444-444444444444";
+  const nextAccess = { ...access, conversationId: nextId, token: "b".repeat(43) };
+  ctx.respond(4, { ...nextAccess, conversation: { ...empty, id: nextId } });
+  await until(() => ctx.calls.length === 6, "Fresh voice offer was not sent");
+  assert.equal(ctx.calls[5].url, `${access.apiBaseUrl}/${nextId}/voice`);
+  assert.equal(ctx.calls[5].init.headers.Authorization, `Bearer ${nextAccess.token}`);
+  assert.notEqual(ctx.calls[5].body.requestId, earlier.id);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 0);
+  const nextVoiceId = ctx.calls[5].body.requestId;
+  ctx.respond(5, { voiceId: nextVoiceId, sdp: "v=0\r\no=roman-answer" });
+  await until(() => !!ctx.media.peers[1].remoteDescription, "Fresh voice answer was not applied");
+  ctx.media.connect();
+  await starting;
+  assert.equal(ctx.readyCalls.length, 2);
+  assert.equal(ctx.readyCalls[1].url, `${access.apiBaseUrl}/${nextId}/voice/${nextVoiceId}/ready`);
+  assert.equal(ctx.readyCalls[1].body.input, undefined, "The previous turn cannot replace the fresh welcome");
+  await until(() => ctx.calls.length === 7, "Fresh voice did not refresh its transcript");
+  ctx.respond(6, {
+    ...empty, id: nextId, revision: 1,
+    voice: { id: nextVoiceId, clientId: ctx.calls[5].body.clientId, status: "active" },
+  });
+  await delay(0);
+  assert.equal(ctx.client.getSnapshot().conversation.messages.length, 0);
+});
+
 const voiceQuestionId = "33333333-3333-4333-8333-333333333333";
 const voiceQuestion = {
   ...empty,
