@@ -1,0 +1,29 @@
+.roman-visualization-dialog { position: fixed; top: calc(var(--roman-visible-top, 0px) + var(--roman-visible-height, 100dvh) / 2); left: 50%; bottom: auto; right: auto; transform: translate(-50%, -50%); box-sizing: border-box; width: min(960px, calc(100% - 40px)); max-width: none; max-height: calc(var(--roman-visible-height, 100dvh) - 40px); margin: 0; padding: 28px; border: 0; border-radius: 28px; background: #f7f5ef; color: #4e0e0e; font-family: GelicaSite, Georgia, serif; overflow: auto; overscroll-behavior: contain; }
+.roman-visualization-dialog *, .roman-visualization-dialog *::before, .roman-visualization-dialog *::after { box-sizing: border-box; }
+.roman-visualization-dialog::backdrop { background: #27171966; backdrop-filter: blur(4px); }
+.roman-visualization-dialog[open] { display: flex; flex-direction: column; gap: 24px; }
+.roman-visualization-dialog-header { position: relative; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 40px; min-height: 44px; flex-shrink: 0; }
+.roman-visualization-dialog-header h2 { font-size: clamp(26px, 3vw, 32px); line-height: 1.25; font-weight: 400; margin: 0; text-align: center; text-wrap: balance; }
+.roman-visualization-close { position: absolute; right: -8px; top: -8px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
+.roman-visualization-close svg, .roman-visualization-save svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.roman-visualization-dialog :is(button, input, summary):focus-visible { outline: 2px solid #4e0e0e; outline-offset: 3px; }
+.roman-visualization-close:disabled { opacity: .5; cursor: default; }
+.roman-visualization-fullscreen { top: var(--roman-visible-top, 0px); left: 0; width: 100%; height: var(--roman-visible-height, 100dvh); max-height: none; margin: 0; transform: none; border-radius: 0; padding: 20px 32px; overflow: hidden; }
+.roman-visualization-fullscreen[open] { gap: 16px; }
+.roman-visualization-fullscreen .roman-visualization-dialog-header { padding-inline: 44px; }
+.roman-visualization-fullscreen .roman-visualization-dialog-header h2 { font-size: clamp(18px, 2vw, 26px); }
+.roman-visualization-viewer-image { flex: 1; min-height: 0; display: flex; justify-content: center; align-items: center; }
+.roman-visualization-viewer-image .roman-image-comparison { width: auto; height: 100%; max-width: 100%; max-height: 100%; flex-shrink: 1; }
+@supports (width: 100cqw) {
+  .roman-visualization-viewer-image { container-type: size; }
+  .roman-visualization-viewer-image .roman-image-comparison { width: min(100cqw, calc(100cqh * var(--roman-comparison-ratio))); height: auto; }
+}
+.roman-visualization-viewer-footer { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px 24px; }
+.roman-visualization-viewer-footer p { margin: 0; font-family: DMSansSite, "DM Sans", sans-serif; font-size: 12px; line-height: 1.5; color: #716b60; text-align: center; }
+.roman-visualization-save { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 20px; border: 1px solid #4e0e0e; border-radius: 999px; background: #fdfbf6; color: #4e0e0e; font-family: DMSansSite, "DM Sans", sans-serif; font-size: 14px; line-height: 1.35; cursor: pointer; }
+.roman-visualization-save:disabled { opacity: .5; cursor: default; }
+.roman-visualization-save-mobile { display: none; }
+.roman-visualization-viewer-footer .roman-visualization-viewer-error { flex-basis: 100%; color: #8b2424; }
+@media (hover: hover) { .roman-visualization-close:not(:disabled):hover { background: #4e0e0e0d; } .roman-visualization-save:not(:disabled):hover { background: #eee9df; } }
+@media (max-width: 639px) { .roman-visualization-dialog { width: calc(100% - 20px); max-height: calc(var(--roman-visible-height, 100dvh) - 20px); padding: 20px 16px; border-radius: 20px; } .roman-visualization-dialog[open] { gap: 20px; } .roman-visualization-dialog-header { padding-inline: 32px; } .roman-visualization-dialog-header h2 { font-size: 26px; } .roman-visualization-fullscreen { width: 100%; height: var(--roman-visible-height, 100dvh); max-height: none; border-radius: 0; padding: 16px; } .roman-visualization-fullscreen[open] { gap: 12px; } .roman-visualization-save-mobile { display: inline; } .roman-visualization-save-desktop { display: none; } }
+@media (forced-colors: active) { .roman-visualization-dialog, .roman-visualization-save { border: 1px solid CanvasText; background: Canvas; color: CanvasText; } }

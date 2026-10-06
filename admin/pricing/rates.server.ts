@@ -173,6 +173,24 @@ export const MODEL_PRICES: readonly ModelPrice[] = [
     sourceUrl: "https://developers.openai.com/api/docs/models/gpt-live-1",
     perMinute: 0.05,
   },
+  ...["sunburst", "flare"].map((name): ModelPrice => ({
+    id: `gpt-image-2.5-${name}-standard-2026-10-06`,
+    model: `gpt-image-2.5-${name}`,
+    kind: "image",
+    serviceTier: null,
+    currency: "USD",
+    effectiveFrom: "2026-10-06T00:00:00.000Z",
+    effectiveTo: null,
+    verifiedAt: "2026-10-06T00:00:00.000Z",
+    sourceUrl: `https://developers.openai.com/api/docs/models/gpt-image-2.5-${name}`,
+    prices: {
+      textInputPerMillion: 5,
+      cachedTextInputPerMillion: 1.25,
+      imageInputPerMillion: 8,
+      cachedImageInputPerMillion: 2,
+      imageOutputPerMillion: 30,
+    },
+  })),
 ];
 
 validatePrices(MODEL_PRICES);

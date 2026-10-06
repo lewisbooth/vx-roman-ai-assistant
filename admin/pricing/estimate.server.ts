@@ -134,31 +134,41 @@ export function emptyCostSummary(): CostSummary {
   return {
     modelUsd: null,
     voiceUsd: null,
+    imageUsd: null,
     totalUsd: null,
     pricedModelCalls: 0,
     unpricedModelCalls: 0,
     pricedVoiceSessions: 0,
     unpricedVoiceSessions: 0,
+    pricedImageAttempts: 0,
+    unpricedImageAttempts: 0,
+    estimatedImageAttempts: 0,
   };
 }
 
 /** Accumulate unrounded amounts; only presentation rounds currency. */
 export function addCost(
   summary: CostSummary,
-  kind: "model" | "voice",
+  kind: "model" | "voice" | "image",
   estimate: CostEstimate,
 ): void {
   if (estimate.usd === null) {
     if (kind === "model") summary.unpricedModelCalls++;
-    else summary.unpricedVoiceSessions++;
+    else if (kind === "voice") summary.unpricedVoiceSessions++;
+    else summary.unpricedImageAttempts++;
     return;
   }
   if (kind === "model") {
     summary.pricedModelCalls++;
     summary.modelUsd = (summary.modelUsd ?? 0) + estimate.usd;
-  } else {
+  } else if (kind === "voice") {
     summary.pricedVoiceSessions++;
     summary.voiceUsd = (summary.voiceUsd ?? 0) + estimate.usd;
+  } else {
+    summary.pricedImageAttempts++;
+    summary.imageUsd = (summary.imageUsd ?? 0) + estimate.usd;
+    if ("evidence" in estimate && estimate.evidence === "estimated")
+      summary.estimatedImageAttempts++;
   }
   summary.totalUsd = (summary.totalUsd ?? 0) + estimate.usd;
 }

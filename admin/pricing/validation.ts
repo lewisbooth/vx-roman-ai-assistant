@@ -1,4 +1,4 @@
-import type { ModelPrice, TokenPrices } from "./contracts";
+import type { ImageTokenPrices, ModelPrice, TokenPrices } from "./contracts";
 
 function instant(value: string): number {
   const time = Date.parse(value);
@@ -16,6 +16,19 @@ function validateTokenPrices(prices: TokenPrices) {
   ]) {
     if (!Number.isFinite(value) || value < 0)
       throw new Error("Model prices must be finite, non-negative USD rates.");
+  }
+}
+
+function validateImagePrices(prices: ImageTokenPrices) {
+  for (const value of [
+    prices.textInputPerMillion,
+    prices.cachedTextInputPerMillion,
+    prices.imageInputPerMillion,
+    prices.cachedImageInputPerMillion,
+    prices.imageOutputPerMillion,
+  ]) {
+    if (!Number.isFinite(value) || value < 0)
+      throw new Error("Image prices must be finite, non-negative USD rates.");
   }
 }
 
@@ -57,6 +70,10 @@ export function validatePrices(prices: readonly ModelPrice[]): void {
           );
         validateTokenPrices(price.longContext.prices);
       }
+    } else if (price.kind === "image") {
+      if (price.serviceTier !== null)
+        throw new Error("Image pricing uses standard processing.");
+      validateImagePrices(price.prices);
     } else if (
       price.kind !== "voice" ||
       price.serviceTier !== null ||

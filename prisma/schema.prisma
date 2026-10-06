@@ -55,8 +55,124 @@ model Conversation {
   measurementDrafts   MeasurementDraft[]
   measurementWrites   MeasurementWriteReceipt[]
   contexts            ConversationContext[]
+  galleryOwnerId      String?
+  galleryOwner        GalleryOwner? @relation(fields: [galleryOwnerId], references: [id])
+  selectedWindowPhotoId String?
+  windowPhotos        WindowPhoto[]
+  visualizationJobs   VisualizationJob[]
+  imageAttempts       ImageGenerationAttempt[]
 
   @@index([shop, createdAt])
+}
+
+model GalleryOwner {
+  id             String @id
+  shop           String
+  origin         String
+  tokenHash      String @unique
+  createdAt      DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  revokedAt      DateTime?
+  conversations  Conversation[]
+  windows        WindowPhoto[]
+  jobs           VisualizationJob[]
+  @@index([shop, createdAt])
+}
+
+model WindowPhoto {
+  id             String @id
+  ownerId        String
+  owner          GalleryOwner @relation(fields: [ownerId], references: [id])
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  requestId      String
+  requestHash    String
+  title          String
+  revision       Int @default(1)
+  assetKey       String
+  sha256         String
+  width          Int
+  height         Int
+  bytes          Int
+  cleanup        Boolean @default(true)
+  consentVersion String
+  consentAt      DateTime
+  uploadStatus   String @default("saving")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+  jobs           VisualizationJob[]
+  @@unique([ownerId, requestId])
+  @@index([ownerId, createdAt, id])
+}
+
+model VisualizationJob {
+  id             String @id
+  ownerId        String
+  owner          GalleryOwner @relation(fields: [ownerId], references: [id])
+  windowId       String
+  window         WindowPhoto @relation(fields: [windowId], references: [id])
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  requestId      String
+  requestHash    String
+  windowRevision Int
+  windowTitle    String
+  sourceAssetKey String
+  productPath    String
+  productTitle   String
+  productJson    String @default("{}")
+  referencesJson String @default("[]")
+  cleanup        Boolean
+  targetDescription String?
+  promptVersion  String
+  status         String @default("awaiting_product")
+  width          Int
+  height         Int
+  reservedBytes  Int @default(10485760)
+  resultKey      String?
+  resultBytes    Int?
+  error          String?
+  claimClientId  String?
+  claimTokenHash String?
+  claimExpiresAt DateTime?
+  deadlineAt     DateTime
+  createdAt      DateTime @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  deletedAt      DateTime?
+  attempts       ImageGenerationAttempt[]
+  @@unique([ownerId, requestId])
+  @@index([ownerId, createdAt, id])
+  @@index([status, deadlineAt])
+}
+
+model ImageGenerationAttempt {
+  id              String @id
+  jobId           String
+  job             VisualizationJob @relation(fields: [jobId], references: [id])
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+  ordinal         Int
+  model           String
+  status          String @default("pending")
+  providerRequestId String?
+  errorCode       String?
+  textInputTokens Int?
+  textCachedInputTokens Int?
+  imageInputTokens Int?
+  imageCachedInputTokens Int?
+  imageOutputTokens Int?
+  usageValid      Boolean @default(false)
+  usageJson       String?
+  rateSnapshotJson String
+  costUsd         Float?
+  costEvidence    String @default("unknown")
+  costReason      String?
+  createdAt       DateTime @default(now())
+  completedAt     DateTime?
+  @@unique([jobId, ordinal])
+  @@index([conversationId, createdAt])
 }
 
 // Provider-owned compacted windows are private and model-specific. The original

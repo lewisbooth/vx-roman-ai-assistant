@@ -928,6 +928,15 @@ export async function heartbeatVoice(
   }
 }
 
+/** Explicit camera/photo interaction is activity; image jobs and polling are not. */
+export function noteVoiceMediaActivity(conversationId: string, voiceId: string, clientId: string) {
+  const owner = owners.get(conversationId);
+  if (!owner || owner.voiceId !== voiceId || owner.clientId !== clientId || owner.stopping)
+    throw new ConversationError(409, disconnected);
+  voiceActivity(owner);
+  return idleDeadline(owner);
+}
+
 export async function stopVoice(
   conversationId: string,
   voiceId: string,
