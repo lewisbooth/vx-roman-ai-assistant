@@ -7,12 +7,18 @@ export async function recallConversationHistory(conversationId: string, input: u
   const terms = query.split(/\s+/u).filter(Boolean).slice(0, 8);
   signal.throwIfAborted();
   const sequence = beforeSequence === null ? {} : { sequence: { lt: beforeSequence } };
-  const [messages, captions, tools] = await Promise.all([
+  const toolWhere = {
+    conversationId, status: { in: ["complete", "failed"] },
+    ...(beforeSequence === null ? {} : { assistant: { sequence: { lt: beforeSequence } } }),
+    name: { notIn: ["ask_question", "ask_measurement", "present_photos", "show_products"] },
+  };
+  const toolSelect = { id: true, name: true, status: true, argumentsJson: true, resultJson: true, error: true, completedAt: true, assistant: { select: { sequence: true } } } as const;
+  const [messages, captions, directTools] = await Promise.all([
     prisma.conversationMessage.findMany({
       where: { conversationId, status: { not: "pending" }, ...sequence,
         ...(terms.length ? { AND: terms.map((term) => ({ partsJson: { contains: term } })) } : {}),
       }, orderBy: { sequence: "desc" }, take: 12,
-      select: { sequence: true, role: true, partsJson: true, createdAt: true },
+      select: { id: true, sequence: true, role: true, partsJson: true, createdAt: true },
     }),
     prisma.voiceTranscript.findMany({
       where: { conversationId, ...sequence,
@@ -21,17 +27,25 @@ export async function recallConversationHistory(conversationId: string, input: u
       select: { sequence: true, voiceId: true },
     }),
     prisma.toolInvocation.findMany({
-      where: { conversationId, status: { in: ["complete", "failed"] },
-        ...(beforeSequence === null ? {} : { assistant: { sequence: { lt: beforeSequence } } }),
+      where: { ...toolWhere,
         ...(terms.length ? { AND: terms.map((term) => ({ OR: [
           { resultJson: { contains: term } }, { argumentsJson: { contains: term } }, { name: { contains: term } },
         ] })) } : {}),
-        name: { notIn: ["ask_question", "ask_measurement", "show_products"] },
-      }, orderBy: { createdAt: "desc" }, take: 8,
-      select: { id: true, name: true, status: true, argumentsJson: true, resultJson: true, error: true, completedAt: true, assistant: { select: { sequence: true } } },
+      }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 8,
+      select: toolSelect,
     }),
   ]);
   signal.throwIfAborted();
+  // Customer window/layer names usually occur in prose, not native arguments.
+  // Recover proof from that exact assistant turn without expanding to adjacent
+  // messages or inferring a relationship from a shared product or timestamp.
+  const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
+  const linkedTools = terms.length && assistantIds.length ? await prisma.toolInvocation.findMany({
+    where: { ...toolWhere, assistantId: { in: assistantIds } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 8, select: toolSelect,
+  }) : [];
+  signal.throwIfAborted();
+  const tools = [...new Map([...linkedTools, ...directTools].map((tool) => [tool.id, tool])).values()].slice(0, 8);
   const fragments = captions.length ? await prisma.voiceTranscript.findMany({
     where: { conversationId, ...sequence, OR: captions.map((caption) => ({
       voiceId: caption.voiceId, sequence: { gte: Math.max(0, caption.sequence - 12), lte: caption.sequence + 12, ...(beforeSequence === null ? {} : { lt: beforeSequence }) },
@@ -47,10 +61,15 @@ export async function recallConversationHistory(conversationId: string, input: u
     bytes += Buffer.byteLength(text, "utf8");
     entries.push({ source, sequence, text });
   };
+  const appendTool = (tool: (typeof tools)[number]) =>
+    append(`tool:${tool.id}`, tool.assistant.sequence, { name: tool.name, status: tool.status, at: tool.completedAt, arguments: JSON.parse(tool.argumentsJson), result: tool.resultJson ? JSON.parse(tool.resultJson) : null, error: tool.error });
+  // Matched-turn receipts have first claim on the existing result byte budget;
+  // later generic matches must not crowd out evidence for the requested event.
+  const linkedIds = new Set(linkedTools.map((tool) => tool.id));
+  for (const tool of tools.filter((tool) => linkedIds.has(tool.id))) appendTool(tool);
   for (const message of messages)
     append(`message:${message.sequence}`, message.sequence, { role: message.role, at: message.createdAt, parts: JSON.parse(message.partsJson) });
-  for (const tool of tools)
-    append(`tool:${tool.id}`, tool.assistant.sequence, { name: tool.name, status: tool.status, at: tool.completedAt, arguments: JSON.parse(tool.argumentsJson), result: tool.resultJson ? JSON.parse(tool.resultJson) : null, error: tool.error });
+  for (const tool of tools.filter((tool) => !linkedIds.has(tool.id))) appendTool(tool);
   if (fragments.length) append(`voice:${fragments[0].sequence}`, fragments[0].sequence, fragments);
   const sequences = [...messages.map((row) => row.sequence), ...tools.map((row) => row.assistant.sequence), ...captions.map((row) => row.sequence)];
   return {
