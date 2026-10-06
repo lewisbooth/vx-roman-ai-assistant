@@ -5,7 +5,7 @@ import {
 } from "../api-errors/repository.server";
 import { ServiceUnavailableError } from "./errors.server";
 
-export const PRIMARY_TEXT_MODEL = "gpt-6-luna";
+export const PRIMARY_TEXT_MODEL = "gpt-5.6-terra";
 export const FALLBACK_TEXT_MODEL = "gpt-5.6-luna";
 export const UNAVAILABLE_MESSAGE = "Roman is currently unavailable";
 

@@ -9,7 +9,6 @@ import { MAX_MESSAGE_LENGTH } from "../../shared/conversation";
 import type { QuestionSelection } from "../../shared/questions";
 import type { ModelMessage } from "../conversations/history.server";
 import {
-  ROMAN_PREAMBLE,
   ROMAN_WELCOME_QUESTION,
 } from "../prompts/shared.server";
 import {
@@ -19,6 +18,7 @@ import {
   ROMAN_VOICE_PENDING_QUESTION_OPENING,
   ROMAN_VOICE_UI_INPUT_INSTRUCTION,
   ROMAN_VOICE_PROGRESS_CUE,
+  ROMAN_VOICE_WELCOME,
 } from "../prompts/voice.server";
 
 export const VOICE_MODEL = "gpt-live-1";
@@ -193,7 +193,7 @@ export async function createVoiceProvider(options: {
     "Keep all existing language, voice, advisor and delegation instructions. This is the one opening for this connection. If either party has already spoken, continue naturally without restarting.",
     resumedConversation
       ? "Continue the existing text or voice conversation without a greeting, introduction or welcome menu. Use the latest customer request and confirmed Roman outcome in the supplied history, not an older topic."
-      : `Speak first using this exact welcome: "${ROMAN_PREAMBLE}" Then listen; the application supplies its answer choices.`,
+      : `Speak first using this exact welcome: "${ROMAN_VOICE_WELCOME}" Then listen; the application supplies its answer choices.`,
     ...(resumedConversation
       ? [
           options.pendingQuestion && !options.resumePendingQuestion

@@ -40,6 +40,17 @@ async function until(condition, message) {
   assert.fail(message);
 }
 
+async function confirmEnd(ctx) {
+  if (!ctx.container.querySelector("[data-roman-confirm-end]")) {
+    ctx.container.querySelector(".roman-end-chat").click();
+    await until(
+      () => ctx.container.querySelector("[data-roman-confirm-end]"),
+      "End Chat confirmation did not open",
+    );
+  }
+  ctx.container.querySelector("[data-roman-confirm-end]").click();
+}
+
 function message(id, role, text, status = "complete") {
   return {
     id,
@@ -2170,7 +2181,7 @@ test("carousel selections respect failed results, restoration and pending End ch
     () => card() && !card().disabled,
     "Ready results become selectable",
   );
-  ctx.container.querySelector(".roman-end-chat").click();
+  await confirmEnd(ctx);
   await until(() => card()?.disabled, "Pending End chat locks carousel choices");
   card().click();
   assert.deepEqual(ctx.calls, []);
@@ -2471,6 +2482,56 @@ test("voice lifecycle events remain chronological context and do not retire a pe
   assert.deepEqual(ctx.stopVoiceCalls, []);
 });
 
+test("desktop and mobile End Chat cancellation preserves the current draft or active voice", async (t) => {
+  for (const { mobile, voice, escape } of [
+    { mobile: false, voice: false, escape: false },
+    { mobile: true, voice: false, escape: true },
+    { mobile: true, voice: true, escape: false },
+  ]) {
+    await t.test(`${mobile ? "mobile" : "desktop"} ${voice ? "voice" : "text"}`, async (t) => {
+      const ctx = await setup(t, {
+        state: {
+          conversation: engagedConversation([message("reply", "assistant", "Keep the window measurements")]),
+          ...(voice ? { voice: { status: "active", muted: false, error: null } } : {}),
+        },
+        beforeImport(window) {
+          window.matchMedia = () => ({ matches: mobile, addEventListener() {}, removeEventListener() {} });
+        },
+      });
+      if (!voice) await ctx.type("My unfinished reply");
+      const composer = ctx.container.querySelector(".roman-composer form");
+      const input = ctx.input();
+      const voiceBar = ctx.container.querySelector(".roman-voice-bar");
+      if (mobile) {
+        ctx.container.querySelector(".roman-menu-toggle").click();
+        await until(() => !ctx.container.querySelector(".roman-header-menu").hidden, "Mobile End Chat menu did not open");
+      }
+      ctx.container.querySelector(".roman-end-chat").click();
+      await until(() => ctx.container.querySelector(".roman-dialog[open]"), "End confirmation did not open");
+      const dialog = ctx.container.querySelector(".roman-dialog");
+      const cancel = [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Cancel");
+      assert.equal(dialog.querySelector("h2").textContent, "End this chat?");
+      assert.match(dialog.textContent, /cart, saved windows and visualizations will remain/);
+      assert.equal(ctx.container.getRootNode().activeElement, cancel);
+      assert.deepEqual(ctx.endCalls, [], "Opening confirmation does not end the session");
+      if (escape) dialog.dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));
+      else cancel.click();
+      await until(() => !ctx.container.querySelector(".roman-dialog"), "Cancel did not close the confirmation");
+      assert.equal(ctx.container.querySelector(".roman-composer form"), composer);
+      assert.equal(ctx.input(), input);
+      if (input) assert.equal(input.value, "My unfinished reply");
+      else assert.equal(ctx.container.querySelector(".roman-voice-bar"), voiceBar);
+      assert.match(ctx.container.textContent, /Keep the window measurements/);
+      assert.equal(ctx.container.querySelector(".roman-welcome"), null);
+      assert.deepEqual(ctx.endCalls, []);
+      assert.deepEqual(ctx.calls, []);
+      assert.deepEqual(ctx.startVoiceCalls, []);
+      assert.deepEqual(ctx.stopVoiceCalls, []);
+      assert.equal(ctx.container.getRootNode().activeElement, ctx.container.querySelector(mobile ? ".roman-menu-toggle" : ".roman-end-chat"));
+    });
+  }
+});
+
 test("a suspended pending turn still allows End Chat while input stays unavailable", async (t) => {
   const ctx = await setup(t, {
     state: {
@@ -2488,7 +2549,7 @@ test("a suspended pending turn still allows End Chat while input stays unavailab
   assert.equal(ctx.input(), null);
   const end = ctx.container.querySelector(".roman-end-chat");
   assert.equal(end.disabled, false);
-  end.click();
+  await confirmEnd(ctx);
   await until(() => ctx.endCalls.length === 1, "End Chat was blocked by suspension");
   assert.equal(ctx.container.querySelector(".roman-unavailable-bar")?.textContent, "Roman is currently unavailable");
 });
@@ -2510,9 +2571,17 @@ test("ending a chat retains its transcript and draft until acknowledged, then st
   const end = ctx.container.querySelector(".roman-end-chat");
   end.click();
   end.click();
+  await until(() => ctx.container.querySelector("[data-roman-confirm-end]"), "End confirmation did not open");
+  assert.deepEqual(ctx.endCalls, [], "Opening confirmation cannot clear the chat");
+  const confirm = ctx.container.querySelector("[data-roman-confirm-end]");
+  confirm.click();
+  confirm.click();
   await until(() => ctx.input().disabled, "Ending did not lock the composer");
   assert.deepEqual(ctx.endCalls, ["end"]);
-  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
+  assert.equal(ctx.container.querySelector(".roman-dialog").getAttribute("aria-busy"), "true");
+  assert.equal(confirm.disabled, true);
+  ctx.container.querySelector(".roman-dialog").dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));
+  assert.ok(ctx.container.querySelector(".roman-dialog[open]"), "Escape cannot interrupt an acknowledged clear in progress");
   assert.match(ctx.container.textContent, /Your saved conversation/);
   assert.equal(ctx.input().value, "Unsent draft");
   finish();
@@ -2554,7 +2623,7 @@ test("an unsuccessful End keeps its conversation and draft available for retry",
     },
   });
   await ctx.type("Keep this draft");
-  ctx.container.querySelector(".roman-end-chat").click();
+  await confirmEnd(ctx);
   await until(
     () => ctx.container.querySelector('[role="alert"]'),
     "End failure was hidden",
@@ -2564,9 +2633,10 @@ test("an unsuccessful End keeps its conversation and draft available for retry",
   assert.equal(ctx.input().value, "Keep this draft");
   assert.equal(ctx.input().disabled, false);
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
-  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
+  assert.ok(ctx.container.querySelector(".roman-dialog[open]"));
+  assert.equal(ctx.container.querySelector("[data-roman-confirm-end]").disabled, false);
   assert.equal(ctx.container.querySelector(".roman-end-chat").disabled, false);
-  ctx.container.querySelector(".roman-end-chat").click();
+  await confirmEnd(ctx);
   await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "Retry did not finish End",
@@ -4037,7 +4107,7 @@ test("End removes progress before acknowledgement and does not restore it after 
     ctx.container.querySelector(".roman-reply-activity").textContent,
     "Roman is replying…",
   );
-  ctx.container.querySelector(".roman-end-chat").click();
+  await confirmEnd(ctx);
   await until(
     () =>
       ctx.container.querySelector(".roman-end-chat")?.textContent === "Ending…",

@@ -41,6 +41,11 @@
 .roman-window-card { overflow: visible; }
 .roman-window-choice:disabled { cursor: default; }
 .roman-window-image { position: relative; display: block; width: 100%; aspect-ratio: 1; background: #bcb6ad; overflow: hidden; border-radius: 22px 22px 0 0; }
+.roman-window-upload-image { display: grid; place-items: center; background: #eee9df; }
+.roman-window-upload-image::before { content: ""; position: absolute; inset: 20px; border: 1px dashed #4e0e0e66; border-radius: 14px; }
+.roman-window-upload-image svg { width: 64px; height: 64px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.roman-window-upload-card .roman-window-choice:enabled:hover .roman-window-upload-image { background: #e5ddcf; }
+.roman-window-upload-card .roman-window-choice:disabled { opacity: .5; }
 .roman-window-use { position: absolute; inset: auto 0 0; padding: 38px 20px 18px; color: #fdfbf6; background: linear-gradient(transparent, #291615aa); font-size: 18px; line-height: 1.3; opacity: 0; transition: opacity .16s ease; }
 .roman-media-card-title { display: block; margin: 0; padding: 18px 20px; font-size: 21px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
 .roman-window-card[data-selected="true"] { border-color: #4e0e0e; box-shadow: 0 0 0 1px #4e0e0e; }

@@ -420,6 +420,8 @@ test("a background PDP cannot activate itself and ending a chat unloads its sele
   );
   await ctx.select("Cart");
   ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector("[data-roman-confirm-end]"), "End confirmation did not open");
+  ctx.container.querySelector("[data-roman-confirm-end]").click();
   await until(
     () => !ctx.container.querySelector(".roman-end-chat"),
     "Conversation did not end",
@@ -673,6 +675,8 @@ test("product actions stay disabled during restoration and ending", async (t) =>
     "Restoration completion unlocks actions",
   );
   ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector("[data-roman-confirm-end]"), "End confirmation did not open");
+  ctx.container.querySelector("[data-roman-confirm-end]").click();
   await until(() => releaseEnd, "End starts");
   assert.ok(buttons().every((button) => button.disabled));
   assert.deepEqual(ctx.calls, [["end"]]);
@@ -1047,6 +1051,8 @@ test("restored customer conversation opens the transcript and ending it restores
   );
   assert.equal(ctx.container.querySelector(".roman-welcome"), null);
   ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector("[data-roman-confirm-end]"), "End confirmation did not open");
+  ctx.container.querySelector("[data-roman-confirm-end]").click();
   await until(
     () => ctx.container.querySelector(".roman-welcome"),
     "End chat did not reset the welcome",

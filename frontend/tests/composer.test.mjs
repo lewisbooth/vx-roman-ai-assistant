@@ -301,7 +301,7 @@ test("voice takes over the whole bar and preserves an unsent text draft until it
   assert.equal(ctx.container.querySelector('[aria-label="End voice"]'), null);
 });
 
-test("upload remains available while Roman works, hides for typed text and shares the unchanged form during voice", async (t) => {
+test("Send owns the rightmost single-action rail while empty input and active voice retain separate upload controls", async (t) => {
   let uploads = 0;
   const ctx = setup(t, {busy: true, onUpload: () => uploads++, onStartVoice: async () => {}});
   const textarea = ctx.input();
@@ -314,11 +314,29 @@ test("upload remains available while Roman works, hides for typed text and share
   assert.equal(ctx.calls.length, 0);
   assert.equal(ctx.input(), textarea);
   assert.equal(form.querySelector(".roman-composer-actions").dataset.upload, "true");
+  assert.deepEqual(
+    [...form.querySelector(".roman-composer-actions").children].map((button) => button.getAttribute("aria-label")),
+    ["Start voice", "Upload image"],
+  );
   await ctx.type("A typed message");
   assert.equal(ctx.input(), textarea);
-  assert.equal(camera().hidden, true);
+  assert.equal(camera(), null);
+  const actions = form.querySelector(".roman-composer-actions");
+  assert.equal(actions.dataset.upload, undefined, "Send must not inherit the two-button offset");
+  assert.equal(form.querySelector(".roman-composer-field").dataset.upload, undefined);
+  assert.equal(actions.children.length, 1);
+  assert.equal(actions.lastElementChild, ctx.send());
+  assert.ok(ctx.send().classList.contains("roman-send-message"));
+  assert.equal(form.querySelector(".roman-start-voice"), null);
+  ctx.send().click();
+  await until(() => ctx.input().value === "");
+  assert.deepEqual(ctx.calls, ["A typed message"]);
+  assert.equal(ctx.input(), textarea);
+  assert.equal(ctx.container.querySelector("form"), form);
+  assert.equal(actions, form.querySelector(".roman-composer-actions"));
+  assert.equal(camera().hidden, false);
   assert.equal(form.querySelector(".roman-composer-actions").dataset.upload, "true");
-  assert.ok(ctx.send());
+  await ctx.type("A draft to retain during voice");
   ctx.render({voice: {status: "active", muted: false, error: null}});
   assert.equal(ctx.container.querySelector("form"), form);
   assert.equal(camera().hidden, false);

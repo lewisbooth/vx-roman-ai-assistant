@@ -768,6 +768,68 @@ test("a delegated presentation persists only its selected widget beside actual p
   );
 });
 
+for (const kind of ["windows", "upload"]) {
+  test(`a delegated ${kind} photo picker preserves its voice owner and follows actual captions`, async () => {
+    const envKeys = ["ROMAN_VISUALIZATIONS_ENABLED", "ROMAN_VISUALIZATIONS_SHOPS", "OPENAI_IMAGE_API_KEY", "ROMAN_MEDIA_ROOT"];
+    const prior = envKeys.map((key) => process.env[key]);
+    process.env.ROMAN_VISUALIZATIONS_ENABLED = "true";
+    process.env.ROMAN_VISUALIZATIONS_SHOPS = "hd-dev-single.myshopify.com";
+    process.env.OPENAI_IMAGE_API_KEY = "synthetic-test-only";
+    process.env.ROMAN_MEDIA_ROOT = directory;
+    const ownerId = randomUUID(), photoId = randomUUID();
+    try {
+      await database.galleryOwner.create({ data: {
+        id: ownerId, shop: "hd-dev-single.myshopify.com",
+        origin: "https://hd-dev-single.myshopify.com", tokenHash: "1".repeat(64),
+      } });
+      await database.conversation.update({ where: { id }, data: {
+        galleryOwnerId: ownerId, ...(kind === "windows" ? { selectedWindowPhotoId: photoId } : {}),
+      } });
+      if (kind === "windows") await database.windowPhoto.create({ data: {
+        id: photoId, ownerId, conversationId: id, requestId: randomUUID(),
+        requestHash: "synthetic", title: "Kitchen", assetKey: "synthetic.jpg",
+        sha256: "synthetic", width: 1000, height: 800, bytes: 100,
+        consentVersion: "roman-window-photo-v1", consentAt: new Date(), uploadStatus: "ready",
+      } });
+      const session = await startVoice();
+      await caption(session, "Choose a room photo", 0);
+      const delegated = await conversation.beginTurn(id, textInput(""), session.id);
+      const photoPresentation = kind === "windows"
+        ? { kind, windowIds: [photoId] }
+        : { kind, suggestedTitle: "Kitchen" };
+      await assert.rejects(conversation.finishTurn(id, delegated.assistantId, {
+        status: "complete", text: "Not yet spoken.", voiceId: randomUUID(),
+        photoPresentation: { callId: "photo-picker", ...photoPresentation },
+      }), { status: 400 });
+      await conversation.finishTurn(id, delegated.assistantId, {
+        status: "complete", text: "Not yet spoken.", voiceId: session.id,
+        photoPresentation: { callId: "photo-picker", ...photoPresentation },
+      });
+      const saved = await database.conversationMessage.findUniqueOrThrow({ where: { id: delegated.assistantId } });
+      const expected = [{
+        type: "media", version: 1, ...photoPresentation,
+        voiceReply: { voiceId: session.id, afterSequence: 2 },
+      }];
+      assert.deepEqual(JSON.parse(saved.partsJson), expected);
+      assert.deepEqual((await conversation.getSnapshot(id)).messages.at(-1).parts, expected);
+      await caption(session, "Choose a saved window or upload a room photo.", 200, "assistant");
+      const snapshot = await conversation.getSnapshot(id);
+      assert.equal(snapshot.messages.at(-1).id, delegated.assistantId);
+      assert.deepEqual(snapshot.messages.at(-1).parts, expected);
+      assert.equal(snapshot.messages.at(-2).parts[0].text, "Choose a saved window or upload a room photo.");
+      assert.equal(snapshot.messages.some((message) => message.parts.some((part) => part.type === "question")), false);
+    } finally {
+      await database.windowPhoto.deleteMany({ where: { ownerId } });
+      await database.conversation.update({ where: { id }, data: { galleryOwnerId: null, selectedWindowPhotoId: null } });
+      await database.galleryOwner.deleteMany({ where: { id: ownerId } });
+      envKeys.forEach((key, index) => {
+        if (prior[index] === undefined) delete process.env[key];
+        else process.env[key] = prior[index];
+      });
+    }
+  });
+}
+
 for (const widgetKinds of [
   ["products"],
   ["guides"],
@@ -2314,7 +2376,7 @@ test("a ready new voice conversation persists one welcome question behind speech
   const question = load().latestQuestion(
     (await conversation.getSnapshot(id)).messages,
   );
-  assert.equal(question.question, "How can I help?");
+  assert.equal(question.question, "Where would you like to start?");
   assert.deepEqual(question.answers, [
     "Help me measure",
     "Explore products",

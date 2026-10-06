@@ -1,4 +1,23 @@
+import { photoPresentationSchema } from "../../shared/visualizations";
+
 const nullableText = { type: ["string", "null"] } as const;
+export const presentPhotosToolDefinition = {
+  type: "function",
+  name: "present_photos",
+  strict: true,
+  description:
+    "Finish this reply with one photo picker: an Upload a room photo card followed by saved window photos. Use upload to offer a new photo with the current saved photos, or windows for one to ten saved IDs verified this turn or the current selected window. Include a short message inviting that selection. This picker is the complete next action: no quick answers, numeric field, product cards or extra question. Offering or selecting a photo does not itself authorize a preview.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      message: { type: "string", minLength: 1, maxLength: 1000 },
+      photoPresentation: { anyOf: photoPresentationSchema.anyOf.slice(1) },
+    },
+    required: ["message", "photoPresentation"],
+  },
+} as const;
+
 export const visualizationToolDefinitions = [
   {
     type: "function",

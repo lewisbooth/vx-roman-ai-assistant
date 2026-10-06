@@ -145,7 +145,11 @@ async function setup(t, initial = {}, options = {}) {
       await until(() => tab(name).getAttribute("aria-current") === "page", `${name} did not become active`);
     },
     async end() {
-      container.querySelector(".roman-end-chat").click();
+      if (!container.querySelector("[data-roman-confirm-end]")) {
+        container.querySelector(".roman-end-chat").click();
+        await until(() => container.querySelector("[data-roman-confirm-end]"), "End confirmation did not open");
+      }
+      container.querySelector("[data-roman-confirm-end]").click();
     },
   };
 }

@@ -161,6 +161,7 @@ type StoredConversation = Conversation & {
   voiceSessions: VoiceSession[];
   voiceTranscripts: VoiceTranscript[];
 };
+type PhotoPickerOwner = Pick<StoredTool, "id" | "assistantId" | "providerCallId" | "name" | "status">;
 
 function validProductIds(value: unknown, limit = MAX_PRODUCT_CARDS): value is string[] {
   return (
@@ -449,8 +450,13 @@ function toolSnapshot(tool: StoredTool): BrowserToolInvocation {
 }
 
 export function conversationEntries(
-  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts">,
+  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts"> &
+    { toolInvocations?: readonly PhotoPickerOwner[] },
 ): ConversationHistoryEntry[] {
+  const tools = new Map(conversation.toolInvocations?.map((tool) => [tool.id, tool]));
+  const photoOwners = new Set(conversation.toolInvocations
+    ?.filter((tool) => tool.status === "complete" && (tool.name === "show_windows" || tool.name === "request_photo"))
+    .map((tool) => JSON.stringify([tool.assistantId, tool.providerCallId, tool.name])));
   const entries: ConversationHistoryEntry[] = conversation.messages.map((message) => {
     if (
       !["user", "assistant", "context"].includes(message.role) ||
@@ -458,6 +464,32 @@ export function conversationEntries(
     ) {
       throw new Error("Invalid stored conversation message.");
     }
+    const messageParts = parts(message, conversation.origin);
+    const retiredPhotoQuestions = new Set<ConversationPart>();
+    const photoReplies = new Map<ConversationPart, {voiceId: string; afterSequence: number}>();
+    for (const part of messageParts) {
+      if (part.type !== "question" || part.measurement) continue;
+      const owner = tools.get(part.invocationId);
+      if (owner?.name !== "ask_question" || owner.status !== "complete" || owner.assistantId !== message.id) continue;
+      const photoCallId = `roman:photos:${createHash("sha256")
+        .update(JSON.stringify([message.id, owner.providerCallId]))
+        .digest("hex")}`;
+      for (const photo of messageParts) {
+        if (photo.type !== "media" || (photo.kind !== "windows" && photo.kind !== "upload") ||
+          !photoOwners.has(JSON.stringify([message.id, photoCallId, photo.kind === "windows" ? "show_windows" : "request_photo"]))) continue;
+        retiredPhotoQuestions.add(part);
+        if (part.voiceReply) photoReplies.set(photo, part.voiceReply);
+      }
+    }
+    const displayParts = messageParts.flatMap((part): ConversationPart[] => {
+      // Old photo terminals owned a question and picker in the same call.
+      // The picker now owns selection; retain words without restoring controls.
+      if (part.type === "question" && retiredPhotoQuestions.has(part))
+        return part.voiceReply ? [] : [{type: "text", text: part.question}];
+      const reply = photoReplies.get(part);
+      if (reply && part.type === "media" && (part.kind === "windows" || part.kind === "upload")) return [{...part, voiceReply: reply}];
+      return [part];
+    });
     return {
       sequence: message.sequence,
       message: {
@@ -467,7 +499,7 @@ export function conversationEntries(
           : {}),
         role: message.role as ConversationMessage["role"],
         status: message.status as ConversationMessage["status"],
-        parts: parts(message, conversation.origin),
+        parts: displayParts,
         createdAt: message.createdAt.toISOString(),
         ...(message.error ? { error: message.error } : {}),
       } as ConversationMessage,
@@ -482,16 +514,42 @@ export function conversationEntries(
 }
 
 export function conversationTimeline(
-  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts">,
+  conversation: Pick<StoredConversation, "origin" | "messages" | "voiceTranscripts"> &
+    { toolInvocations?: readonly PhotoPickerOwner[] },
 ): ConversationMessage[] {
   return projectConversationTimeline(conversationEntries(conversation));
+}
+
+async function readPhotoPickerOwners(
+  id: string,
+  transaction: Prisma.TransactionClient,
+  messages: readonly StoredMessage[],
+  origin: string,
+  known: readonly PhotoPickerOwner[] = [],
+): Promise<PhotoPickerOwner[]> {
+  const loaded = new Set(known.map((tool) => tool.assistantId));
+  const assistantIds = messages.filter((message) => {
+    if (loaded.has(message.id)) return false;
+    const content = parts(message, origin);
+    return content.some((part) => part.type === "question" && !part.measurement) &&
+      content.some((part) => part.type === "media" && (part.kind === "windows" || part.kind === "upload"));
+  }).map((message) => message.id);
+  if (!assistantIds.length) return [...known];
+  const owners = await transaction.toolInvocation.findMany({
+    where: { conversationId: id, assistantId: { in: assistantIds }, status: "complete", name: { in: ["ask_question", "show_windows", "request_photo"] } },
+    select: { id: true, assistantId: true, providerCallId: true, name: true, status: true },
+    take: assistantIds.length * 3,
+  });
+  return [...known, ...owners];
 }
 
 function snapshot(
   conversation: StoredConversation,
   current?: ConversationCurrentState,
+  photoPickerOwners: readonly PhotoPickerOwner[] = [],
 ): ConversationSnapshot {
-  const entries = conversationEntries(conversation);
+  const source = {...conversation, toolInvocations: [...conversation.toolInvocations, ...photoPickerOwners]};
+  const entries = conversationEntries(source);
   const end = Math.max(conversation.nextSequence, (entries.at(-1)?.sequence ?? -1) + 1);
   const start = Math.max(0, end - CONVERSATION_HISTORY_PAGE_SIZE);
   const history: ConversationHistoryPage = {
@@ -502,7 +560,7 @@ function snapshot(
   };
   const messages = projectConversationTimeline(entries);
   const historyUpdates = conversationEntries({
-    ...conversation,
+    ...source,
     voiceTranscripts: [],
     messages: [...conversation.messages]
       .sort((left, right) =>
@@ -920,13 +978,15 @@ export async function getSnapshot(id: string): Promise<ConversationSnapshot> {
         transaction.voiceSession.findMany({ where: { conversationId: id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 }),
       ]).then(([active, latest]) => [...new Map([...active, ...latest].map((voice) => [voice.id, voice])).values()]),
     ]);
+    const snapshotMessages = [...new Map([...messages, ...recentResults, ...pending, ...context.messages].map((message) => [message.id, message])).values()].sort((left, right) => left.sequence - right.sequence);
+    const photoPickerOwners = await readPhotoPickerOwners(id, transaction, snapshotMessages, conversation.origin, context.photoPickerOwners);
     return snapshot({
       ...conversation,
-      messages: [...new Map([...messages, ...recentResults, ...pending, ...context.messages].map((message) => [message.id, message])).values()].sort((left, right) => left.sequence - right.sequence),
+      messages: snapshotMessages,
       voiceTranscripts,
       toolInvocations,
       voiceSessions,
-    }, context.current);
+    }, context.current, photoPickerOwners);
   });
 }
 
@@ -1035,14 +1095,17 @@ export async function getCurrentContext(
     ).values(),
   ].sort((left, right) => left.sequence - right.sequence);
   const voiceTranscripts = caption ? [caption] : [];
+  const photoPickerOwners = await readPhotoPickerOwners(id, transaction, messages, conversation.origin);
   const timeline = conversationTimeline({
     ...conversation,
     messages,
     voiceTranscripts,
+    toolInvocations: photoPickerOwners,
   });
   return {
     messages,
     voiceTranscripts,
+    photoPickerOwners,
     current: {
       activeProduct:
         activeProduct({
@@ -1087,11 +1150,12 @@ export async function getHistoryPage(id: string, before: number) {
       transaction.conversationMessage.findMany({ where: range, orderBy: { sequence: "asc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
       transaction.voiceTranscript.findMany({ where: range, orderBy: { sequence: "asc" }, take: CONVERSATION_HISTORY_PAGE_SIZE }),
     ]);
+    const photoPickerOwners = await readPhotoPickerOwners(id, transaction, messages, conversation.origin);
     return { id, revision: conversation.revision, history: {
       start,
       end: before,
       before: start || null,
-      entries: conversationEntries({ ...conversation, messages, voiceTranscripts }),
+      entries: conversationEntries({ ...conversation, messages, voiceTranscripts, toolInvocations: photoPickerOwners }),
     } satisfies ConversationHistoryPage };
   });
 }
@@ -2134,7 +2198,8 @@ export async function finishTurn(
         typeof callId !== "string" ||
         !callId ||
         callId.length > 200 ||
-        callId !== result.questionPresentation?.callId ||
+        result.questionPresentation ||
+        result.presentation ||
         result.resumeQuestionId
       )
         throw new ConversationError(400, "Invalid photo presentation owner.");
@@ -2280,7 +2345,17 @@ export async function finishTurn(
           completedAt: new Date(),
         },
       });
-      content.push({ type: "media", version: 1, ...selectedPhotos });
+      content.push({
+        type: "media", version: 1, ...selectedPhotos,
+        ...(message.role === "context" && result.voiceId
+          ? {
+              voiceReply: {
+                voiceId: result.voiceId,
+                afterSequence: conversation.nextSequence,
+              },
+            }
+          : {}),
+      });
     }
     const finished = await transaction.conversationMessage.updateMany({
       where: { id: assistantId, conversationId: id, status: "pending" },

@@ -46,9 +46,9 @@ import {
   type CachedGuideSource,
   type WindowPresentation,
 } from "./presentation.server";
-import { photoPresentationSchema } from "../../shared/visualizations";
 import {
   isVisualizationTool,
+  presentPhotosToolDefinition,
   visualizationToolDefinitions,
 } from "../visualizations/tool-definitions";
 import type { VisualizationTurn } from "../visualizations/tools.server";
@@ -81,6 +81,9 @@ import {
 
 export const TEXT_MODEL = PRIMARY_TEXT_MODEL;
 export const TEXT_SERVICE_TIER = "fast";
+
+const isTerminalTool = (name: string) =>
+  name === "ask_question" || name === "ask_measurement" || name === "present_photos";
 
 /** Bounded phase facts only; never provider bodies, arguments or customer text. */
 export type ModelTurnDiagnostic =
@@ -391,6 +394,9 @@ export async function generateReply(
   const resumePresentation = resumeQuestion?.measurement
     ? "ask_measurement"
     : "ask_question";
+  const terminalRepairGuidance = visualizations && !resumeQuestion
+    ? "Use present_photos with only message and photoPresentation when choosing/uploading a photo is next; do not add question or answer fields. Otherwise use ask_question or ask_measurement for the single next decision."
+    : "Use ask_question or ask_measurement for the single next decision.";
   // Stable schemas preserve cached prefixes; allowed_tools narrows each round.
   // Existing runtime budgets and read-only guards remain the authority.
   const allTools = [
@@ -416,6 +422,7 @@ export async function generateReply(
     ...[
       askQuestionToolDefinition,
       ...(execute ? [askMeasurementToolDefinition] : []),
+      ...(visualizations ? [presentPhotosToolDefinition] : []),
     ].map((tool) => ({
       ...tool,
       parameters: {
@@ -423,14 +430,10 @@ export async function generateReply(
         properties: {
           ...tool.parameters.properties,
           ...(memory ? { memoryUpdate: memoryUpdateSchema } : {}),
-          ...(visualizations
-            ? { photoPresentation: photoPresentationSchema }
-            : {}),
         },
         required: [
           ...tool.parameters.required,
           ...(memory ? ["memoryUpdate"] : []),
-          ...(visualizations ? ["photoPresentation"] : []),
         ],
       },
     })),
@@ -473,7 +476,7 @@ export async function generateReply(
         (name === "open_checkout" && actions.checkoutAttempted)
       )
         return false;
-      if (name === "ask_question" || name === "ask_measurement") return true;
+      if (isTerminalTool(name)) return true;
       if (answerRepair) return false;
       if (sourceRecovery)
         return isGuideTool(name) && sourceRecoveryReads < 2 && browserCalls < MAX_TURN_TOOL_CALLS;
@@ -696,7 +699,7 @@ export async function generateReply(
       appendInput({
         role: "developer",
         content:
-          "The previous response ended before producing a complete answer request; none of its output was displayed or executed. Use the completed tool results already in this turn to finish once with ask_question or ask_measurement. Preserve the confirmed outcome in message and ask the next useful question. Do not repeat completed work or claim that unfinished work happened; only an answer request is available.",
+          "The previous response ended before producing a complete answer request; none of its output was displayed or executed. Use the completed tool results already in this turn to finish once. " + terminalRepairGuidance + " Preserve the confirmed outcome in message. Do not repeat completed work or claim that unfinished work happened; only an answer request is available.",
       });
       continue;
     }
@@ -709,7 +712,7 @@ export async function generateReply(
       toolCalls.length > 1 &&
       toolCalls.some(
         (call) =>
-          call.name === "ask_question" || call.name === "ask_measurement",
+          isTerminalTool(call.name),
       )
     )
       throw new Error(
@@ -741,7 +744,7 @@ export async function generateReply(
       appendInput({
         role: "developer",
         content:
-          "Finish this reply with ask_question or ask_measurement. Put the useful overview or confirmed outcome in message and the single next decision in question. No answer was displayed. Do not repeat completed work; only an answer request is available.",
+          "Finish this reply. " + terminalRepairGuidance + " Put the useful overview or confirmed outcome in message. No answer was displayed. Do not repeat completed work; only an answer request is available.",
       });
       continue;
     }
@@ -759,7 +762,7 @@ export async function generateReply(
         call.name !== resumePresentation
       )
         throw new Error("Only read-only question resume tools are allowed.");
-      if (call.name === "ask_question" || call.name === "ask_measurement") {
+      if (isTerminalTool(call.name)) {
         try {
           const argumentsValue: unknown = JSON.parse(call.arguments);
           if (
@@ -770,21 +773,8 @@ export async function generateReply(
             throw new Error("Invalid answer request.");
           const {
             memoryUpdate: rawMemoryUpdate,
-            photoPresentation: rawPhotoPresentation,
             ...publicAnswer
           } = argumentsValue as Record<string, unknown>;
-          if (
-            rawPhotoPresentation != null &&
-            (!visualizations || resumeQuestion)
-          )
-            throw new Error(
-              "Photo presentation is not available for this reply.",
-            );
-          const photoSelection =
-            await visualizations?.validatePresentation(rawPhotoPresentation);
-          const photoPresentation = photoSelection
-            ? { ...photoSelection, callId: call.call_id }
-            : undefined;
           const memoryUpdate = parseMemoryUpdate(rawMemoryUpdate);
           if (memoryUpdate && !memory)
             throw new Error("Private memory is not available for this reply.");
@@ -793,6 +783,40 @@ export async function generateReply(
               "Read-only question resumption cannot change private memory.",
             );
           if (memory) applyMemoryUpdate(memory.memo, memoryUpdate);
+          if (!call.call_id || call.call_id.length > 200)
+            throw new Error("Invalid terminal presentation call ID.");
+          if (call.name === "present_photos") {
+            if (!visualizations || resumeQuestion)
+              throw new Error("Photo presentation is not available for this reply.");
+            if (
+              Object.keys(publicAnswer).length !== 2 ||
+              !Object.hasOwn(publicAnswer, "photoPresentation") ||
+              typeof publicAnswer.message !== "string" ||
+              !publicAnswer.message.trim() ||
+              publicAnswer.message.length > 1000 ||
+              /(?![\n\r\t])\p{Cc}/u.test(publicAnswer.message)
+            )
+              throw new Error("Present photos with only a short message and photoPresentation; no question, answers or measurement.");
+            const photoSelection = await visualizations.validatePresentation(publicAnswer.photoPresentation);
+            if (!photoSelection) throw new Error("A photo picker is required.");
+            const answer = publicAnswer.message.trim();
+            signal.throwIfAborted();
+            appendInput({
+              type: "function_call_output",
+              call_id: call.call_id,
+              output: JSON.stringify({ displayed: true, photoPresentation: photoSelection }),
+            });
+            const contextCheckpoint = checkpoint(model);
+            onText(answer);
+            return {
+              text: answer,
+              model: completed.model,
+              serviceTier: completed.service_tier ?? undefined,
+              photoPresentation: { ...photoSelection, callId: call.call_id },
+              ...(memoryUpdate ? { memoryUpdate } : {}),
+              ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
+            };
+          }
           const { message, productIds, ...selection } =
             call.name === "ask_measurement"
               ? parseMeasurementQuestionCall(publicAnswer)
@@ -873,7 +897,6 @@ export async function generateReply(
             serviceTier: completed.service_tier ?? undefined,
             ...(presentation ? { presentation } : {}),
             questionPresentation,
-            ...(photoPresentation ? { photoPresentation } : {}),
             ...(cachedGuideSource ? { cachedGuideSource } : {}),
             ...(memoryUpdate ? { memoryUpdate } : {}),
             ...(contextCheckpoint
@@ -903,7 +926,7 @@ export async function generateReply(
               instruction:
                 recoverSource
                   ? "No answer was displayed. Read only the missing applicable guide evidence (at most two source operations), then finish with ask_question or ask_measurement. Research is already authorized. Preserve completed actions; do not repeat them. If no applicable source can be verified, explain the limitation without physical instructions."
-                  : "No answer request was displayed. Correct it once using ask_question or ask_measurement. Keep the confirmed outcome in message. Do not repeat completed work; only an answer request is available.",
+                  : "No answer request was displayed. Correct it once. " + terminalRepairGuidance + " Keep the confirmed outcome in message. Do not repeat completed work; only an answer request is available.",
             }),
           });
           continue;

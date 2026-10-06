@@ -318,7 +318,7 @@ test("Live shares identity and notation but delegates instead of copying the kno
 
 test("welcome and voice resumption use canonical UI copy without raw private-state scaffolding", () => {
   assert.equal(ROMAN_PREAMBLE, "Hi! I'm Roman.");
-  assert.equal(ROMAN_WELCOME_QUESTION.question, "How can I help?");
+  assert.equal(ROMAN_WELCOME_QUESTION.question, "Where would you like to start?");
   assert.deepEqual(ROMAN_WELCOME_QUESTION.answers, [
     "Help me measure",
     "Explore products",
@@ -340,7 +340,7 @@ test("welcome and voice resumption use canonical UI copy without raw private-sta
   );
   assert.match(ROMAN_TEXT_PRESENTATION, /digital shop-at-home advisor/);
   assert.ok(
-    ROMAN_VOICE_OPENING_PROMPTS.newConversation.includes(ROMAN_PREAMBLE),
+    ROMAN_VOICE_OPENING_PROMPTS.newConversation.includes("Hi! I'm Roman. Where would you like to start?"),
   );
   assert.match(
     ROMAN_VOICE_OPENING_PROMPTS.resumedConversation,

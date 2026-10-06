@@ -459,12 +459,15 @@ test("thinking and commentary require matching acknowledgment and known delegati
     code: "command_failed",
   });
   assert.equal(socket.sent.length, 0);
-  const thinking = provider.appendThinking(
-    "The customer viewed a roller blind.",
-  );
+  const context = 'Silent displayed choices: {"answers":["Measure another window","Browse products"],"navigationActions":["View Cart"]}';
+  const thinking = provider.appendThinking(context);
+  assert.equal(socket.sent[0].type, "session.thinking.append");
   assert.equal(socket.sent[0].delegation_id, null);
+  assert.equal(socket.sent[0].content, context);
   socket.ack();
   await thinking;
+  assert.equal(socket.sent.length, 1, "Choice context does not trigger speech");
+  assert.deepEqual(app.events, [], "Context acceptance cannot fabricate a caption");
   socket.event(delegation());
   let done = false;
   const commentary = provider
@@ -1061,7 +1064,10 @@ test("beginConversation acknowledges one fresh opening instruction before its si
   assert.equal(socket.sent.length, 1);
   assert.equal(socket.sent[0].type, "session.instructions.append");
   assert.equal(socket.sent[0].delegation_id, null);
-  assert.match(socket.sent[0].content, /Speak first using this exact welcome/);
+  assert.match(
+    socket.sent[0].content,
+    /Speak first using this exact welcome: "Hi! I'm Roman\. Where would you like to start\?"/,
+  );
   assert.ok(socket.sent[0].content.length < 1200);
   assert.equal(provider.beginConversation(), opening);
   let done = false;
@@ -1247,7 +1253,7 @@ test("fresh resumed opening references the latest task without speaking applicat
   for (const pendingQuestion of [
     undefined,
     {
-      question: "How can I help?",
+      question: "Where would you like to start?",
       answers: ["Help me measure", "Explore products", "Find my style"],
     },
   ]) {
@@ -1285,7 +1291,7 @@ test("fresh resumed opening references the latest task without speaking applicat
     );
     if (pendingQuestion) {
       assert.match(instruction, /unanswered welcome question/);
-      assert.match(instruction, /How can I help\?/);
+      assert.match(instruction, /Where would you like to start\?/);
       assert.match(
         instruction,
         /Do not delegate, replay actions or advance the workflow/,
@@ -1386,7 +1392,7 @@ test("initial instructions select the opening from full history before Live crea
   const first = await openingFor([]);
   assert.match(
     first.instruction,
-    /Say this complete welcome exactly: "Hi! I'm Roman/,
+    /Say this complete welcome exactly: "Hi! I'm Roman\. Where would you like to start\?"/,
   );
   assert.match(first.instruction, /Wait for the application's opening cue/);
   assert.doesNotMatch(first.instruction, /Hi, it's Roman again/);

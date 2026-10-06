@@ -54,13 +54,13 @@ const bundle = await build({
         build.onLoad({ filter: /.*/, namespace: "stub" }, (args) => ({
           resolveDir: process.cwd(),
           contents: args.path.endsWith("availability.server")
-            ? `export const PRIMARY_TEXT_MODEL="gpt-6-luna";
+            ? `export const PRIMARY_TEXT_MODEL="gpt-5.6-terra";
                 export const FALLBACK_TEXT_MODEL="gpt-5.6-luna";
                 export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";
                 export const onServiceSuspended=()=>()=>{};
                 export const isServiceSuspended=()=>false;
                 export const assertServiceAvailable=async()=>{};
-                export const textModelForRequest=async()=>"gpt-6-luna";
+                export const textModelForRequest=async()=>"gpt-5.6-terra";
                 export const reportPrimaryUnavailable=async()=>{};
                 export const reportFallbackUnavailable=async()=>{};`
             : args.path === "openai"
@@ -797,7 +797,7 @@ test("the actual model client sets fast/medium/store=false, passes the signal an
   const reply = await env.api.generateReply(history, () => {}, signal);
   assert.equal(reply.text, "A completed reply.");
   const { input, options } = env.calls.requests[0];
-  assert.equal(input.model, "gpt-6-luna");
+  assert.equal(input.model, "gpt-5.6-terra");
   assert.equal(input.service_tier, "fast");
   assert.deepEqual(plain(input.reasoning), { effort: "medium" });
   assert.equal(input.store, false);
@@ -859,7 +859,7 @@ test("explicit low reasoning remains available for text and voice evaluations", 
     const input = env.calls.requests[0].input;
     assert.equal(input.reasoning.effort, "low");
     assert.equal(input.service_tier, "fast");
-    assert.equal(input.model, "gpt-6-luna");
+    assert.equal(input.model, "gpt-5.6-terra");
     assert.equal(input.store, false);
   }
 });
@@ -3702,7 +3702,7 @@ test("terminal numeric replies preserve selected cards, visible text and complet
   assert.ok(
     env.calls.requests.every(
       ({ input }) =>
-        input.model === "gpt-6-luna" &&
+        input.model === "gpt-5.6-terra" &&
         input.service_tier === "fast" &&
         input.reasoning.effort === "medium" &&
         input.store === false,
@@ -4295,7 +4295,7 @@ test("original guide prefixes and scoped cache keys survive different history an
   assert.ok(
     env.calls.requests.every(
       ({ input }) =>
-        input.model === "gpt-6-luna" &&
+        input.model === "gpt-5.6-terra" &&
         input.service_tier === "fast" &&
         input.reasoning.effort === "medium" &&
         input.store === false,
@@ -5776,7 +5776,7 @@ test("voice delegation forwards canonical caption history to the advisor without
     history.map(({ role, text }) => ({ role, content: text })),
   );
   assert.equal(env.calls.requests[0].input.instructions, env.api.ROMAN_VOICE_BRIEFING_PROMPT);
-  assert.equal(env.calls.requests[0].input.model, "gpt-6-luna");
+  assert.equal(env.calls.requests[0].input.model, "gpt-5.6-terra");
   assert.equal(env.calls.requests[0].input.service_tier, "fast");
   assert.equal(env.calls.requests[0].input.store, false);
   assert.equal(env.rows.get("voice").messages.length, 1);
@@ -6594,8 +6594,8 @@ test("automatic compaction persists the entire latest continuation and closes th
     execute: async (...args) => { executions.push(args); return { status: "ready", itemCount: 0 }; },
   });
   const continuation = plain(reply.contextCheckpoint);
-  assert.equal(continuation.model, "gpt-6-luna");
-  assert.equal(reply.requestedModel, "gpt-6-luna");
+  assert.equal(continuation.model, "gpt-5.6-terra");
+  assert.equal(reply.requestedModel, "gpt-5.6-terra");
   assert.equal(reply.model, "gpt-5.6-luna-actual", "the provider's reported model remains the billing identity");
   assert.equal(continuation.throughSequence, 42);
   assert.deepEqual(continuation.input.slice(0, 3), [compact, reasoning, read]);
@@ -6618,7 +6618,7 @@ test("matching saved compaction uses only subsequent history plus current privat
   const compact = { type: "compaction", encrypted_content: "PRIMARY_SAVED" };
   const memory = {
     memo: { "kitchen/blind": "Width corrected to 102 cm. Source 11." }, throughSequence: 12,
-    checkpoints: [{ model: "gpt-6-luna", throughSequence: 10, input: [compact] }],
+    checkpoints: [{ model: "gpt-5.6-terra", throughSequence: 10, input: [compact] }],
   };
   env.streams.push(events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })));
   await memoryReply(env, { memory, history: [
@@ -6640,7 +6640,7 @@ test("an output-budget retry discards incomplete compaction and memory patches w
   const memory = {
     memo: { "kitchen/blind": "Width corrected to 102 cm. Source 11." },
     throughSequence: 12,
-    checkpoints: [{ model: "gpt-6-luna", throughSequence: 10, input: [compact] }],
+    checkpoints: [{ model: "gpt-5.6-terra", throughSequence: 10, input: [compact] }],
   };
   const originalMemory = plain(memory);
   const incomplete = incompleteAnswer("max_output_tokens");
@@ -6697,13 +6697,13 @@ test("fallback preserves calls before a compaction item without foreign encrypte
         call, primary,
         { type: "message", role: "assistant", content: [{ type: "output_text", text: "POST_COMPACTION_REFERENCE" }] },
       ] })),
-      events({ type: "response.failed", response: { model: "gpt-6-luna", output: [], error: { code: "server_error", message: "Unavailable" } } }),
+      events({ type: "response.failed", response: { model: "gpt-5.6-terra", output: [], error: { code: "server_error", message: "Unavailable" } } }),
       events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })),
     );
     const memory = {
       memo: { "kitchen/curtain": "Return to curtains." }, throughSequence: 11,
       checkpoints: [
-        { model: "gpt-6-luna", throughSequence: 10, input: [{ type: "compaction", encrypted_content: "FOREIGN_SAVED_PRIMARY" }] },
+        { model: "gpt-5.6-terra", throughSequence: 10, input: [{ type: "compaction", encrypted_content: "FOREIGN_SAVED_PRIMARY" }] },
         ...(savedFallback ? [{ model: "gpt-5.6-luna", throughSequence: 2, input: [fallback] }] : []),
       ],
     };
@@ -6788,7 +6788,7 @@ test("model-specific history loads only when needed and is reused across that mo
   const env = setup(), loaded = [];
   env.streams.push(
     events(completed("", { output: [catalogCall("primary-cart", "get_cart", {})] })),
-    events({ type: "response.failed", response: { model: "gpt-6-luna", output: [], error: { code: "server_error", message: "Unavailable" } } }),
+    events({ type: "response.failed", response: { model: "gpt-5.6-terra", output: [], error: { code: "server_error", message: "Unavailable" } } }),
     events(completed("", { output: [catalogCall("fallback-cart", "get_cart", {})] })),
     events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })),
   );
@@ -6798,12 +6798,12 @@ test("model-specific history loads only when needed and is reused across that mo
       memo: {}, throughSequence: 21, checkpoints: [],
       historyForModel: async (model) => {
         loaded.push(model);
-        return [{ role: "user", text: model === "gpt-6-luna" ? "PRIMARY_SUFFIX" : "FALLBACK_RAW_HISTORY", sequence: 20, endSequence: 20 }];
+        return [{ role: "user", text: model === "gpt-5.6-terra" ? "PRIMARY_SUFFIX" : "FALLBACK_RAW_HISTORY", sequence: 20, endSequence: 20 }];
       },
     },
     execute: async () => ({ status: "ready", itemCount: 0 }),
   });
-  assert.deepEqual(loaded, ["gpt-6-luna", "gpt-5.6-luna"]);
+  assert.deepEqual(loaded, ["gpt-5.6-terra", "gpt-5.6-luna"]);
   assert.equal(env.calls.requests.length, 4);
   for (const [index, request] of env.calls.requests.entries()) {
     const serialized = JSON.stringify(request.input.input);

@@ -9,7 +9,8 @@ import { isCustomerMediaIntent } from "./visualizations";
 function voiceAssociation(part: ConversationPart) {
   return part.type === "products" ||
     part.type === "guides" ||
-    part.type === "question"
+    part.type === "question" ||
+    (part.type === "media" && (part.kind === "windows" || part.kind === "upload"))
     ? part.voiceReply
     : undefined;
 }
@@ -23,7 +24,7 @@ function isBackgroundObservation(message: ConversationMessage): boolean {
       (part) =>
         part.type === "page_view" ||
         part.type === "navigation" ||
-        (part.type === "media" && !isCustomerMediaIntent(part)),
+        (part.type === "media" && !voiceAssociation(part) && !isCustomerMediaIntent(part)),
     )
   );
 }

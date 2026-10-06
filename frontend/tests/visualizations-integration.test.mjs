@@ -36,6 +36,12 @@ async function until(condition, message) {
   for (let index = 0; index < 150; index++) { if (condition()) return; await delay(5); }
   assert.fail(message);
 }
+async function endChat(ctx) {
+  ctx.container.querySelector(".roman-end-chat").click();
+  await until(() => ctx.container.querySelector("[data-roman-confirm-end]"), "End Chat confirmation did not open");
+  ctx.container.querySelector("[data-roman-confirm-end]").click();
+  await until(() => !ctx.container.querySelector("[data-roman-confirm-end]") && !ctx.container.querySelector(".roman-end-chat")?.disabled, "End Chat did not finish");
+}
 
 async function setup(t, options = {}) {
   const nativeProduct = options.nativeProduct ?? (options.active ? {path: "/products/linen", title: "Linen blind"} : null);
@@ -152,7 +158,7 @@ async function setup(t, options = {}) {
   return {window, container, session, update, calls, sent, xhrs, activity, camera, dialog, setText, loaded,
     launchProduct(path) { return dispose.navigate("/", {state: {visualizeProduct: path, requestId: window.crypto.randomUUID()}}); },
     completeUpload(loseAck = false) { windows = [photo()]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
-    async selectTab(name) { const tab = [...container.querySelectorAll(".roman-view-nav a")].find((item) => item.textContent === name); tab.click(); await until(() => tab.getAttribute("aria-current") === "page", "Gallery did not become active"); },
+    async selectTab(name) { const tab = () => [...container.querySelectorAll(".roman-view-nav a")].find((item) => item.textContent === name); tab().click(); await until(() => tab()?.getAttribute("aria-current") === "page", "Gallery did not become active"); },
     setCompletedJob() { visualizations = [{...job(), status: "completed", resultAvailable: true, completedAt: new Date().toISOString()}]; },
   };
 }
@@ -254,36 +260,78 @@ test("explicit PDP entry opens upload directly and waits for matching activation
   assert.equal(ctx.sent.length, 1);
 });
 
-test("named saved-photo quick answers select verified ownership before the advisor receives a neutral answer", async (t) => {
-  const question = {type: "question", version: 1, invocationId: questionId, question: "Which saved window?", answers: ["Kitchen window"]};
-  const history = conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}, question]});
-  history.current.pendingQuestion = question;
-  const ctx = await setup(t, {active: true, saved: true, conversation: history});
-  const answer = () => [...ctx.container.querySelectorAll(".roman-question button")].find((button) => button.textContent === "Kitchen window");
-  await until(() => answer() && !answer().disabled, "Photo question did not become usable");
-  answer().click(); await until(() => ctx.sent.length === 1, "Named answer did not continue");
-  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 1);
-  assert.equal(ctx.session.getSnapshot().conversation.current.selectedWindow.id, windowId);
-  assert.equal(ctx.sent[0], "Kitchen window");
-  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+test("normalized restored photo pickers retain their historical words without duplicate quick answers", async (t) => {
+  for (const saved of [false, true]) await t.test(saved ? "saved window picker" : "upload picker", async (t) => {
+    const prompt = saved ? "Which saved window?" : "Would you like to upload a room photo?";
+    const presentation = saved ? {kind: "windows", windowIds: [windowId], purpose: "selection"} : {kind: "upload", suggestedTitle: null};
+    const history = conversation({active: true, parts: [{type: "text", text: prompt}, {type: "media", version: 1, ...presentation}]});
+    const ctx = await setup(t, {active: true, saved, conversation: history});
+    await until(() => ctx.container.querySelectorAll(".roman-window-carousel li").length === (saved ? 2 : 1), "Restored picker did not load");
+    assert.equal(ctx.container.querySelector(".roman-question"), null);
+    assert.equal(ctx.session.getSnapshot().conversation.current.pendingQuestion, null);
+    assert.equal([...ctx.container.querySelectorAll(".roman-message-text")].filter((paragraph) => paragraph.textContent === prompt).length, 1);
+    assert.equal([...ctx.container.querySelectorAll(".roman-window-carousel button")].filter((button) => button.textContent === "Upload a room photo").length, 1);
+    assert.deepEqual(ctx.sent, []);
+    assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  });
 });
 
 test("saved-photo cards submit neutral selection rather than implicitly requesting a new paid job", async (t) => {
   const ctx = await setup(t, {active: true, saved: true, conversation: conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "preview"}]})});
-  await until(() => ctx.container.querySelector(".roman-window-carousel .roman-window-choice"), "Saved window card did not load");
-  ctx.container.querySelector(".roman-window-carousel .roman-window-choice").click();
+  await until(() => ctx.container.querySelector('.roman-window-carousel [aria-label="Use Kitchen window"]'), "Saved window card did not load");
+  const choices = [...ctx.container.querySelectorAll(".roman-window-carousel .roman-window-choice")];
+  assert.equal(choices.length, 2);
+  assert.equal(choices[0].textContent, "Upload a room photo");
+  ctx.container.querySelector('.roman-window-carousel [aria-label="Use Kitchen window"]').click();
   await until(() => ctx.sent.length === 1, "Selection did not enter chat");
   assert.match(ctx.sent[0], /selection alone is not a request for a new preview/);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
 });
 
-test("late named-photo selection after End Chat cannot send an answer into a new conversation", async (t) => {
+test("photo upload presentations use the same picker with or without saved windows and open only the upload review", async (t) => {
+  for (const saved of [false, true]) await t.test(saved ? "with saved windows" : "without saved windows", async (t) => {
+    const ctx = await setup(t, {saved, conversation: conversation({parts: [{type: "media", version: 1, kind: "upload", suggestedTitle: "Office window"}]})});
+    await until(() => ctx.container.querySelector(".roman-window-carousel"), "Photo picker did not load");
+    await until(() => ctx.container.querySelectorAll(".roman-window-carousel li").length === (saved ? 2 : 1), "Saved windows did not join the picker");
+    const choices = [...ctx.container.querySelectorAll(".roman-window-carousel .roman-window-choice")];
+    assert.equal(choices[0].textContent, "Upload a room photo");
+    assert.equal(ctx.container.querySelectorAll(".roman-inline-media > .roman-media-button").length, 0);
+    assert.equal(ctx.container.querySelector(".roman-question"), null);
+    choices[0].click(); await until(ctx.dialog, "Upload review did not open");
+    const picker = ctx.dialog().querySelector('[type="file"]');
+    Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
+    picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
+    assert.equal(ctx.dialog().querySelector('[type="text"]').value, "Office window");
+    assert.deepEqual(ctx.sent, []);
+    assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select") || call.path.endsWith("/start")).length, 0);
+  });
+});
+
+test("a deleted historical photo picker remains a tombstone rather than pretending its photo is available", async (t) => {
+  const ctx = await setup(t, {conversation: conversation({parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}]})});
+  await until(() => ctx.container.textContent.includes("Window photos removed."), "Deleted photo state did not settle");
+  assert.equal(ctx.container.querySelector(".roman-window-carousel"), null);
+  assert.equal(ctx.container.querySelector(".roman-question"), null);
+  assert.deepEqual(ctx.sent, []);
+});
+
+test("read-only Gallery keeps saved photo choices visible while disabling the new upload card", async (t) => {
+  const ctx = await setup(t, {active: true, saved: true, enabled: false, conversation: conversation({active: true, parts: [{type: "media", version: 1, kind: "upload", suggestedTitle: null}]})});
+  await until(() => ctx.container.querySelectorAll(".roman-window-carousel .roman-window-choice").length === 2, "Saved photo picker did not load");
+  const choices = [...ctx.container.querySelectorAll(".roman-window-carousel .roman-window-choice")];
+  assert.equal(choices[0].disabled, true);
+  assert.equal(choices[1].disabled, false);
+  choices[0].click();
+  assert.equal(ctx.dialog(), null);
+  assert.deepEqual(ctx.sent, []);
+});
+
+test("late saved-photo card selection after End Chat cannot send an intent into a new conversation", async (t) => {
   let finish; const selected = new Promise((resolve) => {finish = resolve;});
-  const question = {type: "question", version: 1, invocationId: questionId, question: "Which saved window?", answers: ["Kitchen window"]};
-  const history = conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}, question]}); history.current.pendingQuestion = question;
+  const history = conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}]});
   const ctx = await setup(t, {active: true, saved: true, conversation: history, onSelect: () => selected});
-  const answer = () => [...ctx.container.querySelectorAll(".roman-question button")].find((button) => button.textContent === "Kitchen window");
-  await until(() => answer() && !answer().disabled, "Photo question not ready"); answer().click();
+  const choice = () => ctx.container.querySelector('.roman-window-carousel [aria-label="Use Kitchen window"]');
+  await until(choice, "Saved photo card not ready"); choice().click();
   await until(() => ctx.calls.some((call) => call.path.endsWith("/select")), "Selection did not start");
   await ctx.session.end(); finish(); await delay(20);
   assert.deepEqual(ctx.sent, []);
@@ -331,7 +379,7 @@ test("new photo saves before product selection, publishes immediate normalized p
   assert.equal(ctx.session.getSnapshot().conversation.messages.flatMap((message) => message.parts).filter((part) => part.type === "media" && part.kind === "window").length, 1);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
   assert.ok(ctx.window.localStorage.getItem("roman-gallery-v1"));
-  ctx.container.querySelector(".roman-end-chat").click(); await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
+  await endChat(ctx); await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
   await ctx.selectTab("Gallery");
   assert.match(ctx.container.querySelector(".roman-gallery").textContent, /Kitchen window/);
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
@@ -416,7 +464,7 @@ test("End Chat during an accepted photo upload preserves the photo without silen
   ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.xhrs.length, "Upload did not start");
-  ctx.container.querySelector(".roman-end-chat").click();
+  await endChat(ctx);
   await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not return to welcome");
   ctx.completeUpload(); await delay(30);
   assert.equal(ctx.session.getSnapshot().conversation, null);
@@ -436,7 +484,7 @@ test("late selection acknowledgement after End Chat cannot clear a new review of
   ctx.dialog().querySelector(".roman-window-choice").click(); await ctx.loaded();
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.calls.some((call) => call.path.endsWith("/select")), "Selection did not start");
-  ctx.container.querySelector(".roman-end-chat").click();
+  await endChat(ctx);
   await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
   ctx.camera().click(); await until(ctx.dialog, "New upload dialog missing");
   await until(() => ctx.dialog().querySelector(".roman-window-choice"), "Saved window missing after End Chat");

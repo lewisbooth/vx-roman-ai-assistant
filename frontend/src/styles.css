@@ -1201,7 +1201,7 @@
     width: 92px;
   }
 
-  .roman-composer-actions[data-upload] > .roman-composer-action:not(.roman-upload-image) {
+  .roman-composer-actions[data-upload] > .roman-start-voice {
     right: 48px;
   }
 
@@ -1246,6 +1246,17 @@
     --roman-action-size: 44px;
     height: var(--roman-action-size);
     min-width: var(--roman-action-size);
+  }
+
+  .roman-start-voice {
+    background: transparent;
+    color: #4e0e0e;
+  }
+
+  .roman-start-voice:hover:not(:disabled),
+  .roman-start-voice:focus-visible:not(:disabled) {
+    background: #4e0e0e;
+    color: #f8f6f0;
   }
 
   .roman-action-icon {

@@ -3,10 +3,8 @@ import type { ConversationClient } from "../session/types";
 
 export function UploadImageButton({
   onUpload,
-  hidden = false,
 }: {
   onUpload: () => void;
-  hidden?: boolean;
 }) {
   return (
     <button
@@ -14,7 +12,6 @@ export function UploadImageButton({
       className="roman-composer-action roman-upload-image"
       data-roman-upload
       aria-label="Upload image"
-      hidden={hidden}
       onClick={onUpload}
     >
       <span className="roman-action-label" aria-hidden="true">
@@ -49,7 +46,7 @@ export function StartVoiceButton({
   return (
     <button
       type="button"
-      className="roman-composer-action"
+      className="roman-composer-action roman-start-voice"
       data-roman-start-voice
       aria-label="Start voice"
       disabled={disabled}

@@ -1,7 +1,7 @@
 ﻿// Identity and general advisor behavior only. Domain workflows live in knowledge-base/.
 export const ROMAN_WELCOME_INTRO = "Hi! I'm Roman.";
 export const ROMAN_WELCOME_QUESTION = {
-  question: "How can I help?",
+  question: "Where would you like to start?",
   answers: ["Help me measure", "Explore products", "Find my style"],
 } as const;
 export const ROMAN_PREAMBLE = ROMAN_WELCOME_INTRO;

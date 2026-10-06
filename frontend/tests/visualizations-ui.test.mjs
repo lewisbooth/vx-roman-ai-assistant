@@ -13,14 +13,14 @@ const bundle = await build({
       import {ImageComparison} from './shared/visualizations/ImageComparison';
       import {saveVisualization} from './shared/visualizations/save-visualization';
       import {UploadModal} from './frontend/src/visualizations/UploadModal';
-      import {WindowCard} from './frontend/src/visualizations/WindowCard';
+      import {WindowCard,WindowCarousel} from './frontend/src/visualizations/WindowCard';
       import {PrivateImage} from './frontend/src/visualizations/PrivateImage';
       import {VisualizationViewer} from './shared/visualizations/VisualizationViewer';
       import {estimatedGenerationProgress} from './frontend/src/visualizations/VisualizationCard';
       export {saveVisualization, estimatedGenerationProgress};
       export function mount(target, kind) {
         const root=createRoot(target);
-        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,image:PrivateImage,viewer:VisualizationViewer}[kind];
+        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,windows:WindowCarousel,image:PrivateImage,viewer:VisualizationViewer}[kind];
         return {render(props){flushSync(()=>root.render(<Component {...props}/>));},dispose(){flushSync(()=>root.unmount());}};
       }
     `,
@@ -64,6 +64,32 @@ function pointer(window, element, type, values) {
   Object.assign(event, {pointerId: 1, pointerType: "touch", button: 0, isPrimary: true, clientX: 100, clientY: 0}, values);
   element.dispatchEvent(event);
 }
+
+test("window picker offers one upload card before named photos and keeps upload and selection separate", (t) => {
+  const {mount, api} = setup(t, "windows");
+  const windows = [{id: "kitchen", title: "Kitchen window"}, {id: "study", title: "Study window"}];
+  const selected = []; let uploads = 0;
+  api.render({windows, windowSource: (photo) => `/${photo.id}.jpg`, onUpload: () => uploads++, onSelect: (photo) => selected.push(photo.id)});
+  const choices = [...mount.querySelectorAll(".roman-window-carousel button")];
+  assert.equal(mount.querySelector('[role="region"]').getAttribute("aria-label"), "window photos");
+  assert.deepEqual(choices.map((button) => button.getAttribute("aria-label") ?? button.textContent), ["Upload a room photo", "Use Kitchen window", "Use Study window"]);
+  choices[0].click();
+  assert.equal(uploads, 1);
+  assert.deepEqual(selected, []);
+  choices[2].click();
+  assert.deepEqual(selected, ["study"]);
+  assert.equal(uploads, 1);
+});
+
+test("an empty window picker retains the same carousel and a usable upload card", (t) => {
+  const {mount, api} = setup(t, "windows");
+  let uploads = 0;
+  api.render({windows: [], windowSource: () => assert.fail("No saved photo should load"), onUpload: () => uploads++, onSelect: () => assert.fail("No saved photo should be selected")});
+  assert.equal(mount.querySelectorAll(".roman-product-carousel").length, 1);
+  assert.equal(mount.querySelectorAll(".roman-window-carousel li").length, 1);
+  mount.querySelector("button").click();
+  assert.equal(uploads, 1);
+});
 
 test("comparison preserves vertical touch scroll, supports horizontal dragging and keyboard bounds", async (t) => {
   const {window, mount, api} = setup(t, "comparison");

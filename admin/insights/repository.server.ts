@@ -169,6 +169,8 @@ export async function getConversationInspection(
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           select: {
             id: true,
+            assistantId: true,
+            providerCallId: true,
             name: true,
             status: true,
             createdAt: true,
@@ -318,7 +320,10 @@ export async function getConversationInspection(
       conversation: { ...listItem(row), origin: row.origin },
       messages,
       tools: row.toolInvocations.map((tool) => ({
-        ...tool,
+        id: tool.id,
+        name: tool.name,
+        status: tool.status,
+        error: tool.error,
         createdAt: tool.createdAt.toISOString(),
         completedAt: tool.completedAt?.toISOString() ?? null,
       })),

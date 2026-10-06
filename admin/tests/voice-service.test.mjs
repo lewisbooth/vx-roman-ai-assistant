@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import process from "node:process";
@@ -224,13 +225,20 @@ function setup() {
           await mock.onProviderClose?.(record);
           record.closed = true;
         },
-        appendCommentary: async (...args) => record.commentaries.push(args),
+        appendCommentary: async (...args) => {
+          record.commentaries.push(args);
+          order.push("commentary-sent");
+        },
         appendProgress: async (...args) => {
           record.progress.push(args);
           order.push("progress-sent");
           await mock.onProgress?.(...args);
         },
-        appendThinking: async (...args) => record.thoughts.push(args),
+        appendThinking: async (...args) => {
+          record.thoughts.push(args);
+          order.push("thinking-sent");
+          await mock.onThinking?.(...args);
+        },
         appendCustomerInput: async (text) => {
           record.inputs.push(text);
           order.push("input-sent");
@@ -342,6 +350,7 @@ function setup() {
     URL,
     AbortController,
     AbortSignal,
+    Buffer,
     Set,
     Map,
     Promise,
@@ -1113,6 +1122,10 @@ test("a successful question-only delegation speaks the question instead of annou
   assert.deepEqual(plain(state.providers[0].commentaries), [
     ["item_1", "Would you prefer blackout or filtered daylight?"],
   ]);
+  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), {
+    answers: ["Blackout", "Filtered daylight"],
+    navigationActions: [],
+  });
   await state.stop();
 });
 
@@ -1504,6 +1517,10 @@ test("the server resumes one saved question silently at readiness without a Live
   assert.deepEqual(plain(state.providers[0].replies), [
     question.measurement.instructions + " " + question.question,
   ]);
+  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), {
+    answers: [],
+    navigationActions: [],
+  });
   assert.deepEqual(state.providers[0].commentaries, []);
   state.ready();
   state.emit({ type: "started" });
@@ -2042,6 +2059,197 @@ test("long voice sessions retain bounded delegation dedupe without replaying evi
   await flush();
   assert.equal(state.calls.delegate.length, 161);
   await state.stop();
+});
+
+function deliveredChoices(thoughts) {
+  assert.ok(thoughts.length > 0, "Every reply declares its current choices");
+  const batches = thoughts.map(([text]) => {
+    assert.ok(Buffer.byteLength(text, "utf8") <= 500);
+    assert.match(text, /silent|quoted|reference/i);
+    return JSON.parse(text.slice(text.indexOf("{")));
+  });
+  return {
+    answers: batches.flatMap((batch) => batch.answers),
+    navigationActions: batches.flatMap((batch) => batch.navigationActions),
+  };
+}
+
+test("spoken and clicked turns deliver their exact displayed choices silently before the reply", async () => {
+  for (const source of ["speech", "click"]) {
+    const state = setup();
+    const contextGate = deferred();
+    const question = {
+      callId: "private-question-call",
+      question: "What would you like to do next?",
+      answers: ["Measure another window", "Choose a different blind"],
+      navigationActions: [{ label: "View Cart", view: "cart" }],
+    };
+    const reply = "Your blind is in the cart. What would you like to do next?";
+    state.mock.onDelegate = async () => ({
+      text: reply,
+      questionPresentation: question,
+    });
+    state.mock.onThinking = () => contextGate.promise;
+    if (source === "click") {
+      const input = await answerableVoice(state);
+      await state.api.answerVoiceQuestion(
+        state.conversationId,
+        state.input.requestId,
+        input,
+      );
+    } else {
+      await state.start();
+      state.emit(transcript());
+      state.emit({ type: "delegation", delegationId: "cart-result" });
+    }
+    await flush();
+    const provider = state.providers[0];
+    assert.equal(provider.thoughts.length, 1);
+    assert.deepEqual(deliveredChoices(provider.thoughts), {
+      answers: question.answers,
+      navigationActions: ["View Cart"],
+    });
+    assert.doesNotMatch(JSON.stringify(provider.thoughts), /private-question-call/);
+    assert.deepEqual(provider.commentaries, []);
+    assert.deepEqual(provider.replies, []);
+    contextGate.resolve();
+    await flush();
+    assert.deepEqual(
+      source === "speech" ? plain(provider.commentaries) : provider.replies,
+      source === "speech" ? [["cart-result", reply]] : [reply],
+    );
+    assert.ok(
+      state.order.lastIndexOf("thinking-sent") <
+        state.order.indexOf(source === "speech" ? "commentary-sent" : "reply-sent"),
+    );
+    await state.stop();
+  }
+});
+
+test("long Unicode choice labels reach Live in bounded batches without truncation", async () => {
+  const state = setup();
+  const answers = ["窗", "屋", "光", "色"].map((character) => character.repeat(80));
+  state.mock.onDelegate = async () => ({
+    text: "Choose the option that suits your window.",
+    questionPresentation: {
+      callId: "unicode-question",
+      question: "Which option?",
+      answers,
+      navigationActions: [{ label: "View Cart", view: "cart" }],
+    },
+  });
+  await state.start();
+  state.emit(transcript());
+  state.emit({ type: "delegation", delegationId: "unicode-options" });
+  await flush();
+  assert.ok(state.providers[0].thoughts.length > 1);
+  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), {
+    answers,
+    navigationActions: ["View Cart"],
+  });
+  assert.ok(
+    state.order.lastIndexOf("thinking-sent") < state.order.indexOf("commentary-sent"),
+  );
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["unicode-options", "Choose the option that suits your window."],
+  ]);
+  await state.stop();
+});
+
+test("photo upload and failed replies replace prior choice metadata with an empty current set", async () => {
+  for (const result of [{ text: "Upload a photo of your window to begin." }, undefined]) {
+    const state = setup();
+    state.mock.onDelegate = async () => state.calls.delegate.length === 1
+      ? {
+          text: "What would you like next?",
+          questionPresentation: {
+            callId: "previous-question",
+            question: "What would you like next?",
+            answers: ["Measure another window", "Browse products"],
+            navigationActions: [{ label: "View Cart", view: "cart" }],
+          },
+        }
+      : result;
+    await state.start();
+    state.emit(transcript());
+    state.emit({ type: "delegation", delegationId: "previous-turn", offsetMs: 200 });
+    await flush();
+    const contextCount = state.providers[0].thoughts.length;
+    assert.ok(contextCount > 0);
+    state.emit(transcript({ eventId: "photo-request", text: "Show my room with this blind.", startMs: 300, endMs: 400 }));
+    state.emit({ type: "delegation", delegationId: "photo-turn", offsetMs: 500 });
+    await flush();
+    const currentContext = state.providers[0].thoughts.slice(contextCount);
+    assert.ok(currentContext.length > 0);
+    assert.deepEqual(deliveredChoices(currentContext), {
+      answers: [],
+      navigationActions: [],
+    });
+    assert.equal(state.providers[0].commentaries.length, 2);
+    assert.ok(
+      state.order.lastIndexOf("thinking-sent") < state.order.lastIndexOf("commentary-sent"),
+    );
+    await state.stop();
+  }
+});
+
+test("stopping or correcting a turn during choice delivery cannot speak its stale reply", async () => {
+  for (const interruption of ["stop", "correction"]) {
+    const state = setup();
+    const contextGate = deferred();
+    state.mock.onThinking = () => state.providers[0].thoughts.length === 1
+      ? contextGate.promise
+      : undefined;
+    state.mock.onDelegate = async () => state.calls.delegate.length === 1
+      ? {
+          text: "Stale blind choices must not be spoken.",
+          questionPresentation: {
+            callId: "old-question",
+            question: "Which old choice?",
+            answers: ["窗".repeat(80), "屋".repeat(80), "光".repeat(80)],
+          },
+        }
+      : {
+          text: "Which corrected blind would you like?",
+          questionPresentation: {
+            callId: "new-question",
+            question: "Which corrected blind would you like?",
+            answers: ["Blue roller", "Blue pleated"],
+          },
+        };
+    await state.start();
+    state.emit(transcript());
+    state.emit({ type: "delegation", delegationId: "old-work", offsetMs: 200 });
+    await flush();
+    assert.equal(state.providers[0].thoughts.length, 1);
+    let stopped;
+    if (interruption === "stop") stopped = state.stop();
+    else {
+      state.emit(transcript({ eventId: "correction", text: "I meant blue", startMs: 300, endMs: 400 }));
+      state.emit({ type: "delegation", delegationId: "new-work", offsetMs: 500 });
+      await flush();
+    }
+    contextGate.resolve();
+    await flush();
+    await stopped;
+    assert.equal(
+      state.providers[0].commentaries.some(([, text]) => text.includes("Stale blind")),
+      false,
+    );
+    if (interruption === "stop") {
+      assert.equal(state.providers[0].thoughts.length, 1);
+      assert.deepEqual(state.providers[0].commentaries, []);
+    } else {
+      assert.deepEqual(deliveredChoices(state.providers[0].thoughts.slice(1)), {
+        answers: ["Blue roller", "Blue pleated"],
+        navigationActions: [],
+      });
+      assert.deepEqual(plain(state.providers[0].commentaries), [
+        ["new-work", "Which corrected blind would you like?"],
+      ]);
+      await state.stop();
+    }
+  }
 });
 
 test("durable voice close reasons distinguish eligible recovery from terminal policy and user stops", async () => {

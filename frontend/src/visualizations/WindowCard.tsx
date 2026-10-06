@@ -66,12 +66,22 @@ export function WindowCard({ photo, source, compact = false, selected = false, d
   </article>;
 }
 
-export function WindowCarousel({ windows, windowSource, onSelect }: {
+export function WindowCarousel({ windows, windowSource, onUpload, uploadDisabled = false, onSelect }: {
   windows: readonly WindowPhotoDto[];
   windowSource: (photo: WindowPhotoDto) => ImageSource;
+  onUpload: () => void;
+  uploadDisabled?: boolean;
   onSelect: (photo: WindowPhotoDto) => void;
 }) {
-  return <ProductCarousel><ul className="roman-product-list roman-window-carousel">
+  return <ProductCarousel itemLabel="window photos"><ul className="roman-product-list roman-window-carousel">
+    <li><article className="roman-media-card roman-window-card roman-window-upload-card">
+      <button type="button" className="roman-window-choice" disabled={uploadDisabled} onClick={onUpload}>
+        <span className="roman-window-image roman-window-upload-image" aria-hidden="true">
+          <svg viewBox="0 0 48 48"><path d="M8 29v9a3 3 0 0 0 3 3h26a3 3 0 0 0 3-3v-9M24 32V7m-9 9 9-9 9 9" /></svg>
+        </span>
+        <span className="roman-media-card-title">Upload a room photo</span>
+      </button>
+    </article></li>
     {windows.map((photo) => <li key={photo.id}><WindowCard photo={photo} source={() => windowSource(photo)} onSelect={() => onSelect(photo)} /></li>)}
   </ul></ProductCarousel>;
 }

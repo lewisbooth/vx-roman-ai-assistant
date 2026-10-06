@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 /** Native touch/keyboard scrolling, with mouse dragging as a progressive aid. */
-export function ProductCarousel({ children }: { children: ReactNode }) {
+export function ProductCarousel({ children, itemLabel = "products" }: { children: ReactNode; itemLabel?: string }) {
   const scroll = useRef<HTMLDivElement>(null);
   const measure = useRef<() => void>(() => {});
   const [edges, setEdges] = useState({ left: false, right: false });
@@ -170,7 +170,7 @@ export function ProductCarousel({ children }: { children: ReactNode }) {
         ref={scroll}
         className="roman-product-scroll"
         role="region"
-        aria-label="Recommended products"
+        aria-label={itemLabel === "products" ? "Recommended products" : itemLabel}
         tabIndex={0}
       >
         {children}
@@ -181,7 +181,7 @@ export function ProductCarousel({ children }: { children: ReactNode }) {
           <button
             type="button"
             className="roman-carousel-previous"
-            aria-label="Previous products"
+            aria-label={`Previous ${itemLabel}`}
             disabled={!edges.left}
             onClick={() => advance(-1)}
           >
@@ -192,7 +192,7 @@ export function ProductCarousel({ children }: { children: ReactNode }) {
           <button
             type="button"
             className="roman-carousel-next"
-            aria-label="Next products"
+            aria-label={`Next ${itemLabel}`}
             disabled={!edges.right}
             onClick={() => advance(1)}
           >

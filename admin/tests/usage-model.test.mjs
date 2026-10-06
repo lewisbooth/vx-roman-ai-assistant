@@ -177,7 +177,7 @@ const events = (...values) =>
     yield* values;
   };
 
-test("saved-photo choices share the terminal response and use server tools without a browser operation", async () => {
+test("saved-photo terminal has no question and uses server tools without a browser operation", async () => {
   const windowId = "abbf52a1-79c2-41b5-aafc-90089c6f3c34",
     calls = [];
   const app = setup([
@@ -195,13 +195,10 @@ test("saved-photo choices share the terminal response and use server tools witho
       terminal("completed", tokens(25, 5), [
         {
           type: "function_call",
-          name: "ask_question",
+          name: "present_photos",
           call_id: "answer-with-photos",
           arguments: JSON.stringify({
-            message: "",
-            productIds: [],
-            question: "Which window would you like to preview?",
-            answers: ["Upload a new photo"],
+            message: "Choose a saved window or upload a room photo.",
             photoPresentation: { kind: "windows", windowIds: [windowId] },
           }),
         },
@@ -225,15 +222,19 @@ test("saved-photo choices share the terminal response and use server tools witho
   });
   assert.equal(app.requests.length, 2);
   assert.equal(calls.length, 1);
-  assert.equal(
-    reply.photoPresentation.callId,
-    reply.questionPresentation.callId,
-  );
+  assert.equal(reply.photoPresentation.callId, "answer-with-photos");
+  assert.equal(reply.questionPresentation, undefined);
+  assert.equal(reply.presentation, undefined);
   assert.equal(reply.photoPresentation.windowIds[0], windowId);
   const schema = app.requests[0][0].tools.find(
+    (tool) => tool.name === "present_photos",
+  ).parameters;
+  assert.deepEqual(plain(schema.required), ["message", "photoPresentation"]);
+  assert.equal(schema.properties.question, undefined);
+  const questionSchema = app.requests[0][0].tools.find(
     (tool) => tool.name === "ask_question",
   ).parameters;
-  assert.ok(schema.required.includes("photoPresentation"));
+  assert.equal(questionSchema.properties.photoPresentation, undefined);
 });
 
 test("a stale photo presentation repairs only the terminal answer without repeating a server action", async () => {
@@ -260,10 +261,10 @@ test("a stale photo presentation repairs only the terminal answer without repeat
       terminal("completed", tokens(25, 5), [
         {
           type: "function_call",
-          name: "ask_question",
+          name: "present_photos",
           call_id: "stale-photo",
           arguments: JSON.stringify({
-            ...base,
+            message: "Choose a saved window or upload a room photo.",
             photoPresentation: { kind: "windows", windowIds: ["deleted"] },
           }),
         },
@@ -275,7 +276,7 @@ test("a stale photo presentation repairs only the terminal answer without repeat
           type: "function_call",
           name: "ask_question",
           call_id: "repaired",
-          arguments: JSON.stringify({ ...base, photoPresentation: null }),
+          arguments: JSON.stringify(base),
         },
       ]),
     ),
@@ -299,10 +300,47 @@ test("a stale photo presentation repairs only the terminal answer without repeat
   const repair = app.requests[2][0].tool_choice.tools;
   assert.ok(
     repair.every(
-      (tool) => tool.name === "ask_question" || tool.name === "ask_measurement",
+      (tool) => ["ask_question", "ask_measurement", "present_photos"].includes(tool.name),
     ),
   );
+  assert.match(JSON.stringify(app.requests[2][0].input), /Use present_photos with only message and photoPresentation/);
 });
+
+for (const mode of ["text", "voice"]) {
+  test(`${mode} photo picker rejects mixed widgets and repairs to one upload carousel`, async () => {
+    const photoPresentation = { kind: "upload", suggestedTitle: "Kitchen" };
+    const photoReply = {
+      message: "Choose a saved window or upload a room photo.",
+      photoPresentation,
+    };
+    const app = setup([
+      events(terminal("completed", tokens(20, 5), [{
+        type: "function_call", name: "present_photos", call_id: "mixed-picker",
+        arguments: JSON.stringify({ ...photoReply, question: "Choose a photo?", answers: ["Upload"] }),
+      }])),
+      events(terminal("completed", tokens(20, 5), [{
+        type: "function_call", name: "present_photos", call_id: "clean-picker",
+        arguments: JSON.stringify(photoReply),
+      }])),
+    ]);
+    let validations = 0;
+    const reply = await app.run(undefined, {
+      mode,
+      visualizations: {
+        allows: () => true,
+        execute: () => assert.fail("Photo picker must not execute an action"),
+        validatePresentation: async (input) => { validations++; return input; },
+      },
+    });
+    assert.equal(validations, 1);
+    assert.equal(app.requests.length, 2);
+    assert.equal(reply.text, photoReply.message);
+    assert.deepEqual(plain(reply.photoPresentation), { ...photoPresentation, callId: "clean-picker" });
+    assert.equal(reply.questionPresentation, undefined);
+    assert.equal(reply.presentation, undefined);
+    assert.match(JSON.stringify(app.requests[1][0].input), /no question, answers or measurement/);
+  });
+}
 
 test("a primary access rejection falls back before output and records both attempts", async () => {
   const rejection = new StubAPIError(403, "model_not_found");
@@ -320,7 +358,7 @@ test("a primary access rejection falls back before output and records both attem
   assert.equal(app.requests.length, 2);
   assert.deepEqual(
     app.requests.map(([request]) => request.model),
-    ["gpt-6-luna", "gpt-5.6-luna"],
+    ["gpt-5.6-terra", "gpt-5.6-luna"],
   );
   assert.deepEqual(
     app.records.map((entry) => entry.status),
@@ -328,7 +366,7 @@ test("a primary access rejection falls back before output and records both attem
   );
   assert.deepEqual(
     app.records.filter((entry) => entry.status === "pending").map((entry) => entry.model),
-    ["gpt-6-luna", "gpt-5.6-luna"],
+    ["gpt-5.6-terra", "gpt-5.6-luna"],
   );
   assert.deepEqual(app.incidents, ["fallback"]);
   assert.equal(await app.status(), "degraded");
@@ -399,7 +437,7 @@ test("connection, authentication and model access failures trigger fallback, whi
     ]);
     await app.run();
     assert.deepEqual(app.requests.map(([request]) => request.model), [
-      "gpt-6-luna",
+      "gpt-5.6-terra",
       "gpt-5.6-luna",
     ]);
     assert.equal(await app.status(), "degraded");
@@ -464,8 +502,8 @@ test("a later provider round falls back using prior tool results without replayi
   });
   assert.equal(actions, 1);
   assert.deepEqual(app.requests.map(([request]) => request.model), [
-    "gpt-6-luna",
-    "gpt-6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-terra",
     "gpt-5.6-luna",
   ]);
   assert.equal(app.requests[2][0].input.some((item) => item.type === "function_call_output"), true);
@@ -612,7 +650,7 @@ test("output exhaustion after a successful search retains catalogue evidence and
   });
   assert.deepEqual(executions, [["tool_call_1", "search_products"]]);
   assert.deepEqual(plain(reply.presentation.productRefs), [{ id: product.id, title: product.title }]);
-  assert.deepEqual(app.requests.map(([request]) => request.model), ["gpt-6-luna", "gpt-6-luna", "gpt-6-luna"]);
+  assert.deepEqual(app.requests.map(([request]) => request.model), ["gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra"]);
   assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 8192, 16384]);
   const previous = plain(app.requests[1][0]);
   const retry = plain(app.requests[2][0]);

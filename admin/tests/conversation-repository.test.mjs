@@ -363,13 +363,18 @@ test("saved photos stay current outside loaded history and terminal photo widget
     const result = {
       status: "complete",
       text: "Your saved window.",
-      questionPresentation: question,
       photoPresentation: {
         callId: question.callId,
         kind: "windows",
         windowIds: [photoId],
       },
     };
+    await assert.rejects(
+      repository.finishTurn(id, turn.assistantId, {
+        ...result, questionPresentation: question,
+      }),
+      { status: 400 },
+    );
     await assert.rejects(
       repository.finishTurn(id, turn.assistantId, {
         ...result,
@@ -426,12 +431,13 @@ test("saved photos stay current outside loaded history and terminal photo widget
       reply.parts.filter((part) => part.type === "media"),
       [{ type: "media", version: 1, kind: "windows", windowIds: [photoId] }],
     );
+    assert.equal(reply.parts.some((part) => part.type === "question"), false);
     const receipts = await database.toolInvocation.findMany({
       where: { conversationId: id, assistantId: turn.assistantId },
     });
     assert.equal(
       new Set(receipts.map((receipt) => receipt.providerCallId)).size,
-      2,
+      1,
     );
     process.env.ROMAN_VISUALIZATIONS_ENABLED = "false";
     const disabled = await repository.getSnapshot(id);
@@ -4017,7 +4023,7 @@ async function longCaptionHistory({ memo = false } = {}) {
     ...(memo ? { memoJson: JSON.stringify({ windows: "Kitchen blind unfinished; bedroom follows. No new action is authorized." }) } : {}),
   } });
   await database.conversationContext.create({ data: {
-    conversationId: id, model: "gpt-6-luna", throughSequence: 4900,
+    conversationId: id, model: "gpt-5.6-terra", throughSequence: 4900,
     inputJson: JSON.stringify([{ type: "compaction", encrypted_content: "primary-only-encrypted-state" }]),
   } });
   return { id, voiceId };
@@ -4035,7 +4041,7 @@ test("post-compaction turns read bounded caption tails and load another model's 
     (/sequence[`"] >/.test(query) && params.includes(4900))), "mutation reads have a positive row limit; model reads start at their saved checkpoint");
   assert.ok(turn.history.filter((item) => item.sequence !== undefined).every((item) => item.sequence > 4900));
   queries.length = 0;
-  assert.deepEqual(await turn.memory.historyForModel("gpt-6-luna"), turn.history);
+  assert.deepEqual(await turn.memory.historyForModel("gpt-5.6-terra"), turn.history);
   assert.equal(queries.length, 0, "primary history was already read inside the turn transaction");
   await database.voiceTranscript.create({ data: {
     id: randomUUID(), voiceId, conversationId: id, providerEventId: "concurrent-later-caption",

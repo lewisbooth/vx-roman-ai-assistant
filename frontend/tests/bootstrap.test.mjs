@@ -670,6 +670,58 @@ test("an explicit close persists across traditional navigation without loading t
   );
 });
 
+test("roman=true demo links override saved closed state on every storefront page", async (t) => {
+  for (const path of ["/", "/collections/all", "/products/another-product", "/cart"])
+    await t.test(path, async (t) => {
+      const ctx = setup(t, undefined, {
+        url: `${origin}${path}?existing=kept&roman=true#details`,
+        storage: { [openStorageKey]: "0" },
+      });
+      assert.equal(hidden(ctx.panel()), false);
+      assert.equal(ctx.launcher().getAttribute("aria-expanded"), "true");
+      assert.ok(loadingScript(ctx.document));
+      assert.equal(ctx.window.sessionStorage.getItem(openStorageKey), "1");
+      assert.equal(ctx.window.location.search, "?existing=kept&roman=true");
+      assert.equal(ctx.window.location.hash, "#details");
+
+      // The link opens the page; it does not prevent an intentional close.
+      ctx.close().click();
+      assert.equal(hidden(ctx.panel()), true);
+      assert.equal(ctx.window.sessionStorage.getItem(openStorageKey), "0");
+      ctx.window.dispatchEvent(
+        new ctx.window.PageTransitionEvent("pageshow", { persisted: true }),
+      );
+      assert.equal(hidden(ctx.panel()), false);
+      await until(() => ctx.requests.length === 1, "Runtime download was not observed");
+      assert.equal(ctx.requests.length, 1, "Cached restoration reuses the runtime download");
+    });
+});
+
+test("only the explicit roman=true query overrides saved visibility", async (t) => {
+  for (const suffix of ["", "?roman=false", "?roman=True", "?other=roman%3Dtrue", "#roman=true"])
+    await t.test(suffix || "no flag", async (t) => {
+      const ctx = setup(t, undefined, {
+        url: `${origin}/products/another-product${suffix}`,
+        storage: { [openStorageKey]: "0" },
+      });
+      assert.equal(hidden(ctx.panel()), true);
+      assert.equal(loadingScript(ctx.document), null);
+      assert.equal(ctx.requests.length, 0);
+    });
+});
+
+test("a roman=true demo link opens even when session storage is unavailable", (t) => {
+  const ctx = setup(t, (window) => {
+    Object.defineProperty(window, "sessionStorage", {
+      get: () => { throw new window.DOMException("Storage unavailable", "SecurityError"); },
+    });
+  }, { url: `${origin}/?roman=true` });
+  assert.equal(hidden(ctx.panel()), false);
+  assert.ok(loadingScript(ctx.document));
+  ctx.close().click();
+  assert.equal(hidden(ctx.panel()), true);
+});
+
 test("opening persists before download completion so a new document restores the loading sidebar", async (t) => {
   const first = setup(t);
   first.launcher().click();

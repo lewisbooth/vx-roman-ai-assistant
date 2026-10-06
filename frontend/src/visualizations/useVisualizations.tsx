@@ -11,7 +11,6 @@ import { VisualizationGallery } from "./VisualizationGallery";
 import { VisualizationCard } from "./VisualizationCard";
 import { WindowCard, WindowCarousel } from "./WindowCard";
 import type { ProductGalleryPreview } from "../chat/product-gallery-media";
-import type { QuestionPart } from "../../../shared/questions";
 import { isCurrentProduct } from "../tools/product-controls";
 
 const emptyDraft = (): UploadDraft => ({file: null, window: null, preview: null, title: "", cleanup: true, consent: false});
@@ -260,13 +259,6 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     }
     catch (error) { setMediaError(error instanceof Error ? error.message : "Your window could not be selected."); }
   };
-  const selectAnswerWindow = async (question: QuestionPart, answer: string) => {
-    const messages = session.getSnapshot().conversation?.messages ?? [];
-    const message = messages.find((item) => item.parts.some((part) => part.type === "question" && part.invocationId === question.invocationId));
-    const ids = message?.parts.flatMap((part) => part.type === "media" && part.kind === "windows" ? part.windowIds : []) ?? [];
-    const matches = gallery.windows.filter((photo) => ids.includes(photo.id) && photo.title === answer);
-    if (matches.length === 1) { await client.select(matches[0]); setSelectedWindow(matches[0].id); }
-  };
   const checkJob = async (job: VisualizationJobDto) => {
     activity(); setMediaError(null);
     try { await client.check(job); }
@@ -280,10 +272,12 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
   const renderMedia = (part: MediaPart): ReactNode => {
     const missing = (label: string) => referenceError === sourceVersion ? `${label} could not load. Open Gallery to retry.` : loadedReferences !== sourceVersion ? `Loading your ${label.toLowerCase()}…` : `${label} removed.`;
     if (part.kind === "renamed" || part.kind === "outcome") return null;
-    if (part.kind === "upload") return <button type="button" className="roman-media-button" onClick={() => openUpload(part.suggestedTitle)}>Upload a room photo</button>;
+    if (part.kind === "upload") return <WindowCarousel windows={gallery.windows} windowSource={client.windowSource}
+      onUpload={() => openUpload(part.suggestedTitle)} uploadDisabled={!gallery.enabled} onSelect={(photo) => { void chooseWindow(photo); }} />;
     if (part.kind === "windows") {
       const windows = part.windowIds.flatMap((id) => gallery.windows.find((photo) => photo.id === id) ?? []);
-      return windows.length ? <WindowCarousel windows={windows} windowSource={client.windowSource} onSelect={(photo) => { void chooseWindow(photo); }} /> : <p className="roman-inline-event">{missing("Window photos")}</p>;
+      return windows.length ? <WindowCarousel windows={windows} windowSource={client.windowSource}
+        onUpload={() => openUpload()} uploadDisabled={!gallery.enabled} onSelect={(photo) => { void chooseWindow(photo); }} /> : <p className="roman-inline-event">{missing("Window photos")}</p>;
     }
     if (part.kind === "window") {
       const photo = gallery.windows.find((item) => item.id === part.windowId);
@@ -294,7 +288,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       onRetry={(item) => { const photo = gallery.windows.find((row) => row.id === item.windowId); if (photo) selectForReview(photo); }} /> : <p className="roman-inline-event">{missing("Visualization")}</p>;
   };
   return {
-    enabled: gallery.enabled, openUpload, renderMedia, productPreviews, selectAnswerWindow,
+    enabled: gallery.enabled, openUpload, renderMedia, productPreviews,
     galleryView: <VisualizationGallery {...gallery} error={mediaError ?? gallery.error} selectedWindowId={selectedWindow} windowSource={client.windowSource} resultSource={client.resultSource}
       onUpload={openUpload} onSelectWindow={selectForReview}
       onRenameWindow={async (photo, title) => { activity(); await client.rename(photo, title); }}

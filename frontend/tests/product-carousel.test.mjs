@@ -15,7 +15,7 @@ const bundle = await build({
         const root = createRoot(container);
         return {
           flush: flushSync,
-          render(count = 6) { flushSync(() => root.render(<ProductCarousel>
+          render(count = 6, itemLabel) { flushSync(() => root.render(<ProductCarousel itemLabel={itemLabel}>
             <ul className="roman-product-list">{Array.from({length: count}, (_, index) => <li key={index}>
               <button type="button" className="roman-product-card roman-choose-blind" aria-label={"Choose Blind " + index} onClick={() => choose(index)}>
                 <span className="roman-product-image">
@@ -206,6 +206,18 @@ function setup(
     },
   };
 }
+
+test("carousel navigation names its content while preserving the default product labels", (t) => {
+  const ctx = setup(t);
+  assert.equal(ctx.carousel.getAttribute("aria-label"), "Recommended products");
+  assert.ok(ctx.button("Next"));
+  ctx.render(3, "window photos");
+  assert.equal(ctx.carousel.getAttribute("aria-label"), "window photos");
+  assert.ok(ctx.container.querySelector('[aria-label="Previous window photos"]'));
+  ctx.flush(() => ctx.container.querySelector('[aria-label="Next window photos"]').click());
+  assert.equal(ctx.carousel.scrollLeft, 240);
+  assert.deepEqual(ctx.choices, []);
+});
 
 test("overflow cues and accessible directional controls follow scrolling, resize and content changes", (t) => {
   const ctx = setup(t);

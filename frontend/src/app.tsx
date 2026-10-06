@@ -159,6 +159,7 @@ function Assistant({
       showView("chat");
   }, [state.conversation, showView]);
   const [ending, setEnding] = useState(false);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
   const [microphoneDenied, setMicrophoneDenied] = useState(false);
   const endingRef = useRef(false);
   const [endError, setEndError] = useState<string | null>(null);
@@ -215,7 +216,7 @@ function Assistant({
     ending || answering || suspended,
   );
   const textBusy = ending || answering || messageQueue.busy;
-  const chatError = state.error || startError || endError;
+  const chatError = state.error || startError || (!confirmingEnd ? endError : null);
   const activeQuestion =
     state.conversation?.status === "active" && !state.optimisticMessage
       ? currentQuestion(state.conversation, storefront.url)
@@ -305,11 +306,6 @@ function Assistant({
     setAnswering(true);
     try {
       following.current = true;
-      await visualization.selectAnswerWindow(part, answer);
-      const ready = session.getSnapshot();
-      if (ready.conversation?.id !== current.conversation.id || ready.conversation?.status !== "active" ||
-          currentQuestion(ready.conversation, navigation.getSnapshot().url)?.invocationId !== part.invocationId)
-        throw new Error("This question is no longer waiting for an answer. Continue with the latest message.");
       if (current.voice.status === "active") {
         await session.sendVoiceAnswer(part.invocationId, answer);
       } else if (localVoice || waitingForVoice) {
@@ -332,6 +328,7 @@ function Assistant({
     setEndError(null);
     try {
       await session.end();
+      setConfirmingEnd(false);
       messageQueue.clear();
       setCustomerTurnStarted(false);
       scrollPositions.current.chat = 0;
@@ -543,6 +540,7 @@ function Assistant({
               conversation={state.conversation}
               restoring={state.restoring}
               blocked={
+                confirmingEnd ||
                 ending ||
                 suspended ||
                 microphoneDenied
@@ -555,7 +553,10 @@ function Assistant({
             (!suspended && (answering || state.pending || state.restoring))
           }
           ending={ending}
-          onEnd={() => void endChat()}
+          onEnd={() => {
+            setEndError(null);
+            setConfirmingEnd(true);
+          }}
         />
         <div className="roman-conversation">
           <div className="roman-workspace">
@@ -803,6 +804,34 @@ function Assistant({
             </div>
           </div>
         </div>
+        {confirmingEnd && (
+          <BrandedDialog
+            title="End this chat?"
+            description="Your conversation will be cleared. Your cart, saved windows and visualizations will remain."
+            pending={ending}
+            error={endError}
+            onClose={() => setConfirmingEnd(false)}
+            returnFocus=".roman-menu-toggle:not(:disabled), .roman-end-chat"
+          >
+            <button
+              type="button"
+              className="roman-dialog-secondary"
+              disabled={ending}
+              onClick={() => setConfirmingEnd(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="roman-dialog-primary"
+              data-roman-confirm-end
+              disabled={ending}
+              onClick={() => void endChat()}
+            >
+              {ending ? "Ending…" : "End chat"}
+            </button>
+          </BrandedDialog>
+        )}
         {microphoneDenied && (
           <BrandedDialog
             title="Microphone access is off"

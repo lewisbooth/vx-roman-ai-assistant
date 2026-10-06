@@ -26,7 +26,7 @@ let download:
 let loadingStartedAt: number | undefined;
 
 const visibilityKey = "roman:sidebar-open";
-const startError = "Roman could not start. Retry.";
+const startError = "Roman could not start.";
 const focusOptions = { preventScroll: true };
 let storageUnavailable = false;
 
@@ -70,7 +70,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       } else resolve(window.RomanAssistant!);
     };
     const timeout = setTimeout(
-      () => finish(new Error("Roman timed out. Retry.")),
+      () => finish(new Error("Roman timed out.")),
       15000,
     );
     script.onload = () =>
@@ -81,7 +81,7 @@ function loadRuntime(url: string, retry: boolean): Promise<RuntimeModule> {
       );
     script.onerror = () =>
       finish(
-        new Error("Connection failed. Retry Roman."),
+        new Error("Connection failed."),
       );
     try {
       document.head.append(script);
@@ -144,8 +144,10 @@ class RomanAssistant extends HTMLElement {
   };
 
   #restore() {
-    const open = savedState() === "1";
-    if (!storageUnavailable) this.#setOpen(open, false);
+    const open =
+      /(?:^\?|&)roman=true(?:&|$)/.test(location.search) ||
+      savedState() === "1";
+    if (open || !storageUnavailable) this.#setOpen(open, false);
     if (
       this.#state === "idle" &&
       savedState(undefined, CONVERSATION_STORAGE_KEY)
@@ -185,9 +187,9 @@ class RomanAssistant extends HTMLElement {
 <img class=r-brand alt="Roman by SelectBlinds">
 <div class=r-track role=progressbar aria-label="Loading Roman"><div class=r-progress></div></div>
 <p class=r-error role=alert hidden></p>
-<button class=r-retry type=button hidden>Retry</button>
+<button class=r-retry hidden>Retry</button>
 </div>
-<button class=roman-close type=button aria-label="Close assistant">×</button>`;
+<button class=roman-close aria-label="Close assistant">×</button>`;
     const query = panel.querySelector.bind(panel);
     this.#logo = query<HTMLImageElement>(".r-brand")!;
     this.#panel = panel;

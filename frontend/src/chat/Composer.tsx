@@ -35,6 +35,7 @@ export function Composer({
   const draftRevision = useRef(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const sendDisabled = disabled || sending;
+  const hasMessage = !!message.trim();
   const displayedError = unavailable ? null : error || sendError;
   const sendLabel = busy ? "Queue message" : "Send";
 
@@ -116,7 +117,7 @@ export function Composer({
             </label>
             <div
               className="roman-composer-field"
-              data-upload={!!onUpload || undefined}
+              data-upload={(!!onUpload && !hasMessage) || undefined}
             >
               <textarea
                 ref={textarea}
@@ -144,12 +145,12 @@ export function Composer({
               />
               <div
                 className="roman-composer-actions"
-                data-upload={!!onUpload || undefined}
+                data-upload={(!!onUpload && !hasMessage) || undefined}
               >
-                {message.trim() ? (
+                {hasMessage ? (
                   <button
                     type="submit"
-                    className="roman-composer-action"
+                    className="roman-composer-action roman-send-message"
                     aria-label={sendLabel}
                     disabled={sendDisabled || !message.trim()}
                   >
@@ -180,11 +181,8 @@ export function Composer({
                     />
                   )
                 )}
-                {onUpload && (
-                  <UploadImageButton
-                    onUpload={onUpload}
-                    hidden={!!message.trim()}
-                  />
+                {onUpload && !hasMessage && (
+                  <UploadImageButton onUpload={onUpload} />
                 )}
               </div>
             </div>
