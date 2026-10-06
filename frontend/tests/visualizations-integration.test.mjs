@@ -117,7 +117,7 @@ async function setup(t, options = {}) {
       if (pendingParts.length && state.conversation) {
         const parts = pendingParts; pendingParts = [];
         update({conversation: historySnapshot({...state.conversation, revision: state.conversation.revision + 1,
-          current: {...state.conversation.current, hasCustomerReply: state.conversation.current.hasCustomerReply || parts.some((part) => part.customerIntent)},
+          current: {...state.conversation.current, selectedWindow: parts.some((part) => part.kind === "window") ? windows[0] : state.conversation.current.selectedWindow, hasCustomerReply: state.conversation.current.hasCustomerReply || parts.some((part) => part.customerIntent)},
           messages: [...state.conversation.messages, row(`context-${state.conversation.revision}`, "context", parts)]})});
       }
     },
@@ -182,6 +182,8 @@ test("new photo saves before product selection, publishes immediate normalized p
   ctx.completeUpload();
   await until(() => ctx.sent.length === 1 && !ctx.container.querySelector(".roman-local-media"), "Saved photo did not continue discovery once");
   assert.match(ctx.sent[0], /choose a blind.*Kitchen window.*visualize/);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0, "Upload already selects its window without another request or photo card");
+  assert.equal(ctx.session.getSnapshot().conversation.messages.flatMap((message) => message.parts).filter((part) => part.type === "media" && part.kind === "window").length, 1);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
   assert.ok(ctx.window.localStorage.getItem("roman-gallery-v1"));
   ctx.container.querySelector(".roman-end-chat").click(); await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
@@ -232,6 +234,7 @@ test("lost upload acknowledgements keep the original file and request identity u
   assert.equal(ctx.xhrs.length, 1, "A successful but unacknowledged upload must not be resubmitted");
   assert.ok(ctx.calls.filter((call) => call.path.endsWith("/upload-status")).every((call) => call.query.get("requestId") === requestId));
   assert.equal(ctx.sent.length, 1);
+  assert.equal(ctx.session.getSnapshot().conversation.messages.flatMap((message) => message.parts).filter((part) => part.type === "media" && part.kind === "window").length, 1, "Status recovery must retain one uploaded-photo card");
 });
 
 test("End Chat during an accepted photo upload preserves the photo without silently creating another chat or discovery turn", async (t) => {

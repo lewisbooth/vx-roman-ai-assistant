@@ -409,6 +409,32 @@ test("window consent, owner isolation, idempotency, rename revisions and End Cha
   );
 });
 
+test("selecting an already uploaded window does not duplicate its chat card", async () => {
+  const f = await fixture();
+  const countCards = (conversationId) => database.conversationMessage.count({
+    where: { conversationId, partsJson: { contains: '"kind":"window"' } },
+  });
+  const initial = await database.conversation.findUniqueOrThrow({ where: { id: f.conversation.id } });
+  assert.equal(initial.selectedWindowPhotoId, f.photo.id);
+  assert.equal(await countCards(f.conversation.id), 1);
+  assert.deepEqual(await api.selectWindow(f.owner.id, f.conversation.id, f.photo.id), f.photo);
+  assert.deepEqual(await api.selectWindow(f.owner.id, f.conversation.id, f.photo.id), f.photo);
+  const selected = await database.conversation.findUniqueOrThrow({ where: { id: f.conversation.id } });
+  assert.equal(await countCards(f.conversation.id), 1);
+  assert.equal(selected.revision, initial.revision);
+  assert.equal(selected.nextSequence, initial.nextSequence);
+  await assert.rejects(api.selectWindow(randomUUID(), f.conversation.id, f.photo.id), errorStatus(404));
+  await database.conversation.update({ where: { id: f.conversation.id }, data: { status: "ended" } });
+  await assert.rejects(api.selectWindow(f.owner.id, f.conversation.id, f.photo.id), errorStatus(409));
+  const next = await database.conversation.create({ data: {
+    id: randomUUID(), shop, origin, credentialHash: randomBytes(32).toString("hex"),
+    credentialExpiresAt: new Date(Date.now() + 3_600_000), galleryOwnerId: f.owner.id,
+  } });
+  await api.selectWindow(f.owner.id, next.id, f.photo.id);
+  await api.selectWindow(f.owner.id, next.id, f.photo.id);
+  assert.equal(await countCards(next.id), 1);
+});
+
 test("generation needs an actively selected blind, admission is idempotent, and claims expire atomically", async () => {
   const f = await fixture("page_view");
   await assert.rejects(

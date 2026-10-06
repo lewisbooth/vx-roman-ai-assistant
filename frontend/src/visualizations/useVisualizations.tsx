@@ -184,7 +184,10 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
         if (recovered) patchAttempt(attempt.requestId, {jobId: recovered.id});
         else if (continuing()) await client.start(photo, attempt.product.path, attempt.draft.cleanup, attempt.generationId, (job) => patchAttempt(attempt.requestId, {jobId: job.id}));
       } else {
-        await client.select(photo);
+        // A completed upload already selects the window and refreshes context.
+        // Existing windows and recovered uploads still need that context when
+        // the current conversation has not received the selection yet.
+        if (session.getSnapshot().conversation?.current?.selectedWindow?.id !== photo.id) await client.select(photo);
         if (mounted.current && continuing()) {
           setSelectedWindow(photo.id);
           if (!advisorStarted.current.has(attempt.requestId)) {

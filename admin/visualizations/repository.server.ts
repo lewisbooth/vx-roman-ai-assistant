@@ -111,6 +111,9 @@ export async function selectWindow(
         409,
         "Start a chat before choosing this window.",
       );
+    // Upload already selects its photo. Repeated selection acknowledgements
+    // must not add another card or advance the conversation revision.
+    if (conversation.selectedWindowPhotoId === photo.id) return photoDto(photo);
     await tx.conversation.update({
       where: { id: conversationId },
       data: { selectedWindowPhotoId: photo.id },
