@@ -480,11 +480,29 @@ export function createStorefrontExecutor(
       const command = parseApplyMeasurementsCommand(input);
       return enqueue(
         "foreground",
-        async (signal) =>
-          // Inspect and fill together only after this foreground job is admitted.
-          parseApplyMeasurementsResult(
-            await applyMeasurements(command.draft, signal),
-          ),
+        async (signal) => {
+          // Apply and capture fresh controls within the same foreground slot.
+          const result = await applyMeasurements(command.draft, signal);
+          if (result.status !== "applied") return parseApplyMeasurementsResult(result);
+          requireCurrentStore();
+          signal.throwIfAborted();
+          const configuration = parseProductConfigurationResult(
+            "get_product_configuration",
+            await tools.execute("get_product_configuration", { productPath: command.productPath }, signal),
+          );
+          requireCurrentStore();
+          signal.throwIfAborted();
+          if (configuration.status === "available" && (
+            configuration.measurements?.width !== command.draft.width ||
+            configuration.measurements?.height !== command.draft.height ||
+            configuration.measurements?.unit !== command.draft.unit
+          ))
+            return parseApplyMeasurementsResult({
+              ...result, status: "uncertain",
+              message: "The native measurements changed during configuration readback. Do not replay the application or add this blind until the current values are resolved.",
+            });
+          return parseApplyMeasurementsResult({ ...result, configuration });
+        },
         signal,
       );
     }

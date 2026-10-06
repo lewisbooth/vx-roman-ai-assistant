@@ -1,4 +1,5 @@
 import { parseProductPath, productPathSchema } from "./product-path";
+import { parseProductConfigurationResult, type ProductConfiguration } from "./product-configuration";
 
 export type MeasurementToolName = "set_measurements" | "get_measurements";
 
@@ -34,6 +35,8 @@ export interface ApplyMeasurementsResult {
   productPath: string;
   draftUpdatedAt: string;
   message: string;
+  /** Settled native state, distinct from this conversation's saved draft. */
+  configuration?: ProductConfiguration;
 }
 
 export interface ApplyMeasurementsCommand {
@@ -72,7 +75,7 @@ export const measurementToolDefinitions = [
     type: "function",
     name: "get_measurements",
     description:
-      "Read this conversation's saved draft for one verified productPath. No draft means unknown dimensions. A window-kind draft is neither ready for form entry nor evidence of fit.",
+      "Read the saved draft for one verified productPath. This is not the live form: a next-pane draft may differ from the previous pane still configured there. Saving does not apply it or establish price/fit. No draft means unknown dimensions.",
     strict: true,
     parameters: {
       type: "object",
@@ -87,7 +90,7 @@ export const applyMeasurementsToolDefinition = {
   type: "function",
   name: "apply_measurements",
   description:
-    "Apply the chosen current product's saved order-kind draft with a clear customer-supplied pair and unit intended for its form. No separate customer confirmation is required. Selects mm/cm/in and fills dimensions unchanged, invoking the supported native quote step when needed. No on-screen approval, unit conversion, rounding, option selection, fit validation or cart addition. Returns applied only after field verification; native limits can reject the pair.",
+    "Apply the chosen current product's saved order-kind draft with customer-supplied dimensions and unit intended for its form. Fills mm/cm/in unchanged and waits for native pricing. Returns verified applied dimensions and fresh configuration/options/quote; native limits can reject the pair. No separate measurement confirmation, conversion, rounding, fit validation or cart addition.",
   strict: true,
   parameters: {
     type: "object",
@@ -202,7 +205,7 @@ export function parseApplyMeasurementsResult(
 ): ApplyMeasurementsResult {
   const value = object(input);
   if (
-    Object.keys(value).length !== 4 ||
+    Object.keys(value).length !== (value.configuration === undefined ? 4 : 5) ||
     ![
       "applied",
       "unsupported",
@@ -216,10 +219,16 @@ export function parseApplyMeasurementsResult(
     value.message.length > 500
   )
     throw new Error("Invalid measurement application result.");
+  const configuration = value.configuration === undefined ? undefined :
+    parseProductConfigurationResult("get_product_configuration", value.configuration);
+  const productPath = parseProductPath(value.productPath);
+  if (configuration && (value.status !== "applied" || configuration.productPath !== productPath))
+    throw new Error("Fresh configuration must belong to the applied measurements.");
   return {
     status: value.status as ApplyMeasurementsResult["status"],
-    productPath: parseProductPath(value.productPath),
+    productPath,
     draftUpdatedAt: timestamp(value.draftUpdatedAt),
     message: value.message.trim(),
+    ...(configuration ? { configuration } : {}),
   };
 }

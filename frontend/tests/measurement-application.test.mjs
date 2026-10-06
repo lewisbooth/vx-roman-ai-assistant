@@ -8,7 +8,7 @@ import { setImmediate } from "node:timers/promises";
 const bundle = await build({
   stdin: {
     contents:
-      "export { applyMeasurements, readProductMeasurements } from './frontend/src/tools/measurements'; export { createStorefrontExecutor } from './frontend/src/session/storefront-executor';",
+      "export { applyMeasurements, readProductMeasurements } from './frontend/src/tools/measurements'; export { createStorefrontExecutor } from './frontend/src/session/storefront-executor'; export { createProductConfigurationTools } from './frontend/src/tools/product-configuration';",
     resolveDir: cwd(),
   },
   bundle: true,
@@ -93,6 +93,22 @@ function setup(t) {
   });
   t.after(() => window.close());
   return { window, form, events, ...window.Measurement };
+}
+
+function nativeConfigurationTools(t, ctx) {
+  if (!ctx.window.customElements.get("dynamic-pricing"))
+    ctx.window.customElements.define(
+      "dynamic-pricing",
+      class extends ctx.window.HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({ mode: "open" }).innerHTML = "<slot></slot>";
+        }
+      },
+    );
+  const tools = ctx.createProductConfigurationTools();
+  t.after(() => tools.dispose());
+  return tools;
 }
 
 test("confirmed order dimensions update the exact active pair and notify the theme without touching inactive units or purchasing", async (t) => {
@@ -187,8 +203,14 @@ test("70 by 35 cm is a known minimum-drop rejection after switching units and on
   });
   let submissions = 0;
   ctx.form.addEventListener("submit", () => submissions++);
+  const configurationTools = nativeConfigurationTools(t, ctx);
+  const configurationReads = [];
   const executor = ctx.createStorefrontExecutor({
-    execute: async () => assert.fail("No other tool should run"),
+    execute: async (name, input, signal) => {
+      assert.equal(name, "get_product_configuration");
+      configurationReads.push(input.productPath);
+      return configurationTools.getProductConfiguration(input.productPath, signal);
+    },
   });
   t.after(() => executor.dispose());
   const invalid = { ...draft, unit: "cm", width: 70, height: 35 };
@@ -212,6 +234,7 @@ test("70 by 35 cm is a known minimum-drop rejection after switching units and on
     assert.equal(ctx.readProductMeasurements(ctx.form).height, null);
   }
   assert.deepEqual(dimensionEvents, []);
+  assert.deepEqual(configurationReads, [], "Rejected readings have no post-state read");
   assert.equal(submissions, 0);
   assert.deepEqual(
     [
@@ -226,6 +249,11 @@ test("70 by 35 cm is a known minimum-drop rejection after switching units and on
     draft: { ...invalid, height: 40, updatedAt: "2026-09-15T00:01:00.000Z" },
   });
   assert.equal(result.status, "applied");
+  assert.equal(result.configuration.status, "available");
+  assert.deepEqual(configurationReads, [draft.productPath]);
+  assert.equal(result.configuration.measurements.width, 70);
+  assert.equal(result.configuration.measurements.height, 40);
+  assert.equal(result.configuration.measurements.unit, "cm");
   assert.deepEqual(
     [...cm.querySelectorAll("input")].map((input) => input.value),
     ["70", "40"],
@@ -297,9 +325,14 @@ test("theme replacement of the active fields reports uncertainty instead of conf
 
 test("ordinary measurement execution fills current controls after its queue wait without preparing an approval", async (t) => {
   const ctx = setup(t);
+  const configurationTools = nativeConfigurationTools(t, ctx);
+  const calls = [];
   let release;
   const executor = ctx.createStorefrontExecutor({
-    execute: async (name) => {
+    execute: async (name, input, signal) => {
+      calls.push(name);
+      if (name === "get_product_configuration")
+        return configurationTools.getProductConfiguration(input.productPath, signal);
       assert.equal(name, "search_products");
       return new Promise((resolve) => {
         release = resolve;
@@ -326,7 +359,11 @@ test("ordinary measurement execution fills current controls after its queue wait
     queries: [{ query: "blind", status: "succeeded", productIds: [] }],
   });
   await search;
-  assert.equal((await applying).status, "applied");
+  const applied = await applying;
+  assert.equal(applied.status, "applied");
+  assert.equal(applied.configuration.measurements.width, 300);
+  assert.equal(applied.configuration.measurements.height, 400);
+  assert.deepEqual(calls, ["search_products", "get_product_configuration"]);
   assert.equal(current.value, "300");
   assert.equal(previous.value, "200");
   assert.deepEqual(ctx.events, [
@@ -335,6 +372,135 @@ test("ordinary measurement execution fills current controls after its queue wait
     ["300", "400"],
     ["300", "400"],
   ]);
+});
+
+test("measurement post-state captures settled native quote and choices before the next foreground request", async (t) => {
+  const ctx = setup(t);
+  const submissions = quoteTheme(ctx);
+  ctx.form.insertAdjacentHTML(
+    "beforeend",
+    '<fieldset data-feature="2"><select name="Lining##2"><option value="Light filtering##20" data-feature-option="2##20">Light filtering</option><option value="Blackout##21" data-feature-option="2##21">Blackout</option></select></fieldset>',
+  );
+  ctx.form.parentElement.insertAdjacentHTML(
+    "beforeend",
+    '<span data-dynamic-price>£100.00</span>',
+  );
+  ctx.form.addEventListener("input", () => {
+    ctx.window.setTimeout(() => {
+      ctx.form.querySelector('[name="Lining##2"]').value = "Blackout##21";
+      ctx.form.parentElement.querySelector("[data-dynamic-price]").textContent = "£147.97";
+    }, 5);
+  }, { once: true });
+  const configurationTools = nativeConfigurationTools(t, ctx);
+  const calls = [];
+  let releaseRead;
+  let markReadStarted;
+  const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
+  const executor = ctx.createStorefrontExecutor({
+    execute: async (name, input, signal) => {
+      calls.push(name);
+      if (name === "get_product_configuration") {
+        assert.equal(ctx.form.classList.contains("loading"), false);
+        assert.equal(submissions.length, 1);
+        await new Promise((resolve) => {
+          releaseRead = resolve;
+          markReadStarted();
+        });
+        return configurationTools.getProductConfiguration(input.productPath, signal);
+      }
+      assert.equal(name, "search_products");
+      return { products: [], messages: [], queries: [{ query: "blind", status: "succeeded", productIds: [] }] };
+    },
+  });
+  t.after(() => executor.dispose());
+  const applying = executor.execute("apply_measurements", { productPath: draft.productPath, draft });
+  const searching = executor.execute("search_products", { queries: ["blind"] });
+  await readStarted;
+  assert.deepEqual(calls, ["get_product_configuration"], "Post-state read still owns the serial foreground slot");
+  releaseRead();
+  const result = await applying;
+  assert.equal(result.status, "applied");
+  assert.equal(result.configuration.status, "available");
+  assert.equal(result.configuration.configuredPrice, "£147.97");
+  assert.equal(result.configuration.measurements.width, draft.width);
+  assert.equal(result.configuration.measurements.height, draft.height);
+  assert.equal(result.configuration.measurements.unit, draft.unit);
+  assert.equal(result.configuration.controls[0].options[1].selected, true);
+  assert.equal(result.configuration.productPath, draft.productPath);
+  assert.match(result.configuration.configurationId, /^[a-f0-9-]{36}$/);
+  await searching;
+  assert.deepEqual(calls, ["get_product_configuration", "search_products"]);
+  assert.equal(submissions.length, 1, "Only native quote submitter ran; no purchase was submitted");
+});
+
+test("changed or cancelled measurement post-state cannot claim an applied snapshot", async (t) => {
+  for (const change of ["width", "height", "unit", "abort"]) {
+    await t.test(change, async (t) => {
+      const ctx = setup(t);
+      const configurationTools = nativeConfigurationTools(t, ctx);
+      const controller = new ctx.window.AbortController();
+      let reads = 0;
+      const executor = ctx.createStorefrontExecutor({
+        execute: async (name, input, signal) => {
+          assert.equal(name, "get_product_configuration");
+          reads++;
+          if (change === "width" || change === "height")
+            ctx.form.querySelector(`[data-active-input-measurement] [data-${change === "height" ? "drop" : "width"}-input]`).value = "600";
+          if (change === "unit") {
+            const units = ctx.form.querySelector("[data-measurement-select]");
+            units.value = "cm";
+            units.dispatchEvent(new ctx.window.Event("change", { bubbles: true }));
+          }
+          const result = configurationTools.getProductConfiguration(input.productPath, signal);
+          if (change === "abort") controller.abort(new Error("Cancelled during readback"));
+          return result;
+        },
+      });
+      t.after(() => executor.dispose());
+      const pending = executor.execute("apply_measurements", { productPath: draft.productPath, draft }, controller.signal);
+      if (change === "abort")
+        await assert.rejects(pending, (error) => error === controller.signal.reason);
+      else {
+        const result = await pending;
+        assert.equal(result.status, "uncertain");
+        assert.equal("configuration" in result, false);
+        assert.match(result.message, /changed during configuration readback/);
+      }
+      assert.equal(reads, 1, "No mutation or readback replay");
+    });
+  }
+});
+
+test("non-applied measurement outcomes never request a configuration read", async (t) => {
+  for (const outcome of ["invalid", "corrected", "cancelled after write"]) {
+    await t.test(outcome, async (t) => {
+      const ctx = setup(t);
+      const controller = new ctx.window.AbortController();
+      if (outcome !== "invalid")
+        ctx.form.querySelector("[data-active-input-measurement] [data-width-input]").addEventListener("change", (event) => {
+          if (outcome === "corrected") event.target.value = "301";
+          else controller.abort();
+        });
+      let reads = 0;
+      const executor = ctx.createStorefrontExecutor({ execute: async () => {
+        reads++;
+        assert.fail("A non-applied result cannot request a post-state read");
+      } });
+      t.after(() => executor.dispose());
+      const pending = executor.execute("apply_measurements", {
+        productPath: draft.productPath,
+        draft: outcome === "invalid" ? { ...draft, height: 2500 } : draft,
+      }, controller.signal);
+      if (outcome === "cancelled after write")
+        await assert.rejects(pending, (error) => error === controller.signal.reason);
+      else {
+        const result = await pending;
+        assert.equal(result.status, outcome === "invalid" ? "invalid_measurements" : "uncertain");
+        assert.equal("configuration" in result, false);
+      }
+      assert.equal(reads, 0);
+    });
+  }
 });
 
 test("queued measurement application validates the current page and cancellation before writing", async (t) => {

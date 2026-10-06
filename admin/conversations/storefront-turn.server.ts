@@ -199,13 +199,20 @@ export class StorefrontTurn {
         throw new Error("Configuration returned a different product.");
       this.observeConfiguration(configuration);
     }
-    if (call.name === "configure_product" || call.name === "apply_measurements")
+    if (call.name === "configure_product" || call.name === "apply_measurements") {
       this.formBlocked = !(
         "status" in outcome &&
         outcome.status === "applied" &&
         "productPath" in outcome &&
         outcome.productPath === this.formProductPath
       );
+      if (!this.formBlocked && "configuration" in outcome && outcome.configuration) {
+        const configuration = parseProductConfigurationResult("get_product_configuration", outcome.configuration);
+        if (configuration.productPath !== this.formProductPath)
+          throw new Error("Configuration returned a different applied product.");
+        this.observeConfiguration(configuration);
+      }
+    }
     if (call.name === "open_checkout" && !("error" in outcome)) {
       parseCheckoutResult(outcome);
       this.checkoutHandoff = true;

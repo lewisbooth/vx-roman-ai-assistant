@@ -273,6 +273,7 @@ function inspect(productPath: string): Inspection {
       kind: "radio",
       purpose: "measurement_guarantee",
       description: guarantee.description,
+      feeBasis: "per_item",
       options: guarantee.options.map((option, index) => ({
         id: `o${index}`,
         label: option.label,
@@ -374,6 +375,18 @@ export function createProductConfigurationTools() {
     | null = null;
   let disposed = false;
   let pending: AbortController | undefined;
+  const capture = (productPath: string, current: Inspection): ProductConfiguration => {
+    const id = crypto.randomUUID();
+    const configuration = parseProductConfigurationResult("get_product_configuration", {
+      status: "available", productPath, configurationId: id,
+      controls: current.controls, measurements: current.measurements,
+      configuredPrice: current.configuredPrice,
+      actions: { sampleAvailable: isSampleAvailable(productPath) },
+      message: "Listed native choices and their current selectability, dependencies, dimensions and settled quote. Disabled choices do not establish stock or permanent incompatibility; missing price labels mean unknown cost.",
+    });
+    snapshot = { ...current, id, productPath, createdAt: Date.now() };
+    return configuration;
+  };
   return {
     getProductConfiguration(
       productPath: string,
@@ -388,20 +401,7 @@ export function createProductConfigurationTools() {
       snapshot = null;
       try {
         if (pending) throw new Error(unavailable);
-        const current = inspect(productPath),
-          id = crypto.randomUUID();
-        snapshot = { ...current, id, productPath, createdAt: Date.now() };
-        return parseProductConfigurationResult("get_product_configuration", {
-          status: "available",
-          productPath,
-          configurationId: id,
-          controls: current.controls,
-          measurements: current.measurements,
-          configuredPrice: current.configuredPrice,
-          actions,
-          message:
-            "These are supported native product choices, measurements and current configured price. Unavailable choices need the theme's required steps.",
-        });
+        return capture(productPath, inspect(productPath));
       } catch {
         snapshot = null;
         return {
@@ -431,10 +431,12 @@ export function createProductConfigurationTools() {
       const result = (
         status: ConfigureProductResult["status"],
         message: string,
+        configuration?: ProductConfiguration,
       ): ConfigureProductResult => ({
         status,
         productPath: input.productPath,
         message,
+        ...(configuration ? { configuration } : {}),
       });
       if (
         disposed ||
@@ -542,8 +544,9 @@ export function createProductConfigurationTools() {
         return result(
           "applied",
           price === "needs_configuration"
-            ? "The requested product option is selected. The theme still needs product configuration before pricing is ready; read its current choices before continuing. Nothing was added to the cart."
-            : "The requested product option is selected and the theme has finished updating. Read its current configuration before changing another choice. Nothing was added to the cart.",
+            ? "The requested option is selected. Fresh configuration is included; its quote remains unknown until the theme's required steps are complete. Nothing was added to the cart."
+            : "The requested option is selected. Fresh configuration includes changed choices and the settled quote. Nothing was added to the cart.",
+          capture(input.productPath, settled),
         );
       } catch {
         return result(

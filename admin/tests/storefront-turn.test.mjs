@@ -135,6 +135,41 @@ test("a configuration read without form work does not extend the cart budget", (
   assert.equal(turn.isConfigurationCompletion("add_to_cart"), false);
 });
 
+test("fresh mutation state resolves new controls and permits one priced same-product completion without rereading", () => {
+  const next = configuration({configurationId: "20000000-0000-4000-8000-000000000002"});
+  for (const name of ["configure_product", "apply_measurements"]) {
+    const turn = new StorefrontTurn();
+    readConfiguration(turn);
+    complete(turn, name, name === "configure_product" ? {
+      productPath, configurationId: configuration().configurationId, controlId: "c0", optionId: "o0",
+    } : {productPath}, {status: "applied", productPath, configuration: next});
+    assert.equal(turn.isConfigurationCompletion("add_to_cart"), true);
+    assert.equal(turn.allows("add_to_cart"), true);
+    assert.throws(() => complete(turn, "configure_product", {
+      productPath, configurationId: configuration().configurationId, controlId: "c0", optionId: "o0",
+    }, {}), /before each change/);
+  }
+  const turn = new StorefrontTurn();
+  applyMeasurements(turn, {status: "applied", productPath, configuration: next});
+  complete(turn, "configure_product", {productPath, configurationId: next.configurationId, controlId: "c0", optionId: "o0"}, {status: "applied", productPath, configuration: configuration()});
+  complete(turn, "add_to_cart", {productPath, quantity: 3}, {status: "added", quantityAdded: 3});
+  assert.equal(turn.allows("add_to_cart"), false);
+});
+
+test("missing quote, foreign state and uncertainty in mutation readback never authorize a cart completion", () => {
+  for (const [result, rejects] of [
+    [{status: "applied", productPath, configuration: configuration({configuredPrice: null})}, false],
+    [{status: "applied", productPath, configuration: configuration({productPath: "/products/other"})}, true],
+    [{status: "uncertain", productPath, configuration: configuration()}, false],
+  ]) {
+    const turn = new StorefrontTurn();
+    if (rejects) assert.throws(() => applyMeasurements(turn, result), /different applied product/);
+    else applyMeasurements(turn, result);
+    assert.equal(turn.allows("add_to_cart"), false);
+  }
+  assert.equal(new StorefrontTurn().isConfigurationCompletion("add_to_cart"), false);
+});
+
 test("one native addition consumes the cart mutation allowance even after a fresh cart read", () => {
   for (const result of [
     { status: "added", message: "Three added.", quantityAdded: 3, addedProduct: { productPath, title: "Shade", lineKey } },

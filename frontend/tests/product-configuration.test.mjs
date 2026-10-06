@@ -647,8 +647,11 @@ test("configuration waits for native pricing and dependent choices before a fres
     `<fieldset data-feature="9"><input type="radio" name="Width definition##9" value="Fabric Width##90" data-feature-option="9##90" checked><input type="radio" name="Width definition##9" value="Bracket to Bracket##91" data-feature-option="9##91"></fieldset>`,
   );
   ctx.form.classList.remove("loading", "variant-loading");
-  assert.equal((await pending).status, "applied");
-  const next = ctx.read();
+  const applied = await pending;
+  assert.equal(applied.status, "applied");
+  const next = applied.configuration;
+  assert.equal(next.status, "available");
+  assert.notEqual(next.configurationId, call.configurationId);
   const control = next.controls.find(
     (entry) => entry.label === "Width definition",
   );
@@ -836,15 +839,14 @@ test("native multi-level dependencies retain hidden defaults but authorize only 
     ).status,
     "unsupported",
   );
-  assert.equal(
-    (
-      await ctx.configure(
-        namedSelection(ctx.read(), "Control Options", "Electric SmartView"),
-      )
-    ).status,
-    "applied",
+  const motorRead = ctx.read();
+  const motor = await ctx.configure(
+    namedSelection(motorRead, "Control Options", "Electric SmartView"),
   );
-  const expanded = ctx.read();
+  assert.equal(motor.status, "applied");
+  const expanded = motor.configuration;
+  assert.equal(expanded.status, "available");
+  assert.notEqual(expanded.configurationId, motorRead.configurationId);
   assert.ok(
     expanded.controls
       .find((c) => c.label === "14 Channel Remote Control")
@@ -860,24 +862,21 @@ test("native multi-level dependencies retain hidden defaults but authorize only 
     false,
     "Revealing a branch does not choose its paid option",
   );
-  assert.equal(
-    (
-      await ctx.configure(
-        namedSelection(
-          expanded,
-          "14 Channel Remote Control",
-          "14 Channel Remote Control",
-        ),
-      )
-    ).status,
-    "applied",
+  const remoteResult = await ctx.configure(
+    namedSelection(expanded, "14 Channel Remote Control", "14 Channel Remote Control"),
   );
+  assert.equal(remoteResult.status, "applied");
+  assert.notEqual(remoteResult.configuration.configurationId, expanded.configurationId);
   assert.ok(
-    ctx
-      .read()
-      .controls.find((c) => c.label === "Remote finish")
+    remoteResult.configuration.controls.find((c) => c.label === "Remote finish")
       .options.every((o) => o.available),
   );
+  assert.equal(
+    (await ctx.configure(namedSelection(motorRead, "Control Options", "Electric SmartView"))).status,
+    "unsupported",
+    "The old capability was consumed, even though the motor remains selected",
+  );
+  assert.equal(nested.remote.checked, true);
 });
 
 test("missing, ambiguous, cross-fieldset or unavailable parents cannot authorize nested writes", async (t) => {

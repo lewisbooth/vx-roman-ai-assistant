@@ -806,6 +806,18 @@ test("cart preparation and native removal use a 35s deadline instead of the gene
   assert.equal(ctx.calls.length, 2, "one fresh cart read per native removal");
 });
 
+test("known removal preflight failures do not navigate to cart or replay the request", async (t) => {
+  const ctx = setup(t);
+  const result = await ctx.tools.execute("remove_from_cart", {
+    lineKeys: [cartData.items[0].key, "missing:line"],
+  });
+  assert.equal(result.status, "unsupported");
+  assert.match(result.message, /No cart change was submitted/);
+  assert.equal(ctx.calls.length, 1, "only the fresh baseline read is needed");
+  assert.deepEqual(ctx.visits, []);
+  assert.equal(ctx.timers.size, 0);
+});
+
 test("quantity changes prepare the background cart once and revalidate before a single native write", async (t) => {
   for (const scenario of ["ready", "preview", "missing controls", "stale key", "cancelled", "wrong page"]) {
     await t.test(scenario, async (t) => {

@@ -6,6 +6,7 @@ export interface ProductConfigurationChoice {
   id: string;
   label: string;
   selected: boolean;
+  /** Whether this native choice is selectable now, never a stock/fit claim. */
   available: boolean;
   /** Native displayed option charge, separate from the configured product total. */
   priceLabel?: string;
@@ -20,6 +21,8 @@ export interface ProductConfigurationControl {
   /** Optional paid protection needs a separate, explicit customer decision. */
   purpose?: "measurement_guarantee";
   description?: string;
+  /** Verified native charge scope; omitted when the fee basis is unknown. */
+  feeBasis?: "per_item";
 }
 export const MAX_NATIVE_MEASUREMENT_VALUES = 512;
 export type NativeMeasurementConstraint =
@@ -68,6 +71,8 @@ export interface ConfigureProductResult {
   status: "applied" | "unsupported" | "uncertain" | "cancelled";
   productPath: string;
   message: string;
+  /** Fresh settled state from this operation, never the consumed capability. */
+  configuration?: ProductConfiguration;
 }
 export type ProductConfigurationCall =
   | { name: "get_product_configuration"; arguments: { productPath: string } }
@@ -94,7 +99,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "get_product_configuration",
     description:
-      "Read supported native options, dependencies, dimensions, per-unit native limits/choices and settled configuredPrice for the currently loaded verified productPath. Returns short-lived single-use configurationId/control/option IDs. Available choices only are mutable; parent IDs belong to this snapshot. option.priceLabel is a surcharge; configuredPrice excludes the separate measurement guarantee and null means unknown. Unsupported widgets and purchase controls are excluded.",
+      "Read listed native options, dependencies, dimensions, native limits and settled configuredPrice for the loaded verified productPath. Returns short-lived single-use IDs. available means selectable now, not stock or permanent compatibility; parent IDs describe prerequisites. A missing priceLabel means unknown cost; configuredPrice excludes separate measurement guarantees and null means unknown. Unsupported widgets and purchase controls are excluded.",
     strict: true,
     parameters: {
       type: "object",
@@ -107,7 +112,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "configure_product",
     description:
-      "Apply one available choice using IDs from the latest configuration snapshot and authorized customer intent. A measurement_guarantee requires explicit consent to its current fee and terms, even when preselected; apply an explicit yes/no to record that decision. Waits for the native update and consumes the snapshot. Returns status only; get_product_configuration supplies the changed options and quote. No measurements, cart or purchase action.",
+      "Apply one selectable choice using IDs from this turn's latest snapshot and authorized customer intent. A measurement_guarantee requires an explicit decision on its current fee and terms; apply yes/no to record it. Consumes the snapshot, waits for the native update and returns fresh configuration with new IDs, dependent choices and settled quote when applied. No measurements or cart action.",
     strict: true,
     parameters: {
       type: "object",
@@ -300,17 +305,22 @@ export function parseProductConfigurationResult(
   const productPath = parseProductPath(value.productPath),
     message = text(value.message, 600);
   if (name === "configure_product") {
-    exact(value, ["status", "productPath", "message"]);
+    exact(value, ["status", "productPath", "message", ...(value.configuration !== undefined ? ["configuration"] : [])]);
     if (
       !["applied", "unsupported", "uncertain", "cancelled"].includes(
         value.status as string,
       )
     )
       throw new Error("Invalid product configuration outcome.");
+    const configuration = value.configuration === undefined ? undefined :
+      parseProductConfigurationResult("get_product_configuration", value.configuration);
+    if (configuration && (value.status !== "applied" || configuration.productPath !== productPath))
+      throw new Error("Fresh configuration must belong to the applied product.");
     return {
       status: value.status as ConfigureProductResult["status"],
       productPath,
       message,
+      ...(configuration ? { configuration } : {}),
     };
   }
   if (name !== "get_product_configuration")
@@ -356,6 +366,7 @@ export function parseProductConfigurationResult(
         ...(control.parent !== undefined ? ["parent"] : []),
         ...(control.purpose !== undefined ? ["purpose"] : []),
         ...(control.description !== undefined ? ["description"] : []),
+        ...(control.feeBasis !== undefined ? ["feeBasis"] : []),
       ]);
       let guarantee:
         | Pick<ProductConfigurationControl, "purpose" | "description">
@@ -374,6 +385,8 @@ export function parseProductConfigurationResult(
           description: text(control.description, 1200),
         };
       }
+      if (control.feeBasis !== undefined && (control.purpose !== "measurement_guarantee" || control.feeBasis !== "per_item"))
+        throw new Error("Invalid native fee basis.");
       let parent: ProductConfigurationControl["parent"];
       if (control.parent !== undefined) {
         const dependency = object(control.parent);
@@ -429,6 +442,7 @@ export function parseProductConfigurationResult(
         options,
         ...(parent ? { parent } : {}),
         ...guarantee,
+        ...(control.feeBasis === "per_item" ? { feeBasis: "per_item" as const } : {}),
       };
     },
   );
