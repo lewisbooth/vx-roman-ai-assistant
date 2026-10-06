@@ -172,6 +172,7 @@ test("core owns intent and trust while channel suffixes contain delivery rather 
 
 test("domain owners retain their executable contract references without prescribing wording", () => {
   const references = {
+    visualization: ["list_windows", "rename_window", "create_visualization", "photoPresentation"],
     discovery: ["search_products", "lookup_catalog", "productIds"],
     guides: ["get_product_guides", "discover_guides", "read_library_guides"],
     measuring: ["set_measurements", "apply_measurements", "single_pair"],

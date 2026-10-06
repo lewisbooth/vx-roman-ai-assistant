@@ -46,6 +46,50 @@ const offered = [
   },
 ];
 
+const selectedHistory = [
+  { role: "user", text: "I want living-room blinds for daytime privacy, one blind across a standard rectangular window recess. Regular fitting is fine. I'd like light neutral colours." },
+  { role: "assistant", text: `You selected ${currentProduct.title}.` },
+  { role: "user", source: "roman_question", text: `Roman question: ${JSON.stringify({
+    question: "Would you like help measuring, an explanation of this blind's options, or to explore more blinds?",
+    answers: ["Help me measure", "Explain blind options", "Explore more blinds"],
+  })}` },
+];
+const alternativeProducts = [
+  {
+    ...currentProduct,
+    id: "gid://shopify/Product/8300",
+    title: "Synthetic Cream Privacy Roller Blind",
+    url: currentProductOrigin + "/products/synthetic-cream-privacy-roller",
+    description: "A light neutral cream roller blind for living-room daytime privacy. Regular screw-fixed brackets fit one blind across a standard rectangular window recess.",
+  },
+  {
+    ...currentProduct,
+    id: "gid://shopify/Product/8301",
+    title: "Synthetic Ivory Privacy Venetian Blind",
+    url: currentProductOrigin + "/products/synthetic-ivory-privacy-venetian",
+    description: "Light neutral ivory Venetian slats offer adjustable daytime privacy in a living room. Regular screw-fixed brackets fit one blind across a standard rectangular window recess.",
+  },
+];
+export const currentProductConfiguration = {
+  status: "available",
+  productPath: currentProductPath,
+  configurationId: "10000000-0000-4000-8000-000000000001",
+  controls: [
+    { id: "c0", label: "Lining", kind: "radio", options: [
+      { id: "o0", label: "Light filtering", selected: true, available: true },
+      { id: "o1", label: "Blackout lining", priceLabel: "+£12.00", selected: false, available: true },
+    ] },
+    { id: "c1", label: "Control side", kind: "radio", options: [
+      { id: "o0", label: "Left", selected: true, available: true },
+      { id: "o1", label: "Right", selected: false, available: true },
+    ] },
+  ],
+  measurements: { width: null, height: null, unit: "mm", availableUnits: ["mm"] },
+  configuredPrice: null,
+  actions: { sampleAvailable: true },
+  message: "Current native choices; dimensions have not been entered.",
+};
+
 export const currentProductCases = [
   {
     name: "current-product-offer",
@@ -106,6 +150,14 @@ export const currentProductCases = [
     knownRoom,
     history: [beginning[0], { role: "user", text }],
   })),
+  ...[
+    ["selected-product-explore-more", "explore-more", "Explore more blinds"],
+    ["selected-product-explain-options", "explain-options", "Explain blind options"],
+    ["selected-product-natural-options", "explain-options", "Explore its options"],
+  ].map(([name, currentProductFlow, text]) => ({
+    name, currentProductFlow, activeProduct: true,
+    history: [...selectedHistory, { role: "user", text }],
+  })),
 ];
 
 export function createCurrentProductFixture(sample) {
@@ -132,7 +184,7 @@ export function createCurrentProductFixture(sample) {
         role: "user",
         source: "application_state",
         text: `Application state: ${JSON.stringify({
-          activeBlind: null,
+          activeBlind: sample.activeProduct ? { path: currentProductPath, title: currentProduct.title } : null,
           backgroundPage: {
             path: currentProductPath,
             title: currentProduct.title,
@@ -144,6 +196,19 @@ export function createCurrentProductFixture(sample) {
     async execute(_callId, name, input) {
       const operation = { name, input };
       operations.push(operation);
+      if (sample.currentProductFlow === "explore-more" && name === "search_products") {
+        operation.result = {
+          ...catalogue(alternativeProducts),
+          queries: input.queries.map((query) => ({ query, status: "succeeded", productIds: alternativeProducts.map(({ id }) => id) })),
+        };
+        return operation.result;
+      }
+      if (sample.currentProductFlow === "explain-options" && name === "get_product_configuration") {
+        if (input.productPath !== currentProductPath)
+          reject("Options must belong to the active selected blind.");
+        operation.result = currentProductConfiguration;
+        return operation.result;
+      }
       if (sample.currentProductFlow === "offer" && name === "search_products") {
         if (input.queries?.length !== 1)
           reject(
@@ -273,6 +338,26 @@ export function gradeCurrentProductReply(
         ),
       "Acceptance restarted discovery or asked for another product confirmation.",
     );
+  } else if (sample.currentProductFlow === "explore-more") {
+    const searches = fixture.operations.filter(({ name }) => name === "search_products");
+    check(fixture.operations.length === 1 && searches.length === 1,
+      "Explore more blinds must research other products without configuring or replacing the selected blind.");
+    const queries = searches.flatMap(({ input }) => input.queries ?? []);
+    check(queries.length >= 1 && queries.length <= 3 && queries.every((query) =>
+      /privacy/i.test(query) && /recess|whole opening|window/i.test(query) && /neutral|cream|ivory|light colou?r/i.test(query)),
+    "Wider discovery lost the retained opening, privacy or light neutral appearance requirements.");
+    check(selected.length > 0 && selected.every((id) => alternativeProducts.some((product) => product.id === id)),
+      "Wider discovery must show verified alternative products.");
+    check(!/which room|what room|which opening|what opening/i.test(question?.question ?? ""),
+      "Wider discovery restarted settled intake.");
+  } else if (sample.currentProductFlow === "explain-options") {
+    check(fixture.operations.length === 1 && fixture.operations[0].name === "get_product_configuration" &&
+      fixture.operations[0].input.productPath === currentProductPath,
+    "Explain blind options must read the selected product's choices without discovery, navigation or mutations.");
+    check(selected.length === 0 && !question?.measurement,
+      "Explaining options must not show other products or require measurements first.");
+    check(/lining|blackout|light.filter|control side|left|right/i.test([message, question?.question, ...answers].join(" ")),
+      "The response did not explain or offer a verified configuration choice beyond measurements.");
   } else {
     check(
       fixture.operations.length === 0 && selected.length === 0,

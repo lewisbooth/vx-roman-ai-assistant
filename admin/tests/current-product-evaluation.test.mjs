@@ -7,6 +7,7 @@ import {
   currentProductCases,
   currentProductOrigin,
   currentProductPath,
+  currentProductConfiguration,
   createCurrentProductFixture,
   gradeCurrentProductReply,
 } from "../evals/current-product.mjs";
@@ -14,7 +15,7 @@ import {
 const bundle = await build({
   stdin: {
     contents:
-      'export {parseCatalogResult} from "./shared/catalog.ts"; export {parseNavigationResult} from "./shared/navigation-tool.ts";',
+      'export {parseCatalogResult} from "./shared/catalog.ts"; export {parseNavigationResult} from "./shared/navigation-tool.ts"; export {parseProductConfigurationResult} from "./shared/product-configuration.ts";',
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -27,7 +28,7 @@ new Function("module", "exports", bundle.outputFiles[0].text)(
   module,
   module.exports,
 );
-const { parseCatalogResult, parseNavigationResult } = module.exports;
+const { parseCatalogResult, parseNavigationResult, parseProductConfigurationResult } = module.exports;
 const offer = currentProductCases.find(
   ({ currentProductFlow }) => currentProductFlow === "offer",
 );
@@ -52,15 +53,15 @@ function productActions() {
   };
 }
 
-test("current-product histories preserve actual card/question/selection provenance without an active blind", () => {
-  assert.equal(currentProductCases.length, 9);
+test("current-product histories preserve card/question provenance and distinguish a selected blind from the background page", () => {
+  assert.equal(currentProductCases.length, 12);
   assert.equal(accepted.length, 3);
   for (const sample of currentProductCases) {
     const fixture = createCurrentProductFixture(sample);
     const state = JSON.parse(
       fixture.history.at(-1).text.slice("Application state: ".length),
     );
-    assert.equal(state.activeBlind, null);
+    assert.deepEqual(state.activeBlind, sample.activeProduct ? { path: currentProductPath, title: currentProduct.title } : null);
     assert.equal(state.backgroundPage.path, currentProductPath);
     assert.equal(state.pendingQuestion, null);
     if (["accept", "decline"].includes(sample.currentProductFlow)) {
@@ -340,4 +341,52 @@ test("unrequested searches, early selection, wrong paths and repeated navigation
     fixture.execute("repeat", "navigate", { path: currentProductPath }),
     /once/,
   );
+});
+
+test("Explore more blinds searches under retained requirements without replacing or configuring the active blind", async () => {
+  const sample = currentProductCases.find(({ name }) => name === "selected-product-explore-more");
+  assert.equal(sample.history.at(-1).text, "Explore more blinds");
+  const fixture = createCurrentProductFixture(sample);
+  const result = await fixture.execute("alternatives", "search_products", {
+    queries: ["light neutral privacy roller blinds for standard window recess", "ivory privacy Venetian blinds for standard window recess"],
+  });
+  parseCatalogResult(result, currentProductOrigin);
+  const reply = {
+    text: "These give you different ways to balance daylight and privacy.",
+    presentation: { productIds: result.products.map(({ id }) => id) },
+    questionPresentation: { question: "Which style appeals to you?", answers: ["Roller", "Venetian", "More styles"] },
+  };
+  assert.deepEqual(gradeCurrentProductReply(sample, fixture, reply), []);
+  assert.deepEqual(gradeCurrentProductReply(sample, fixture, { ...reply, text: reply.text + " " + reply.questionPresentation.question }, "voice"), []);
+  const lostContext = { ...fixture, operations: [{ name: "search_products", input: { queries: ["roller blinds"] } }] };
+  assert.ok(gradeCurrentProductReply(sample, lostContext, reply).some((failure) => /retained opening/.test(failure)));
+  const restarted = { ...reply, questionPresentation: { question: "Which room is this for?", answers: ["Bedroom", "Kitchen"] } };
+  assert.ok(gradeCurrentProductReply(sample, fixture, restarted).some((failure) => /restarted settled intake/.test(failure)));
+  await assert.rejects(fixture.execute("wrong-flow", "get_product_configuration", { productPath: currentProductPath }));
+  assert.ok(gradeCurrentProductReply(sample, fixture, reply).includes(fixture.violations[0]));
+});
+
+test("explicit and natural option requests read and explain selected-product choices without mutations or rediscovery", async () => {
+  for (const sample of currentProductCases.filter(({ currentProductFlow }) => currentProductFlow === "explain-options")) {
+    const fixture = createCurrentProductFixture(sample);
+    const result = await fixture.execute("choices", "get_product_configuration", { productPath: currentProductPath });
+    assert.deepEqual(result, currentProductConfiguration);
+    parseProductConfigurationResult("get_product_configuration", result);
+    const reply = {
+      text: "You can choose light-filtering or blackout lining, with the control on the left or right.",
+      questionPresentation: { question: "Which lining would you like?", answers: ["Light filtering", "Blackout, +£12"] },
+    };
+    assert.deepEqual(gradeCurrentProductReply(sample, fixture, reply), []);
+    assert.deepEqual(gradeCurrentProductReply(sample, fixture, { ...reply, text: reply.text + " " + reply.questionPresentation.question }, "voice"), []);
+    assert.ok(gradeCurrentProductReply(sample, fixture, { ...reply, presentation: { productIds: [currentProduct.id] } }).some((failure) => /show other products/.test(failure)));
+    for (const [name, input] of [
+      ["search_products", { queries: ["Roman blinds"] }],
+      ["configure_product", { productPath: currentProductPath, configurationId: result.configurationId, controlId: "c0", optionId: "o1" }],
+      ["get_product_configuration", { productPath: "/products/another-blind" }],
+    ]) {
+      const forbidden = createCurrentProductFixture(sample);
+      await assert.rejects(forbidden.execute("wrong-flow", name, input));
+      assert.ok(gradeCurrentProductReply(sample, forbidden, reply).includes(forbidden.violations[0]));
+    }
+  }
 });
