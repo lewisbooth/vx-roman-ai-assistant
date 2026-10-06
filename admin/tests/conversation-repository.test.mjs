@@ -263,11 +263,13 @@ test("version probes recover stale replies and voices once, then remain read-onl
 test("saved photos stay current outside loaded history and terminal photo widgets commit atomically", async () => {
   const envKeys = [
     "ROMAN_VISUALIZATIONS_ENABLED",
+    "ROMAN_VISUALIZATIONS_SHOPS",
     "OPENAI_IMAGE_API_KEY",
     "ROMAN_MEDIA_ROOT",
   ];
   const prior = envKeys.map((key) => process.env[key]);
   process.env.ROMAN_VISUALIZATIONS_ENABLED = "true";
+  process.env.ROMAN_VISUALIZATIONS_SHOPS = shop;
   process.env.OPENAI_IMAGE_API_KEY = "synthetic-unused";
   process.env.ROMAN_MEDIA_ROOT = directory;
   const id = (await repository.createConversation(shop, origin)).conversationId;
@@ -336,6 +338,12 @@ test("saved photos stay current outside loaded history and terminal photo widget
     assert.ok(
       !JSON.stringify(snapshot).includes("private-source-never-public"),
     );
+    process.env.ROMAN_VISUALIZATIONS_SHOPS = "another.myshopify.com";
+    const outsidePilot = await repository.getSnapshot(id);
+    assert.equal(outsidePilot.current.galleryEnabled, false);
+    assert.equal(outsidePilot.current.selectedWindow.id, photoId);
+    assert.equal(outsidePilot.current.hasCustomerReply, true);
+    process.env.ROMAN_VISUALIZATIONS_SHOPS = shop;
     const turn = await repository.beginTurn(id, {
       requestId: randomUUID(),
       text: "Show this window.",
