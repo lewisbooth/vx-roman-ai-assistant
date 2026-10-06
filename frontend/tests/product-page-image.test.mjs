@@ -9,7 +9,7 @@ import { JSDOM } from "jsdom";
 const bundle = await build({
   stdin: {
     contents:
-      "export * from './frontend/src/tools/product-image'; export {createStorefrontExecutor} from './frontend/src/session/storefront-executor';",
+      "export * from './frontend/src/tools/product-image'; export * from './frontend/src/tools/product-references'; export {createStorefrontExecutor} from './frontend/src/session/storefront-executor';",
     resolveDir: cwd(),
   },
   bundle: true,
@@ -535,4 +535,97 @@ test("simultaneous thumbnail and active gallery requests share one fetched snaps
   assert.equal(image, main);
   assert.equal(result.items.length, 2);
   assert.equal(ctx.calls.length, 1);
+});
+
+test("visualization image roles use inspected Shopify labels rather than generic room or fabric words", (t) => {
+  const ctx = setup(t);
+  for (const [file, alt, role] of [
+    ["Product2600_Color2092_Zoom.jpg", "", "unknown"],
+    ["blind_Z.jpg", "Room fabric close-up", "unknown"],
+    ["blind.jpg", "Colorized", "installation"],
+    ["blind.jpg", " ColorizedRoomAngle view ", "installation"],
+    ["blind.jpg", "ColorizedFullRoom", "installation"],
+    ["blind.jpg", "ColorizedFabricZoom cloth", "detail"],
+    ["blind.jpg", "ColorizedPLA sample", "detail"],
+    ["blind_FR.jpg", "", "installation"],
+    ["blind_RoomAngle_1.jpg", "", "installation"],
+    ["PID-123_CID-456_R.jpg", "", "installation"],
+    ["blind_FZ.jpg", "", "detail"],
+    ["blind_FabricZoom_2.jpg", "", "detail"],
+    ["blind_FR.jpg", "ColorizedFabricZoom", "unknown"],
+    ["blind_FZ.jpg", "ColorizedFullRoom", "unknown"],
+  ]) {
+    assert.equal(ctx.classifyShopifyImage({ url: `${origin}/cdn/shop/files/${file}`, alt }), role, `${file}: ${alt}`);
+  }
+});
+
+const referenceImage = (file, alt = "", kind = "product") => ({
+  id: file, kind, alt,
+  src: `${origin}/cdn/shop/files/${file}?width=1200`,
+  thumbnailSrc: `${origin}/cdn/shop/files/${file}?width=90`,
+  zoomSrc: `${origin}/cdn/shop/files/${file}?width=1800`,
+});
+
+test("visualization references classify all photos before the cap, promoting installation and preserving detail", (t) => {
+  const ctx = setup(t);
+  const result = ctx.selectVisualizationProductReferences([
+    referenceImage("feature_FR.jpg", "", "feature"),
+    ...["first_Z.jpg", "second_Z.jpg", "third_Z.jpg", "fourth_Z.jpg", "fifth_Z.jpg"].map(file => referenceImage(file)),
+    referenceImage("late_FZ.jpg"), referenceImage("late_FR.jpg"),
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.map(({url, role}) => ({file: new URL(url).pathname.split("/").at(-1), role})))), [
+    {file: "late_FR.jpg", role: "installation"},
+    {file: "first_Z.jpg", role: "unknown"},
+    {file: "second_Z.jpg", role: "unknown"},
+    {file: "late_FZ.jpg", role: "detail"},
+  ]);
+  assert.equal(result.every(image => image.url.endsWith("?width=1800")), true);
+});
+
+test("unknown visualization photos retain gallery order, deduplicate and bound alt payloads", (t) => {
+  const ctx = setup(t);
+  const images = [referenceImage("a_Z.jpg"), referenceImage("b_Z.jpg"), referenceImage("a_Z.jpg", "x".repeat(300)), referenceImage("c_Z.jpg"), referenceImage("d_Z.jpg"), referenceImage("e_Z.jpg")];
+  const result = ctx.selectVisualizationProductReferences(images);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.map(image => image.url))), [images[0].zoomSrc, images[1].zoomSrc, images[3].zoomSrc, images[4].zoomSrc]);
+  assert.equal(result.every(image => image.role === "unknown"), true);
+  assert.equal(result[0].alt, "x".repeat(200));
+});
+
+test("visualization preparation selects later references from validated gallery in one owner operation", async (t) => {
+  const media = [
+    `<swiper-slide data-feature-option-slide-holder><img data-feature-option-slide-image src="${origin}/cdn/shop/files/feature_FR.jpg"></swiper-slide>`,
+    ...["first_Z.jpg", "second_Z.jpg", "third_Z.jpg", "fourth_Z.jpg", "late_FZ.jpg", "late_FR.jpg"].map(file =>
+      `<swiper-slide><img data-testid="pdp-product-image-main" src="${origin}/cdn/shop/files/${file}?width=1800"></swiper-slide>`),
+  ].join("");
+  const ctx = setup(t, async () => response(html(page, `<swiper-with-media data-main-product-media-gallery><swiper-container id="MediaGallery-template-main-swiper-initial">${media}</swiper-container></swiper-with-media>`)));
+  const executor = ctx.createStorefrontExecutor({execute: () => assert.fail("No catalog call")});
+  t.after(() => executor.dispose());
+  const result = await executor.prepareVisualizationProduct("/products/shade", new AbortController().signal);
+  assert.equal(result.productPath, "/products/shade");
+  assert.deepEqual(JSON.parse(JSON.stringify(result.references.map(image => image.role))), ["installation", "unknown", "unknown", "detail"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.references.map(image => new URL(image.url).pathname.split("/").at(-1)))), ["late_FR.jpg", "first_Z.jpg", "second_Z.jpg", "late_FZ.jpg"]);
+  assert.equal(ctx.calls.length, 1);
+  await executor.loadProductGallery(page, new AbortController().signal);
+  assert.equal(ctx.calls.length, 1, "Preparation shares the gallery cache");
+});
+
+test("cancelled visualization preparation does not retain stale photos or block the next operation", async (t) => {
+  let attempts = 0;
+  const ctx = setup(t, (_url, options) => {
+    attempts++;
+    if (attempts > 1) return Promise.resolve(response());
+    return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), {once: true}));
+  });
+  const executor = ctx.createStorefrontExecutor({execute: () => assert.fail("No catalog call")});
+  t.after(() => executor.dispose());
+  const controller = new AbortController();
+  const pending = executor.prepareVisualizationProduct("/products/shade", controller.signal);
+  const rejected = assert.rejects(pending, {name: "AbortError"});
+  await until(() => ctx.calls.length === 1);
+  controller.abort();
+  await rejected;
+  const result = await executor.prepareVisualizationProduct("/products/shade", new AbortController().signal);
+  assert.equal(result.references.length, 2);
+  assert.equal(ctx.calls.length, 2, "Aborted preparation must not populate the cache");
+  assert.equal(ctx.timers.size, 0);
 });

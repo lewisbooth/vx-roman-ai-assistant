@@ -64,7 +64,8 @@ import {
   type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
-import type { VisualizationPreparation, ProductImageRole } from "../../../shared/visualizations";
+import { selectVisualizationProductReferences } from "../tools/product-references";
+import type { VisualizationPreparation } from "../../../shared/visualizations";
 
 export type BrowserToolResult =
   | CatalogResult
@@ -321,13 +322,9 @@ export function createStorefrontExecutor(
     return enqueue("foreground", async (signal) => {
       requireCurrentStore();
       const gallery = await loadGalleryNow(pageUrl, signal);
-      const items = gallery?.items.filter((item) => item.kind === "product").slice(0, 4) ?? [];
-      if (!items.length) throw new Error("This blind has no usable product images.");
-      return { productPath: new URL(pageUrl).pathname, references: items.map((item) => {
-        const clue = `${item.alt} ${new URL(item.src).pathname}`;
-        const role: ProductImageRole = /detail|close.?up|swatch|fabric/i.test(clue) ? "detail" : /room|lifestyle|installation|window/i.test(clue) ? "installation" : "unknown";
-        return { url: item.zoomSrc || item.src, role, alt: item.alt.slice(0, 200) };
-      }) };
+      const references = selectVisualizationProductReferences(gallery?.items ?? []);
+      if (!references.length) throw new Error("This blind has no usable product images.");
+      return { productPath: new URL(pageUrl).pathname, references };
     }, signal);
   }
 
