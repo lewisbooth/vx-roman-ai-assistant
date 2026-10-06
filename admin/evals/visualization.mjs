@@ -10,7 +10,7 @@ const alternateProduct = {path: "/products/synthetic-linen-roller", title: "Synt
 const acceptedJob = (status) => ({id: "e9b59a4b-a760-4189-8c86-79e02b9ce48a", windowId: visualizationWindow.id, windowTitle: visualizationWindow.title, productPath: visualizationProduct.path, productTitle: visualizationProduct.title, status});
 const acceptedPreview = (status) => [
   text("user", "Help me choose a blind for Study window, then visualize it."),
-  text("user", `Application media event: ${JSON.stringify({type: "media", version: 1, kind: "visualization", jobId: acceptedJob(status).id, customerIntent: true})}`),
+  text("user", `Application media outcome: visualization request already accepted (not a new request): ${JSON.stringify({type: "media", version: 1, kind: "visualization", jobId: acceptedJob(status).id, customerIntent: true})}`),
   text("assistant", "Your preview request is accepted and should be ready soon."),
 ];
 export const visualizationCases = [

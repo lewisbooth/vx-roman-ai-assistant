@@ -742,7 +742,7 @@ function modelHistory(
         .filter((part) => part.type === "media")
         .map((part) => ({
           role: "user" as const,
-          text: `Application media event: ${JSON.stringify(part)}`,
+          text: `${part.kind === "visualization" ? "Application media outcome: visualization request already accepted (not a new request)" : "Application media event"}: ${JSON.stringify(part)}`,
         })),
       ...(text
         ? [

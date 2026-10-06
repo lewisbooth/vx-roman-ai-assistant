@@ -84,7 +84,7 @@ export const askQuestionToolDefinition = {
   type: "function",
   name: "ask_question",
   description:
-    "Finish this reply atomically with a message, zero to ten verified product cards, one question and one to four clickable answers. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question. Questions and answers are plain text; message may use Markdown. Product IDs must come from successful catalog results in this reply. Returned choices request customer input and do not execute actions or grant consent. Optional navigationActions opens Cart directly without answering this question.",
+    "Finish this reply atomically with one question and one to four clickable answers, optional message and zero to ten verified product cards. Complete necessary tool work first, then call this alone; there is no prose response afterward. Put the question only in question. Questions and answers are plain text; message may use Markdown. Product IDs must come from successful catalog results in this reply. Returned choices request customer input and do not execute actions or grant consent. Optional navigationActions opens Cart directly without answering this question.",
   strict: true,
   parameters: {
     type: "object",
@@ -93,15 +93,16 @@ export const askQuestionToolDefinition = {
         type: "string",
         maxLength: 2000,
         description:
-          "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
+          "Only the new result needed for the latest request, not a recap of settled choices. Empty when the question alone is sufficient. Leave its conditions and the next choice to question.",
       },
       productIds: terminalProductsSchema,
-      question: { type: "string", minLength: 1, maxLength: 300 },
+      question: { type: "string", minLength: 1, maxLength: 300, description: "The sole next decision, including any condition or verified cost needed to answer it." },
       answers: {
         type: "array",
         items: { type: "string", minLength: 1, maxLength: 80 },
         minItems: 1,
         maxItems: 4,
+        description: "Short, distinct answers to the question. For a yes/no check use Yes, No, and optionally Not sure; do not repeat the condition or threshold.",
       },
       navigationActions: navigationActionsSchema,
     },
@@ -123,7 +124,7 @@ export const askMeasurementToolDefinition = {
         type: "string",
         maxLength: 2000,
         description:
-          "Necessary context or confirmed outcome only; empty for a simple question. Never repeat the question here.",
+          "Only the new result needed for the latest request, not a recap of settled choices. Empty when the measurement question and instructions are sufficient; do not repeat them here.",
       },
       productIds: terminalProductsSchema,
       question: { type: "string", minLength: 1, maxLength: 300 },

@@ -260,6 +260,42 @@ test("version probes recover stale replies and voices once, then remain read-onl
   });
 });
 
+test("accepted visualization outcomes retain historical order and storage without becoming another customer request", async () => {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const jobId = randomUUID(), windowId = randomUUID();
+  const accepted = {type: "media", version: 1, kind: "visualization", jobId, customerIntent: true};
+  const window = {type: "media", version: 1, kind: "window", windowId, title: "Study window", customerIntent: true};
+  const progress = {type: "media", version: 1, kind: "outcome", jobId, status: "generating"};
+  const records = [
+    {role: "user", parts: [{type: "text", text: "Choose a blind for Study window, then visualize it."}]},
+    {role: "context", parts: [window]},
+    {role: "context", parts: [accepted]},
+    {role: "user", parts: [{type: "text", text: "I'd like the different linen blind."}]},
+    {role: "context", parts: [progress]},
+  ];
+  await database.conversationMessage.createMany({data: records.map(({role, parts}, sequence) => ({
+    id: randomUUID(), requestId: randomUUID(), conversationId: id, sequence,
+    role, status: "complete", partsJson: JSON.stringify(parts), completedAt: new Date(),
+  }))});
+  await database.conversation.update({where: {id}, data: {nextSequence: records.length}});
+  const stored = await database.conversationMessage.findMany({where: {conversationId: id}, orderBy: {sequence: "asc"}});
+  const history = await repository.getModelHistory(id);
+  const outcomeIndex = history.findIndex(({text}) => text.startsWith("Application media outcome:"));
+  const outcome = history[outcomeIndex];
+  assert.match(outcome.text, /visualization request already accepted \(not a new request\)/);
+  assert.deepEqual(JSON.parse(outcome.text.slice(outcome.text.indexOf("{"))), accepted);
+  assert.equal(outcome.sequence, 2);
+  assert.equal(outcome.endSequence, 2);
+  assert.ok(outcomeIndex < history.findIndex(({text}) => text === records[3].parts[0].text));
+  for (const [sequence, part] of [[1, window], [4, progress]]) {
+    const projected = history.find((item) => item.sequence === sequence);
+    assert.ok(projected.text.startsWith("Application media event:"));
+    assert.deepEqual(JSON.parse(projected.text.slice(projected.text.indexOf("{"))), part);
+  }
+  assert.deepEqual(await database.conversationMessage.findMany({where: {conversationId: id}, orderBy: {sequence: "asc"}}), stored);
+  assert.equal((await database.conversation.findUnique({where: {id}})).nextSequence, records.length);
+});
+
 test("saved photos stay current outside loaded history and terminal photo widgets commit atomically", async () => {
   const envKeys = [
     "ROMAN_VISUALIZATIONS_ENABLED",
