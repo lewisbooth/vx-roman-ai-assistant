@@ -1694,6 +1694,149 @@ test("text and voice send the whole requested count in one native add without a 
   }
 });
 
+test("text and voice finish two requested layer samples with bounded serial identity and navigation", async (t) => {
+  for (const mode of ["text", "voice"])
+    for (const firstStatus of ["added", "already_in_cart"])
+      await t.test(`${mode}: ${firstStatus}`, async () => {
+        const env = setup();
+        const paths = ["/products/shade", "/products/curtain"];
+        const steps = paths.flatMap((productPath, index) => [
+          catalogCall(`identity-${index}`, "get_product", {id: `gid://shopify/Product/${index + 1}`}),
+          catalogCall(`navigate-${index}`, "navigate", {path: productPath}),
+          catalogCall(`sample-${index}`, "add_sample_to_cart", {productPath}),
+        ]);
+        env.streams.push(
+          ...steps.map((call) => events(completed("", {output: [call]}))),
+          events(completed("The requested blind and curtain samples are in your cart.")),
+        );
+        const executed = [];
+        const reply = await env.api.generateReply(
+          [{role: "user", text: "Order one sample of our chosen blind and one sample of our chosen curtain. Do not add the full products."}],
+          () => {}, new AbortController().signal,
+          async (id, name, args) => {
+            executed.push({id, name, args});
+            const index = Number(id.split("-")[1]);
+            if (name === "get_product") return {
+              products: [{id: args.id, title: index ? "Curtain" : "Shade", description: "", url: guideOrigin + paths[index]}], messages: [],
+            };
+            if (name === "navigate") return {status: "navigated", path: args.path, actions: {sampleAvailable: true}};
+            const status = index === 0 ? firstStatus : "added";
+            return {status, message: "Sample confirmed.", ...(status === "added" ? {addedSample: {productPath: args.productPath, title: index ? "Curtain" : "Shade"}} : {})};
+          }, mode,
+        );
+        assert.deepEqual(executed.map(({name}) => name), steps.map(({name}) => name));
+        assert.deepEqual(executed.filter(({name}) => name === "add_sample_to_cart").map(({args}) => args.productPath), paths);
+        for (const index of [4, 5]) {
+          const allowed = allowedToolNames(env.calls.requests[index].input);
+          for (const name of ["get_product", "lookup_catalog", "navigate", "add_sample_to_cart"])
+            assert.equal(allowed.includes(name), true, `${index}: ${name}`);
+          for (const name of ["search_products", "get_cart", "get_product_configuration", "get_product_guides", "configure_product", "apply_measurements", "add_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart"])
+            assert.equal(allowed.includes(name), false, `${index}: ${name}`);
+        }
+        assert.deepEqual(allowedToolNames(env.calls.requests[6].input), ["ask_question", "ask_measurement"]);
+        assert.equal(env.calls.requests.length, 7);
+        assert.match(reply.text, /blind and curtain samples/);
+      });
+});
+
+test("a failed or uncertain sample prevents another target or another cart mutation", async (t) => {
+  for (const mode of ["text", "voice"])
+    for (const result of ["throws", "uncertain", "handed_off", "unsupported"])
+      await t.test(`${mode}: ${result}`, async () => {
+        const env = setup();
+        env.streams.push(
+          events(completed("", {output: [catalogCall("first-sample", "add_sample_to_cart", {productPath: "/products/shade"})]})),
+          events(completed("", {output: [catalogCall("second-sample", "add_sample_to_cart", {productPath: "/products/curtain"})]})),
+          events(completed("The first sample was not confirmed; I have stopped without adding the other sample.")),
+        );
+        const executed = [];
+        await env.api.generateReply(
+          [{role: "user", text: "Order the blind and curtain samples."}],
+          () => {}, new AbortController().signal,
+          async (id, name) => {
+            executed.push(name);
+            if (result === "throws") throw new Error("Disconnected after native dispatch");
+            return {status: result, message: "Sample not confirmed."};
+          }, mode,
+        );
+        assert.deepEqual(executed, ["add_sample_to_cart"]);
+        const allowed = allowedToolNames(env.calls.requests[1].input);
+        for (const name of ["add_sample_to_cart", "add_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+          assert.equal(allowed.includes(name), false, name);
+      });
+});
+
+test("sample continuation cannot borrow configuration research or exceed six browser operations", async () => {
+  for (const deniedName of ["get_product_configuration", "search_products", "navigate"])
+    {
+      const env = setup();
+      const steps = [
+        configRead(1),
+        catalogCall("first-sample", "add_sample_to_cart", {productPath: "/products/shade"}),
+        catalogCall("identity-1", "get_product", {id: "gid://shopify/Product/2"}),
+        catalogCall("identity-2", "get_product", {id: "gid://shopify/Product/2"}),
+        ...(deniedName === "navigate" ? [
+          catalogCall("identity-3", "get_product", {id: "gid://shopify/Product/2"}),
+          catalogCall("identity-4", "get_product", {id: "gid://shopify/Product/2"}),
+        ] : []),
+        catalogCall("denied", deniedName, deniedName === "get_product_configuration" ? {productPath: "/products/shade"} : deniedName === "search_products" ? {queries: ["curtain"]} : {path: "/products/curtain"}),
+      ];
+      env.streams.push(...steps.map((call) => events(completed("", {output: [call]}))));
+      const executed = [];
+      await assert.rejects(env.api.generateReply(
+        [{role: "user", text: "Order a blind sample and curtain sample."}],
+        () => {}, new AbortController().signal,
+        async (id, name) => {
+          executed.push(name);
+          if (name === "get_product_configuration") return configuration(1);
+          if (name === "add_sample_to_cart") return {status: "added", message: "Sample added.", addedSample: {productPath: "/products/shade", title: "Shade"}};
+          return {products: [{id: "gid://shopify/Product/2", title: "Curtain", description: "", url: guideOrigin + "/products/curtain"}], messages: []};
+        },
+      ), /tool limit/i);
+      assert.equal(executed.length, deniedName === "navigate" ? 6 : 4);
+      assert.equal(allowedToolNames(env.calls.requests.at(-1).input).includes(deniedName), false);
+    }
+});
+
+test("text and voice stop the second sample when its identity or navigation preparation fails", async (t) => {
+  const preparations = [
+    ["navigate", {path: "/products/curtain"}, new Error("Navigation failed")],
+    ["navigate", {path: "/products/curtain"}, {error: "Navigation not confirmed."}],
+    ["navigate", {path: "/products/curtain"}, {status: "navigated", path: "/products/other"}],
+    ["get_product", {id: "gid://shopify/Product/2"}, new Error("Identity lookup failed")],
+    ["get_product", {id: "gid://shopify/Product/2"}, {products: [], messages: []}],
+    ["lookup_catalog", {ids: ["gid://shopify/Product/2"]}, new Error("Identity lookup failed")],
+    ["lookup_catalog", {ids: ["gid://shopify/Product/2"]}, {products: [], messages: []}],
+  ];
+  for (const mode of ["text", "voice"])
+    for (const [index, [name, args, outcome]] of preparations.entries())
+      await t.test(`${mode}: ${name} ${index}`, async () => {
+        const env = setup();
+        env.streams.push(
+          events(completed("", {output: [catalogCall("first-sample", "add_sample_to_cart", {productPath: "/products/shade"})]})),
+          events(completed("", {output: [catalogCall("prepare-second", name, args)]})),
+          events(completed("", {output: [catalogCall("second-sample", "add_sample_to_cart", {productPath: "/products/curtain"})]})),
+          events(completed("The blind sample was added; I could not prepare the curtain sample, so I stopped without another cart change.")),
+        );
+        const executed = [];
+        const reply = await env.api.generateReply(
+          [{role: "user", text: "Order both selected layer samples."}],
+          () => {}, new AbortController().signal,
+          async (id, tool) => {
+            executed.push(tool);
+            if (id === "first-sample") return {status: "added", message: "Blind sample added.", addedSample: {productPath: "/products/shade", title: "Shade"}};
+            if (outcome instanceof Error) throw outcome;
+            return outcome;
+          }, mode,
+        );
+        assert.deepEqual(executed, ["add_sample_to_cart", name]);
+        const allowed = allowedToolNames(env.calls.requests[2].input);
+        for (const mutation of ["add_sample_to_cart", "add_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+          assert.equal(allowed.includes(mutation), false, mutation);
+        assert.match(reply.text, /blind sample was added;.*stopped/i);
+      });
+});
+
 test("an unconfirmed addition blocks further cart mutations in text and voice", async () => {
   for (const mode of ["text", "voice"]) {
     const env = setup();

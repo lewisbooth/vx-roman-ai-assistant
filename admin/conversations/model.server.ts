@@ -94,6 +94,8 @@ export type ModelTurnDiagnostic =
 // The provider counts reasoning and structured tool arguments as output too.
 const OUTPUT_TOKEN_BUDGET = 8192;
 const EXPANDED_OUTPUT_TOKEN_BUDGET = 16384;
+// Two verified sample targets can each need identity, navigation and native add.
+const MAX_SAMPLE_TOOL_CALLS = 6;
 
 const incompleteReasons = [
   "max_output_tokens",
@@ -371,7 +373,8 @@ export async function generateReply(
   const actions = new StorefrontTurn();
   const withinToolBudget = (name: string) =>
     browserCalls < 4 ||
-    (actions.configurationMode &&
+    (actions.isSampleContinuation(name) && browserCalls < MAX_SAMPLE_TOOL_CALLS && browserCalls < MAX_TURN_TOOL_CALLS) ||
+    (actions.configurationMode && !actions.sampleAttempted &&
       (isConfigurationStep(name) || isGuideTool(name) || actions.isConfigurationCompletion(name)) &&
       browserCalls < MAX_TURN_TOOL_CALLS);
   let answerRepair = false;

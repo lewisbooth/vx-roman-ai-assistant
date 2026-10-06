@@ -200,3 +200,86 @@ test("an explicitly requested existing-line quantity change remains a separate s
   assert.equal(turn.allows("set_cart_quantity"), false);
   assert.equal(turn.allows("add_to_cart"), false);
 });
+
+test("two distinct sample targets run serially only after confirmed outcomes", () => {
+  for (const firstStatus of ["added", "already_in_cart"]) {
+    const turn = new StorefrontTurn();
+    const first = parseStorefrontCall("add_sample_to_cart", {productPath});
+    turn.before(first);
+    assert.equal(turn.sampleAttempted, true);
+    assert.equal(turn.allows("add_sample_to_cart"), false, "pending dispatch is not permission to continue");
+    turn.after(first, {
+      status: firstStatus, message: "First sample confirmed.",
+      ...(firstStatus === "added" ? {addedSample: {productPath, title: "Shade"}} : {}),
+    });
+    assert.equal(turn.allows("add_sample_to_cart"), true);
+    for (const name of ["get_product", "lookup_catalog", "navigate", "add_sample_to_cart"])
+      assert.equal(turn.isSampleContinuation(name), true, name);
+    for (const name of ["search_products", "get_cart", "get_product_configuration", "get_product_guides", "configure_product", "apply_measurements", "add_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart"])
+      assert.equal(turn.isSampleContinuation(name), false, name);
+    complete(turn, "navigate", {path: "/products/curtain"}, {status: "navigated", path: "/products/curtain"});
+    complete(turn, "add_sample_to_cart", {productPath: "/products/curtain"}, {
+      status: "added", message: "Curtain sample confirmed.",
+      addedSample: {productPath: "/products/curtain", title: "Curtain"},
+    });
+    readConfiguration(turn);
+    complete(turn, "get_cart", {}, cart);
+    for (const name of ["add_to_cart", "add_sample_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+      assert.equal(turn.allows(name), false, name);
+    assert.throws(() => complete(turn, "add_sample_to_cart", {productPath: "/products/third"}, {}), /not available/);
+    assert.equal(turn.isSampleContinuation("navigate"), false, "two physical sample attempts exhaust continuation");
+  }
+});
+
+test("sample failure, uncertainty or malformed confirmation stops further writes", () => {
+  for (const outcome of [
+    ...["unsupported", "needs_configuration", "handed_off", "cancelled", "uncertain"].map((status) => ({status, message: "Not confirmed."})),
+    {status: "added", message: "Wrong product.", addedSample: {productPath: "/products/other", title: "Other"}},
+    {status: "added", message: "Missing sample identity."},
+    new Error("Connection ended after submission"),
+  ]) {
+    const turn = new StorefrontTurn();
+    try { complete(turn, "add_sample_to_cart", {productPath}, outcome); } catch { /* the dispatch remains reserved */ }
+    readConfiguration(turn);
+    complete(turn, "get_cart", {}, cart);
+    for (const name of ["add_to_cart", "add_sample_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+      assert.equal(turn.allows(name), false, `${name}: ${JSON.stringify(outcome)}`);
+    assert.equal(turn.isSampleContinuation("navigate"), false);
+  }
+});
+
+test("a confirmed sample cannot be repeated or mixed with another cart mutation", () => {
+  for (const repeatPath of [productPath, `${productPath}/`]) {
+    const turn = new StorefrontTurn();
+    complete(turn, "add_sample_to_cart", {productPath}, {
+      status: "added", message: "Sample confirmed.", addedSample: {productPath, title: "Shade"},
+    });
+    for (const name of ["add_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+      assert.equal(turn.allows(name), false, name);
+    assert.throws(() => complete(turn, "add_sample_to_cart", {productPath: repeatPath}, {}), /already been attempted/);
+    assert.equal(turn.allows("add_sample_to_cart"), false, "a rejected replay does not reopen a write lane");
+  }
+});
+
+test("failed or empty second-target preparation closes sample continuation without replay", () => {
+  for (const [name, args, outcome] of [
+    ["navigate", {path: "/products/curtain"}, new Error("Navigation failed")],
+    ["navigate", {path: "/products/curtain"}, {error: "Navigation not confirmed."}],
+    ["navigate", {path: "/products/curtain"}, {status: "navigated", path: "/products/other"}],
+    ["get_product", {id: "gid://shopify/Product/2"}, new Error("Lookup failed")],
+    ["get_product", {id: "gid://shopify/Product/2"}, {error: "Lookup not confirmed."}],
+    ["get_product", {id: "gid://shopify/Product/2"}, {products: [], messages: []}],
+    ["lookup_catalog", {ids: ["gid://shopify/Product/2"]}, new Error("Lookup failed")],
+    ["lookup_catalog", {ids: ["gid://shopify/Product/2"]}, {products: [], messages: []}],
+  ]) {
+    const turn = new StorefrontTurn();
+    complete(turn, "add_sample_to_cart", {productPath}, {
+      status: "added", message: "Sample confirmed.", addedSample: {productPath, title: "Shade"},
+    });
+    try { complete(turn, name, args, outcome); } catch { /* the successful sample remains confirmed history */ }
+    readConfiguration(turn);
+    for (const action of ["add_sample_to_cart", "add_to_cart", "remove_from_cart", "set_cart_quantity", "clear_cart", "configure_product", "apply_measurements"])
+      assert.equal(turn.allows(action), false, `${name}: ${action}`);
+    assert.equal(turn.isSampleContinuation("navigate"), false);
+  }
+});

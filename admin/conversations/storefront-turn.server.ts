@@ -1,11 +1,12 @@
 import { parseCheckoutCall, parseCheckoutResult } from "../../shared/checkout";
 import { parseViewCall, parseViewResult } from "../../shared/assistant-view";
 import { parseStoreSupportCall } from "../../shared/store-support";
-import { parseNavigationCall } from "../../shared/navigation-tool";
+import { parseNavigationCall, parseNavigationResult } from "../../shared/navigation-tool";
 import {
   isCartMutation,
   isCartTool,
   parseCartCall,
+  parseCartResult,
 } from "../../shared/cart-tools";
 import {
   isProductConfigurationTool,
@@ -57,6 +58,8 @@ export function isConfigurationStep(name: string) {
 /** One turn's mutation permission; a model's tool choice is never authorization. */
 export class StorefrontTurn {
   private cartAttempted = false;
+  private readonly samplePaths = new Set<string>();
+  private sampleConfirmed = false;
   private formProductPath?: string;
   private formBlocked = false;
   private configurationAttempts = 0;
@@ -65,6 +68,22 @@ export class StorefrontTurn {
   configurationMode = false;
   checkoutAttempted = false;
   checkoutHandoff = false;
+
+  get sampleAttempted() {
+    return this.samplePaths.size > 0;
+  }
+
+  /** A confirmed first sample may finish one other requested product sample. */
+  isSampleContinuation(name: string): boolean {
+    return (
+      this.sampleConfirmed &&
+      this.samplePaths.size < 2 &&
+      !this.checkoutHandoff &&
+      !this.formBlocked &&
+      !this.formProductPath &&
+      ["get_product", "lookup_catalog", "navigate", "add_sample_to_cart"].includes(name)
+    );
+  }
 
   /** Only a newly validated browser read can establish a mutable capability. */
   observeConfiguration(configuration: ProductConfiguration) {
@@ -102,6 +121,12 @@ export class StorefrontTurn {
       (name === "open_checkout" && this.checkoutAttempted)
     )
       return false;
+    if (name === "add_sample_to_cart")
+      return (
+        !this.formBlocked &&
+        !this.formProductPath &&
+        (!this.cartAttempted || this.isSampleContinuation(name))
+      );
     if (isCartMutation(name))
       return (
         !this.cartAttempted &&
@@ -140,6 +165,14 @@ export class StorefrontTurn {
       if (this.formProductPath) this.formBlocked = true;
     }
     if (call.name === "open_checkout") this.checkoutAttempted = true;
+    if (call.name === "add_sample_to_cart") {
+      const path = call.arguments.productPath as string;
+      if (this.samplePaths.has(path))
+        throw new Error("This product's sample has already been attempted in this reply.");
+      // Reserve before dispatch. Until confirmed, no other sample may run.
+      this.samplePaths.add(path);
+      this.sampleConfirmed = false;
+    }
     if (isCartMutation(call.name)) this.cartAttempted = true;
     if (
       call.name === "configure_product" ||
@@ -190,6 +223,26 @@ export class StorefrontTurn {
     call: ReturnType<typeof parseStorefrontCall>,
     outcome: BrowserToolOutcome | MeasurementToolResult,
   ) {
+    if (this.isSampleContinuation(call.name)) {
+      if ("error" in outcome ||
+          ((call.name === "get_product" || call.name === "lookup_catalog") &&
+            (!("products" in outcome) || outcome.products.length === 0)))
+        this.sampleConfirmed = false;
+      else if (call.name === "navigate" &&
+          parseNavigationResult(outcome).path !== parseNavigationCall(call.arguments).path)
+        throw new Error("Sample preparation returned a different product page.");
+    }
+    if (call.name === "add_sample_to_cart") {
+      const result = parseCartResult(call.name, outcome);
+      if ("status" in result && result.status === "added" &&
+          result.addedSample?.productPath !== call.arguments.productPath)
+        throw new Error("The added sample returned a different product.");
+      this.sampleConfirmed =
+        "status" in result &&
+        (result.status === "already_in_cart" ||
+          (result.status === "added" &&
+            result.addedSample?.productPath === call.arguments.productPath));
+    }
     if (call.name === "get_product_configuration") {
       const configuration = parseProductConfigurationResult(call.name, outcome);
       if (
@@ -226,6 +279,8 @@ export class StorefrontTurn {
   }
 
   failed(name: string) {
+    if (name === "add_sample_to_cart" || this.isSampleContinuation(name))
+      this.sampleConfirmed = false;
     if (name === "configure_product" || name === "apply_measurements") {
       this.formBlocked = true;
       this.currentConfiguration = undefined;

@@ -95,7 +95,7 @@ const definitions = [
   ],
   [
     "add_sample_to_cart",
-    "Add only the explicitly requested sample from its verified current productPath, without query/hash. Theme verifies sample availability. No product configuration or extra approval needed; cannot fall back to adding the full product.",
+    "Add only the explicitly requested sample from its verified current productPath, without query/hash. Theme verifies current product identity and sample availability. At most two distinct product samples per reply, serially; a second requires the first added or already_in_cart. Failed or uncertain results stop further writes; never repeat an attempted sample or mix sample additions with other cart mutations. No product configuration or extra approval needed; cannot fall back to adding the full product.",
     { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
   ],
   [
