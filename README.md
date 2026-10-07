@@ -51,6 +51,8 @@ npm run build
 
 `check` runs lint, TypeScript and frontend/backend tests. `build` builds both apps. GitHub Actions runs these commands after `npm ci` on pushes and pull requests; it does not publish. Use `npm test`, `build:frontend` or `build:admin` for focused iteration.
 
+Database tests apply the checked-in migrations through Prisma's migration runner to disposable SQLite files before opening their pooled clients. Historical migration tests execute intact SQL scripts through the same test helper. Tests provide synthetic service credentials where needed; CI does not require a local `.env` or production credentials.
+
 Validate Shopify changes without publishing:
 
 ```powershell

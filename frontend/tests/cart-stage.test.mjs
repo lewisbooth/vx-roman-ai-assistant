@@ -909,7 +909,10 @@ test("original prices do not invent named discount allocations or total savings 
   await until(() => ctx.calls.length === 2, "Cart refresh");
   ctx.calls[1].complete(exampleCart);
   await until(
-    () => !ctx.container.querySelector('[role="status"]'),
+    () =>
+      ctx.container.querySelector(".roman-cart-price") &&
+      !ctx.container.querySelector('[role="status"]') &&
+      !ctx.container.querySelector("del"),
     "Refreshed cart rendered",
   );
   assert.equal(

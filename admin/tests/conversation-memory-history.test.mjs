@@ -1,24 +1,23 @@
 import assert from "node:assert/strict";
 import {Buffer} from "node:buffer";
 import {randomUUID} from "node:crypto";
-import {mkdtemp, readFile, readdir, rm} from "node:fs/promises";
+import {mkdtemp, rm} from "node:fs/promises";
 import {createRequire} from "node:module";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {after, before, test} from "node:test";
 import {PrismaClient} from "@prisma/client";
 import {build} from "esbuild";
+import { migrateTestDatabase } from "./helpers/database.mjs";
 
 const require = createRequire(import.meta.url), previousGlobal = global.prismaGlobal;
 const bundle = await build({entryPoints: ["admin/conversations/memory-history.server.ts"], bundle: true, write: false, format: "cjs", platform: "node", external: ["@prisma/client"]});
 let directory, database, recall;
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "roman-memory-history-"));
-  database = new PrismaClient({datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`});
-  for (const migration of (await readdir("prisma/migrations", {withFileTypes: true})).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()) {
-    const sql = await readFile(`prisma/migrations/${migration}/migration.sql`, "utf8");
-    for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) await database.$executeRawUnsafe(statement);
-  }
+  const databaseUrl = `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`;
+  await migrateTestDatabase(databaseUrl);
+  database = new PrismaClient({datasourceUrl: databaseUrl});
   global.prismaGlobal = database;
   const module = {exports: {}};
   new Function("require", "module", "exports", bundle.outputFiles[0].text)(require, module, module.exports);

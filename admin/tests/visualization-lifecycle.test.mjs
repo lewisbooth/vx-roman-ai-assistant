@@ -3,8 +3,6 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
-  readFile,
-  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -16,6 +14,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import { PrismaClient } from "@prisma/client";
 import { build } from "esbuild";
+import { migrateTestDatabase } from "./helpers/database.mjs";
 import sharp from "sharp";
 
 // Real SQL transactions and private file I/O; only remote image dependencies are
@@ -62,7 +61,10 @@ const require = createRequire(import.meta.url);
 const previousGlobal = global.prismaGlobal;
 const previousRemote = global.__romanImageTest;
 const names = [
+  "SHOPIFY_API_KEY",
+  "SHOPIFY_API_SECRET",
   "SHOPIFY_APP_URL",
+  "SCOPES",
   "ROMAN_MEDIA_ROOT",
   "ROMAN_VISUALIZATIONS_ENABLED",
   "ROMAN_VISUALIZATIONS_SHOPS",
@@ -256,34 +258,22 @@ before(async () => {
   directory = await mkdtemp(
     path.join(tmpdir(), "roman-visualization-lifecycle-"),
   );
+  const databaseUrl = `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`;
+  await migrateTestDatabase(databaseUrl);
   database = new PrismaClient({
-    datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+    datasourceUrl: databaseUrl,
   });
   global.prismaGlobal = database;
   Object.assign(process.env, {
+    SHOPIFY_API_KEY: "test-shopify-api-key",
+    SHOPIFY_API_SECRET: "test-shopify-api-secret",
     SHOPIFY_APP_URL: "https://roman.example.test",
+    SCOPES: "write_app_proxy",
     ROMAN_MEDIA_ROOT: path.join(directory, "media"),
     ROMAN_VISUALIZATIONS_ENABLED: "true",
     ROMAN_VISUALIZATIONS_SHOPS: "",
     OPENAI_IMAGE_API_KEY: "test-image-key",
   });
-  const migrations = (
-    await readdir("prisma/migrations", { withFileTypes: true })
-  )
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort();
-  for (const migration of migrations) {
-    const sql = await readFile(
-      `prisma/migrations/${migration}/migration.sql`,
-      "utf8",
-    );
-    for (const statement of sql
-      .split(";")
-      .map((value) => value.trim())
-      .filter(Boolean))
-      await database.$executeRawUnsafe(statement);
-  }
   rawPhoto = await sharp({
     create: { width: 32, height: 24, channels: 3, background: "#cab79d" },
   })
@@ -984,6 +974,27 @@ test("gallery bearer is scoped to installed shop, exact origin and revocation", 
     },
   });
   const credential = await api.createGalleryOwner(shop, origin);
+  const request = new Request(
+    `https://roman.example.test/api/gallery/${credential.ownerId}`,
+    {
+      headers: {
+        Origin: origin,
+        Authorization: `Bearer ${credential.token}`,
+      },
+    },
+  );
+  assert.deepEqual(await api.authenticateGallery(request, credential.ownerId), {
+    id: credential.ownerId,
+    shop,
+    origin,
+  });
+  await assert.rejects(
+    api.authenticateGallery(
+      new Request(request.url, { headers: { Origin: origin } }),
+      credential.ownerId,
+    ),
+    errorStatus(401),
+  );
   assert.equal(
     (
       await api.authorizeGallery(

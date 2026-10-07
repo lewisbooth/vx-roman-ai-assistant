@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import process from "node:process";
 import { after, before, beforeEach, test } from "node:test";
 import { PrismaClient } from "@prisma/client";
 import { build } from "esbuild";
+import { migrateTestDatabase, executeTestMigrations } from "./helpers/database.mjs";
 
 const require = createRequire(import.meta.url);
 const bundle = await build({
@@ -93,8 +94,10 @@ async function captureProbeQueries(run) {
 
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "roman-conversations-"));
+  const databaseUrl = `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`;
+  await migrateTestDatabase(databaseUrl);
   database = new PrismaClient({
-    datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+    datasourceUrl: databaseUrl,
     log: [{ emit: "event", level: "query" }],
   });
   database.$on("query", ({ query, params }) => {
@@ -106,24 +109,6 @@ before(async () => {
   });
   global.prismaGlobal = database;
   process.env.SHOPIFY_APP_URL = "https://roman.example.test";
-  const migrations = (
-    await readdir("prisma/migrations", { withFileTypes: true })
-  )
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort();
-  for (const migration of migrations) {
-    const sql = await readFile(
-      `prisma/migrations/${migration}/migration.sql`,
-      "utf8",
-    );
-    for (const statement of sql
-      .split(";")
-      .map((value) => value.trim())
-      .filter(Boolean)) {
-      await database.$executeRawUnsafe(statement);
-    }
-  }
   repository = loadRepository();
 });
 
@@ -3340,23 +3325,14 @@ test("ending a chat and server recovery prevent late catalog writes without losi
 });
 
 test("migration retains legacy messages, metadata and credentials and advances ordering past existing sequences", async () => {
-  const legacy = new PrismaClient({
-    datasourceUrl: `file:${path.join(directory, "migration.sqlite").replaceAll("\\", "/")}`,
-  });
-  async function migrate(name) {
-    const sql = await readFile(
-      `prisma/migrations/${name}/migration.sql`,
-      "utf8",
-    );
-    for (const statement of sql
-      .split(";")
-      .map((value) => value.trim())
-      .filter(Boolean))
-      await legacy.$executeRawUnsafe(statement);
-  }
+  const databaseUrl = `file:${path.join(directory, "migration.sqlite").replaceAll("\\", "/")}`;
+  let legacy;
   try {
-    await migrate("20240530213853_create_session_table");
-    await migrate("20260915120000_add_conversations");
+    await executeTestMigrations(databaseUrl, [
+      "20240530213853_create_session_table",
+      "20260915120000_add_conversations",
+    ]);
+    legacy = new PrismaClient({ datasourceUrl: databaseUrl });
     const id = randomUUID();
     const messageId = randomUUID();
     const originalText = 'A "quoted" blind\nwith café and 🪟';
@@ -3382,10 +3358,12 @@ test("migration retains legacy messages, metadata and credentials and advances o
       "priority",
       new Date(),
     );
-    await migrate("20260915150000_conversation_catalog_journey");
-    for (const migration of (await readdir("prisma/migrations", {withFileTypes:true}))
-      .filter(entry => entry.isDirectory() && entry.name > "20260915150000_conversation_catalog_journey")
-      .map(entry => entry.name).sort()) await migrate(migration);
+    await legacy.$disconnect();
+    const migrations = (await readdir("prisma/migrations", { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && entry.name >= "20260915150000_conversation_catalog_journey")
+      .map((entry) => entry.name).sort();
+    await executeTestMigrations(databaseUrl, migrations);
+    legacy = new PrismaClient({ datasourceUrl: databaseUrl });
     const row = await legacy.conversation.findUniqueOrThrow({
       where: { id },
       include: { messages: true },
@@ -3410,7 +3388,7 @@ test("migration retains legacy messages, metadata and credentials and advances o
     const violations = await legacy.$queryRawUnsafe("PRAGMA foreign_key_check");
     assert.deepEqual(violations, []);
   } finally {
-    await legacy.$disconnect();
+    await legacy?.$disconnect();
   }
 });
 
@@ -3450,11 +3428,8 @@ test("cart removal migration keeps completed history and pending actions readabl
   await assert.rejects(repository.getModelHistory(completed.id));
   await assert.rejects(repository.getSnapshot(pending.id));
 
-  const sql = await readFile("prisma/migrations/20261002170000_cart_removal_batches/migration.sql", "utf8");
-  const migrate = async () => {
-    for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean))
-      await database.$executeRawUnsafe(statement);
-  };
+  const databaseUrl = `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`;
+  const migrate = () => executeTestMigrations(databaseUrl, ["20261002170000_cart_removal_batches"]);
   await migrate();
   const expectedRows = originalRows.map((row) => {
     const lineKey = row.id === completed.tool.id ? "123:abc" : row.id === pending.tool.id ? "456:def" : undefined;

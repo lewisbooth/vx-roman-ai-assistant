@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,7 @@ import process from "node:process";
 import { after, before, beforeEach, test } from "node:test";
 import { PrismaClient } from "@prisma/client";
 import { build } from "esbuild";
+import { migrateTestDatabase } from "./helpers/database.mjs";
 
 const require = createRequire(import.meta.url);
 const bundle = await build({
@@ -48,27 +49,12 @@ function load() {
 
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "roman-measurements-"));
+  const databaseUrl = `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`;
+  await migrateTestDatabase(databaseUrl);
   database = new PrismaClient({
-    datasourceUrl: `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`,
+    datasourceUrl: databaseUrl,
   });
   global.prismaGlobal = database;
-  const migrations = (
-    await readdir("prisma/migrations", { withFileTypes: true })
-  )
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort();
-  for (const migration of migrations) {
-    const sql = await readFile(
-      `prisma/migrations/${migration}/migration.sql`,
-      "utf8",
-    );
-    for (const statement of sql
-      .split(";")
-      .map((value) => value.trim())
-      .filter(Boolean))
-      await database.$executeRawUnsafe(statement);
-  }
   api = load();
 });
 
