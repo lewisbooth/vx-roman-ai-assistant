@@ -756,11 +756,11 @@ test("a delegated presentation persists only its selected widget beside actual p
 
 for (const kind of ["windows", "upload"]) {
   test(`a delegated ${kind} photo picker preserves its voice owner and follows actual captions`, async () => {
-    const envKeys = ["ROMAN_VISUALIZATIONS_ENABLED", "ROMAN_VISUALIZATIONS_SHOPS", "OPENAI_IMAGE_API_KEY", "ROMAN_MEDIA_ROOT"];
+    const envKeys = ["ROMAN_VISUALIZATIONS_ENABLED", "ROMAN_VISUALIZATIONS_SHOPS", "OPENAI_API_KEY", "ROMAN_MEDIA_ROOT"];
     const prior = envKeys.map((key) => process.env[key]);
     process.env.ROMAN_VISUALIZATIONS_ENABLED = "true";
     process.env.ROMAN_VISUALIZATIONS_SHOPS = "hd-dev-single.myshopify.com";
-    process.env.OPENAI_IMAGE_API_KEY = "synthetic-test-only";
+    process.env.OPENAI_API_KEY = "synthetic-test-only";
     process.env.ROMAN_MEDIA_ROOT = directory;
     const ownerId = randomUUID(), photoId = randomUUID();
     try {

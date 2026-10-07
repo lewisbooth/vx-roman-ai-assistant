@@ -671,7 +671,7 @@ export async function generateReply(
             await reportPrimaryUnavailable();
             // The current provider round has not published text or dispatched
             // its tool calls. Prior round outcomes are already in its input.
-            if (!fallbackAttempted && !isServiceSuspended()) {
+            if (FALLBACK_TEXT_MODEL && !fallbackAttempted && !isServiceSuspended()) {
               fallbackAttempted = true;
               model = FALLBACK_TEXT_MODEL;
               turnModel = model;

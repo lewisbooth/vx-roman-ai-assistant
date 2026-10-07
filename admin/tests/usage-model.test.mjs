@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import { setImmediate } from "node:timers";
@@ -20,7 +22,7 @@ class StubAPIConnectionError extends StubAPIError {
     this.name = "Error"; // The installed SDK uses this generic name.
   }
 }
-const bundle = await build({
+const buildModelBundle = (withFallbackFixture = false) => build({
   stdin: {
     contents: `export * from "./admin/conversations/model.server.ts";
       export * from "./admin/conversations/availability.server.ts";`,
@@ -34,6 +36,22 @@ const bundle = await build({
     {
       name: "model-api",
       setup(build) {
+        if (withFallbackFixture) {
+          // Keep existing failover scenarios meaningful independently of the
+          // production configuration, whose optional fallback is now disabled.
+          build.onResolve({ filter: /availability\.server(?:\.ts)?$/ }, () => ({
+            path: path.resolve("admin/conversations/availability.server.ts"),
+            namespace: "fallback-fixture",
+          }));
+          build.onLoad({ filter: /.*/, namespace: "fallback-fixture" }, async (args) => ({
+            contents: (await readFile(args.path, "utf8")).replace(
+              /export const FALLBACK_TEXT_MODEL: string \| null = null;/,
+              'export const FALLBACK_TEXT_MODEL: string | null = "gpt-5.6-luna";',
+            ),
+            loader: "ts",
+            resolveDir: path.dirname(args.path),
+          }));
+        }
         build.onResolve({ filter: /api-errors\/repository\.server$/ }, (args) => ({
           path: args.path,
           namespace: "incidents",
@@ -53,6 +71,8 @@ const bundle = await build({
     },
   ],
 });
+const bundle = await buildModelBundle(true);
+const singleModelBundle = await buildModelBundle();
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const tokens = (input, output, cached = 0, reasoning = 0) => ({
   input_tokens: input,
@@ -100,7 +120,7 @@ const outputLimit = (usage = tokens(30, 8192, 10, 8000), output = []) => {
   event.response.incomplete_details = { reason: "max_output_tokens" };
   return event;
 };
-function setup(scripts, initialAvailability = "healthy") {
+function setup(scripts, initialAvailability = "healthy", singleModel = false) {
   const records = [];
   const requests = [];
   const incidents = [];
@@ -119,7 +139,7 @@ function setup(scripts, initialAvailability = "healthy") {
     },
   };
   const module = { exports: {} };
-  runInNewContext(bundle.outputFiles[0].text, {
+  runInNewContext((singleModel ? singleModelBundle : bundle).outputFiles[0].text, {
     module,
     exports: module.exports,
     require,
@@ -139,6 +159,8 @@ function setup(scripts, initialAvailability = "healthy") {
     requests,
     incidents,
     timers,
+    primaryModel: module.exports.PRIMARY_TEXT_MODEL,
+    fallbackModel: module.exports.FALLBACK_TEXT_MODEL,
     status: () => module.exports.getAvailabilityStatus(),
     tick: async () => {
       const timer = timers.find((item) => !item.cancelled && !item.ran);
@@ -415,6 +437,66 @@ test("photo clarification rejects pickers, duplicate wording and malformed answe
   });
 });
 
+test("the configured single advisor rejects outages without a lower-model attempt", async () => {
+  const rejection = new StubAPIError(404, "model_not_found");
+  const app = setup([async () => { throw rejection; }], "healthy", true);
+  assert.equal(app.primaryModel, "gpt-6.1-sol");
+  assert.equal(app.fallbackModel, null);
+  await assert.rejects(app.run(), (error) => error === rejection);
+  assert.deepEqual(app.requests.map(([request]) => request.model), [app.primaryModel]);
+  assert.deepEqual(app.records.map((entry) => entry.status), ["pending", "unavailable"]);
+  assert.deepEqual(app.incidents, ["outage"]);
+  assert.equal(await app.status(), "suspended");
+  await assert.rejects(app.run(), { status: 503 });
+  assert.equal(app.requests.length, 1);
+});
+
+test("a saved retired fallback incident suspends until the sole current advisor recovers", async () => {
+  const app = setup([async () => ({ status: "completed" })], "fallback", true);
+  assert.equal(await app.status(), "suspended");
+  assert.deepEqual(app.incidents, ["outage"]);
+  await assert.rejects(app.run(), { status: 503 });
+  assert.equal(app.requests.length, 0);
+  assert.equal(await app.tick(), 1_000);
+  assert.equal(await app.status(), "available");
+  assert.deepEqual(app.requests.map(([request]) => request.model), [app.primaryModel]);
+  assert.deepEqual(app.incidents, ["outage", "healthy"]);
+});
+
+test("single-advisor recovery keeps capped backoff and probes only the configured model", async () => {
+  const unavailable = new StubAPIError(503, "server_error");
+  const app = setup([
+    ...Array.from({ length: 6 }, () => async () => { throw unavailable; }),
+    async () => ({ status: "completed" }),
+  ], "outage", true);
+  assert.equal(await app.status(), "suspended");
+  const delays = [];
+  for (let index = 0; index < 6; index++) delays.push(await app.tick());
+  assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]);
+  assert.equal(await app.status(), "suspended");
+  assert.equal(await app.tick(), 30_000);
+  assert.equal(await app.status(), "available");
+  assert.deepEqual(app.incidents, ["healthy"]);
+  assert.ok(app.requests.every(([request]) =>
+    request.model === app.primaryModel && request.input === "Reply with OK." &&
+    request.reasoning.effort === "medium" && request.service_tier === "fast" &&
+    request.store === false));
+});
+
+test("a sole-advisor failure after a tool result preserves the completed action without replay", async () => {
+  const unavailable = new StubAPIError(503, "server_error");
+  const app = setup([events(toolRound()), async () => { throw unavailable; }], "healthy", true);
+  let actions = 0;
+  await assert.rejects(app.run(undefined, { execute: async () => {
+    actions++;
+    return { products: [], messages: [] };
+  } }), (error) => error === unavailable);
+  assert.equal(actions, 1);
+  assert.deepEqual(app.requests.map(([request]) => request.model), [app.primaryModel, app.primaryModel]);
+  assert.equal(await app.status(), "suspended");
+  assert.deepEqual(app.incidents, ["outage"]);
+});
+
 test("a primary access rejection falls back before output and records both attempts", async () => {
   const rejection = new StubAPIError(403, "model_not_found");
   const app = setup([
@@ -431,7 +513,7 @@ test("a primary access rejection falls back before output and records both attem
   assert.equal(app.requests.length, 2);
   assert.deepEqual(
     app.requests.map(([request]) => request.model),
-    ["gpt-5.6-terra", "gpt-5.6-luna"],
+    [app.primaryModel, "gpt-5.6-luna"],
   );
   assert.deepEqual(
     app.records.map((entry) => entry.status),
@@ -439,7 +521,7 @@ test("a primary access rejection falls back before output and records both attem
   );
   assert.deepEqual(
     app.records.filter((entry) => entry.status === "pending").map((entry) => entry.model),
-    ["gpt-5.6-terra", "gpt-5.6-luna"],
+    [app.primaryModel, "gpt-5.6-luna"],
   );
   assert.deepEqual(app.incidents, ["fallback"]);
   assert.equal(await app.status(), "degraded");
@@ -510,7 +592,7 @@ test("connection, authentication and model access failures trigger fallback, whi
     ]);
     await app.run();
     assert.deepEqual(app.requests.map(([request]) => request.model), [
-      "gpt-5.6-terra",
+      app.primaryModel,
       "gpt-5.6-luna",
     ]);
     assert.equal(await app.status(), "degraded");
@@ -575,8 +657,8 @@ test("a later provider round falls back using prior tool results without replayi
   });
   assert.equal(actions, 1);
   assert.deepEqual(app.requests.map(([request]) => request.model), [
-    "gpt-5.6-terra",
-    "gpt-5.6-terra",
+    app.primaryModel,
+    app.primaryModel,
     "gpt-5.6-luna",
   ]);
   assert.equal(app.requests[2][0].input.some((item) => item.type === "function_call_output"), true);
@@ -723,7 +805,7 @@ test("output exhaustion after a successful search retains catalogue evidence and
   });
   assert.deepEqual(executions, [["tool_call_1", "search_products"]]);
   assert.deepEqual(plain(reply.presentation.productRefs), [{ id: product.id, title: product.title }]);
-  assert.deepEqual(app.requests.map(([request]) => request.model), ["gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra"]);
+  assert.deepEqual(app.requests.map(([request]) => request.model), [app.primaryModel, app.primaryModel, app.primaryModel]);
   assert.deepEqual(app.requests.map(([request]) => request.max_output_tokens), [8192, 8192, 16384]);
   const previous = plain(app.requests[1][0]);
   const retry = plain(app.requests[2][0]);

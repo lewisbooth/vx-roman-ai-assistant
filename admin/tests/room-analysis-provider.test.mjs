@@ -12,7 +12,7 @@ const bundle = await build({
   } }],
 });
 const observed = { image_kind: "other", summary: "No room is visible.", colours: [], decor_style: [], notable_features: [], windows: { visible_count: 0, count_confidence: "high", count_note: "", items: [] }, limitations: ["This is not a room photo."] };
-const response = { status: "completed", model: "gpt-5.6-luna", service_tier: "priority", output_text: JSON.stringify(observed), usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 20 }, output_tokens: 50, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 150 } };
+const response = { status: "completed", model: "gpt-6-luna", service_tier: "fast", output_text: JSON.stringify(observed), usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 20 }, output_tokens: 50, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 150 } };
 function load(create) {
   const mock = { create }; const module = { exports: {} };
   runInNewContext(bundle.outputFiles[0].text, { module, exports: module.exports, mock, process: { env: { OPENAI_API_KEY: "test" } } });
@@ -25,9 +25,9 @@ test("analysis uses the benchmarked narrow request, no persistence or SDK retrie
   const result = await api.analyzeRoomPhoto(Buffer.from("private image"), { usageId: "usage", signal, onUsage: async value => usage.push(value) });
   assert.deepEqual(JSON.parse(JSON.stringify(result)), observed);
   assert.equal(mock.options.maxRetries, 0); assert.equal(mock.options.timeout, 30000); assert.equal(options.signal, signal);
-  assert.equal(request.model, "gpt-5.6-luna"); assert.equal(request.service_tier, "fast"); assert.equal(request.store, false); assert.equal(request.reasoning.effort, "none");
+  assert.equal(request.model, "gpt-6-luna"); assert.equal(request.service_tier, "fast"); assert.equal(request.store, false); assert.equal(request.reasoning.effort, "none");
   assert.equal(request.input[0].content[1].detail, "high"); assert.equal(request.text.format.strict, true);
-  assert.equal(request.max_output_tokens, 2400); assert.equal(usage[0].serviceTier, "priority"); assert.equal(usage[0].cacheWriteInputTokens, 20);
+  assert.equal(request.max_output_tokens, 2400); assert.equal(usage[0].model, "gpt-6-luna"); assert.equal(usage[0].serviceTier, "fast"); assert.equal(usage[0].cacheWriteInputTokens, 20);
 });
 test("malformed or incomplete output cannot lose provider usage or become cached observations", async () => {
   for (const variant of [{ ...response, output_text: "{}" }, { ...response, status: "incomplete" }]) {

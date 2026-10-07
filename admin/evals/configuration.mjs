@@ -1018,7 +1018,7 @@ async function liveEvaluation(args) {
   const declarations = ["PRIMARY_TEXT_MODEL", "FALLBACK_TEXT_MODEL"]
     .map((name) => {
       const match = availability.match(
-        new RegExp(`export const ${name} = ("[^"\\r\\n]+");`),
+        new RegExp(`export const ${name}(?:\\s*:\\s*string \\| null)? = ("[^"\\r\\n]+"|null);`),
       );
       assert.ok(
         match,

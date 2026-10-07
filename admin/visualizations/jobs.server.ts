@@ -681,7 +681,7 @@ async function executeJob(id: string, origin: string) {
           });
         },
       },
-      { apiKey: process.env.OPENAI_IMAGE_API_KEY! },
+      { apiKey: process.env.OPENAI_API_KEY! },
     );
     if (result.image) {
       const key = `${id}.jpg`;

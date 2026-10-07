@@ -74,7 +74,7 @@ const names = [
   "ROMAN_MEDIA_ROOT",
   "ROMAN_VISUALIZATIONS_ENABLED",
   "ROMAN_VISUALIZATIONS_SHOPS",
-  "OPENAI_IMAGE_API_KEY",
+  "OPENAI_API_KEY",
 ];
 const previousEnvironment = Object.fromEntries(
   names.map((name) => [name, process.env[name]]),
@@ -157,7 +157,8 @@ function receipt(input, outcome = "succeeded", fallbackEligible = false) {
     retryAfterSeconds: null,
   };
 }
-async function success(input) {
+async function success(input, options) {
+  assert.equal(options.apiKey, "test-main-key", "generation uses the shared server-only OpenAI key");
   calls.push(input);
   const physical = receipt(input);
   await input.onReceipt(physical);
@@ -278,7 +279,7 @@ before(async () => {
     ROMAN_MEDIA_ROOT: path.join(directory, "media"),
     ROMAN_VISUALIZATIONS_ENABLED: "true",
     ROMAN_VISUALIZATIONS_SHOPS: "",
-    OPENAI_IMAGE_API_KEY: "test-image-key",
+    OPENAI_API_KEY: "test-main-key",
   });
   rawPhoto = await sharp({
     create: { width: 32, height: 24, channels: 3, background: "#cab79d" },
@@ -542,14 +543,14 @@ test("one paid receipt, one immutable result, no repeat generation and linked de
 
 test("eligible Flare continuation keeps one job and two physical receipts, unknown attempts do not retry", async () => {
   const f = await fixture();
-  global.__romanImageTest.provider = async (input) => {
+  global.__romanImageTest.provider = async (input, options) => {
     if (input.model.endsWith("sunburst")) {
       calls.push(input);
       const physical = receipt(input, "failed", true);
       await input.onReceipt(physical);
       return { receipt: physical, image: null, imageErrorCode: null };
     }
-    return success(input);
+    return success(input, options);
   };
   const job = await prepare(f);
   assert.equal((await settled(job.id)).status, "completed");
@@ -561,7 +562,7 @@ test("eligible Flare continuation keeps one job and two physical receipts, unkno
   assert.equal(await database.imageGenerationAttempt.count(), 2);
   assert.equal(calls[0].room.sha256, calls[1].room.sha256);
   assert.notEqual(calls[0].requestId, calls[1].requestId);
-  global.__romanImageTest.provider = async (input) => {
+  global.__romanImageTest.provider = async (input, options) => {
     calls.push(input);
     const physical = receipt(input, "unknown", false);
     await input.onReceipt(physical);
@@ -590,8 +591,8 @@ test("deletion while the provider is running cannot publish late pixels or relea
   const f = await fixture();
   const dispatched = gate(),
     release = gate();
-  global.__romanImageTest.provider = async (input) => {
-    const result = await success(input);
+  global.__romanImageTest.provider = async (input, options) => {
+    const result = await success(input, options);
     dispatched.resolve();
     await release.promise;
     return result;
@@ -665,8 +666,8 @@ test("storage failure after a known successful receipt remains failed with the p
   const f = await fixture();
   const brokenRoot = path.join(directory, "not-a-directory");
   await writeFile(brokenRoot, "not a folder");
-  global.__romanImageTest.provider = async (input) => {
-    const result = await success(input);
+  global.__romanImageTest.provider = async (input, options) => {
+    const result = await success(input, options);
     process.env.ROMAN_MEDIA_ROOT = brokenRoot;
     return result;
   };
@@ -1117,8 +1118,8 @@ test("disabling the feature allows an already dispatched receipt and result to s
   const f = await fixture();
   const dispatched = gate(),
     release = gate();
-  global.__romanImageTest.provider = async (input) => {
-    const result = await success(input);
+  global.__romanImageTest.provider = async (input, options) => {
+    const result = await success(input, options);
     dispatched.resolve();
     await release.promise;
     return result;
@@ -1137,7 +1138,7 @@ test("disabling the feature allows an already dispatched receipt and result to s
 
 test("disabling the shop after primary rejection prevents a new Flare dispatch", async () => {
   const f = await fixture();
-  global.__romanImageTest.provider = async (input) => {
+  global.__romanImageTest.provider = async (input, options) => {
     calls.push(input);
     const physical = receipt(input, "failed", true);
     await input.onReceipt(physical);

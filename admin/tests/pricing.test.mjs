@@ -97,6 +97,17 @@ test("long-context prices apply to the whole request only above the input thresh
   }
 });
 
+test("Sol uses dated rates, returned tier and long context without repricing historical models", () => {
+  const sol = usage({ model: "gpt-6.1-sol", createdAt: "2026-10-07T12:00:00.000Z" });
+  close(estimateModelUsage(sol).usd, 0.00658);
+  assert.equal(estimateModelUsage(sol).rateId, "gpt-6.1-sol-fast-2026-10-07");
+  assert.deepEqual(estimateModelUsage({ ...sol, serviceTier: "fast" }), estimateModelUsage(sol));
+  close(estimateModelUsage({ ...sol, serviceTier: "default" }).usd, 0.00329);
+  close(estimateModelUsage({ ...sol, inputTokens: 272001 }).usd, 2.179168);
+  assert.equal(estimateModelUsage({ ...sol, createdAt: "2026-10-06T23:59:59.999Z" }).reason, "missing_rate");
+  assert.equal(estimateModelUsage({ ...sol, serviceTier: "unknown" }).reason, "missing_rate");
+});
+
 test("Terra uses dated Standard and Fast rates without changing Luna history", () => {
   const terra = usage({
     model: "gpt-5.6-terra",

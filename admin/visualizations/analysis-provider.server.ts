@@ -4,7 +4,7 @@ import { parseRoomAnalysis, roomAnalysisSchema } from "../../shared/room-analysi
 import { ROOM_ANALYSIS_PROMPT } from "../prompts/room-analysis.server";
 import type { ModelUsageUpdate } from "../usage/contracts";
 
-export const ROOM_ANALYSIS_MODEL = "gpt-5.6-luna";
+export const ROOM_ANALYSIS_MODEL = "gpt-6-luna";
 export const ROOM_ANALYSIS_TIMEOUT_MS = 30_000;
 const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 2_147_483_647 ? value : null;
 export function analysisUsage(id: string, status: ModelUsageUpdate["status"], response?: Response): ModelUsageUpdate {

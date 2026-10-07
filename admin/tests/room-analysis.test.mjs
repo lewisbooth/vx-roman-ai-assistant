@@ -29,7 +29,7 @@ const bundle = await build({
   } }],
 });
 const load = () => { const module = { exports: {} }; new Function("require", "module", "exports", bundle.outputFiles[0].text)(require, module, module.exports); return module.exports; };
-const envNames = ["ROMAN_MEDIA_ROOT", "ROMAN_VISUALIZATIONS_ENABLED", "ROMAN_VISUALIZATIONS_SHOPS", "OPENAI_IMAGE_API_KEY", "OPENAI_API_KEY"];
+const envNames = ["ROMAN_MEDIA_ROOT", "ROMAN_VISUALIZATIONS_ENABLED", "ROMAN_VISUALIZATIONS_SHOPS", "OPENAI_API_KEY"];
 const savedEnv = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
 const savedPrisma = global.prismaGlobal;
 const savedProvider = global.__roomAnalysis;
@@ -53,7 +53,7 @@ before(async () => {
   const datasourceUrl = `file:${path.join(directory, "test.sqlite").replaceAll("\\", "/")}`;
   await migrateTestDatabase(datasourceUrl);
   database = new PrismaClient({ datasourceUrl }); global.prismaGlobal = database;
-  Object.assign(process.env, { ROMAN_MEDIA_ROOT: path.join(directory, "media"), ROMAN_VISUALIZATIONS_ENABLED: "true", ROMAN_VISUALIZATIONS_SHOPS: "", OPENAI_IMAGE_API_KEY: "synthetic", OPENAI_API_KEY: "synthetic" });
+  Object.assign(process.env, { ROMAN_MEDIA_ROOT: path.join(directory, "media"), ROMAN_VISUALIZATIONS_ENABLED: "true", ROMAN_VISUALIZATIONS_SHOPS: "", OPENAI_API_KEY: "synthetic" });
   bytes = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#e0d0c0" } }).jpeg().toBuffer();
 });
 beforeEach(async () => {
@@ -133,12 +133,25 @@ test("restart resumes queued work and retries an interrupted request only once",
   api = load(); api.kickRoomAnalysis(); const exhausted = await settled(photo.id);
   assert.equal(exhausted.analysisStatus, "failed"); assert.equal(calls.length, 2);
 });
-test("a missing analysis credential keeps the photo usable and records no undispatched provider usage", async () => {
+test("a missing shared credential blocks new uploads before persistence or provider usage", async () => {
   const f = await fixture(); delete process.env.OPENAI_API_KEY;
   try {
-    const photo = await api.saveWindow(f.owner, f.conversation.id, f.upload); const result = await settled(photo.id);
-    assert.equal(result.uploadStatus, "ready"); assert.equal(result.analysisStatus, "failed");
+    await assert.rejects(api.saveWindow(f.owner, f.conversation.id, f.upload), { status: 503 });
+    assert.equal(await database.windowPhoto.count(), 0);
     assert.equal(calls.length, 0); assert.equal(await database.modelUsage.count(), 0);
+  } finally { process.env.OPENAI_API_KEY = "synthetic"; }
+});
+
+test("loss of the shared credential keeps saved photos usable and records no undispatched analysis usage", async () => {
+  const f = await fixture();
+  const photo = await api.saveWindow(f.owner, f.conversation.id, f.upload); await settled(photo.id);
+  await database.windowPhoto.update({ where: { id: photo.id }, data: { analysisStatus: "queued", analysisAttempts: 0, analysisJson: null, analysisUsageId: null } });
+  const priorUsage = await database.modelUsage.count(); calls.length = 0;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    api.kickRoomAnalysis(); const result = await settled(photo.id);
+    assert.equal(result.uploadStatus, "ready"); assert.equal(result.analysisStatus, "failed");
+    assert.equal(calls.length, 0); assert.equal(await database.modelUsage.count(), priorUsage);
   } finally { process.env.OPENAI_API_KEY = "synthetic"; }
 });
 test("queued photos are processed after server restart without a new customer action", async () => {

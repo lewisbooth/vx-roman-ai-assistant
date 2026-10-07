@@ -5,8 +5,8 @@ import {
 } from "../api-errors/repository.server";
 import { ServiceUnavailableError } from "./errors.server";
 
-export const PRIMARY_TEXT_MODEL = "gpt-5.6-terra";
-export const FALLBACK_TEXT_MODEL = "gpt-5.6-luna";
+export const PRIMARY_TEXT_MODEL = "gpt-6.1-sol";
+export const FALLBACK_TEXT_MODEL: string | null = null;
 export const UNAVAILABLE_MESSAGE = "Roman is currently unavailable";
 
 export type AvailabilityStatus = "available" | "degraded" | "suspended";
@@ -55,7 +55,7 @@ async function probeModels() {
     if (await checkModel(PRIMARY_TEXT_MODEL)) {
       probeDelayMs = 1_000;
       await transition("available");
-    } else if (status === "suspended" && (await checkModel(FALLBACK_TEXT_MODEL))) {
+    } else if (FALLBACK_TEXT_MODEL && status === "suspended" && (await checkModel(FALLBACK_TEXT_MODEL))) {
       probeDelayMs = 1_000;
       await transition("degraded");
     } else {
@@ -104,9 +104,15 @@ async function initialize() {
           : saved === "fallback"
             ? "degraded"
             : "suspended";
-      if (status === "suspended")
-        for (const listener of suspensionListeners) listener();
-      scheduleProbe();
+      if (status === "degraded" && !FALLBACK_TEXT_MODEL) {
+        // A saved fallback incident cannot route to a retired model. Preserve
+        // the outage until the configured primary's recovery probe succeeds.
+        await transition("suspended");
+      } else {
+        if (status === "suspended")
+          for (const listener of suspensionListeners) listener();
+        scheduleProbe();
+      }
     } catch {
       // A persisted outage must not silently become healthy on restart merely
       // because the incident store could not be read.
@@ -132,7 +138,11 @@ export async function textModelForRequest(): Promise<string> {
   await initialize();
   if (status === "suspended")
     throw new ServiceUnavailableError();
-  return status === "degraded" ? FALLBACK_TEXT_MODEL : PRIMARY_TEXT_MODEL;
+  if (status === "degraded") {
+    if (!FALLBACK_TEXT_MODEL) throw new ServiceUnavailableError();
+    return FALLBACK_TEXT_MODEL;
+  }
+  return PRIMARY_TEXT_MODEL;
 }
 
 export async function assertServiceAvailable(): Promise<void> {
@@ -145,7 +155,8 @@ export function isServiceSuspended(): boolean {
 
 export async function reportPrimaryUnavailable(): Promise<void> {
   await initialize();
-  if (status === "available") await transition("degraded");
+  if (status === "available")
+    await transition(FALLBACK_TEXT_MODEL ? "degraded" : "suspended");
   else scheduleProbe();
 }
 

@@ -15,5 +15,5 @@ export function mediaRoot() {
 }
 export function visualizationsEnabled(shop?: string) {
   const shops = process.env.ROMAN_VISUALIZATIONS_SHOPS?.split(",").map((value) => value.trim()).filter(Boolean);
-  return process.env.ROMAN_VISUALIZATIONS_ENABLED === "true" && !!process.env.OPENAI_IMAGE_API_KEY?.trim() && !!process.env.ROMAN_MEDIA_ROOT && (!shop || !shops?.length || shops.includes(shop));
+  return process.env.ROMAN_VISUALIZATIONS_ENABLED === "true" && !!process.env.OPENAI_API_KEY?.trim() && !!process.env.ROMAN_MEDIA_ROOT && (!shop || !shops?.length || shops.includes(shop));
 }
