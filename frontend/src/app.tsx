@@ -733,10 +733,11 @@ function Assistant({
                   )}
                   {visualization.localCards}
                 </div>
-                {(hasCustomerReply || view !== "chat") && (
+                {(hasCustomerReply || visualization.analyzingRoom || view !== "chat") && (
                   <ReplyActivity
                     state={state}
                     ending={ending}
+                    analyzingRoom={visualization.analyzingRoom}
                     onContentChange={followConversation}
                   />
                 )}

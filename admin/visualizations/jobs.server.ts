@@ -13,7 +13,7 @@ import { galleryTokenHash, type GalleryIdentity } from "./auth.server";
 import {
   ACTIVE_JOB_STATUSES,
   JOB_DEADLINE_MS,
-  MEDIA_CONSENT_VERSION,
+  VISUALIZATION_CONSENT_VERSIONS,
   RESULT_RESERVATION_BYTES,
   visualizationsEnabled,
 } from "./config.server";
@@ -172,7 +172,7 @@ export async function startVisualization(
         "Choose this blind before visualizing it.",
       );
     const photo = await ownedPhoto(owner.id, input.windowId, tx);
-    if (photo.consentVersion !== MEDIA_CONSENT_VERSION)
+    if (!VISUALIZATION_CONSENT_VERSIONS.includes(photo.consentVersion))
       throw new ConversationError(
         409,
         "This photo needs updated image consent. Upload it again.",

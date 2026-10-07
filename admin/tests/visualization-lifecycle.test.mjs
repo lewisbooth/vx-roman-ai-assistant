@@ -37,6 +37,12 @@ const bundle = await build({
     {
       name: "remote-image-boundary",
       setup(builder) {
+        // Advisory photo analysis has its own durable lifecycle tests. Keep
+        // these generation tests independent of background model requests.
+        builder.onLoad({ filter: /visualizations[\\/]analysis\.server\.ts$/ }, () => ({
+          contents: `export const kickRoomAnalysis=()=>{};`,
+          loader: "ts",
+        }));
         builder.onLoad(
           { filter: /visualizations[\\/]product-images\.server\.ts$/ },
           () => ({
@@ -1142,4 +1148,14 @@ test("disabling the shop after primary rejection prevents a new Flare dispatch",
   assert.equal((await settled(job.id)).status, "failed");
   assert.equal(calls.length, 1);
   assert.equal(await database.imageGenerationAttempt.count(), 1);
+});
+
+test("saved photos with visualization-only v1 consent remain eligible without analysis backfill", async () => {
+  const f = await fixture();
+  await database.windowPhoto.update({ where: { id: f.photo.id }, data: {
+    consentVersion: "roman-window-photo-v1", analysisStatus: null, analysisVersion: null, analysisQueuedAt: null,
+  } });
+  const job = await api.startVisualization(f.owner, f.conversation.id, f.input);
+  assert.equal(job.status, "awaiting_product");
+  assert.equal((await database.windowPhoto.findUniqueOrThrow({ where: { id: f.photo.id } })).analysisStatus, null);
 });

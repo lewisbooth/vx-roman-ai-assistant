@@ -130,6 +130,7 @@ async function setup(t, options = {}) {
     clearError() {}, getCachedProducts: () => [], loadProducts: async () => ({products: [], messages: []}), loadOlderHistory: async () => {},
     ensureMediaConversation: async () => { if (!state.conversation) update({conversation: conversation()}); return {conversationId: "conversation", conversationToken: "token"}; },
     refreshMediaContext: async () => {
+      await options.onRefresh?.();
       if (pendingParts.length && state.conversation) {
         const parts = pendingParts; pendingParts = [];
         update({conversation: historySnapshot({...state.conversation, revision: state.conversation.revision + 1,
@@ -157,7 +158,8 @@ async function setup(t, options = {}) {
   const loaded = async () => { await until(() => dialog()?.querySelector(".roman-photo-preview img"), "Review preview did not load"); dialog().querySelector(".roman-photo-preview img").dispatchEvent(new window.Event("load")); await delay(0); };
   return {window, container, session, update, calls, sent, xhrs, activity, camera, dialog, setText, loaded,
     launchProduct(path) { return dispose.navigate("/", {state: {visualizeProduct: path, requestId: window.crypto.randomUUID()}}); },
-    completeUpload(loseAck = false) { windows = [photo()]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
+    completeUpload(loseAck = false, analysis) { windows = [{...photo(), ...(analysis ? {analysis} : {})}]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
+    finishAnalysis() { windows = windows.map((item) => ({...item, analysis: {...item.analysis, status: "completed", completedAt: new Date().toISOString()}})); },
     async selectTab(name) { const tab = () => [...container.querySelectorAll(".roman-view-nav a")].find((item) => item.textContent === name); tab().click(); await until(() => tab()?.getAttribute("aria-current") === "page", "Gallery did not become active"); },
     setCompletedJob() { visualizations = [{...job(), status: "completed", resultAvailable: true, completedAt: new Date().toISOString()}]; },
   };
@@ -408,6 +410,102 @@ test("a slow discovery message retains only the persisted photo after a no-produ
     assert.equal(ctx.container.querySelector(".roman-local-media"), null, "Queued slow discovery must not retain the optimistic upload card");
     assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
   } finally { finishSend(); await delay(0); }
+});
+
+async function uploadRoom(ctx) {
+  ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
+  const picker = ctx.dialog().querySelector('[type="file"]');
+  Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
+  picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
+  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
+  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => ctx.xhrs.length === 1, "Upload did not start");
+}
+
+test("new photo analysis follows upload progress, ends as soon as ready and never creates a second advisor turn", async (t) => {
+  const ctx = await setup(t, {voice: true});
+  const composer = ctx.container.querySelector(".roman-composer form");
+  await uploadRoom(ctx);
+  assert.equal(ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), null);
+  const queuedAt = new Date().toISOString();
+  ctx.completeUpload(false, {status: "analyzing", queuedAt, startedAt: queuedAt, completedAt: null});
+  await until(() => ctx.sent.length === 1 && ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), "Uploaded photo did not show analysis");
+  assert.equal(ctx.container.querySelector(".roman-reply-activity").textContent, "Roman is analyzing your room...");
+  assert.equal(ctx.container.querySelectorAll(".roman-inline-window").length, 1);
+  assert.equal(ctx.container.querySelector(".roman-local-media"), null);
+  ctx.finishAnalysis();
+  await until(() => !ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), "Ready analysis retained its fake progress");
+  assert.ok(Date.now() - Date.parse(queuedAt) < 3000, "Fast analysis should not enforce a three-second delay");
+  assert.equal(ctx.container.querySelector(".roman-reply-activity"), null);
+  assert.equal(ctx.sent.length, 1);
+  assert.equal(ctx.session.getSnapshot().voice.status, "active");
+  assert.equal(ctx.container.querySelector(".roman-composer form"), composer);
+});
+
+test("analysis starts on the upload acknowledgement without waiting for transcript refresh", async (t) => {
+  let finishRefresh;
+  const pending = new Promise((resolve) => { finishRefresh = resolve; });
+  const ctx = await setup(t, {onRefresh: () => pending});
+  await uploadRoom(ctx);
+  const queuedAt = new Date().toISOString();
+  ctx.completeUpload(false, {status: "analyzing", queuedAt, startedAt: queuedAt, completedAt: null});
+  try {
+    await until(() => ctx.container.querySelector('.roman-local-media [aria-label="Estimated room analysis progress"]'), "Uploaded card waited for transcript refresh before analysis");
+    assert.equal(ctx.container.querySelector(".roman-reply-activity").textContent, "Roman is analyzing your room...");
+    assert.equal(ctx.sent.length, 0);
+  } finally { finishRefresh(); }
+  await until(() => ctx.sent.length === 1 && !ctx.container.querySelector(".roman-local-media"), "Persisted photo did not replace its analyzing upload card");
+  assert.equal(ctx.container.querySelectorAll('[aria-label="Estimated room analysis progress"]').length, 1);
+});
+
+test("analysis progress expires at five seconds and a late result never adds a reply", async (t) => {
+  const ctx = await setup(t);
+  await uploadRoom(ctx);
+  const queuedAt = new Date(Date.now() - 4700).toISOString();
+  ctx.completeUpload(false, {status: "analyzing", queuedAt, startedAt: queuedAt, completedAt: null});
+  await until(() => ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), "Analysis wait missing");
+  await until(() => !ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), "Analysis wait exceeded the upload deadline");
+  assert.equal(ctx.container.querySelector(".roman-reply-activity"), null);
+  assert.equal(ctx.sent.length, 1);
+  ctx.finishAnalysis();
+  await ctx.selectTab("Gallery"); await ctx.selectTab("Chat");
+  assert.equal(ctx.sent.length, 1);
+  assert.equal(ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), null);
+});
+
+test("a new product-bound upload starts one preview and one continuation without requesting generation again", async (t) => {
+  const ctx = await setup(t, {active: true});
+  await uploadRoom(ctx);
+  ctx.completeUpload();
+  await until(() => ctx.sent.length === 1, "Product-bound upload did not reach the advisor");
+  assert.match(ctx.sent[0], /Kitchen window.*Linen blind.*already started/);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 1);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
+  assert.equal(ctx.container.querySelector(".roman-local-media"), null);
+});
+
+test("a new customer turn during upload suppresses its stale automatic continuation", async (t) => {
+  const ctx = await setup(t);
+  await uploadRoom(ctx);
+  const current = ctx.session.getSnapshot().conversation;
+  ctx.update({conversation: historySnapshot({...current, messages: [...current.messages, row("changed-mind", "user", [{type: "text", text: "Leave the photo for now, help me with the cart."}])]})});
+  ctx.completeUpload();
+  await until(() => ctx.container.querySelector(".roman-inline-window") && !ctx.container.querySelector(".roman-local-media"), "Photo did not settle after the customer's interruption");
+  assert.deepEqual(ctx.sent, []);
+});
+
+test("a new caption extending the same customer voice bubble suppresses the stale upload continuation", async (t) => {
+  const caption = {...row("first-caption", "user", [{type: "voice", version: 1, voiceId: questionId, text: "Here is the room.", startMs: 100, endMs: 200}]), sequence: 3, sourceSequence: 3, sourceEndSequence: 3};
+  const current = conversation();
+  const ctx = await setup(t, {voice: true, conversation: historySnapshot({...current, messages: [caption]})});
+  await uploadRoom(ctx);
+  const extended = {...caption, sourceEndSequence: 6, parts: [{...caption.parts[0], text: "Here is the room. Actually, leave this for now.", endMs: 400}]};
+  ctx.update({conversation: historySnapshot({...ctx.session.getSnapshot().conversation, messages: [extended]})});
+  ctx.completeUpload();
+  await until(() => ctx.container.querySelector(".roman-inline-window") && !ctx.container.querySelector(".roman-local-media"), "Photo did not settle after further customer speech");
+  assert.deepEqual(ctx.sent, []);
+  assert.equal(ctx.session.getSnapshot().voice.status, "active");
 });
 
 test("saved photo rename is committed once and lost generation acknowledgements recover the original job without another paid start", async (t) => {

@@ -1,4 +1,5 @@
 import { parseCheckoutCall, parseCheckoutResult, type CheckoutResult } from "../../shared/checkout";
+import { photoDto, photoAnalysisFacts } from "../visualizations/photo-metadata.server";
 import {
   parseGuideLibraryCall,
   parseGuideLibraryResult,
@@ -1040,7 +1041,7 @@ export async function getCurrentContext(
     !!conversation.galleryOwnerId &&
     !!conversation.galleryOwner &&
     !conversation.galleryOwner.revokedAt;
-  const ownerId = conversation.galleryOwnerId;
+  const ownerId = conversation.galleryOwner?.revokedAt ? null : conversation.galleryOwnerId;
   const [selectedPhoto, windowCount, jobs, mediaIntent] = ownerId
     ? await Promise.all([
         conversation.selectedWindowPhotoId
@@ -1076,17 +1077,7 @@ export async function getCurrentContext(
         }),
       ])
     : [null, 0, [], null];
-  const selectedWindow = selectedPhoto
-    ? {
-        id: selectedPhoto.id,
-        title: selectedPhoto.title,
-        revision: selectedPhoto.revision,
-        width: selectedPhoto.width,
-        height: selectedPhoto.height,
-        cleanup: selectedPhoto.cleanup,
-        createdAt: selectedPhoto.createdAt.toISOString(),
-      }
-    : null;
+  const selectedWindow = selectedPhoto ? photoDto(selectedPhoto) : null;
   const messages = [
     ...new Map(
       [navigation, page, question, customer]
@@ -1129,6 +1120,8 @@ export async function getCurrentContext(
       ? {
           enabled: galleryEnabled,
           selectedWindow,
+          selectedWindowAnalysis: selectedPhoto ? photoAnalysisFacts(selectedPhoto) : null,
+          uploadSummary: null,
           windowCount,
           recentVisualizations: jobs,
         }

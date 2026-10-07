@@ -2,6 +2,7 @@ import { GALLERY_STORAGE_KEY, isMediaId, isWindowPhotoDto as photo, isVisualizat
 import type { ConversationClient } from "../session/types";
 import type { ImageLease } from "../../../shared/visualizations/ImageComparison";
 import { parseProductPath } from "../../../shared/product-path";
+import { photoAnalysisProgress } from "./photo-analysis-progress";
 
 type State = GallerySnapshot & { loading: boolean; error: string | null; persistent: boolean };
 const STORAGE_KEY = GALLERY_STORAGE_KEY;
@@ -93,7 +94,8 @@ export function createGalleryClient(session: ConversationClient) {
     window.clearTimeout(timer);
     if (disposed) return;
     if (state.enabled) for (const item of state.visualizations) if (item.status === "awaiting_product" && !preparing.has(item.id) && !failedPreparations.has(item.id)) void prepare(item);
-    if (state.visualizations.some(pending)) timer = window.setTimeout(() => { void refresh().catch(() => undefined); }, document.hidden ? 10_000 : 2000);
+    const analyzing = state.windows.some((item) => photoAnalysisProgress(item.analysis) !== null);
+    if (analyzing || state.visualizations.some(pending)) timer = window.setTimeout(() => { void refresh().catch(() => undefined); }, document.hidden ? 10_000 : analyzing ? 500 : 2000);
   }
   async function prepare(item: VisualizationJobDto) {
     if (!state.enabled || disposed) return;
@@ -180,7 +182,7 @@ export function createGalleryClient(session: ConversationClient) {
     leases.set(url, lease);
     return lease;
   }
-  function onVisibility() { if (!document.hidden && access && state.visualizations.some(pending)) void refresh().catch(() => undefined); }
+  function onVisibility() { if (!document.hidden && access && (state.visualizations.some(pending) || state.windows.some((item) => photoAnalysisProgress(item.analysis) !== null))) void refresh().catch(() => undefined); }
   document.addEventListener("visibilitychange", onVisibility);
   return {
     getSnapshot: () => state,
@@ -263,15 +265,15 @@ export function createGalleryClient(session: ConversationClient) {
     async recoverUpload(requestId: string) {
       const value = await api(`upload-status?requestId=${requestId}`);
       if (!record(value)) throw new Error("The upload status could not be checked.");
-      if (photo(value.window)) { uncertainUploads.delete(requestId); update({ windows: merge(state.windows, [value.window]) }); return value.window; }
+      if (photo(value.window)) { uncertainUploads.delete(requestId); update({ windows: merge(state.windows, [value.window]) }); schedule(); return value.window; }
       if (value.status === "saving") throw new Error("Your photo is still being saved. Check its status in a moment.");
       return null;
     },
-    async upload(input: { file: File; title: string; cleanup: boolean; requestId: string }, onProgress: (percentage: number) => void) {
+    async upload(input: { file: File; title: string; cleanup: boolean; requestId: string }, onProgress: (percentage: number) => void, onSaved?: (photo: WindowPhotoDto) => void) {
       const conversation = await link();
       if (uncertainUploads.has(input.requestId)) {
         const status = await api(`upload-status?requestId=${input.requestId}`);
-        if (record(status) && photo(status.window)) { update({ windows: merge(state.windows, [status.window]) }); uncertainUploads.delete(input.requestId); return status.window; }
+        if (record(status) && photo(status.window)) { update({ windows: merge(state.windows, [status.window]) }); uncertainUploads.delete(input.requestId); schedule(); onSaved?.(status.window); return status.window; }
         if (!record(status) || status.status !== "not_found") throw new Error("This upload has not finished. Check its status before uploading again.");
       }
       const form = new FormData();
@@ -296,6 +298,8 @@ export function createGalleryClient(session: ConversationClient) {
       if (!photo(value)) throw new Error("Roman received an invalid saved photo.");
       uncertainUploads.delete(input.requestId);
       update({ windows: merge(state.windows, [value]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
+      schedule();
+      onSaved?.(value);
       await session.refreshMediaContext();
       return value;
     },

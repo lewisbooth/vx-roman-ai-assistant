@@ -9,8 +9,9 @@ import {
 } from "../../shared/visualizations";
 import { isStorefrontPagePath } from "../../shared/journey";
 import { visualizationsEnabled } from "./config.server";
-import { ownedPhoto, photoDto, renameWindow } from "./repository.server";
+import { ownedPhoto, renameWindow } from "./repository.server";
 import { startVisualization } from "./jobs.server";
+import { photoDto, photoAnalysisFacts } from "./photo-metadata.server";
 
 import { isVisualizationTool } from "./tool-definitions";
 
@@ -102,6 +103,7 @@ export async function createVisualizationTurn(
           id: conversationId,
           status: "active",
           galleryOwnerId: owner.id,
+          galleryOwner: { revokedAt: null },
         },
       });
       if (!active)
@@ -126,9 +128,16 @@ export async function createVisualizationTurn(
           throw new ConversationError(409, "This photo request has changed.");
         if (previous.status === "complete" && previous.resultJson) {
           const result = JSON.parse(previous.resultJson);
-          if (name === "list_windows" && Array.isArray(result.windows))
-            for (const photo of result.windows)
-              if (isMediaId(photo?.id)) verified.add(photo.id);
+          if (name === "list_windows" && Array.isArray(result.windows)) {
+            // Replays must not resurrect deleted photos or stale analysis.
+            const photos = await prisma.windowPhoto.findMany({ where: {
+              id: { in: result.windows.map((photo: { id: string }) => photo.id).filter(isMediaId) },
+              ownerId: owner.id, uploadStatus: "ready", deletedAt: null,
+              owner: { revokedAt: null },
+            } });
+            result.windows = photos.map((photo) => ({ ...photoDto(photo), analysis: photoAnalysisFacts(photo) }));
+            for (const photo of result.windows) verified.add(photo.id);
+          }
           return result;
         }
         return {
@@ -189,7 +198,7 @@ export async function createVisualizationTurn(
             }),
             prisma.windowPhoto.count({ where }),
           ]);
-          const windows = photos.slice(0, 10).map(photoDto);
+          const windows = photos.slice(0, 10).map((photo) => ({ ...photoDto(photo), analysis: photoAnalysisFacts(photo) }));
           for (const photo of windows) verified.add(photo.id);
           result = {
             windows,

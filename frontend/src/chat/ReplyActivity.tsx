@@ -23,7 +23,7 @@ const toolLabels: Record<BrowserToolName, string> = {
   apply_measurements: "Entering your measurements…",
 };
 
-function activityLabel(state: ConversationClientState, ending: boolean) {
+function activityLabel(state: ConversationClientState, ending: boolean, analyzingRoom: boolean) {
   const conversation = state.conversation;
   if (
     ending ||
@@ -35,6 +35,8 @@ function activityLabel(state: ConversationClientState, ending: boolean) {
     conversation?.status === "ended"
   )
     return null;
+
+  if (analyzingRoom) return "Roman is analyzing your room...";
 
   const tools = conversation?.tools ?? [];
   const tool = tools.find((item) => item.status === "running") ?? tools[0];
@@ -63,13 +65,15 @@ function activityLabel(state: ConversationClientState, ending: boolean) {
 export function ReplyActivity({
   state,
   ending,
+  analyzingRoom = false,
   onContentChange,
 }: {
   state: ConversationClientState;
   ending: boolean;
+  analyzingRoom?: boolean;
   onContentChange: () => void;
 }) {
-  const label = activityLabel(state, ending);
+  const label = activityLabel(state, ending, analyzingRoom);
   useLayoutEffect(onContentChange, [label, onContentChange]);
   if (!label) return null;
 

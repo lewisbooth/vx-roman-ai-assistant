@@ -3,7 +3,8 @@ import prisma from "../db.server";
 import { handleJsonRequest, readJsonObject } from "../conversations/http.server";
 import { ConversationError } from "../conversations/errors.server";
 import { authenticateGallery, linkGalleryConversation } from "../visualizations/auth.server";
-import { deleteVisualization, deleteWindow, gallerySnapshot, jobDto, photoDto, ownedJob, productVisualizations, renameWindow, saveWindow, selectWindow, uploadStatus } from "../visualizations/repository.server";
+import { deleteVisualization, deleteWindow, gallerySnapshot, jobDto, ownedJob, productVisualizations, renameWindow, saveWindow, selectWindow, uploadStatus } from "../visualizations/repository.server";
+import { photoDto } from "../visualizations/photo-metadata.server";
 import { claimPreparation, completePreparation, recoverImageJobs, startVisualization } from "../visualizations/jobs.server";
 import { isMediaId, type VisualizationPreparation } from "../../shared/visualizations";
 

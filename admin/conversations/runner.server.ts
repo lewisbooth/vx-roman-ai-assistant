@@ -1,4 +1,5 @@
 import { createVisualizationTurn } from "../visualizations/tools.server";
+import { prepareUploadAnalysis, withUploadAnalysis } from "./upload-analysis.server";
 import type { GuideReuse } from "./guide-turn.server";
 import type { ModelMemory } from "./memory.server";
 import type {
@@ -205,6 +206,16 @@ async function completeTurn(
     | (Parameters<GuideReuse["read"]>[0] & { pageId: string })
     | undefined;
   try {
+    if (!turn.resumeQuestion && initial.current?.selectedWindow?.analysis) {
+      const gallery = await prepareUploadAnalysis(id, assistantId, signal);
+      if (gallery) {
+        history = withUploadAnalysis(history, gallery);
+        const historyForModel = memory?.historyForModel;
+        if (memory && historyForModel) memory = { ...memory,
+          historyForModel: async (model) => withUploadAnalysis(await historyForModel(model), gallery),
+        };
+      }
+    }
     const reply = await generateReply(
       history,
       // The complete response becomes visible only after finishTurn commits its

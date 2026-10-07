@@ -19,11 +19,12 @@ export function estimatedGenerationProgress(startedAt: number, now = Date.now())
   return Number.isFinite(startedAt) && startedAt > 0 ? Math.min(95, Math.max(0, (now - startedAt) / 20_000 * 95)) : 0;
 }
 
-export function VisualizationCard({ job, source, result, uploadProgress, onOpen, onRetry, onCheck, onDelete }: {
+export function VisualizationCard({ job, source, result, uploadProgress, analysisProgress, onOpen, onRetry, onCheck, onDelete }: {
   job: VisualizationJobDto;
   source?: ImageSource | (() => ImageSource);
   result?: ImageSource | (() => ImageSource);
   uploadProgress?: number;
+  analysisProgress?: number | null;
   onOpen?: (job: VisualizationJobDto) => void;
   onRetry?: (job: VisualizationJobDto) => void;
   onCheck?: (job: VisualizationJobDto) => void;
@@ -33,8 +34,9 @@ export function VisualizationCard({ job, source, result, uploadProgress, onOpen,
   const [tick, setTick] = useState(Date.now());
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const analyzing = analysisProgress !== undefined && analysisProgress !== null;
   useEffect(() => {
-    if (!pending || uploadProgress !== undefined) return;
+    if (!pending || uploadProgress !== undefined || analyzing) return;
     let timer: number | undefined;
     const refresh = () => {
       window.clearInterval(timer);
@@ -42,16 +44,16 @@ export function VisualizationCard({ job, source, result, uploadProgress, onOpen,
     };
     refresh(); document.addEventListener("visibilitychange", refresh);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
-  }, [pending, uploadProgress]);
-  const progress = uploadProgress === undefined ? estimatedGenerationProgress(Date.parse(job.startedAt ?? job.createdAt), tick) : Math.min(100, Math.max(0, uploadProgress));
-  const label = uploadProgress !== undefined ? "Uploading your room photo" : statusCopy[job.status];
+  }, [pending, uploadProgress, analyzing]);
+  const progress = analyzing ? analysisProgress : uploadProgress === undefined ? estimatedGenerationProgress(Date.parse(job.startedAt ?? job.createdAt), tick) : Math.min(100, Math.max(0, uploadProgress));
+  const label = analyzing ? "Analyzing your room" : uploadProgress !== undefined ? "Uploading your room photo" : statusCopy[job.status];
   const complete = job.status === "completed" && job.resultAvailable;
   const image = complete ? result : source;
   const preview = <div className="roman-visualization-card-image" style={{ aspectRatio: `${job.width || 1} / ${job.height || 1}` }}>
     {image && <PrivateImage source={image} sourceKey={`${job.id}/${complete ? "result" : "source"}`} alt={complete ? `${job.productTitle} in ${job.windowTitle}` : ""} />}
     {!complete && <div className="roman-generation-content">
       <p role="status" aria-live="polite">{label}</p>
-      {pending && <div className="roman-generation-progress" role="progressbar" aria-label={uploadProgress === undefined ? "Estimated generation progress" : "Upload progress"}
+      {pending && <div className="roman-generation-progress" role="progressbar" aria-label={analyzing ? "Estimated room analysis progress" : uploadProgress === undefined ? "Estimated generation progress" : "Upload progress"}
         aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}
         aria-valuetext={uploadProgress === undefined ? `${Math.round(progress)}%. Estimated progress.` : `${Math.round(progress)}% uploaded.`}>
         <span style={{ width: `${progress}%` }} />

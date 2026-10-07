@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Prisma, WindowPhoto, VisualizationJob } from "@prisma/client";
+import type { Prisma, VisualizationJob } from "@prisma/client";
 import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
 import type { GalleryIdentity } from "./auth.server";
@@ -12,6 +12,9 @@ import {
   visualizationsEnabled,
 } from "./config.server";
 import { normalizeRoomPhoto } from "./image.server";
+import { kickRoomAnalysis } from "./analysis.server";
+import { photoDto } from "./photo-metadata.server";
+import { ROOM_ANALYSIS_VERSION } from "../prompts/room-analysis.server";
 import { parseProductPath } from "../../shared/product-path";
 import {
   isMediaId,
@@ -20,22 +23,10 @@ import {
   type GallerySnapshot,
   type MediaPart,
   type VisualizationJobDto,
-  type WindowPhotoDto,
 } from "../../shared/visualizations";
 
 export const requestHash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export function photoDto(photo: WindowPhoto): WindowPhotoDto {
-  return {
-    id: photo.id,
-    title: photo.title,
-    revision: photo.revision,
-    width: photo.width,
-    height: photo.height,
-    cleanup: photo.cleanup,
-    createdAt: photo.createdAt.toISOString(),
-  };
-}
 export function jobDto(job: VisualizationJob): VisualizationJobDto {
   return {
     id: job.id,
@@ -389,7 +380,12 @@ export async function saveWindow(
     const saved = await prisma.$transaction(async (tx) => {
       const allowed = await tx.windowPhoto.updateMany({
         where: { id: photo.id, deletedAt: null, uploadStatus: "saving" },
-        data: { uploadStatus: "ready" },
+        data: {
+          uploadStatus: "ready",
+          analysisStatus: "queued",
+          analysisVersion: ROOM_ANALYSIS_VERSION,
+          analysisQueuedAt: new Date(),
+        },
       });
       if (!allowed.count) throw notFound();
       const ready = await tx.windowPhoto.findUniqueOrThrow({
@@ -418,6 +414,7 @@ export async function saveWindow(
       );
       return ready;
     });
+    kickRoomAnalysis();
     return photoDto(saved);
   } catch (error) {
     // A lost commit acknowledgement is observed, never mistaken for permission
@@ -425,8 +422,10 @@ export async function saveWindow(
     const latest = await prisma.windowPhoto.findUnique({
       where: { id: photo.id },
     });
-    if (latest && !latest.deletedAt && latest.uploadStatus === "ready")
+    if (latest && !latest.deletedAt && latest.uploadStatus === "ready") {
+      kickRoomAnalysis();
       return photoDto(latest);
+    }
     await prisma.windowPhoto.updateMany({
       where: { id: photo.id, uploadStatus: { not: "ready" } },
       data: { uploadStatus: "failed", deletedAt: new Date() },
@@ -516,7 +515,10 @@ export async function deleteWindow(ownerId: string, id: string) {
   await prisma.$transaction(async (tx) => {
     await ownedPhoto(ownerId, id, tx);
     const now = new Date();
-    await tx.windowPhoto.update({ where: { id }, data: { deletedAt: now } });
+    await tx.windowPhoto.update({ where: { id }, data: {
+      deletedAt: now, analysisJson: null,
+      analysisStatus: "failed", analysisCompletedAt: now,
+    } });
     await tx.visualizationJob.updateMany({
       where: { ownerId, windowId: id },
       data: { deletedAt: now },

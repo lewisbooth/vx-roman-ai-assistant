@@ -6,7 +6,7 @@ export const presentPhotosToolDefinition = {
   name: "present_photos",
   strict: true,
   description:
-    "Finish this reply with one photo picker: an Upload a room photo card followed by saved window photos. Use upload to offer a new photo with the current saved photos, or windows for one to ten saved IDs verified this turn or the current selected window. Include a short message inviting that selection. This picker is the complete next action: no quick answers, numeric field, product cards or extra question. Offering or selecting a photo does not itself authorize a preview.",
+    "Finish this reply with photo cards. Use windows with purpose reference to show the saved photo(s) you are discussing, with a brief explanation or clarification in message; reference cards do not select photos or start previews. For upload/selection/preview, show one upload-first picker and invite selection in message. Use only saved IDs verified this turn or the current selected window. No separate quick answers, numeric field, product cards or duplicate question. Offering or selecting a photo does not itself authorize a preview.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -24,7 +24,7 @@ export const visualizationToolDefinitions = [
     name: "list_windows",
     strict: true,
     description:
-      "List this customer's saved window photos by optional title query and page cursor. Returns photo IDs, names, revision, dimensions and cleanup preference, a total and the next cursor; no image pixels or file URLs.",
+      "List this customer's saved window photos by optional title query and page cursor. Returns IDs, names, pixel dimensions, cleanup preference and cached room analysis (when available), plus total and next cursor. Pixel dimensions are not window measurements. Analysis contains uncertain room observations and per-opening width/height aspect ratios; use its confidence, visibility and the customer's context. No image bytes or file URLs.",
     parameters: {
       type: "object",
       additionalProperties: false,

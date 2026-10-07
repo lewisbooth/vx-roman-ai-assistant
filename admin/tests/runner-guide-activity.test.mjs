@@ -17,11 +17,11 @@ const bundle = await build({
       name: "guide-activity-boundaries",
       setup(build) {
         build.onResolve(
-          { filter: /visualizations\/tools\.server$/ },
+          { filter: /visualizations\/tools\.server$|upload-analysis\.server$/ },
           (args) => ({ path: args.path, namespace: "gallery-disabled" }),
         );
         build.onLoad({ filter: /.*/, namespace: "gallery-disabled" }, () => ({
-          contents: "export const createVisualizationTurn=async()=>undefined;",
+          contents: "export const createVisualizationTurn=async()=>undefined; export const prepareUploadAnalysis=async()=>undefined; export const withUploadAnalysis=h=>h;",
         }));
         build.onResolve(
           {

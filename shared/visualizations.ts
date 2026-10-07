@@ -1,3 +1,5 @@
+import { isPhotoAnalysisStatusDto, type PhotoAnalysisStatusDto } from "./room-analysis";
+
 export const GALLERY_STORAGE_KEY = "roman-gallery-v1";
 
 /** Private Gallery DTOs contain metadata only, never credentials or image bytes. */
@@ -9,6 +11,7 @@ export interface WindowPhotoDto {
   height: number;
   cleanup: boolean;
   createdAt: string;
+  analysis?: PhotoAnalysisStatusDto;
 }
 
 export const VISUALIZATION_STATUSES = [
@@ -56,12 +59,12 @@ export interface VisualizationPreparation {
   references: VisualizationReference[];
 }
 export type PhotoPresentation =
-  | { kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview" }
+  | { kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview" | "reference" }
   | { kind: "upload"; suggestedTitle: string | null };
 export type MediaPart =
   | { type: "media"; version: 1; kind: "window"; windowId: string; title: string; customerIntent: boolean }
   | { type: "media"; version: 1; kind: "visualization"; jobId: string; customerIntent: boolean }
-  | { type: "media"; version: 1; kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview"; voiceReply?: { voiceId: string; afterSequence: number } }
+  | { type: "media"; version: 1; kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview" | "reference"; voiceReply?: { voiceId: string; afterSequence: number } }
   | { type: "media"; version: 1; kind: "upload"; suggestedTitle: string | null; voiceReply?: { voiceId: string; afterSequence: number } }
   | { type: "media"; version: 1; kind: "renamed"; windowId: string; previousTitle: string; title: string }
   | { type: "media"; version: 1; kind: "outcome"; jobId: string; status: VisualizationStatus };
@@ -74,7 +77,7 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 const date = (value: unknown) => typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value));
 const titleValid = (value: unknown, limit = 100) => typeof value === "string" && !!value.trim() && value.length <= limit && !/\p{Cc}/u.test(value);
 export function isWindowPhotoDto(value: unknown): value is WindowPhotoDto {
-  return object(value) && isMediaId(value.id) && titleValid(value.title) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && Number.isSafeInteger(value.width) && Number.isSafeInteger(value.height) && Number(value.width) > 0 && Number(value.height) > 0 && Number(value.width) < 2048 && Number(value.height) < 2048 && typeof value.cleanup === "boolean" && date(value.createdAt);
+  return object(value) && isMediaId(value.id) && titleValid(value.title) && Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && Number.isSafeInteger(value.width) && Number.isSafeInteger(value.height) && Number(value.width) > 0 && Number(value.height) > 0 && Number(value.width) < 2048 && Number(value.height) < 2048 && typeof value.cleanup === "boolean" && date(value.createdAt) && (value.analysis === undefined || isPhotoAnalysisStatusDto(value.analysis));
 }
 export function isVisualizationJobDto(value: unknown): value is VisualizationJobDto {
   return object(value) && isMediaId(value.id) && isMediaId(value.windowId) && titleValid(value.windowTitle) && titleValid(value.productTitle, 200) && typeof value.productPath === "string" && /^\/products\/[a-z0-9][a-z0-9-]*$/i.test(value.productPath) && typeof value.status === "string" && (VISUALIZATION_STATUSES as readonly string[]).includes(value.status) && typeof value.resultAvailable === "boolean" && Number.isSafeInteger(value.width) && Number.isSafeInteger(value.height) && Number(value.width) > 0 && Number(value.height) > 0 && Number(value.width) < 2048 && Number(value.height) < 2048 && date(value.createdAt) && (value.startedAt === null || date(value.startedAt)) && (value.completedAt === null || date(value.completedAt)) && (value.error === null || typeof value.error === "string" && value.error.length <= 500);
@@ -91,10 +94,10 @@ export function parsePhotoPresentation(value: unknown): PhotoPresentation | null
   if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid photo presentation.");
   const v = value as Record<string, unknown>;
   if (v.kind === "windows" && Object.keys(v).length === (v.purpose === undefined ? 2 : 3) &&
-      (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview") && Array.isArray(v.windowIds) &&
+      (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview" || v.purpose === "reference") && Array.isArray(v.windowIds) &&
       v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) &&
       new Set(v.windowIds).size === v.windowIds.length)
-    return { kind: "windows", windowIds: v.windowIds, ...(v.purpose !== undefined ? { purpose: v.purpose as "selection" | "preview" } : {}) };
+    return { kind: "windows", windowIds: v.windowIds, ...(v.purpose !== undefined ? { purpose: v.purpose as "selection" | "preview" | "reference" } : {}) };
   if (v.kind === "upload" && Object.keys(v).length === 2 &&
       (v.suggestedTitle === null || typeof v.suggestedTitle === "string"))
     return { kind: "upload", suggestedTitle: v.suggestedTitle === null ? null : windowTitle(v.suggestedTitle) };
@@ -108,7 +111,7 @@ export function isMediaPart(value: unknown): value is MediaPart {
   const voiceReply = v.voiceReply === undefined || object(v.voiceReply) && Object.keys(v.voiceReply).length === 2 && isMediaId(v.voiceReply.voiceId) && Number.isSafeInteger(v.voiceReply.afterSequence) && Number(v.voiceReply.afterSequence) >= 0;
   if (v.kind === "window") return exact(["windowId", "title", "customerIntent"]) && isMediaId(v.windowId) && titleValid(v.title) && typeof v.customerIntent === "boolean";
   if (v.kind === "visualization") return exact(["jobId", "customerIntent"]) && isMediaId(v.jobId) && typeof v.customerIntent === "boolean";
-  if (v.kind === "windows") return exact(["windowIds", ...(v.purpose !== undefined ? ["purpose"] : []), ...(v.voiceReply !== undefined ? ["voiceReply"] : [])]) && voiceReply && (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview") && Array.isArray(v.windowIds) && v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) && new Set(v.windowIds).size === v.windowIds.length;
+  if (v.kind === "windows") return exact(["windowIds", ...(v.purpose !== undefined ? ["purpose"] : []), ...(v.voiceReply !== undefined ? ["voiceReply"] : [])]) && voiceReply && (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview" || v.purpose === "reference") && Array.isArray(v.windowIds) && v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) && new Set(v.windowIds).size === v.windowIds.length;
   if (v.kind === "upload") return exact(["suggestedTitle", ...(v.voiceReply !== undefined ? ["voiceReply"] : [])]) && voiceReply && (v.suggestedTitle === null || titleValid(v.suggestedTitle));
   if (v.kind === "renamed") return exact(["windowId", "title", "previousTitle"]) && isMediaId(v.windowId) && titleValid(v.title) && titleValid(v.previousTitle);
   return v.kind === "outcome" && exact(["jobId", "status"]) && isMediaId(v.jobId) && VISUALIZATION_STATUSES.includes(v.status as VisualizationStatus);
@@ -119,7 +122,7 @@ export function isCustomerMediaIntent(part: MediaPart): boolean {
 export const photoPresentationSchema = {
   anyOf: [
     { type: "null" },
-    { type: "object", properties: { kind: { type: "string", enum: ["windows"] }, windowIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 }, purpose: { type: "string", enum: ["selection", "preview"], description: "Picker context only, never generation permission. Preview requires a real unpaused customer request; neutral list/select/rename uses selection." } }, required: ["kind", "windowIds", "purpose"], additionalProperties: false },
+    { type: "object", properties: { kind: { type: "string", enum: ["windows"] }, windowIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 }, purpose: { type: "string", enum: ["selection", "preview", "reference"], description: "Use reference to show existing photos being discussed, without upload or selection actions. Other purposes show a picker; preview requires an unpaused customer request and is never itself generation permission." } }, required: ["kind", "windowIds", "purpose"], additionalProperties: false },
     { type: "object", properties: { kind: { type: "string", enum: ["upload"] }, suggestedTitle: { type: ["string", "null"], maxLength: 100 } }, required: ["kind", "suggestedTitle"], additionalProperties: false },
   ],
 } as const;

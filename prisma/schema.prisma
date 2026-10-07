@@ -101,9 +101,18 @@ model WindowPhoto {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   deletedAt      DateTime?
+  analysisStatus String?
+  analysisVersion String?
+  analysisQueuedAt DateTime?
+  analysisStartedAt DateTime?
+  analysisCompletedAt DateTime?
+  analysisAttempts Int @default(0)
+  analysisUsageId String?
+  analysisJson String?
   jobs           VisualizationJob[]
   @@unique([ownerId, requestId])
   @@index([ownerId, createdAt, id])
+  @@index([analysisStatus, analysisQueuedAt])
 }
 
 model VisualizationJob {

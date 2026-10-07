@@ -83,7 +83,7 @@ export function UploadModal({ draft, windows, productTitle, windowSource, onDraf
           </label>
           {!draft.window && <label className="roman-photo-option">
             <input type="checkbox" checked={draft.consent} disabled={busy} required onChange={(event) => onDraftChange({ consent: event.currentTarget.checked })} />
-            <span>I consent to processing and storing this image <small>(required)</small><small>We will only use your image for the purpose of visualizing our products. Your image will not be shared publicly.</small></span>
+            <span>I consent to processing and storing this image <small>(required)</small><small>We will use your image to understand your room and windows, personalize blind advice and visualize our products. Your image will not be shared publicly.</small></span>
           </label>}
           {productTitle && <p className="roman-photo-product">Visualizing {productTitle}</p>}
           {awaitingProduct && <p role="status" className="roman-photo-product">Open the selected blind in Roman to start its preview. You can prepare your photo now.</p>}

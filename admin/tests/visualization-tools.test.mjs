@@ -133,6 +133,7 @@ function setup() {
     conversationId,
     assistantId,
     photoId,
+    photo,
     controller,
     create: () =>
       module.exports.createVisualizationTurn(
@@ -179,6 +180,22 @@ test("window listing is owner-scoped and bounded, and terminal cards use current
     turn.validatePresentation({ kind: "windows", windowIds: [app.photoId] }),
     /no longer available/,
   );
+});
+
+test("cached observations are retrievable and reference cards cannot resurrect deleted photos", async () => {
+  const app = setup();
+  const observations = { image_kind: "room_photo", summary: "A cream room.", colours: ["cream"], decor_style: [], notable_features: [],
+    windows: { visible_count: 0, count_confidence: "low", count_note: "No clear opening.", items: [] }, limitations: ["Window hidden."] };
+  Object.assign(app.photo, { analysisStatus: "completed", analysisVersion: "test", analysisQueuedAt: new Date(), analysisStartedAt: new Date(), analysisCompletedAt: new Date(), analysisJson: JSON.stringify(observations) });
+  const turn = await app.create();
+  const args = { query: null, cursor: null };
+  const result = await turn.execute("analysis-list", "list_windows", args);
+  assert.deepEqual(result.windows[0].analysis.observations, observations);
+  assert.equal((await turn.validatePresentation({ kind: "windows", windowIds: [app.photoId], purpose: "reference" })).purpose, "reference");
+  app.mock.present = false;
+  const replay = await turn.execute("analysis-list", "list_windows", args);
+  assert.deepEqual(replay.windows, []);
+  await assert.rejects(turn.validatePresentation({ kind: "windows", windowIds: [app.photoId], purpose: "reference" }), /no longer available/);
 });
 
 test("unknown photo IDs cannot rename or dispatch generation; renaming uses the authoritative revision", async () => {

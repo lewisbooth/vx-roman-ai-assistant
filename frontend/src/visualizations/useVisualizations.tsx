@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { ConversationSnapshot } from "../../../shared/conversation";
+import type { ConversationMessage, ConversationSnapshot } from "../../../shared/conversation";
 import { activeProduct } from "../../../shared/active-product";
 import { isCustomerMediaIntent, windowTitle, type MediaPart, type VisualizationJobDto, type WindowPhotoDto } from "../../../shared/visualizations";
 import { imageCanvasForPhoto } from "../../../shared/visualizations/image-canvas";
@@ -12,14 +12,23 @@ import { VisualizationCard } from "./VisualizationCard";
 import { WindowCard, WindowCarousel } from "./WindowCard";
 import type { ProductGalleryPreview } from "../chat/product-gallery-media";
 import { isCurrentProduct } from "../tools/product-controls";
+import { photoAnalysisProgress, usePhotoAnalysisClock } from "./photo-analysis-progress";
 
 const emptyDraft = (): UploadDraft => ({file: null, window: null, preview: null, title: "", cleanup: true, consent: false});
+const customerSequence = (message: ConversationMessage) => message.sourceEndSequence ?? message.sourceSequence ?? message.endSequence ?? message.sequence ?? 0;
+const customerInputVersion = (conversation: ConversationSnapshot | null) => {
+  const latest = conversation?.messages.filter((message) => message.role === "user").reduce<ConversationMessage | undefined>(
+    (previous, message) => !previous || customerSequence(message) >= customerSequence(previous) ? message : previous, undefined);
+  // Voice captions can extend a bubble without changing its first fragment ID.
+  return latest ? `${latest.id}:${customerSequence(latest)}` : null;
+};
 type UploadAttempt = {
   requestId: string;
   generationId: string;
   createdAt: string;
   jobId: string | null;
   conversationId: string | null;
+  customerInputVersion: string | null;
   draft: UploadDraft;
   product: {path: string; title: string} | undefined;
   photo: WindowPhotoDto | null;
@@ -39,6 +48,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
 }) {
   const client = useMemo(() => createGalleryClient(session), [session]);
   const gallery = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const analysisNow = usePhotoAnalysisClock(gallery.windows.map((photo) => photo.analysis));
   const [modal, setModal] = useState(false);
   const [modalProduct, setModalProduct] = useState<{path: string; title: string} | undefined>();
   const [draft, setDraft] = useState<UploadDraft>(emptyDraft);
@@ -195,7 +205,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       if (!continuing()) { release(attempt.draft); return; }
       let photo = attempt.photo;
       if (!photo && recover) photo = await client.recoverUpload(attempt.requestId);
-      if (!photo && attempt.draft.file) photo = await client.upload({file: attempt.draft.file, title: attempt.draft.title, cleanup: attempt.draft.cleanup, requestId: attempt.requestId}, (progress) => patchAttempt(attempt.requestId, {progress}));
+      if (!photo && attempt.draft.file) photo = await client.upload({file: attempt.draft.file, title: attempt.draft.title, cleanup: attempt.draft.cleanup, requestId: attempt.requestId}, (progress) => patchAttempt(attempt.requestId, {progress}), (saved) => patchAttempt(attempt.requestId, {photo: saved, stage: "preparing", progress: 100}));
       if (!photo) throw new Error("Choose a saved window or upload a room photo.");
       if (!continuing()) { release(attempt.draft); return; }
       if (photo.title !== attempt.draft.title) photo = await client.rename(photo, attempt.draft.title);
@@ -214,12 +224,17 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
         // Existing windows and recovered uploads still need that context when
         // the current conversation has not received the selection yet.
         if (session.getSnapshot().conversation?.current?.selectedWindow?.id !== photo.id) await client.select(photo);
-        if (mounted.current && continuing()) {
-          setSelectedWindow(photo.id);
-          if (!advisorStarted.current.has(attempt.requestId)) {
-            advisorStarted.current.add(attempt.requestId);
-            await sendMessage(`I'd like to choose a blind for my saved window “${photo.title}”, then visualize it in my room.`);
-          }
+      }
+      const current = session.getSnapshot().conversation;
+      // A photo completion never overrides a newer customer turn or a different
+      // selected window. Generation is already accepted; it is not requested twice.
+      if (mounted.current && continuing() && current?.current?.selectedWindow?.id === photo.id && customerInputVersion(current) === attempt.customerInputVersion) {
+        setSelectedWindow(photo.id);
+        if ((!attempt.product || attempt.draft.file) && !advisorStarted.current.has(attempt.requestId)) {
+          advisorStarted.current.add(attempt.requestId);
+          await sendMessage(attempt.product
+            ? `My room photo “${photo.title}” is saved and its preview with ${attempt.product.title} has already started. Please continue helping me with this blind while the preview is prepared.`
+            : `I'd like to choose a blind for my saved window “${photo.title}”, then visualize it in my room.`);
         }
       }
       release(attempt.draft);
@@ -244,7 +259,8 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     }
     if (attempts.length >= 4) { setDraftError("Wait for one of your photo requests to finish before adding another."); return; }
     activity();
-    const attempt: UploadAttempt = {requestId: crypto.randomUUID(), generationId: crypto.randomUUID(), createdAt: new Date().toISOString(), jobId: null, conversationId: session.getSnapshot().conversation?.id ?? null, draft: {...input, title: windowTitle(input.title)}, product: modalProduct, photo: input.window, progress: 0, stage: input.file ? "uploading" : "preparing", error: null};
+    const current = session.getSnapshot().conversation;
+    const attempt: UploadAttempt = {requestId: crypto.randomUUID(), generationId: crypto.randomUUID(), createdAt: new Date().toISOString(), jobId: null, conversationId: current?.id ?? null, customerInputVersion: customerInputVersion(current), draft: {...input, title: windowTitle(input.title)}, product: modalProduct, photo: input.window, progress: 0, stage: input.file ? "uploading" : "preparing", error: null};
     setModal(false); onCustomerIntent(); showChat(); setAttempts((values) => [...values, attempt]);
     void execute(attempt);
   };
@@ -276,12 +292,12 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       onUpload={() => openUpload(part.suggestedTitle)} uploadDisabled={!gallery.enabled} onSelect={(photo) => { void chooseWindow(photo); }} />;
     if (part.kind === "windows") {
       const windows = part.windowIds.flatMap((id) => gallery.windows.find((photo) => photo.id === id) ?? []);
-      return windows.length ? <WindowCarousel windows={windows} windowSource={client.windowSource}
+      return windows.length ? <WindowCarousel windows={windows} windowSource={client.windowSource} referenceOnly={part.purpose === "reference"}
         onUpload={() => openUpload()} uploadDisabled={!gallery.enabled} onSelect={(photo) => { void chooseWindow(photo); }} /> : <p className="roman-inline-event">{missing("Window photos")}</p>;
     }
     if (part.kind === "window") {
       const photo = gallery.windows.find((item) => item.id === part.windowId);
-      return photo ? <div className="roman-inline-window"><WindowCard photo={photo} source={() => client.windowSource(photo)} onSelect={() => selectForReview(photo)} /></div> : <p className="roman-inline-event">{missing("Window photo")}</p>;
+      return photo ? <div className="roman-inline-window"><WindowCard photo={photo} source={() => client.windowSource(photo)} analysisProgress={photoAnalysisProgress(photo.analysis, analysisNow)} onSelect={() => selectForReview(photo)} /></div> : <p className="roman-inline-event">{missing("Window photo")}</p>;
     }
     const job = gallery.visualizations.find((item) => item.id === part.jobId);
     return job ? <VisualizationCard job={job} source={() => client.beforeSource(job)} result={() => client.resultSource(job)} onOpen={openViewer} onCheck={(item) => { void checkJob(item); }}
@@ -289,6 +305,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
   };
   return {
     enabled: gallery.enabled, openUpload, renderMedia, productPreviews,
+    analyzingRoom: conversation?.status === "active" && gallery.windows.some((photo) => photoAnalysisProgress(photo.analysis, analysisNow) !== null && (attempts.some((attempt) => attempt.conversationId === conversation.id && attempt.photo?.id === photo.id) || conversation.messages.some((message) => message.parts.some((part) => part.type === "media" && part.kind === "window" && part.customerIntent && part.windowId === photo.id)))),
     galleryView: <VisualizationGallery {...gallery} error={mediaError ?? gallery.error} selectedWindowId={selectedWindow} windowSource={client.windowSource} resultSource={client.resultSource}
       onUpload={openUpload} onSelectWindow={selectForReview}
       onRenameWindow={async (photo, title) => { activity(); await client.rename(photo, title); }}
@@ -300,9 +317,11 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       onLoadMoreWindows={() => { void client.loadWindows().catch(() => undefined); }} onLoadMoreVisualizations={() => { void client.loadVisualizations().catch(() => undefined); }} />,
     localCards: [mediaError && <p key="media-error" role="alert" className="roman-media-error">{mediaError}</p>, ...attempts.map((attempt) => {
       if (attempt.jobId && conversation?.messages.some((message) => message.parts.some((part) => part.type === "media" && part.kind === "visualization" && part.jobId === attempt.jobId))) return null;
+      if ((!attempt.product || attempt.draft.file) && attempt.stage !== "failed" && attempt.photo && conversation?.messages.some((message) => message.parts.some((part) => part.type === "media" && part.kind === "window" && part.windowId === attempt.photo!.id))) return null;
       const accepted = gallery.visualizations.find((item) => item.id === attempt.jobId);
       const job: VisualizationJobDto = {id: attempt.requestId, windowId: attempt.photo?.id ?? attempt.requestId, windowTitle: attempt.draft.title, productPath: attempt.product?.path ?? "", productTitle: attempt.product?.title ?? "Your room photo", status: attempt.stage === "failed" ? "unknown" : "awaiting_product", width: attempt.photo?.width ?? attempt.draft.width ?? 1024, height: attempt.photo?.height ?? attempt.draft.height ?? 1024, createdAt: attempt.createdAt, startedAt: null, completedAt: null, error: attempt.error, resultAvailable: false};
-      return <div key={attempt.requestId} className="roman-local-media"><VisualizationCard job={accepted ?? job} source={attempt.draft.preview} uploadProgress={attempt.stage === "uploading" ? attempt.progress : undefined} onCheck={() => { void execute(attempt, true); }} /></div>;
+      const currentPhoto = gallery.windows.find((photo) => photo.id === attempt.photo?.id) ?? attempt.photo;
+      return <div key={attempt.requestId} className="roman-local-media"><VisualizationCard job={accepted ?? job} source={attempt.draft.preview} uploadProgress={attempt.stage === "uploading" ? attempt.progress : undefined} analysisProgress={attempt.stage === "preparing" ? photoAnalysisProgress(currentPhoto?.analysis, analysisNow) : undefined} onCheck={() => { void execute(attempt, true); }} /></div>;
     })],
     dialogs: <>{modal && <UploadModal draft={draft} windows={gallery.windows} windowSource={client.windowSource} productTitle={modalProduct?.title}
       awaitingProduct={!!modalProduct && (selectedProductPath !== modalProduct.path || !isCurrentProduct(modalProduct.path))}

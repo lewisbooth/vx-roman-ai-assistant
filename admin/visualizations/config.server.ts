@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
 
-export const MEDIA_CONSENT_VERSION = "roman-window-photo-v1";
+export const MEDIA_CONSENT_VERSION = "roman-window-photo-v2";
+// v1 permitted visualization; v2 additionally covers advisory image analysis.
+export const VISUALIZATION_CONSENT_VERSIONS = ["roman-window-photo-v1", MEDIA_CONSENT_VERSION];
 export const ACTIVE_JOB_STATUSES = ["awaiting_product", "preparing_assets", "generating", "saving"];
 export const MAX_GALLERY_BYTES = 500 * 1024 * 1024;
 export const MAX_STORE_BYTES = 20 * 1024 * 1024 * 1024;

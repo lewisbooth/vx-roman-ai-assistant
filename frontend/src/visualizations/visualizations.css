@@ -68,6 +68,7 @@
 .roman-visualization-card[data-pending="true"] .roman-private-image { filter: blur(14px); transform: scale(1.05); }
 .roman-generation-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 10px; width: calc(100% - 32px); padding: 20px; border-radius: 16px; background: #f7f5efed; color: #4e0e0e; text-align: center; }
 .roman-generation-content p { font-size: 20px; line-height: 1.3; margin: 0; }
+.roman-analysis-label { font-size: 20px; line-height: 1.3; }
 .roman-generation-content small { font-family: DMSansSite, "DM Sans", sans-serif; font-size: 12px; line-height: 1.5; color: #716b60; }
 .roman-generation-progress { height: 6px; width: 100%; overflow: hidden; border-radius: 999px; background: #e3e0d8; }
 .roman-generation-progress span { display: block; height: 100%; border-radius: inherit; background: #4e0e0e; transition: width .2s linear; }
@@ -98,6 +99,7 @@
   .roman-visualization-card-copy { padding: 14px; }
   .roman-generation-content { width: calc(100% - 20px); padding: 14px 10px; gap: 8px; }
   .roman-generation-content p { font-size: 16px; }
+  .roman-analysis-label { font-size: 16px; }
   .roman-generation-content small { display: none; }
   .roman-window-use { padding: 30px 14px 14px; font-size: 15px; }
 }

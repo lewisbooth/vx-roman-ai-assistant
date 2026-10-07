@@ -17,7 +17,8 @@ const bundle = await build({
       import {PrivateImage} from './frontend/src/visualizations/PrivateImage';
       import {VisualizationViewer} from './shared/visualizations/VisualizationViewer';
       import {estimatedGenerationProgress} from './frontend/src/visualizations/VisualizationCard';
-      export {saveVisualization, estimatedGenerationProgress};
+      import {photoAnalysisProgress} from './frontend/src/visualizations/photo-analysis-progress';
+      export {saveVisualization, estimatedGenerationProgress, photoAnalysisProgress};
       export function mount(target, kind) {
         const root=createRoot(target);
         const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,windows:WindowCarousel,image:PrivateImage,viewer:VisualizationViewer}[kind];
@@ -89,6 +90,42 @@ test("an empty window picker retains the same carousel and a usable upload card"
   assert.equal(mount.querySelectorAll(".roman-window-carousel li").length, 1);
   mount.querySelector("button").click();
   assert.equal(uploads, 1);
+});
+
+test("reference photo carousels show the named photos without upload, selection or preview actions", (t) => {
+  const {mount, api} = setup(t, "windows");
+  const forbidden = () => assert.fail("Reference photos must be read-only");
+  api.render({windows: [{id: "kitchen", title: "Kitchen window"}, {id: "study", title: "Study window"}], referenceOnly: true, windowSource: (photo) => `/${photo.id}.jpg`, onUpload: forbidden, onSelect: forbidden});
+  assert.equal(mount.querySelectorAll(".roman-window-carousel li").length, 2);
+  assert.equal(mount.querySelector("button"), null);
+  assert.doesNotMatch(mount.textContent, /Upload|Use this window/);
+});
+
+test("photo analysis progress estimates three seconds but stops immediately at terminal state or the five-second deadline", (t) => {
+  const {exports} = setup(t);
+  const queuedAt = new Date(10_000).toISOString();
+  const analysis = {status: "queued", queuedAt, startedAt: null, completedAt: null};
+  assert.equal(exports.photoAnalysisProgress(analysis, 10_000), 0);
+  assert.equal(exports.photoAnalysisProgress(analysis, 11_500), 47.5);
+  assert.equal(exports.photoAnalysisProgress({...analysis, status: "analyzing"}, 13_000), 95);
+  assert.equal(exports.photoAnalysisProgress(analysis, 14_999), 95);
+  assert.equal(exports.photoAnalysisProgress(analysis, 15_000), null);
+  assert.equal(exports.photoAnalysisProgress({...analysis, status: "completed"}, 10_500), null);
+  assert.equal(exports.photoAnalysisProgress({...analysis, status: "failed"}, 10_500), null);
+  assert.equal(exports.photoAnalysisProgress(undefined, 10_500), null);
+});
+
+test("a saved upload card reserves the same image while analysis starts and finishes", (t) => {
+  const {mount, api} = setup(t, "window");
+  const props = {photo: {id: "kitchen", title: "Kitchen window"}, source: "/room.jpg", onSelect() {}};
+  api.render({...props, analysisProgress: 38});
+  const image = mount.querySelector(".roman-window-image");
+  assert.equal(mount.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"), "38");
+  assert.equal(mount.querySelector(".roman-window-use"), null);
+  api.render({...props, analysisProgress: null});
+  assert.equal(mount.querySelector(".roman-window-image"), image);
+  assert.equal(mount.querySelector('[role="progressbar"]'), null);
+  assert.ok(mount.querySelector(".roman-window-use"));
 });
 
 test("comparison preserves vertical touch scroll, supports horizontal dragging and keyboard bounds", async (t) => {
