@@ -1,4 +1,5 @@
 import { photoPresentationSchema } from "../../shared/visualizations";
+import { askQuestionToolDefinition } from "../../shared/questions";
 
 const nullableText = { type: ["string", "null"] } as const;
 export const presentPhotosToolDefinition = {
@@ -6,15 +7,30 @@ export const presentPhotosToolDefinition = {
   name: "present_photos",
   strict: true,
   description:
-    "Finish with photo cards when the customer must choose/upload a photo, requests to review one, or needs a photo-based clarification such as a suspected measurement swap. Use windows/purpose reference with the sole clarification in message; these cards do not select photos or start previews. A clearly inferred photo needs no reference carousel before generation. For upload/selection, show one upload-first picker. Use only saved IDs verified this turn or the current selected window. No separate quick answers, numeric field, product cards or duplicate question. Photo selection alone does not authorize a preview.",
+    "Finish with photo cards when the customer must choose/upload a photo, requests to review one, or needs a photo-based clarification such as a suspected measurement swap. Windows/purpose reference shows read-only photos and may include clarification with the sole question and its quick answers; keep context in message without repeating the question. These cards do not select photos or start previews. A clearly inferred photo needs no reference carousel before generation. For upload/selection, show one upload-first picker and set clarification to null: no question or quick answers. Use only saved IDs verified this turn or the current selected window. No numeric field, product cards or duplicate question. Photo selection alone does not authorize a preview.",
   parameters: {
     type: "object",
     additionalProperties: false,
     properties: {
       message: { type: "string", minLength: 1, maxLength: 1000 },
       photoPresentation: { anyOf: photoPresentationSchema.anyOf.slice(1) },
+      clarification: {
+        description: "A single question with quick answers only beside windows/purpose reference; null for upload, selection or a photo review needing no answer.",
+        anyOf: [
+          { type: "null" },
+          {
+            type: "object",
+            properties: {
+              question: askQuestionToolDefinition.parameters.properties.question,
+              answers: askQuestionToolDefinition.parameters.properties.answers,
+            },
+            required: ["question", "answers"],
+            additionalProperties: false,
+          },
+        ],
+      },
     },
-    required: ["message", "photoPresentation"],
+    required: ["message", "photoPresentation", "clarification"],
   },
 } as const;
 

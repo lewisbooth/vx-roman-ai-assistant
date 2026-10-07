@@ -88,6 +88,30 @@ test("unrelated photo ownership cannot retire a genuine pending question", async
   }
 });
 
+test("reference photos preserve an owned clarification and its answer controls across text and voice projection", () => {
+  for (const voice of [false, true]) {
+    const association = {voiceId: randomUUID(), afterSequence: 1};
+    const f = fixture("windows", {
+      question: "Could the width and height labels have been swapped?",
+      answers: ["My measurements are correct", "Swap width and height"],
+      ...(voice ? {voiceReply: association} : {}),
+    });
+    f.photo.purpose = "reference";
+    if (voice) {
+      f.photo.voiceReply = association;
+      f.messages[0].role = "context";
+      f.voiceTranscripts = [{id: randomUUID(), voiceId: association.voiceId, sequence: 1, role: "assistant", text: f.question.question, startMs: 100, endMs: 800, createdAt: new Date()}];
+    }
+    f.messages[0].partsJson = JSON.stringify([f.photo, f.question]);
+    const original = structuredClone(source(f));
+    const timeline = repository.conversationTimeline(source(f));
+    assert.deepEqual(repository.latestQuestion(timeline), f.question);
+    assert.deepEqual(timeline.flatMap((message) => message.parts).find((part) => part.type === "media"), f.photo);
+    assert.equal(timeline.flatMap((message) => message.parts).filter((part) => part.type === "question").length, 1);
+    assert.deepEqual(source(f), original);
+  }
+});
+
 test("measurement, product and completed-preview questions retain their normal controls", async () => {
   const measurement = fixture("windows", {answers: [], measurement: {productPath: "/products/linen", label: "Width", unit: "cm", instructions: "Use the smallest of three recess widths."}});
   measurement.toolInvocations[0].name = "ask_measurement";

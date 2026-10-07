@@ -477,6 +477,7 @@ export function conversationEntries(
         .digest("hex")}`;
       for (const photo of messageParts) {
         if (photo.type !== "media" || (photo.kind !== "windows" && photo.kind !== "upload") ||
+          (photo.kind === "windows" && photo.purpose === "reference") ||
           !photoOwners.has(JSON.stringify([message.id, photoCallId, photo.kind === "windows" ? "show_windows" : "request_photo"]))) continue;
         retiredPhotoQuestions.add(part);
         if (part.voiceReply) photoReplies.set(photo, part.voiceReply);
@@ -2191,7 +2192,6 @@ export async function finishTurn(
         typeof callId !== "string" ||
         !callId ||
         callId.length > 200 ||
-        result.questionPresentation ||
         result.presentation ||
         result.resumeQuestionId
       )
@@ -2201,6 +2201,14 @@ export async function finishTurn(
       } catch {
         throw new ConversationError(400, "Invalid photo presentation.");
       }
+      if (result.questionPresentation && (
+        selectedPhotos?.kind !== "windows" ||
+        selectedPhotos.purpose !== "reference" ||
+        !selectedQuestion ||
+        selectedQuestion.measurement ||
+        result.questionPresentation.callId !== callId
+      ))
+        throw new ConversationError(400, "Only reference photos may share a clarification question from the same terminal call.");
       if (selectedPhotos?.kind === "windows") {
         const verified = new Set<string>(
           conversation.selectedWindowPhotoId

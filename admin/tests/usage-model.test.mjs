@@ -200,6 +200,7 @@ test("saved-photo terminal has no question and uses server tools without a brows
           arguments: JSON.stringify({
             message: "Choose a saved window or upload a room photo.",
             photoPresentation: { kind: "windows", windowIds: [windowId] },
+            clarification: null,
           }),
         },
       ]),
@@ -229,7 +230,7 @@ test("saved-photo terminal has no question and uses server tools without a brows
   const schema = app.requests[0][0].tools.find(
     (tool) => tool.name === "present_photos",
   ).parameters;
-  assert.deepEqual(plain(schema.required), ["message", "photoPresentation"]);
+  assert.deepEqual(plain(schema.required), ["message", "photoPresentation", "clarification"]);
   assert.equal(schema.properties.question, undefined);
   const questionSchema = app.requests[0][0].tools.find(
     (tool) => tool.name === "ask_question",
@@ -266,6 +267,7 @@ test("a stale photo presentation repairs only the terminal answer without repeat
           arguments: JSON.stringify({
             message: "Choose a saved window or upload a room photo.",
             photoPresentation: { kind: "windows", windowIds: ["deleted"] },
+            clarification: null,
           }),
         },
       ]),
@@ -303,7 +305,7 @@ test("a stale photo presentation repairs only the terminal answer without repeat
       (tool) => ["ask_question", "ask_measurement", "present_photos"].includes(tool.name),
     ),
   );
-  assert.match(JSON.stringify(app.requests[2][0].input), /Use present_photos with only message and photoPresentation/);
+  assert.match(JSON.stringify(app.requests[2][0].input), /Use present_photos with message, photoPresentation and clarification:null/);
 });
 
 for (const mode of ["text", "voice"]) {
@@ -312,6 +314,7 @@ for (const mode of ["text", "voice"]) {
     const photoReply = {
       message: "Choose a saved window or upload a room photo.",
       photoPresentation,
+      clarification: null,
     };
     const app = setup([
       events(terminal("completed", tokens(20, 5), [{
@@ -338,9 +341,79 @@ for (const mode of ["text", "voice"]) {
     assert.deepEqual(plain(reply.photoPresentation), { ...photoPresentation, callId: "clean-picker" });
     assert.equal(reply.questionPresentation, undefined);
     assert.equal(reply.presentation, undefined);
-    assert.match(JSON.stringify(app.requests[1][0].input), /no question, answers or measurement/);
+    assert.match(JSON.stringify(app.requests[1][0].input), /no separate question, answers or measurement/);
   });
 }
+
+for (const mode of ["text", "voice"]) {
+  test(`${mode} reference photos share one normal clarification with quick answers`, async () => {
+    const windowId = "313171f9-923f-4b44-a12f-79b2a247cb0b";
+    const message = "I’m comparing the fully visible window above the desk.";
+    const clarification = {
+      question: "Could the width and height labels have been swapped?",
+      answers: ["My measurements are correct", "Swap width and height"],
+    };
+    const photoPresentation = {kind: "windows", windowIds: [windowId], purpose: "reference"};
+    const app = setup([events(terminal("completed", tokens(20, 5), [{
+      type: "function_call", name: "present_photos", call_id: "reference-check",
+      arguments: JSON.stringify({message, photoPresentation, clarification}),
+    }]))]);
+    const reply = await app.run(undefined, {
+      mode,
+      execute: () => assert.fail("A reference question must not change the storefront"),
+      visualizations: {
+        allows: () => true,
+        execute: () => assert.fail("Showing a reference must not select a photo or generate a preview"),
+        validatePresentation: async (input) => input,
+      },
+    });
+    assert.equal(app.requests.length, 1);
+    assert.deepEqual(plain(reply.questionPresentation), {...clarification, callId: "reference-check"});
+    assert.deepEqual(plain(reply.photoPresentation), {...photoPresentation, callId: "reference-check"});
+    assert.equal(reply.presentation, undefined);
+    assert.equal(reply.text, mode === "voice" ? `${message} ${clarification.question}` : message);
+    const schema = app.requests[0][0].tools.find((tool) => tool.name === "present_photos").parameters;
+    const questionSchema = app.requests[0][0].tools.find((tool) => tool.name === "ask_question").parameters;
+    assert.deepEqual(plain(schema.properties.clarification.anyOf[1].properties.answers), plain(questionSchema.properties.answers));
+  });
+}
+
+test("photo clarification rejects pickers, duplicate wording and malformed answers with terminal-only repair", async (t) => {
+  const reference = {kind: "windows", windowIds: ["313171f9-923f-4b44-a12f-79b2a247cb0b"], purpose: "reference"};
+  const clarification = {question: "Could the labels be swapped?", answers: ["Keep my readings", "Swap them"]};
+  const valid = {message: "This is the window I’m comparing.", photoPresentation: reference, clarification};
+  const variations = {
+    upload: {...valid, photoPresentation: {kind: "upload", suggestedTitle: "Bedroom"}},
+    selection: {...valid, photoPresentation: {...reference, purpose: "selection"}},
+    preview: {...valid, photoPresentation: {...reference, purpose: "preview"}},
+    "repeated question": {...valid, message: clarification.question},
+    "duplicate answers": {...valid, clarification: {...clarification, answers: ["Keep", "keep"]}},
+    "numeric field": {...valid, clarification: {...clarification, measurement: {label: "Width"}}},
+    "missing answers": {...valid, clarification: {question: clarification.question}},
+  };
+  for (const [name, invalid] of Object.entries(variations)) await t.test(name, async () => {
+    const app = setup([
+      events(terminal("completed", tokens(20, 5), [{
+        type: "function_call", name: "present_photos", call_id: "invalid-reference",
+        arguments: JSON.stringify(invalid),
+      }])),
+      events(terminal("completed", tokens(20, 5), [{
+        type: "function_call", name: "present_photos", call_id: "valid-reference",
+        arguments: JSON.stringify(valid),
+      }])),
+    ]);
+    const reply = await app.run(undefined, {
+      visualizations: {
+        allows: () => true,
+        execute: () => assert.fail("Terminal repair must not perform an action"),
+        validatePresentation: async (input) => input,
+      },
+    });
+    assert.equal(app.requests.length, 2);
+    assert.deepEqual(plain(reply.questionPresentation), {...clarification, callId: "valid-reference"});
+    assert.ok(app.requests[1][0].tool_choice.tools.every((tool) => ["ask_question", "ask_measurement", "present_photos"].includes(tool.name)));
+  });
+});
 
 test("a primary access rejection falls back before output and records both attempts", async () => {
   const rejection = new StubAPIError(403, "model_not_found");

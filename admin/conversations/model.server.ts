@@ -398,7 +398,7 @@ export async function generateReply(
     ? "ask_measurement"
     : "ask_question";
   const terminalRepairGuidance = visualizations && !resumeQuestion
-    ? "Use present_photos with only message and photoPresentation when choosing/uploading a photo is next; do not add question or answer fields. Otherwise use ask_question or ask_measurement for the single next decision."
+    ? "Use present_photos with message, photoPresentation and clarification:null when choosing/uploading a photo is next; no question or answers for a picker. Only windows/purpose reference may include clarification:{question,answers}; keep its sole question out of message. Otherwise use ask_question or ask_measurement for the single next decision."
     : "Use ask_question or ask_measurement for the single next decision.";
   // Stable schemas preserve cached prefixes; allowed_tools narrows each round.
   // Existing runtime budgets and read-only guards remain the authority.
@@ -799,22 +799,51 @@ export async function generateReply(
             if (!visualizations || resumeQuestion)
               throw new Error("Photo presentation is not available for this reply.");
             if (
-              Object.keys(publicAnswer).length !== 2 ||
+              Object.keys(publicAnswer).length !== 3 ||
               !Object.hasOwn(publicAnswer, "photoPresentation") ||
+              !Object.hasOwn(publicAnswer, "clarification") ||
               typeof publicAnswer.message !== "string" ||
               !publicAnswer.message.trim() ||
               publicAnswer.message.length > 1000 ||
               /(?![\n\r\t])\p{Cc}/u.test(publicAnswer.message)
             )
-              throw new Error("Present photos with only a short message and photoPresentation; no question, answers or measurement.");
+              throw new Error("Present photos with message, photoPresentation and clarification; no separate question, answers or measurement. Pickers require clarification:null.");
             const photoSelection = await visualizations.validatePresentation(publicAnswer.photoPresentation);
-            if (!photoSelection) throw new Error("A photo picker is required.");
-            const answer = publicAnswer.message.trim();
+            if (!photoSelection) throw new Error("A photo presentation is required.");
+            let questionPresentation: QuestionPresentation | undefined;
+            if (publicAnswer.clarification !== null) {
+              const clarification = publicAnswer.clarification;
+              if (
+                photoSelection.kind !== "windows" ||
+                photoSelection.purpose !== "reference" ||
+                !clarification ||
+                typeof clarification !== "object" ||
+                Array.isArray(clarification) ||
+                Object.keys(clarification).length !== 2 ||
+                !Object.hasOwn(clarification, "question") ||
+                !Object.hasOwn(clarification, "answers")
+              )
+                throw new Error("Only read-only reference photos may include clarification with question and answers.");
+              const { question, answers } = parseQuestionCall({
+                message: publicAnswer.message,
+                productIds: [],
+                ...clarification,
+              });
+              questionPresentation = { callId: call.call_id, question, answers };
+            }
+            const answer = [
+              publicAnswer.message.trim(),
+              ...(mode === "voice" && questionPresentation
+                ? [questionPresentation.question]
+                : []),
+            ].join(" ");
+            if (mode === "voice" && answer.length > 1000)
+              throw new Error("The complete spoken reply exceeds 1000 characters. Shorten message while preserving the clarification question.");
             signal.throwIfAborted();
             appendInput({
               type: "function_call_output",
               call_id: call.call_id,
-              output: JSON.stringify({ displayed: true, photoPresentation: photoSelection }),
+              output: JSON.stringify({ displayed: true, photoPresentation: photoSelection, ...(questionPresentation ? { question: questionPresentation.question } : {}) }),
             });
             const contextCheckpoint = checkpoint(model);
             onText(answer);
@@ -823,6 +852,7 @@ export async function generateReply(
               model: completed.model,
               serviceTier: completed.service_tier ?? undefined,
               photoPresentation: { ...photoSelection, callId: call.call_id },
+              ...(questionPresentation ? { questionPresentation } : {}),
               ...(memoryUpdate ? { memoryUpdate } : {}),
               ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
             };

@@ -71,7 +71,7 @@ async function setup(t, options = {}) {
     complete(value) { this.status = 200; this.responseText = JSON.stringify(value); this.onload?.(); this.onloadend?.(); }
     fail() { this.onerror?.(); this.onloadend?.(); }
   };
-  const errors = [], calls = [], sent = [], activity = [], listeners = new Set();
+  const errors = [], calls = [], sent = [], voiceAnswers = [], activity = [], listeners = new Set();
   window.console.error = (...args) => errors.push(args);
   let state = {conversation: options.conversation ?? (options.active ? conversation({active: true}) : null), pending: !!options.pending, restoring: false, error: null, voice: {status: options.voice ? "active" : "idle", muted: false, error: null}};
   let windows = options.saved ? [photo()] : [], visualizations = options.jobs ?? [], historicalJobs = options.productJobs ?? [], pendingParts = [];
@@ -141,6 +141,7 @@ async function setup(t, options = {}) {
     noteMediaActivity: () => activity.push("activity"),
     prepareVisualizationProduct: async () => assert.fail("Known generating jobs must not reprepare"),
     sendMessage: async (text) => { sent.push(text); await options.onSend?.(); },
+    sendVoiceAnswer: async (questionId, answer) => { voiceAnswers.push({questionId, answer}); },
     startVoice: async () => {}, stopVoice: async () => {},
     end: async () => update({conversation: null, voice: {status: "idle", muted: false, error: null}}),
   };
@@ -156,7 +157,7 @@ async function setup(t, options = {}) {
   const dialog = () => container.querySelector(".roman-visualization-dialog");
   const setText = async (input, text) => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text); input.dispatchEvent(new window.Event("input", {bubbles: true})); await delay(0); };
   const loaded = async () => { await until(() => dialog()?.querySelector(".roman-photo-preview img"), "Review preview did not load"); dialog().querySelector(".roman-photo-preview img").dispatchEvent(new window.Event("load")); await delay(0); };
-  return {window, container, session, update, calls, sent, xhrs, activity, camera, dialog, setText, loaded,
+  return {window, container, session, update, calls, sent, voiceAnswers, xhrs, activity, camera, dialog, setText, loaded,
     launchProduct(path) { return dispose.navigate("/", {state: {visualizeProduct: path, requestId: window.crypto.randomUUID()}}); },
     completeUpload(loseAck = false, analysis) { windows = [{...photo(), ...(analysis ? {analysis} : {})}]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
     finishAnalysis() { windows = windows.map((item) => ({...item, analysis: {...item.analysis, status: "completed", completedAt: new Date().toISOString()}})); },
@@ -275,6 +276,48 @@ test("normalized restored photo pickers retain their historical words without du
     assert.equal([...ctx.container.querySelectorAll(".roman-window-carousel button")].filter((button) => button.textContent === "Upload a room photo").length, 1);
     assert.deepEqual(ctx.sent, []);
     assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  });
+});
+
+test("reference photos keep one measurement clarification actionable through the normal text and voice answer handlers", async (t) => {
+  const prompt = "Your photo looks taller than it is wide, but the supplied width is larger than the height. Are your measurements correct?";
+  const answers = ["My measurements are correct", "Swap width and height"];
+  for (const voice of [false, true]) for (const answer of answers) await t.test(`${voice ? "voice" : "text"}: ${answer}`, async (t) => {
+    const voiceReply = voice ? {voiceReply: {voiceId: ownerId, afterSequence: 0}} : {};
+    const question = {type: "question", version: 1, invocationId: questionId, question: prompt, answers, ...voiceReply};
+    const history = conversation({active: true, parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "reference", ...voiceReply}, question]});
+    history.current.pendingQuestion = question;
+    const ctx = await setup(t, {active: true, saved: true, voice, conversation: history});
+    await until(() => ctx.container.querySelector('.roman-window-carousel img')?.getAttribute("src")?.startsWith("blob:") && ctx.container.querySelectorAll(".roman-question button").length === answers.length && [...ctx.container.querySelectorAll(".roman-question button")].every((button) => !button.disabled), "Reference photo and clarification did not become ready");
+    const carousel = ctx.container.querySelector(".roman-window-carousel");
+    const voiceBar = ctx.container.querySelector(".roman-voice-bar");
+    const image = carousel.querySelector("img");
+    assert.equal(carousel.querySelectorAll("li").length, 1, "Reference presentation shows only the requested saved photo");
+    assert.equal(image.alt, "Kitchen window");
+    assert.equal(carousel.querySelector("button"), null, "A reference photo offers neither upload nor selection");
+    assert.equal(carousel.textContent.includes("Upload a room photo"), false);
+    assert.equal(carousel.textContent.includes("Use this window"), false);
+    assert.equal(ctx.container.querySelectorAll(".roman-question").length, 1);
+    assert.equal([...ctx.container.querySelectorAll(".roman-message-text")].filter((paragraph) => paragraph.textContent === prompt).length, 1, "The normal QuestionPart owns the sole clarification text");
+    assert.deepEqual([...ctx.container.querySelectorAll(".roman-question button")].map((button) => button.textContent), answers);
+    assert.ok(ctx.calls.some((call) => call.path.endsWith(`/media/window/${windowId}`)), "The card must resolve the saved source image");
+    assert.deepEqual(ctx.sent, []);
+    assert.deepEqual(ctx.voiceAnswers, []);
+    image.click();
+    await delay(0);
+    assert.equal(ctx.dialog(), null, "The source reference is read-only");
+    [...ctx.container.querySelectorAll(".roman-question button")].find((button) => button.textContent === answer).click();
+    await until(() => ctx.sent.length + ctx.voiceAnswers.length === 1, "Clarification answer did not use the existing question handler");
+    assert.deepEqual(ctx.sent, voice ? [] : [answer]);
+    assert.deepEqual(ctx.voiceAnswers, voice ? [{questionId, answer}] : []);
+    assert.equal(ctx.session.getSnapshot().conversation.current.selectedWindow, null);
+    assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select") || call.path.endsWith("/start")).length, 0, "Showing and answering a reference does not select a photo or start a paid preview");
+    assert.equal(ctx.xhrs.length, 0);
+    assert.equal(ctx.container.querySelector(".roman-local-media"), null);
+    if (voice) {
+      assert.equal(ctx.session.getSnapshot().voice.status, "active");
+      assert.equal(ctx.container.querySelector(".roman-voice-bar"), voiceBar);
+    }
   });
 });
 

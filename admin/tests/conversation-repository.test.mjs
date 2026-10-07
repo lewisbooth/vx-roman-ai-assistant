@@ -460,6 +460,41 @@ test("saved photos stay current outside loaded history and terminal photo widget
       new Set(receipts.map((receipt) => receipt.providerCallId)).size,
       1,
     );
+    const clarificationTurn = await repository.beginTurn(id, {
+      requestId: randomUUID(), text: "Could I have swapped the width and height?",
+    });
+    const clarificationResult = {
+      status: "complete",
+      text: "I’m comparing this window’s overall shape.",
+      photoPresentation: {...result.photoPresentation, callId: "reference-clarification", purpose: "reference"},
+      questionPresentation: {
+        callId: "reference-clarification",
+        question: "Could the width and height labels be swapped?",
+        answers: ["My measurements are correct", "Swap width and height"],
+      },
+    };
+    for (const invalid of [
+      {...clarificationResult, photoPresentation: {...clarificationResult.photoPresentation, purpose: "selection"}},
+      {...clarificationResult, photoPresentation: {...clarificationResult.photoPresentation, purpose: "preview"}},
+      {...clarificationResult, photoPresentation: {callId: "reference-clarification", kind: "upload", suggestedTitle: null}},
+      {...clarificationResult, questionPresentation: {...clarificationResult.questionPresentation, callId: "another-call"}},
+      {...clarificationResult, resumeQuestionId: randomUUID()},
+    ]) {
+      await assert.rejects(repository.finishTurn(id, clarificationTurn.assistantId, invalid), {status: 400});
+      assert.equal(await database.toolInvocation.count({where: {assistantId: clarificationTurn.assistantId}}), 0);
+      assert.equal((await database.conversationMessage.findUniqueOrThrow({where: {id: clarificationTurn.assistantId}})).status, "pending");
+    }
+    assert.equal(await repository.finishTurn(id, clarificationTurn.assistantId, clarificationResult), true);
+    const clarified = await repository.getSnapshot(id);
+    const referenceReply = clarified.messages.find((message) => message.id === clarificationTurn.assistantId);
+    const referenceQuestion = referenceReply.parts.find((part) => part.type === "question");
+    assert.deepEqual(referenceQuestion.answers, clarificationResult.questionPresentation.answers);
+    assert.equal(referenceQuestion.question, clarificationResult.questionPresentation.question);
+    assert.equal(referenceReply.parts.find((part) => part.type === "media").purpose, "reference");
+    assert.deepEqual(clarified.current.pendingQuestion, referenceQuestion);
+    assert.deepEqual((await repository.getCurrentContext(id)).current.pendingQuestion, referenceQuestion);
+    const referenceHistory = await repository.getHistoryPage(id, clarified.history.end);
+    assert.deepEqual(referenceHistory.history.entries.find((entry) => entry.message.id === clarificationTurn.assistantId).message.parts, referenceReply.parts);
     process.env.ROMAN_VISUALIZATIONS_ENABLED = "false";
     const disabled = await repository.getSnapshot(id);
     assert.equal(disabled.current.galleryEnabled, false);
