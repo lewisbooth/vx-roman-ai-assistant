@@ -29,9 +29,6 @@
 .roman-photo-option input { width: 17px; height: 17px; margin: 3px 0 0; accent-color: #4e0e0e; flex-shrink: 0; }
 .roman-photo-option small { display: block; color: #716b60; font-size: 13px; }
 .roman-photo-product { margin: 0 0 14px; color: #716b60; font-family: DMSansSite, "DM Sans", sans-serif; font-size: 13px; line-height: 1.5; }
-.roman-upload-windows { border-top: 1px solid #e3e0d8; padding-top: 20px; }
-.roman-upload-windows h3 { margin: 0 0 16px; font-size: 20px; font-weight: 400; }
-.roman-window-thumbnails { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; list-style: none; margin: 0; padding: 0; }
 .roman-private-image { position: relative; display: block; width: 100%; height: 100%; }
 .roman-private-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .roman-media-placeholder { display: block; width: 100%; height: 100%; background: #bcb6ad; }
@@ -49,10 +46,6 @@
 .roman-window-use { position: absolute; inset: auto 0 0; padding: 38px 20px 18px; color: #fdfbf6; background: linear-gradient(transparent, #291615aa); font-size: 18px; line-height: 1.3; opacity: 0; transition: opacity .16s ease; }
 .roman-media-card-title { display: block; margin: 0; padding: 18px 20px; font-size: 21px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
 .roman-window-card[data-selected="true"] { border-color: #4e0e0e; box-shadow: 0 0 0 1px #4e0e0e; }
-.roman-window-compact { border-radius: 12px; }
-.roman-window-compact .roman-window-image { border-radius: 12px 12px 0 0; }
-.roman-window-compact .roman-media-card-title { padding: 8px 10px; font-family: DMSansSite, "DM Sans", sans-serif; font-size: 13px; line-height: 1.4; }
-.roman-window-compact .roman-window-use { display: none; }
 .roman-window-actions { position: absolute; top: 8px; right: 8px; z-index: 1; font-family: DMSansSite, "DM Sans", sans-serif; }
 .roman-window-actions summary { display: grid; place-items: center; width: 44px; height: 44px; list-style: none; border-radius: 50%; background: #fdfbf6e8; cursor: pointer; }
 .roman-window-actions summary::-webkit-details-marker { display: none; }
@@ -93,7 +86,6 @@
   .roman-photo-picker { min-height: 280px; padding: 24px 16px; }
   .roman-photo-setup { display: flex; flex-direction: column; gap: 22px; }
   .roman-photo-preview { min-height: 260px; }
-  .roman-window-thumbnails { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
   .roman-media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .roman-media-card-title { padding: 14px; font-size: 18px; }
   .roman-visualization-card-copy { padding: 14px; }

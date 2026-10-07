@@ -1,10 +1,8 @@
 import { useId, useRef, useState, type FormEvent } from "react";
 import { windowTitle, type WindowPhotoDto } from "../../../shared/visualizations";
-import type { ImageSource, ImageResolver } from "../../../shared/visualizations/ImageComparison";
+import type { ImageResolver } from "../../../shared/visualizations/ImageComparison";
 import { PrivateImage } from "./PrivateImage";
 import { VisualizationDialog } from "../../../shared/visualizations/VisualizationDialog";
-import { WindowCard } from "./WindowCard";
-import { LoadMoreSentinel } from "./LoadMoreSentinel";
 
 export interface UploadDraft {
   file: File | null;
@@ -17,22 +15,17 @@ export interface UploadDraft {
   height?: number;
 }
 
-export function UploadModal({ draft, windows, productTitle, windowSource, onDraftChange, onFile, onSelectWindow,
-  onSubmit, onClose, error, busy = false, awaitingProduct = false, hasMoreWindows = false, onLoadMoreWindows }: {
+export function UploadModal({ draft, productTitle, onDraftChange, onFile,
+  onSubmit, onClose, error, busy = false, awaitingProduct = false }: {
   draft: UploadDraft;
-  windows: readonly WindowPhotoDto[];
   productTitle?: string | null;
-  windowSource: (photo: WindowPhotoDto) => ImageSource;
   onDraftChange: (patch: Partial<UploadDraft>) => void;
   onFile: (file: File) => void;
-  onSelectWindow: (photo: WindowPhotoDto) => void;
   onSubmit: (draft: UploadDraft) => void;
   onClose: () => void;
   error?: string | null;
   busy?: boolean;
   awaitingProduct?: boolean;
-  hasMoreWindows?: boolean;
-  onLoadMoreWindows?: () => void;
 }) {
   const id = useId();
   const picker = useRef<HTMLInputElement>(null);
@@ -104,11 +97,5 @@ export function UploadModal({ draft, windows, productTitle, windowSource, onDraf
       </div>}
       {(error || validation) && <p role="alert" className="roman-media-error">{error || validation}</p>}
     </form>
-    {windows.length > 0 && <section className="roman-upload-windows" aria-label="Your Windows">
-      <h3>Your Windows</h3>
-      <ul className="roman-window-thumbnails">{windows.map((photo) => <li key={photo.id}><WindowCard photo={photo} source={() => windowSource(photo)} compact selected={draft.window?.id === photo.id}
-        onSelect={() => { setValidation(null); setReadableKey(null); onSelectWindow(photo); }} disabled={busy} /></li>)}</ul>
-      <LoadMoreSentinel key={windows.at(-1)?.id} enabled={hasMoreWindows && !busy} onLoadMore={onLoadMoreWindows} />
-    </section>}
   </VisualizationDialog>;
 }

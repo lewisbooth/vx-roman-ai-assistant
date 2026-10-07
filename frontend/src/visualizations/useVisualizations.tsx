@@ -157,11 +157,11 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       return value;
     });
   };
-  const selectForReview = (photo: WindowPhotoDto, preserveProduct = false) => {
+  const selectForReview = (photo: WindowPhotoDto) => {
     activity(); fileVersion.current++; setDraftError(null);
     setDraft((current) => { if (!attempts.some((attempt) => attempt.draft.file === current.file && current.file)) release(current); return {file: null, window: photo, preview: () => client.windowSource(photo), title: photo.title, cleanup: photo.cleanup, consent: true, width: photo.width, height: photo.height}; });
     setModal(true);
-    if (!preserveProduct) setModalProduct(activeProduct(session.getSnapshot().conversation));
+    setModalProduct(activeProduct(session.getSnapshot().conversation));
   };
   const selectFile = async (file: File) => {
     activity(); const version = ++fileVersion.current;
@@ -323,10 +323,10 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
       const currentPhoto = gallery.windows.find((photo) => photo.id === attempt.photo?.id) ?? attempt.photo;
       return <div key={attempt.requestId} className="roman-local-media"><VisualizationCard job={accepted ?? job} source={attempt.draft.preview} uploadProgress={attempt.stage === "uploading" ? attempt.progress : undefined} analysisProgress={attempt.stage === "preparing" ? photoAnalysisProgress(currentPhoto?.analysis, analysisNow) : undefined} onCheck={() => { void execute(attempt, true); }} /></div>;
     })],
-    dialogs: <>{modal && <UploadModal draft={draft} windows={gallery.windows} windowSource={client.windowSource} productTitle={modalProduct?.title}
+    dialogs: <>{modal && <UploadModal draft={draft} productTitle={modalProduct?.title}
       awaitingProduct={!!modalProduct && (selectedProductPath !== modalProduct.path || !isCurrentProduct(modalProduct.path))}
-      onDraftChange={changeDraft} onFile={(file) => { void selectFile(file); }} onSelectWindow={(photo) => selectForReview(photo, true)} onSubmit={submit} onClose={closeUpload}
-      error={draftError} hasMoreWindows={!!gallery.nextWindowsCursor} onLoadMoreWindows={() => { void client.loadWindows().catch(() => undefined); }} />}
+      onDraftChange={changeDraft} onFile={(file) => { void selectFile(file); }} onSubmit={submit} onClose={closeUpload}
+      error={draftError} />}
       {viewer && viewerMedia && <VisualizationViewer key={viewer.id} title={`${viewer.windowTitle} · ${viewer.productTitle}`} {...viewerMedia} width={viewer.width} height={viewer.height} filename={`roman-${viewer.id}.jpg`} onClose={() => setViewer(null)} />}</>,
   };
 }

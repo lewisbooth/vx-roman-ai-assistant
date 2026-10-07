@@ -43,6 +43,15 @@ async function endChat(ctx) {
   await until(() => !ctx.container.querySelector("[data-roman-confirm-end]") && !ctx.container.querySelector(".roman-end-chat")?.disabled, "End Chat did not finish");
 }
 
+async function reviewSavedWindow(ctx) {
+  await ctx.selectTab("Gallery");
+  const choice = () => ctx.container.querySelector('.roman-gallery [aria-label="Use Kitchen window"]');
+  await until(choice, "Saved window missing from Gallery");
+  choice().click();
+  await until(ctx.dialog, "Saved-window review did not open");
+  await ctx.loaded();
+}
+
 async function setup(t, options = {}) {
   const nativeProduct = options.nativeProduct ?? (options.active ? {path: "/products/linen", title: "Linen blind"} : null);
   const nativeMarkup = nativeProduct ? `<app-provider><main id="main"><main-product update-url="true" product-url="${nativeProduct.path}"><h1>${nativeProduct.title}</h1><dynamic-pricing><form data-dynamic-pricing-form></form></dynamic-pricing></main-product></main></app-provider>` : "";
@@ -218,18 +227,27 @@ test("an optional preview read failure retries once when Gallery is opened and l
 });
 
 test("camera and visualizer welcome open the same non-conversational modal while voice and pending chat retain their state", async (t) => {
-  const ctx = await setup(t, {voice: true, pending: true});
+  const ctx = await setup(t, {voice: true, pending: true, saved: true});
   const form = ctx.container.querySelector(".roman-composer form"), voice = ctx.container.querySelector(".roman-voice-bar");
   ctx.camera().click(); await until(ctx.dialog, "Camera did not open upload");
+  assert.equal(ctx.dialog().querySelector(".roman-window-choice"), null, "Upload does not duplicate saved-photo selection");
+  assert.equal(ctx.dialog().querySelector('[aria-label="Your Windows"]'), null);
   assert.equal(ctx.container.querySelector(".roman-chat").getAttribute("data-welcome-theme"), "true");
   assert.deepEqual(ctx.sent, []);
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
   ctx.dialog().querySelector('[aria-label="Close"]').click(); await delay(0);
   [...ctx.container.querySelectorAll(".roman-welcome-tile")].find((tile) => tile.textContent.includes("Visualize in room")).click();
   await until(ctx.dialog, "Welcome did not open the shared upload modal");
+  assert.equal(ctx.dialog().querySelector(".roman-window-choice"), null);
   assert.equal(ctx.container.querySelector(".roman-composer form"), form);
   assert.deepEqual(ctx.sent, []);
   assert.equal(ctx.calls.filter((call) => call.path === "/apps/roman/gallery").length, 1, "StrictMode must not duplicate bootstrap");
+  ctx.dialog().querySelector('[aria-label="Close"]').click(); await delay(0);
+  await ctx.selectTab("Gallery");
+  assert.equal(ctx.container.querySelector("#roman-gallery-windows").textContent, "Your Windows");
+  assert.ok(ctx.container.querySelector('.roman-gallery [aria-label="Use Kitchen window"]'));
+  assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
+  assert.deepEqual(ctx.sent, []);
 });
 
 test("the home visualization tile asks Roman about the verified open product while the camera stays direct", async (t) => {
@@ -249,7 +267,12 @@ test("explicit PDP entry opens upload directly and waits for matching activation
   await until(() => ctx.sent.length === 1, "Existing advisor activation was not requested");
   assert.match(ctx.sent[0], /Background blind.*photo setup only.*Do not create a preview yet/);
   assert.doesNotMatch(ctx.sent[0], /\/products\//);
-  ctx.dialog().querySelector('.roman-window-choice').click(); await ctx.loaded();
+  assert.equal(ctx.dialog().querySelector(".roman-window-choice"), null);
+  const picker = ctx.dialog().querySelector('[type="file"]');
+  Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
+  picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
+  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
+  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
   const submit = () => ctx.dialog().querySelector('[type="submit"]');
   assert.equal(submit().disabled, true);
   const active = conversation({active: true}); active.current.activeProduct = {path: "/products/background", title: "Background blind"};
@@ -343,6 +366,7 @@ test("photo upload presentations use the same picker with or without saved windo
     assert.equal(ctx.container.querySelectorAll(".roman-inline-media > .roman-media-button").length, 0);
     assert.equal(ctx.container.querySelector(".roman-question"), null);
     choices[0].click(); await until(ctx.dialog, "Upload review did not open");
+    assert.equal(ctx.dialog().querySelector(".roman-window-choice"), null, "Saved photos remain in the chat carousel");
     const picker = ctx.dialog().querySelector('[type="file"]');
     Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
     picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
@@ -553,9 +577,7 @@ test("a new caption extending the same customer voice bubble suppresses the stal
 
 test("saved photo rename is committed once and lost generation acknowledgements recover the original job without another paid start", async (t) => {
   const ctx = await setup(t, {active: true, saved: true, loseStart: true});
-  ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
-  await until(() => ctx.dialog().querySelector(".roman-window-choice"), "Saved photo missing");
-  ctx.dialog().querySelector(".roman-window-choice").click(); await ctx.loaded();
+  await reviewSavedWindow(ctx);
   await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Breakfast window");
   assert.equal(ctx.dialog().querySelectorAll('[type="checkbox"]').length, 1, "Saved consent must not be requested again");
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
@@ -620,16 +642,12 @@ test("late selection acknowledgement after End Chat cannot clear a new review of
   let finishSelection;
   const selected = new Promise((resolve) => { finishSelection = resolve; });
   const ctx = await setup(t, {saved: true, onSelect: () => selected});
-  ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
-  await until(() => ctx.dialog().querySelector(".roman-window-choice"), "Saved window missing");
-  ctx.dialog().querySelector(".roman-window-choice").click(); await ctx.loaded();
+  await reviewSavedWindow(ctx);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.calls.some((call) => call.path.endsWith("/select")), "Selection did not start");
   await endChat(ctx);
   await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
-  ctx.camera().click(); await until(ctx.dialog, "New upload dialog missing");
-  await until(() => ctx.dialog().querySelector(".roman-window-choice"), "Saved window missing after End Chat");
-  ctx.dialog().querySelector(".roman-window-choice").click(); await ctx.loaded();
+  await reviewSavedWindow(ctx);
   await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Next room");
   finishSelection(); await delay(40);
   assert.ok(ctx.dialog().querySelector(".roman-photo-preview img"), "Old selection completion must not clear the new window review");

@@ -231,7 +231,7 @@ test("upload review requires name and consent, focuses close and saves before a 
   const submitted = [];
   const props = {
     draft: {file: new window.File(["jpeg"], "room.jpg", {type: "image/jpeg"}), window: null, preview: "/room.jpg", title: "Kitchen", cleanup: true, consent: false},
-    windows: [], windowSource: () => null, onDraftChange() {}, onFile() {}, onSelectWindow() {}, onSubmit: (draft) => submitted.push(draft), onClose() {},
+    onDraftChange() {}, onFile() {}, onSubmit: (draft) => submitted.push(draft), onClose() {},
   };
   window.document.querySelector("[data-roman-upload]").focus();
   api.render(props);
@@ -257,8 +257,8 @@ test("saved-window review reuses consent and identity without reuploading", asyn
   const {window, mount, api} = setup(t, "upload");
   const photo = {id: "window-1", title: "Kitchen", revision: 3, width: 600, height: 800, cleanup: true, createdAt: "2026-10-06"};
   const submitted = [];
-  api.render({draft: {file: null, window: photo, preview: "/saved.jpg", title: "Breakfast room", cleanup: true, consent: true}, windows: [],
-    productTitle: "Blue blind", windowSource: () => null, onDraftChange() {}, onFile() {}, onSelectWindow() {}, onSubmit: (draft) => submitted.push(draft), onClose() {}});
+  api.render({draft: {file: null, window: photo, preview: "/saved.jpg", title: "Breakfast room", cleanup: true, consent: true},
+    productTitle: "Blue blind", onDraftChange() {}, onFile() {}, onSubmit: (draft) => submitted.push(draft), onClose() {}});
   await delay(10);
   mount.querySelector("img").dispatchEvent(new window.Event("load"));
   await delay(5);
