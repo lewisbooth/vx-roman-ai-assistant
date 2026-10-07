@@ -6,7 +6,7 @@ export const presentPhotosToolDefinition = {
   name: "present_photos",
   strict: true,
   description:
-    "Finish this reply with photo cards. Use windows with purpose reference to show the saved photo(s) you are discussing, with a brief explanation or clarification in message; reference cards do not select photos or start previews. For upload/selection/preview, show one upload-first picker and invite selection in message. Use only saved IDs verified this turn or the current selected window. No separate quick answers, numeric field, product cards or duplicate question. Offering or selecting a photo does not itself authorize a preview.",
+    "Finish with photo cards when the customer must choose/upload a photo, requests to review one, or needs a photo-based clarification such as a suspected measurement swap. Use windows/purpose reference with the sole clarification in message; these cards do not select photos or start previews. A clearly inferred photo needs no reference carousel before generation. For upload/selection, show one upload-first picker. Use only saved IDs verified this turn or the current selected window. No separate quick answers, numeric field, product cards or duplicate question. Photo selection alone does not authorize a preview.",
   parameters: {
     type: "object",
     additionalProperties: false,
