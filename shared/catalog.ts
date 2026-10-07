@@ -5,6 +5,8 @@ export interface CatalogProduct {
   url: string;
   imageUrl?: string;
   priceLabel?: string;
+  /** Supplied collection labels may be partial; absence is not a fitting verdict. */
+  collectionTitles?: string[];
 }
 
 export interface CatalogMessage {
@@ -191,6 +193,22 @@ function startingPrice(value: unknown): string | undefined {
   }
 }
 
+function collectionTitles(value: unknown, path: string): string[] | undefined {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) invalid(path, "an array of collections");
+  // Preserve only the provided grouping labels, not collection descriptions:
+  // a broad collection can describe features only some members support.
+  const titles = value.slice(0, 10).map((collection, index) => {
+    const field = `${path}[${index}].title`;
+    if (!object(collection) || typeof collection.title !== "string")
+      invalid(field, "non-empty text");
+    const title = compact(collection.title, 100);
+    if (!title) invalid(field, "non-empty text");
+    return title;
+  });
+  return [...new Set(titles)];
+}
+
 function normalizeProduct(
   value: unknown,
   storefrontOrigin: string,
@@ -233,6 +251,7 @@ function normalizeProduct(
     .map((item) => imageUrl(item.url, storefrontOrigin))
     .find(Boolean);
   const priceLabel = startingPrice(value.price_range);
+  const collections = collectionTitles(value.collections, `${path}.collections`);
   return {
     id: value.id,
     title,
@@ -240,6 +259,7 @@ function normalizeProduct(
     url,
     ...(image ? { imageUrl: image } : {}),
     ...(priceLabel ? { priceLabel } : {}),
+    ...(collections ? { collectionTitles: collections } : {}),
   };
 }
 
@@ -339,7 +359,9 @@ export function parseCatalogResult(
     if (!object(product)) invalid(path, "a product object");
     onlyKeys(
       product,
-      ["id", "title", "description", "url", "imageUrl", "priceLabel"],
+      [
+        "id", "title", "description", "url", "imageUrl", "priceLabel", "collectionTitles",
+      ],
       path,
     );
     const id = text(product.id, `${path}.id`, 100);
@@ -364,6 +386,22 @@ export function parseCatalogResult(
         `${path}.imageUrl`,
         "a canonical HTTPS image URL on the storefront or cdn.shopify.com",
       );
+    let collections: string[] | undefined;
+    if (product.collectionTitles !== undefined) {
+      if (
+        !Array.isArray(product.collectionTitles) ||
+        product.collectionTitles.length > 10
+      )
+        invalid(
+          `${path}.collectionTitles`,
+          "an array of at most 10 collection labels",
+        );
+      collections = product.collectionTitles.map((title, index) =>
+        text(title, `${path}.collectionTitles[${index}]`, 100),
+      );
+      if (new Set(collections).size !== collections.length)
+        invalid(`${path}.collectionTitles`, "unique collection labels");
+    }
     return {
       id,
       title: text(product.title, `${path}.title`, 200),
@@ -373,6 +411,7 @@ export function parseCatalogResult(
       ...(product.priceLabel !== undefined
         ? { priceLabel: text(product.priceLabel, `${path}.priceLabel`, 100) }
         : {}),
+      ...(collections ? { collectionTitles: collections } : {}),
     };
   });
   const messages = value.messages.map((message, index): CatalogMessage => {

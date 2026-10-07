@@ -131,7 +131,12 @@ export function createStorefrontExecutor(
     for (const product of result.products) {
       displayProducts.delete(product.id);
       displayProducts.set(product.id, {
-        product: { ...product },
+        product: {
+          ...product,
+          ...(product.collectionTitles
+            ? { collectionTitles: [...product.collectionTitles] }
+            : {}),
+        },
         messages: result.messages.map((message) => ({ ...message })),
         expiresAt: now + DISPLAY_CACHE_MS,
       });
@@ -150,7 +155,12 @@ export function createStorefrontExecutor(
     for (const id of ids) {
       const entry = displayProducts.get(id);
       if (entry && entry.expiresAt > now) {
-        products.set(id, { ...entry.product });
+        products.set(id, {
+          ...entry.product,
+          ...(entry.product.collectionTitles
+            ? { collectionTitles: [...entry.product.collectionTitles] }
+            : {}),
+        });
         for (const message of entry.messages)
           messages.set(JSON.stringify(message), { ...message });
       } else missing.push(id);

@@ -223,6 +223,59 @@ test("UCP search, lookup and product responses share one minimal projection", ()
   }
 });
 
+test("catalog collection labels survive every projection without borrowing collection claims", () => {
+  const collections = [
+    { title: " All Blinds ", description: { plain: "Some ranges support no-drill" } },
+    { title: "No Drill Pleated Blinds", handle: "no-drill-pleated-blinds" },
+    { title: "No Drill Pleated Blinds", url: "https://unrelated.example/" },
+  ];
+  for (const raw of [
+    { products: [{ ...product, collections }] },
+    { product: { ...product, collections } },
+  ]) {
+    const result = normalizeCatalogResult(raw, origin);
+    assert.deepEqual(result.products[0].collectionTitles, [
+      "All Blinds", "No Drill Pleated Blinds",
+    ]);
+    assert.deepEqual(parseCatalogResult(result, origin), result);
+    assert.doesNotMatch(JSON.stringify(result), /Some ranges|unrelated\.example|no-drill-pleated-blinds/);
+    assert.equal("noDrill" in result.products[0], false);
+  }
+});
+
+test("missing and empty collection metadata remain distinct without inventing fitting support", () => {
+  const missing = normalizeCatalogResult({ product }, origin);
+  const empty = normalizeCatalogResult({ product: { ...product, collections: [] } }, origin);
+  const unrelated = normalizeCatalogResult({
+    product: { ...product, collections: [{ title: "Pleated Blinds" }] },
+  }, origin);
+  assert.equal("collectionTitles" in missing.products[0], false);
+  assert.deepEqual(empty.products[0].collectionTitles, []);
+  assert.deepEqual(unrelated.products[0].collectionTitles, ["Pleated Blinds"]);
+  for (const result of [missing, empty, unrelated]) {
+    assert.deepEqual(parseCatalogResult(result, origin), result);
+    assert.equal("noDrill" in result.products[0], false);
+  }
+});
+
+test("collection label bounds and server validation exclude malformed or fabricated metadata", () => {
+  const labels = Array.from({ length: 11 }, (_, index) => ({ title: `${index} ${"x".repeat(200)}` }));
+  const bounded = normalizeCatalogResult({ product: { ...product, collections: labels } }, origin);
+  assert.equal(bounded.products[0].collectionTitles.length, 10);
+  assert.ok(bounded.products[0].collectionTitles.every((title) => title.length === 100));
+  assert.deepEqual(parseCatalogResult(bounded, origin), bounded);
+  for (const collections of [null, {}, [null], [{ title: 12 }], [{ title: " " }]])
+    assert.throws(() => normalizeCatalogResult({ product: { ...product, collections } }, origin), /collections/);
+  const valid = normalizeCatalogResult({ product }, origin);
+  for (const collectionTitles of [null, {}, [12], [""], ["x".repeat(101)], ["Same", "Same"], Array(11).fill("Title")])
+    assert.throws(() => parseCatalogResult({
+      ...valid, products: [{ ...valid.products[0], collectionTitles }],
+    }, origin), /collectionTitles/);
+  assert.throws(() => parseCatalogResult({
+    ...valid, products: [{ ...valid.products[0], noDrill: false }],
+  }, origin), /only these fields/);
+});
+
 test("a catalog handle supplies the same-store PDP when the optional URL is absent", () => {
   // Keep only the observed handle shape; all other fields are synthetic.
   const handle = "click2go-smooth-white-no-drill-shutter-blind";

@@ -554,6 +554,7 @@ test("batch results admit thirty candidates but keep multibyte payloads bounded"
             description: {
               plain: oversized ? "織".repeat(2000) : "Useful catalog evidence",
             },
+            collections: [{ title: "No Drill Pleated Blinds" }],
           })),
         },
       });
@@ -565,6 +566,9 @@ test("batch results admit thirty candidates but keep multibyte payloads bounded"
       new TextEncoder().encode(JSON.stringify(result)).byteLength <= 120 * 1024,
     );
     assert.equal(result.products.length, 30);
+    assert.ok(result.products.every(({ collectionTitles }) =>
+      JSON.stringify(collectionTitles) === JSON.stringify(["No Drill Pleated Blinds"]),
+    ), "Payload bounds preserve supplied collection evidence");
     assert.deepEqual(
       result.queries.map(({ productIds }) => productIds.length),
       [10, 10, 10],

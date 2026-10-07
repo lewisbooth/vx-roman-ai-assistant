@@ -144,16 +144,22 @@ test("display hydration reuses a pending search and concurrent card lookups with
   const first = executor.loadProducts([product.id]);
   const second = executor.loadProducts([product.id]);
   gate.resolve({
-    products: [product],
+    products: [{ ...product, collections: [{ title: "No Drill Pleated Blinds" }] }],
     messages: [{ type: "warning", content: "Starting price only." }],
   });
   const modelResult = await search;
   modelResult.products[0].title = "Changed outside the cache";
+  modelResult.products[0].collectionTitles[0] = "Changed outside the cache";
   const firstCards = await first;
   firstCards.products[0].title = "Changed by one carousel";
+  firstCards.products[0].collectionTitles.push("Changed by one carousel");
   firstCards.messages[0].text = "Changed warning";
   const secondCards = await second;
   assert.equal(secondCards.products[0].title, product.title);
+  assert.deepEqual(plain(secondCards.products[0].collectionTitles), ["No Drill Pleated Blinds"]);
+  const preview = executor.getCachedProducts([product.id]);
+  preview[0].collectionTitles.length = 0;
+  assert.deepEqual(plain(executor.getCachedProducts([product.id])[0].collectionTitles), ["No Drill Pleated Blinds"]);
   assert.equal(secondCards.messages[0].text, "Starting price only.");
   assert.equal(calls.length, 1, "two carousels reuse the one real search");
 });
