@@ -101,15 +101,16 @@ test("reference photo carousels show the named photos without upload, selection 
   assert.doesNotMatch(mount.textContent, /Upload|Use this window/);
 });
 
-test("photo analysis progress estimates three seconds but stops immediately at terminal state or the five-second deadline", (t) => {
+test("photo analysis progress estimates three seconds but stops immediately at terminal state or the ten-second deadline", (t) => {
   const {exports} = setup(t);
   const queuedAt = new Date(10_000).toISOString();
   const analysis = {status: "queued", queuedAt, startedAt: null, completedAt: null};
   assert.equal(exports.photoAnalysisProgress(analysis, 10_000), 0);
   assert.equal(exports.photoAnalysisProgress(analysis, 11_500), 47.5);
   assert.equal(exports.photoAnalysisProgress({...analysis, status: "analyzing"}, 13_000), 95);
-  assert.equal(exports.photoAnalysisProgress(analysis, 14_999), 95);
-  assert.equal(exports.photoAnalysisProgress(analysis, 15_000), null);
+  assert.equal(exports.photoAnalysisProgress(analysis, 15_000), 95);
+  assert.equal(exports.photoAnalysisProgress(analysis, 19_999), 95);
+  assert.equal(exports.photoAnalysisProgress(analysis, 20_000), null);
   assert.equal(exports.photoAnalysisProgress({...analysis, status: "completed"}, 10_500), null);
   assert.equal(exports.photoAnalysisProgress({...analysis, status: "failed"}, 10_500), null);
   assert.equal(exports.photoAnalysisProgress(undefined, 10_500), null);

@@ -459,10 +459,10 @@ test("analysis starts on the upload acknowledgement without waiting for transcri
   assert.equal(ctx.container.querySelectorAll('[aria-label="Estimated room analysis progress"]').length, 1);
 });
 
-test("analysis progress expires at five seconds and a late result never adds a reply", async (t) => {
+test("analysis progress expires at ten seconds and a late result never adds a reply", async (t) => {
   const ctx = await setup(t);
   await uploadRoom(ctx);
-  const queuedAt = new Date(Date.now() - 4700).toISOString();
+  const queuedAt = new Date(Date.now() - 9700).toISOString();
   ctx.completeUpload(false, {status: "analyzing", queuedAt, startedAt: queuedAt, completedAt: null});
   await until(() => ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), "Analysis wait missing");
   await until(() => !ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), "Analysis wait exceeded the upload deadline");

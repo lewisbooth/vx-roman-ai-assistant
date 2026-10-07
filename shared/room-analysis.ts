@@ -1,5 +1,5 @@
 export const PHOTO_ANALYSIS_STATUSES = ["queued", "analyzing", "completed", "failed"] as const;
-export const ROOM_ANALYSIS_WAIT_MS = 5_000;
+export const ROOM_ANALYSIS_WAIT_MS = 10_000;
 export interface PhotoAnalysisStatusDto {
   status: (typeof PHOTO_ANALYSIS_STATUSES)[number];
   queuedAt: string;

@@ -51,7 +51,7 @@ test("first reply joins the exact owned upload, refreshes facts and includes a f
   const gallery = await ctx.api.prepareUploadAnalysis("conversation", "reply", signal);
   assert.deepEqual(plain(gallery.uploadSummary), {windowId: "photo", includeSummary: true});
   assert.equal(gallery.selectedWindowAnalysis.observations.summary, "Warm wood and green decor.");
-  assert.deepEqual(ctx.waits, [{ownerId: "owner", photoId: "photo", timeout: 3000, signal}]);
+  assert.deepEqual(ctx.waits, [{ownerId: "owner", photoId: "photo", timeout: 8000, signal}]);
   assert.deepEqual(ctx.contextReads, ["conversation"]);
   assert.deepEqual(ctx.requests.find(([table]) => table === "photo")[1].where, {
     id: "photo", ownerId: "owner", conversationId: "conversation", uploadStatus: "ready", deletedAt: null,
@@ -62,17 +62,28 @@ test("first reply joins the exact owned upload, refreshes facts and includes a f
 });
 
 test("upload waiting budget is measured from queuedAt rather than restarted for the advisor", async () => {
-  for (const [now, remaining] of [[14_900, 100], [15_000, 0], [20_000, 0]]) {
+  for (const [now, remaining] of [[14_900, 5100], [19_900, 100], [20_000, 0], [25_000, 0]]) {
     const ctx = setup(); ctx.setNow(now);
     await ctx.api.prepareUploadAnalysis("conversation", "reply", new AbortController().signal);
     assert.equal(ctx.waits[0].timeout, remaining);
   }
 });
 
+test("analysis completing after five seconds but within ten seconds includes the upload summary", async () => {
+  const ctx = setup({wait: ({current, setNow}) => {
+    setNow(17_000);
+    current.galleryFacts.selectedWindowAnalysis.completedAt = new Date(17_000).toISOString();
+  }});
+  const gallery = await ctx.api.prepareUploadAnalysis("conversation", "reply", new AbortController().signal);
+  assert.equal(gallery.uploadSummary.includeSummary, true);
+  assert.equal(gallery.selectedWindowAnalysis.observations.summary, "Warm wood and green decor.");
+  assert.equal(ctx.waits.length, 1);
+});
+
 test("a late completed analysis remains available as facts while its upload summary is skipped", async () => {
   const ctx = setup({wait: async ({current, setNow}) => {
-    setNow(15_001);
-    current.galleryFacts.selectedWindowAnalysis.completedAt = new Date(15_001).toISOString();
+    setNow(20_001);
+    current.galleryFacts.selectedWindowAnalysis.completedAt = new Date(20_001).toISOString();
   }});
   const gallery = await ctx.api.prepareUploadAnalysis("conversation", "reply", new AbortController().signal);
   assert.equal(gallery.uploadSummary.includeSummary, false);
