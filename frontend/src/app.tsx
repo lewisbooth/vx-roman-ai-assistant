@@ -222,7 +222,7 @@ function Assistant({
       ? currentQuestion(state.conversation, storefront.url)
       : undefined;
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, requestId?: string) {
     if (session.getSnapshot().availability === "suspended")
       throw new Error("Roman is currently unavailable");
     if (endingRef.current || state.restoring)
@@ -230,7 +230,7 @@ function Assistant({
     setStartError(null);
     showView("chat");
     following.current = true;
-    messageQueue.enqueue(text);
+    messageQueue.enqueue(text, undefined, requestId);
     setCustomerTurnStarted(true);
   }
 

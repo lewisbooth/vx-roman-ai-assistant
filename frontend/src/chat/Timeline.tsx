@@ -42,7 +42,7 @@ export function Timeline({
     carouselId: string,
     product: CatalogProduct,
   ) => Promise<void>;
-  renderMedia?: (part: MediaPart) => ReactNode;
+  renderMedia?: (part: MediaPart, messageCreatedAt: string) => ReactNode;
 }) {
   const reveal = useReplyReveal(messages, onContentChange);
   // Keep the current question below every widget and later journey event.
@@ -72,6 +72,27 @@ export function Timeline({
       })),
     ];
   });
+  // Upload-started previews are accepted before their customer continuation.
+  // Present that card after Roman's reply, without changing stored event order.
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row.kind !== "message" || row.message.role !== "context" ||
+        row.parts.length !== 1) continue;
+    const preview = row.parts[0];
+    if (preview.type !== "media" || preview.kind !== "visualization" || !preview.continuationRequestId) continue;
+    const customer = rows.findIndex((candidate, position) => position > index && candidate.kind === "message" && candidate.message.role === "user");
+    if (customer < 0 || rows[customer].message.requestId !== preview.continuationRequestId) continue;
+    for (let next = customer + 1; next < rows.length; next++) {
+      const candidate = rows[next];
+      if (candidate.message.role === "user") break;
+      if (candidate.message.role === "assistant") {
+        const insertion = candidate.kind === "message" ? next + 1 : next;
+        rows.splice(index, 1);
+        rows.splice(insertion - 1, 0, row);
+        break;
+      }
+    }
+  }
   const activeRow = rows.findIndex(
     (row) =>
       row.kind === "question" && row.part.invocationId === activeQuestionId,
@@ -207,7 +228,7 @@ export function Timeline({
                       </p>
                     </div>
                   );
-                if (part.type === "media") return <div key={index} className="roman-inline-media">{renderMedia?.(part)}</div>;
+                if (part.type === "media") return <div key={index} className="roman-inline-media">{renderMedia?.(part, message.createdAt)}</div>;
                 return (
                   <ProductCards
                     key={part.invocationId}

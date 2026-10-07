@@ -794,6 +794,7 @@ for (const kind of ["windows", "upload"]) {
       const saved = await database.conversationMessage.findUniqueOrThrow({ where: { id: delegated.assistantId } });
       const expected = [{
         type: "media", version: 1, ...photoPresentation,
+        ...(kind === "upload" ? {windowIds: []} : {}),
         voiceReply: { voiceId: session.id, afterSequence: 2 },
       }];
       assert.deepEqual(JSON.parse(saved.partsJson), expected);

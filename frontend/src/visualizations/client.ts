@@ -224,7 +224,7 @@ export function createGalleryClient(session: ConversationClient) {
       return promise;
     },
     async loadReferences(parts: readonly MediaPart[]) {
-      const windowIds = [...new Set(parts.flatMap((part) => part.kind === "window" ? [part.windowId] : part.kind === "windows" ? part.windowIds : []))];
+      const windowIds = [...new Set(parts.flatMap((part) => part.kind === "window" ? [part.windowId] : part.kind === "windows" || part.kind === "upload" ? part.windowIds ?? [] : []))];
       const jobIds = [...new Set(parts.flatMap((part) => part.kind === "visualization" ? [part.jobId] : []))];
       for (let start = 0; start < Math.max(windowIds.length, jobIds.length); start += 24) {
         const requestedWindows = windowIds.slice(start, start + 24), requestedJobs = jobIds.slice(start, start + 24);

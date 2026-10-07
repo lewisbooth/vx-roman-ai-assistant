@@ -2,6 +2,7 @@ import { isPhotoAnalysisStatusDto, type PhotoAnalysisStatusDto } from "./room-an
 
 export const GALLERY_STORAGE_KEY = "roman-gallery-v1";
 export const DEFAULT_UPLOAD_TITLE = "Uploaded image";
+export const MAX_GALLERY_PHOTOS = 100;
 
 /** Private Gallery DTOs contain metadata only, never credentials or image bytes. */
 export interface WindowPhotoDto {
@@ -64,9 +65,10 @@ export type PhotoPresentation =
   | { kind: "upload"; suggestedTitle: string | null };
 export type MediaPart =
   | { type: "media"; version: 1; kind: "window"; windowId: string; title: string; customerIntent: boolean }
-  | { type: "media"; version: 1; kind: "visualization"; jobId: string; customerIntent: boolean }
+  | { type: "media"; version: 1; kind: "visualization"; jobId: string; customerIntent: boolean; continuationRequestId?: string }
   | { type: "media"; version: 1; kind: "windows"; windowIds: string[]; purpose?: "selection" | "preview" | "reference"; voiceReply?: { voiceId: string; afterSequence: number } }
-  | { type: "media"; version: 1; kind: "upload"; suggestedTitle: string | null; voiceReply?: { voiceId: string; afterSequence: number } }
+  // Older saved pickers omit windowIds; new ones freeze their Gallery membership.
+  | { type: "media"; version: 1; kind: "upload"; suggestedTitle: string | null; windowIds?: string[]; voiceReply?: { voiceId: string; afterSequence: number } }
   | { type: "media"; version: 1; kind: "renamed"; windowId: string; previousTitle: string; title: string }
   | { type: "media"; version: 1; kind: "outcome"; jobId: string; status: VisualizationStatus };
 
@@ -111,9 +113,9 @@ export function isMediaPart(value: unknown): value is MediaPart {
   const exact = (keys: string[]) => Object.keys(v).length === keys.length + 3 && Object.keys(v).every((key) => ["type", "version", "kind", ...keys].includes(key));
   const voiceReply = v.voiceReply === undefined || object(v.voiceReply) && Object.keys(v.voiceReply).length === 2 && isMediaId(v.voiceReply.voiceId) && Number.isSafeInteger(v.voiceReply.afterSequence) && Number(v.voiceReply.afterSequence) >= 0;
   if (v.kind === "window") return exact(["windowId", "title", "customerIntent"]) && isMediaId(v.windowId) && titleValid(v.title) && typeof v.customerIntent === "boolean";
-  if (v.kind === "visualization") return exact(["jobId", "customerIntent"]) && isMediaId(v.jobId) && typeof v.customerIntent === "boolean";
+  if (v.kind === "visualization") return exact(["jobId", "customerIntent", ...(v.continuationRequestId !== undefined ? ["continuationRequestId"] : [])]) && isMediaId(v.jobId) && typeof v.customerIntent === "boolean" && (v.continuationRequestId === undefined || isMediaId(v.continuationRequestId));
   if (v.kind === "windows") return exact(["windowIds", ...(v.purpose !== undefined ? ["purpose"] : []), ...(v.voiceReply !== undefined ? ["voiceReply"] : [])]) && voiceReply && (v.purpose === undefined || v.purpose === "selection" || v.purpose === "preview" || v.purpose === "reference") && Array.isArray(v.windowIds) && v.windowIds.length > 0 && v.windowIds.length <= 10 && v.windowIds.every(isMediaId) && new Set(v.windowIds).size === v.windowIds.length;
-  if (v.kind === "upload") return exact(["suggestedTitle", ...(v.voiceReply !== undefined ? ["voiceReply"] : [])]) && voiceReply && (v.suggestedTitle === null || titleValid(v.suggestedTitle));
+  if (v.kind === "upload") return exact(["suggestedTitle", ...(v.windowIds !== undefined ? ["windowIds"] : []), ...(v.voiceReply !== undefined ? ["voiceReply"] : [])]) && voiceReply && (v.suggestedTitle === null || titleValid(v.suggestedTitle)) && (v.windowIds === undefined || Array.isArray(v.windowIds) && v.windowIds.length <= MAX_GALLERY_PHOTOS && v.windowIds.every(isMediaId) && new Set(v.windowIds).size === v.windowIds.length);
   if (v.kind === "renamed") return exact(["windowId", "title", "previousTitle"]) && isMediaId(v.windowId) && titleValid(v.title) && titleValid(v.previousTitle);
   return v.kind === "outcome" && exact(["jobId", "status"]) && isMediaId(v.jobId) && VISUALIZATION_STATUSES.includes(v.status as VisualizationStatus);
 }

@@ -17,6 +17,7 @@ import { photoDto } from "./photo-metadata.server";
 import { ROOM_ANALYSIS_VERSION } from "../prompts/room-analysis.server";
 import { parseProductPath } from "../../shared/product-path";
 import {
+  MAX_GALLERY_PHOTOS,
   isMediaId,
   isMediaPart,
   windowTitle,
@@ -179,7 +180,7 @@ export async function gallerySnapshot(
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: 25,
     }),
-    prisma.windowPhoto.findMany({ where: { ownerId, deletedAt: null, uploadStatus: "ready" }, select: { id: true }, take: 100 }),
+    prisma.windowPhoto.findMany({ where: { ownerId, deletedAt: null, uploadStatus: "ready" }, select: { id: true }, take: MAX_GALLERY_PHOTOS }),
     prisma.visualizationJob.findMany({ where: { ownerId, deletedAt: null, window: { deletedAt: null } }, select: { id: true }, take: 500 }),
   ]);
   return {
@@ -348,7 +349,7 @@ export async function saveWindow(
     if (
       (await tx.windowPhoto.count({
         where: { ownerId: owner.id, deletedAt: null },
-      })) >= 100
+      })) >= MAX_GALLERY_PHOTOS
     )
       throw new ConversationError(
         429,

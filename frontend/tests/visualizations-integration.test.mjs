@@ -80,13 +80,13 @@ async function setup(t, options = {}) {
     complete(value) { this.status = 200; this.responseText = JSON.stringify(value); this.onload?.(); this.onloadend?.(); }
     fail() { this.onerror?.(); this.onloadend?.(); }
   };
-  const errors = [], calls = [], sent = [], voiceAnswers = [], activity = [], listeners = new Set();
+  const errors = [], calls = [], sent = [], sentRequestIds = [], voiceAnswers = [], activity = [], listeners = new Set();
   window.console.error = (...args) => errors.push(args);
   let state = {conversation: options.conversation ?? (options.active ? conversation({active: true}) : null), pending: !!options.pending, restoring: false, error: null, voice: {status: options.voice ? "active" : "idle", muted: false, error: null}};
-  let windows = options.saved ? [photo()] : [], visualizations = options.jobs ?? [], historicalJobs = options.productJobs ?? [], pendingParts = [];
+  let windows = options.windows ?? (options.saved ? [photo()] : []), visualizations = options.jobs ?? [], historicalJobs = options.productJobs ?? [], pendingParts = [];
   let loseStart = !!options.loseStart, loseStatus = !!options.loseStart, loseUploadStatus = !!options.loseUpload;
   const update = (patch) => { state = {...state, ...patch}; listeners.forEach((listener) => listener()); };
-  const snapshot = () => ({enabled: options.enabled ?? true, liveWindowIds: windows.map((item) => item.id), liveVisualizationIds: [...new Set([...visualizations, ...historicalJobs].map((item) => item.id))], windows, visualizations, nextWindowsCursor: null, nextVisualizationsCursor: historicalJobs.length ? "older-page" : null});
+  const snapshot = () => ({enabled: options.enabled ?? true, liveWindowIds: windows.map((item) => item.id), liveVisualizationIds: [...new Set([...visualizations, ...historicalJobs].map((item) => item.id))], windows: options.firstPageWindowIds ? windows.filter((item) => options.firstPageWindowIds.includes(item.id)) : windows, visualizations, nextWindowsCursor: options.firstPageWindowIds ? "older-uploads" : null, nextVisualizationsCursor: historicalJobs.length ? "older-page" : null});
   const respond = (value) => new Response(JSON.stringify(value), {headers: {"Content-Type": "application/json"}});
   window.fetch = async (url, init = {}) => {
     const parsed = new URL(String(url)), path = parsed.pathname, body = init.body ? JSON.parse(init.body) : null;
@@ -149,7 +149,7 @@ async function setup(t, options = {}) {
     },
     noteMediaActivity: () => activity.push("activity"),
     prepareVisualizationProduct: async () => assert.fail("Known generating jobs must not reprepare"),
-    sendMessage: async (text) => { sent.push(text); await options.onSend?.(); },
+    sendMessage: async (text, _productChoice, requestId) => { sent.push(text); sentRequestIds.push(requestId); await options.onSend?.(); },
     sendVoiceAnswer: async (questionId, answer) => { voiceAnswers.push({questionId, answer}); },
     startVoice: async () => {}, stopVoice: async () => {},
     end: async () => update({conversation: null, voice: {status: "idle", muted: false, error: null}}),
@@ -166,9 +166,10 @@ async function setup(t, options = {}) {
   const dialog = () => container.querySelector(".roman-visualization-dialog");
   const setText = async (input, text) => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text); input.dispatchEvent(new window.Event("input", {bubbles: true})); await delay(0); };
   const loaded = async () => { await until(() => dialog()?.querySelector(".roman-photo-preview img"), "Review preview did not load"); dialog().querySelector(".roman-photo-preview img").dispatchEvent(new window.Event("load")); await delay(0); };
-  return {window, container, session, update, calls, sent, voiceAnswers, xhrs, activity, camera, dialog, setText, loaded,
+  return {window, container, session, update, calls, sent, sentRequestIds, voiceAnswers, xhrs, activity, camera, dialog, setText, loaded,
     launchProduct(path) { return dispose.navigate("/", {state: {visualizeProduct: path, requestId: window.crypto.randomUUID()}}); },
-    completeUpload(loseAck = false, analysis) { windows = [{...photo(), title: xhrs[0].body.get("title"), ...(analysis ? {analysis} : {})}]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
+    completeUpload(loseAck = false, analysis) { windows = [{...photo(), createdAt: new Date().toISOString(), title: xhrs[0].body.get("title"), ...(analysis ? {analysis} : {})}]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
+    setWindows(value) { windows = value; },
     finishAnalysis() { windows = windows.map((item) => ({...item, analysis: {...item.analysis, status: "completed", completedAt: new Date().toISOString()}})); },
     async selectTab(name) { const tab = () => [...container.querySelectorAll(".roman-view-nav a")].find((item) => item.textContent === name); tab().click(); await until(() => tab()?.getAttribute("aria-current") === "page", "Gallery did not become active"); },
     setCompletedJob() { visualizations = [{...job(), status: "completed", resultAvailable: true, completedAt: new Date().toISOString()}]; },
@@ -375,6 +376,58 @@ test("photo upload presentations use the same picker with or without saved windo
   });
 });
 
+test("an empty upload picker remains upload-only after its new photo is saved", async (t) => {
+  const picker = {type: "media", version: 1, kind: "upload", suggestedTitle: null, windowIds: []};
+  const ctx = await setup(t, {active: true, conversation: conversation({active: true, parts: [picker]})});
+  await until(() => ctx.container.querySelector(".roman-window-carousel"), "Empty upload picker did not appear");
+  const carousel = ctx.container.querySelector(".roman-window-carousel");
+  carousel.querySelector("button").click(); await until(ctx.dialog, "Upload picker did not open the modal");
+  await submitRoomFile(ctx);
+  ctx.completeUpload();
+  await until(() => ctx.sent.length === 1 && ctx.container.querySelector(".roman-inline-window") && !ctx.container.querySelector(".roman-local-media"), "Photo upload did not settle into its single saved card");
+  assert.equal(ctx.container.querySelector(".roman-window-carousel"), carousel);
+  assert.equal(carousel.querySelectorAll("li").length, 1, "The earlier picker does not acquire the new upload");
+  assert.equal(carousel.querySelector("img"), null);
+  assert.equal(ctx.container.querySelectorAll(".roman-inline-window").length, 1);
+  await ctx.selectTab("Gallery");
+  assert.ok(ctx.container.querySelector('.roman-gallery [aria-label="Use Uploaded image"]'), "The upload still joins the live Gallery");
+  await ctx.selectTab("Chat");
+  assert.equal(carousel.querySelectorAll("li").length, 1, "Gallery refresh does not rewrite the earlier picker");
+});
+
+test("restored upload pickers retain only their persisted IDs, resolve older Gallery pages and use current names and deletions", async (t) => {
+  const newer = {...photo(), id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", title: "Living room", createdAt: "2026-10-06T12:01:00Z"};
+  const picker = {type: "media", version: 1, kind: "upload", suggestedTitle: null, windowIds: [windowId]};
+  const ctx = await setup(t, {windows: [newer, photo()], firstPageWindowIds: [newer.id], conversation: conversation({parts: [picker]})});
+  const carousel = () => ctx.container.querySelector(".roman-window-carousel");
+  await until(() => carousel()?.querySelector('[aria-label="Use Kitchen window"]'), "Historical upload IDs did not resolve outside the first Gallery page");
+  assert.equal(carousel().querySelectorAll("li").length, 2);
+  assert.equal(carousel().querySelector('[aria-label="Use Living room"]'), null, "A later Gallery upload is not an earlier picker choice");
+  assert.ok(ctx.calls.some((call) => call.path.endsWith("/references") && call.body.windowIds.includes(windowId)));
+  ctx.setWindows([newer, {...photo(), title: "Breakfast window", revision: 2}]);
+  await ctx.selectTab("Gallery"); await ctx.selectTab("Chat");
+  await until(() => carousel()?.querySelector('[aria-label="Use Breakfast window"]'), "The picker did not reflect the authoritative rename");
+  assert.equal(carousel().querySelector('[aria-label="Use Kitchen window"]'), null);
+  ctx.setWindows([newer]);
+  await ctx.selectTab("Gallery"); await ctx.selectTab("Chat");
+  await until(() => carousel()?.querySelectorAll("li").length === 1, "Deleted picker images remained selectable");
+  assert.equal(carousel().querySelector("img"), null);
+  assert.deepEqual(ctx.sent, []);
+});
+
+test("legacy upload pickers exclude photos saved after the historical message even when restored with a populated Gallery", async (t) => {
+  const newer = {...photo(), id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", title: "Living room", createdAt: "2026-10-06T12:01:00Z"};
+  const picker = {type: "media", version: 1, kind: "upload", suggestedTitle: null};
+  const ctx = await setup(t, {windows: [newer, photo()], conversation: conversation({parts: [picker]})});
+  await until(() => ctx.container.querySelector('.roman-window-carousel [aria-label="Use Kitchen window"]'), "An existing historical upload did not appear");
+  assert.equal(ctx.container.querySelectorAll(".roman-window-carousel li").length, 2);
+  assert.equal(ctx.container.querySelector('.roman-window-carousel [aria-label="Use Living room"]'), null);
+  await ctx.selectTab("Gallery");
+  assert.ok(ctx.container.querySelector('.roman-gallery [aria-label="Use Living room"]'));
+  await ctx.selectTab("Chat");
+  assert.equal(ctx.container.querySelectorAll(".roman-window-carousel li").length, 2);
+});
+
 test("a deleted historical photo picker remains a tombstone rather than pretending its photo is available", async (t) => {
   const ctx = await setup(t, {conversation: conversation({parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}]})});
   await until(() => ctx.container.textContent.includes("Uploaded images removed."), "Deleted photo state did not settle");
@@ -448,7 +501,7 @@ test("new photo saves before product selection, publishes immediate normalized p
   assert.equal(ctx.container.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"), "40");
   ctx.completeUpload();
   await until(() => ctx.sent.length === 1 && !ctx.container.querySelector(".roman-local-media"), "Saved photo did not continue the existing conversation once");
-  assert.equal(ctx.sent[0], 'I\'ve uploaded “Uploaded image”.');
+  assert.equal(ctx.sent[0], 'My image is saved.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0, "Upload already selects its window without another request or photo card");
   assert.equal(ctx.session.getSnapshot().conversation.messages.flatMap((message) => message.parts).filter((part) => part.type === "media" && part.kind === "window").length, 1);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
@@ -555,7 +608,7 @@ test("a camera upload stays neutral even when a blind is selected", async (t) =>
   await uploadRoom(ctx);
   ctx.completeUpload();
   await until(() => ctx.sent.length === 1, "Neutral upload did not reach the advisor");
-  assert.equal(ctx.sent[0], 'I\'ve uploaded “Uploaded image”.');
+  assert.equal(ctx.sent[0], 'My image is saved.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
@@ -567,8 +620,9 @@ test("an explicit PDP upload starts one preview with cleanup enabled and reports
   await submitRoomFile(ctx);
   ctx.completeUpload();
   await until(() => ctx.sent.length === 1, "Product-bound upload did not reach the advisor");
-  assert.equal(ctx.sent[0], 'My image “Uploaded image” is uploaded and its preview with Linen blind has already started.');
+  assert.equal(ctx.sent[0], 'My image “Uploaded image” is saved and its preview with Linen blind has already started.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 1);
+  assert.equal(ctx.sentRequestIds[0], ctx.calls.find((call) => call.path.endsWith("/start")).body.requestId, "The saved continuation and accepted preview share durable provenance");
   assert.equal(ctx.calls.find((call) => call.path.endsWith("/start")).body.cleanup, true);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
@@ -626,7 +680,7 @@ test("Gallery uploads retain a customer-entered title without implying a visuali
   assert.equal(ctx.xhrs[0].body.get("title"), "Bedroom inspiration");
   ctx.completeUpload();
   await until(() => ctx.sent.length === 1, "Gallery upload did not reach the advisor");
-  assert.equal(ctx.sent[0], 'I\'ve uploaded “Bedroom inspiration”.');
+  assert.equal(ctx.sent[0], 'My image “Bedroom inspiration” is saved.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
 });
 
@@ -701,7 +755,7 @@ test("lost upload acknowledgement recovery preserves a later saved-image name in
   await until(() => !ctx.container.querySelector(".roman-local-media") && ctx.sent.length === 1, "Renamed upload did not recover");
   assert.equal(ctx.xhrs.length, 1, "A recovered upload is never submitted twice");
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/rename")).length, 1, "Recovery must not undo a later user or Roman name");
-  assert.equal(ctx.sent[0], "I've uploaded “Daughter's bedroom”.");
+  assert.equal(ctx.sent[0], "My image “Daughter's bedroom” is saved.");
   assert.ok(ctx.calls.filter((call) => call.path.endsWith("/upload-status")).every((call) => call.query.get("requestId") === requestId));
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
   await ctx.selectTab("Gallery");

@@ -468,6 +468,11 @@ test("generation needs an actively selected blind, admission is idempotent, and 
     await database.conversationMessage.count({ where: { id: job.id } }),
     1,
   );
+  const accepted = await database.conversationMessage.findUniqueOrThrow({where: {id: job.id}});
+  assert.deepEqual(JSON.parse(accepted.partsJson), [{
+    type: "media", version: 1, kind: "visualization", jobId: job.id, customerIntent: true,
+    continuationRequestId: f.input.requestId,
+  }], "the accepted card carries the exact idempotent request provenance, unchanged by retries");
   assert.equal(calls.length, 0);
   const firstClient = randomUUID();
   const { claim } = await api.claimPreparation(f.owner.id, job.id, firstClient);

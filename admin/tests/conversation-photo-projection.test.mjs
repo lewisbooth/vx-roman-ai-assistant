@@ -14,7 +14,7 @@ const require = createRequire(import.meta.url);
 const bundle = await build({
   stdin: {contents: `export * from './admin/conversations/repository.server.ts';
     export {latestQuestion} from './shared/questions.ts';
-    export {isMediaPart} from './shared/visualizations.ts';`, resolveDir: process.cwd()},
+    export {isMediaPart, parsePhotoPresentation, MAX_GALLERY_PHOTOS} from './shared/visualizations.ts';`, resolveDir: process.cwd()},
   bundle: true, write: false, format: "cjs", platform: "node", external: ["@prisma/client"],
 });
 const origin = "https://hd-dev-single.myshopify.com";
@@ -145,5 +145,84 @@ test("photo voice associations validate their bounded display provenance without
     assert.equal(repository.isMediaPart(part), true);
     assert.equal(repository.isMediaPart({...part, voiceReply: {...association, afterSequence: -1}}), false);
     assert.equal(repository.isMediaPart({...part, voiceReply: {...association, permission: true}}), false);
+  }
+});
+
+test("upload picker snapshots accept empty and bounded distinct owned IDs only as persisted display data", () => {
+  const part = fixture("upload").photo;
+  assert.equal(repository.isMediaPart(part), true, "legacy history remains readable");
+  for (const windowIds of [[], [randomUUID()], Array.from({length: repository.MAX_GALLERY_PHOTOS}, () => randomUUID())])
+    assert.equal(repository.isMediaPart({...part, windowIds}), true);
+  const repeated = randomUUID();
+  for (const windowIds of [null, "not an array", ["invalid"], [repeated, repeated], Array.from({length: repository.MAX_GALLERY_PHOTOS + 1}, () => randomUUID())])
+    assert.equal(repository.isMediaPart({...part, windowIds}), false);
+  assert.throws(() => repository.parsePhotoPresentation({kind: "upload", suggestedTitle: null, windowIds: []}), /Invalid photo presentation/,
+    "the model cannot supply or enlarge the server-owned Gallery snapshot");
+});
+
+test("preview display provenance accepts an exact request UUID without making it required in historical media", () => {
+  const part = {type: "media", version: 1, kind: "visualization", jobId: randomUUID(), customerIntent: true};
+  assert.equal(repository.isMediaPart(part), true);
+  assert.equal(repository.isMediaPart({...part, continuationRequestId: randomUUID()}), true);
+  for (const continuationRequestId of [null, "", "invalid", 123, {requestId: randomUUID()}])
+    assert.equal(repository.isMediaPart({...part, continuationRequestId}), false);
+  assert.equal(repository.isMediaPart({...fixture("upload").photo, continuationRequestId: randomUUID()}), false);
+});
+
+test("upload pickers persist their complete owner-scoped Gallery snapshot once, including an empty Gallery", async () => {
+  const envKeys = ["ROMAN_VISUALIZATIONS_ENABLED", "ROMAN_VISUALIZATIONS_SHOPS", "OPENAI_API_KEY", "ROMAN_MEDIA_ROOT", "SHOPIFY_APP_URL"];
+  const prior = envKeys.map((key) => process.env[key]);
+  const shop = "hd-dev-single.myshopify.com";
+  process.env.ROMAN_VISUALIZATIONS_ENABLED = "true";
+  process.env.ROMAN_VISUALIZATIONS_SHOPS = shop;
+  process.env.OPENAI_API_KEY = "synthetic-unused";
+  process.env.ROMAN_MEDIA_ROOT = directory;
+  process.env.SHOPIFY_APP_URL = "https://synthetic.example";
+  const ownerId = randomUUID(), otherOwnerId = randomUUID();
+  let id;
+  try {
+    id = (await repository.createConversation(shop, origin)).conversationId;
+    await database.galleryOwner.createMany({data: [ownerId, otherOwnerId].map((owner) => ({id: owner, shop, origin, tokenHash: randomUUID()}))});
+    await database.conversation.update({where: {id}, data: {galleryOwnerId: ownerId}});
+    const finishPicker = async (callId) => {
+      const turn = await repository.beginTurn(id, {requestId: randomUUID(), text: "Upload a photo."});
+      const result = {status: "complete", text: "Choose an image.", photoPresentation: {callId, kind: "upload", suggestedTitle: null}};
+      assert.equal(await repository.finishTurn(id, turn.assistantId, result), true);
+      return {turn, result};
+    };
+    const empty = await finishPicker("empty-gallery");
+    const readPart = async (assistantId) => JSON.parse((await database.conversationMessage.findUniqueOrThrow({where: {id: assistantId}})).partsJson).find((part) => part.type === "media");
+    assert.deepEqual((await readPart(empty.turn.assistantId)).windowIds, []);
+    const photos = Array.from({length: repository.MAX_GALLERY_PHOTOS}, (_, index) => ({
+      id: randomUUID(), ownerId, conversationId: id, requestId: randomUUID(), requestHash: "synthetic",
+      title: `Image ${index}`, assetKey: `synthetic-${index}.jpg`, sha256: "synthetic", width: 1000, height: 800, bytes: 100,
+      consentVersion: "roman-window-photo-v1", consentAt: new Date(), uploadStatus: "ready", createdAt: new Date(1_700_000_000_000 + index),
+    }));
+    await database.windowPhoto.createMany({data: [
+      ...photos,
+      {...photos[0], id: randomUUID(), requestId: randomUUID(), deletedAt: new Date()},
+      {...photos[0], id: randomUUID(), requestId: randomUUID(), uploadStatus: "saving"},
+      {...photos[0], id: randomUUID(), requestId: randomUUID(), ownerId: otherOwnerId},
+    ]});
+    const populated = await finishPicker("full-gallery");
+    const saved = await readPart(populated.turn.assistantId);
+    assert.deepEqual(saved.windowIds, photos.map(({id}) => id).reverse(), "all ready owned photos, including beyond the first Gallery page");
+    await database.windowPhoto.create({data: {...photos[0], id: randomUUID(), requestId: randomUUID(), createdAt: new Date()}});
+    assert.equal(await repository.finishTurn(id, populated.turn.assistantId, populated.result), false, "completion replay cannot change its snapshot");
+    const snapshot = await repository.getSnapshot(id);
+    const page = await repository.getHistoryPage(id, snapshot.history.end);
+    for (const messages of [snapshot.messages, page.history.entries.map(({message}) => message)]) {
+      assert.deepEqual(messages.find((message) => message.id === empty.turn.assistantId).parts.find((part) => part.type === "media").windowIds, []);
+      assert.deepEqual(messages.find((message) => message.id === populated.turn.assistantId).parts.find((part) => part.type === "media").windowIds, saved.windowIds);
+    }
+    assert.deepEqual(await readPart(populated.turn.assistantId), saved);
+  } finally {
+    if (id) await database.conversation.update({where: {id}, data: {galleryOwnerId: null, selectedWindowPhotoId: null}});
+    await database.windowPhoto.deleteMany({where: {ownerId: {in: [ownerId, otherOwnerId]}}});
+    await database.galleryOwner.deleteMany({where: {id: {in: [ownerId, otherOwnerId]}}});
+    envKeys.forEach((key, index) => {
+      if (prior[index] === undefined) delete process.env[key];
+      else process.env[key] = prior[index];
+    });
   }
 });

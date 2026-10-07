@@ -42,8 +42,14 @@ export interface ConversationClient {
   setOpen(open: boolean): void;
   /** Prepends the previous transcript page without changing current conversation state. */
   loadOlderHistory(): Promise<void>;
-  /** Uses connected/starting voice when present, otherwise text; resolves on acceptance. */
-  sendMessage(text: string, productChoice?: ProductChoice): Promise<void>;
+  /** Uses connected/starting voice when present, otherwise text; resolves on acceptance.
+   * A supplied identity links an accepted media job to this continuation and its retries.
+   */
+  sendMessage(
+    text: string,
+    productChoice?: ProductChoice,
+    requestId?: string,
+  ): Promise<void>;
   /** Sends a saved suggested answer to this tab's live connection. */
   sendVoiceAnswer(questionId: string, answer: string): Promise<void>;
   recordPage(input: Omit<JourneyInput, "requestId">): Promise<void>;

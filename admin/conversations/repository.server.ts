@@ -107,6 +107,7 @@ import {
 import { isStorefrontPagePath } from "../../shared/journey";
 import { projectConversationTimeline } from "../../shared/conversation-timeline";
 import {
+  MAX_GALLERY_PHOTOS,
   isMediaPart,
   isCustomerMediaIntent,
   parsePhotoPresentation,
@@ -2077,6 +2078,7 @@ export async function finishTurn(
     let selectedProducts: ProductPresentation | undefined;
     let selectedQuestion: QuestionSelection | undefined;
     let selectedPhotos: PhotoPresentation | null = null;
+    let uploadPhotoIds: string[] | undefined;
     if (result.status === "complete" && result.presentation) {
       let productIds: string[];
       try {
@@ -2209,6 +2211,17 @@ export async function finishTurn(
         result.questionPresentation.callId !== callId
       ))
         throw new ConversationError(400, "Only reference photos may share a clarification question from the same terminal call.");
+      if (selectedPhotos?.kind === "upload") {
+        // A persisted picker shows the uploads available when it was offered,
+        // rather than acquiring later additions each time history is rendered.
+        const photos = await transaction.windowPhoto.findMany({
+          where: { ownerId: conversation.galleryOwnerId, uploadStatus: "ready", deletedAt: null },
+          select: { id: true },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: MAX_GALLERY_PHOTOS,
+        });
+        uploadPhotoIds = photos.map((photo) => photo.id);
+      }
       if (selectedPhotos?.kind === "windows") {
         const verified = new Set<string>(
           conversation.selectedWindowPhotoId
@@ -2348,6 +2361,7 @@ export async function finishTurn(
       });
       content.push({
         type: "media", version: 1, ...selectedPhotos,
+        ...(selectedPhotos.kind === "upload" ? { windowIds: uploadPhotoIds } : {}),
         ...(message.role === "context" && result.voiceId
           ? {
               voiceReply: {

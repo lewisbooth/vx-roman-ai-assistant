@@ -16,6 +16,7 @@ export type QueuedMessage = {
   id: number;
   text: string;
   productChoice?: ProductChoice;
+  requestId?: string;
   status: "queued" | "sending" | "failed";
   error?: string;
 };
@@ -97,7 +98,7 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
       );
       void (async () => {
         try {
-          await session.sendMessage(head.text, head.productChoice);
+          await session.sendMessage(head.text, head.productChoice, head.requestId);
           if (mounted.current && startedEpoch === epoch.current) {
             active.current = false;
             publish(current.current.filter((item) => item.id !== head.id));
@@ -140,7 +141,7 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
   }, [messages, paused, send, session, state]);
 
   const enqueue = useCallback(
-    (value: string, productChoice?: ProductChoice) => {
+    (value: string, productChoice?: ProductChoice, requestId?: string) => {
       const text = value.trim();
       if (!text || text.length > MAX_MESSAGE_LENGTH)
         throw new Error(
@@ -161,6 +162,7 @@ export function useMessageQueue(session: ConversationClient, paused: boolean) {
         id: ++nextId.current,
         text,
         ...(productChoice ? { productChoice } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
         status: immediate ? "sending" : "queued",
       };
       current.current = [...current.current, message];

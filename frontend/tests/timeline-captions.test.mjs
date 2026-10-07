@@ -76,6 +76,70 @@ function setup(t) {
   return { container, render: view.render };
 }
 
+test("an upload-started preview follows the saved-image reply and precedes its quick answers", (t) => {
+  const ctx = setup(t);
+  const requestId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const offered = question({voiceReply: undefined, question: "What shall we do while your preview prepares?"});
+  const uploaded = message("context", {type: "media", version: 1, kind: "window", windowId: "photo", title: "Kitchen window", customerIntent: true});
+  const accepted = message("context", {type: "media", version: 1, kind: "visualization", jobId: "preview", customerIntent: true, continuationRequestId: requestId});
+  const saved = {...message("user", {type: "text", text: "My image Kitchen window is saved."}), requestId};
+  const reply = message("assistant", {type: "text", text: "Soft neutral tones. Your preview is preparing."}, offered);
+  const messages = [uploaded, accepted, saved, reply];
+  const original = structuredClone(messages);
+  ctx.render({messages, activeQuestionId: offered.invocationId, onAnswer: async () => {}, renderMedia: (part) => `CARD:${part.kind}`});
+  const text = ctx.container.textContent;
+  assert.ok(text.indexOf("CARD:window") < text.indexOf("My image Kitchen window is saved."));
+  assert.ok(text.indexOf("My image Kitchen window is saved.") < text.indexOf("Soft neutral tones."));
+  assert.ok(text.indexOf("Soft neutral tones.") < text.indexOf("CARD:visualization"));
+  assert.ok(text.indexOf("CARD:visualization") < text.indexOf(offered.question));
+  assert.equal(text.split("CARD:visualization").length - 1, 1);
+  assert.deepEqual(messages, original, "Presentation must not rewrite stored history");
+});
+
+test("upload preview placement also follows spoken captions without repeating the photo", (t) => {
+  const ctx = setup(t);
+  const requestId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const offered = question();
+  const messages = [
+    message("context", {type: "media", version: 1, kind: "window", windowId: "photo", title: "Kitchen window", customerIntent: true}),
+    message("context", {type: "media", version: 1, kind: "visualization", jobId: "preview", customerIntent: true, continuationRequestId: requestId}),
+    {...message("user", {type: "text", text: "My image is saved."}), requestId},
+    message("assistant", caption("Your preview is preparing.")),
+    message("context", offered),
+  ];
+  ctx.render({messages, activeQuestionId: offered.invocationId, voice: true, onAnswer: async () => {}, renderMedia: (part) => `CARD:${part.kind}`});
+  const text = ctx.container.textContent;
+  assert.ok(text.indexOf("Your preview is preparing.") < text.indexOf("CARD:visualization"));
+  assert.ok(text.indexOf("CARD:visualization") < text.indexOf(offered.question));
+  assert.equal(text.split("CARD:window").length - 1, 1);
+});
+
+test("preview placement preserves standalone events and does not attach an upload to a later conversation turn", (t) => {
+  const ctx = setup(t);
+  const accepted = message("context", {type: "media", version: 1, kind: "visualization", jobId: "preview", customerIntent: true, continuationRequestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"});
+  for (const prefix of [[], [message("context", {type: "media", version: 1, kind: "window", windowId: "photo", title: "Kitchen", customerIntent: true})]]) {
+    const messages = [...prefix, accepted,
+      message("user", {type: "text", text: "My image is saved."}),
+      message("user", {type: "text", text: "Help with another room instead."}),
+      message("assistant", {type: "text", text: "Let's choose your next room."}),
+    ];
+    ctx.render({messages, renderMedia: (part) => `CARD:${part.kind}`});
+    assert.ok(ctx.container.textContent.indexOf("CARD:visualization") < ctx.container.textContent.indexOf("My image is saved."));
+  }
+});
+
+test("a suppressed upload continuation cannot place its preview beneath an unrelated single turn", (t) => {
+  const ctx = setup(t);
+  const messages = [
+    message("context", {type: "media", version: 1, kind: "window", windowId: "photo", title: "Kitchen", customerIntent: true}),
+    message("context", {type: "media", version: 1, kind: "visualization", jobId: "preview", customerIntent: true, continuationRequestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}),
+    {...message("user", {type: "text", text: "Help with another room instead."}), requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff"},
+    message("assistant", {type: "text", text: "Which room would you like to choose next?"}),
+  ];
+  ctx.render({messages, renderMedia: (part) => `CARD:${part.kind}`});
+  assert.ok(ctx.container.textContent.indexOf("CARD:visualization") < ctx.container.textContent.indexOf("Help with another room instead."));
+});
+
 test("carousel choices display friendly text from structured metadata without rewriting actual customer text", (t) => {
   const ctx = setup(t);
   const text = "Choose Lottie Roman blind (/products/lottie).";

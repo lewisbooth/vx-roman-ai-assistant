@@ -74,12 +74,13 @@ async function setup(t, overrides = {}) {
     clearError() {
       update({ error: null });
     },
-    sendMessage(text, productChoice) {
+    sendMessage(text, productChoice, requestId) {
       update({ pending: true });
       return new Promise((resolve, reject) =>
         calls.push({
           text,
           productChoice,
+          requestId,
           accept() {
             update({
               pending: false,
@@ -187,6 +188,26 @@ test("idle failures become visible and deliberate retry uses the same message wi
     ctx.calls.map((call) => call.text),
     ["retain this request", "retain this request"],
   );
+});
+
+test("a media continuation keeps its supplied request identity while queued and retried", async (t) => {
+  const ctx = await setup(t, {pending: true});
+  const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  ctx.queue().enqueue("My room photo is saved and its preview has started.", undefined, requestId);
+  await until(() => ctx.queue().messages.length === 1);
+  assert.equal(ctx.queue().messages[0].requestId, requestId);
+  assert.equal(ctx.calls.length, 0);
+  ctx.update({pending: false});
+  await until(() => ctx.calls.length === 1);
+  assert.equal(ctx.calls[0].requestId, requestId);
+  ctx.calls[0].fail();
+  await until(() => ctx.queue().messages[0]?.status === "failed");
+  ctx.queue().retry(ctx.queue().messages[0].id);
+  await until(() => ctx.calls.length === 2);
+  assert.equal(ctx.calls[1].requestId, requestId);
+  assert.equal(ctx.calls[1].text, ctx.calls[0].text);
+  ctx.calls[1].accept();
+  await until(() => ctx.queue().messages.length === 0);
 });
 
 test("free text queues once in order and waits for both acceptance and completed reply", async (t) => {

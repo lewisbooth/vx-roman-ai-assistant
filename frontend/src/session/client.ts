@@ -1435,6 +1435,7 @@ export function createConversationClient(
       | { questionId: string; answer: string }
       | { text: string }
       | import("../../../shared/product-choice").ProductChoice,
+    requestId?: string,
   ) {
     if (disposed) throw new Error("Roman has been removed.");
     if (state.availability === "suspended")
@@ -1487,6 +1488,7 @@ export function createConversationClient(
     const submission =
       id &&
       uncertainVoiceAnswer?.voiceId === id &&
+      (requestId === undefined || uncertainVoiceAnswer.requestId === requestId) &&
       Object.entries(selection).every(
         ([key, value]) =>
           (uncertainVoiceAnswer as unknown as Record<string, unknown>)[key] ===
@@ -1494,7 +1496,7 @@ export function createConversationClient(
       )
         ? uncertainVoiceAnswer
         : {
-            requestId: window.crypto.randomUUID(),
+            requestId: requestId ?? window.crypto.randomUUID(),
             voiceId: id,
             clientId,
             ...selection,
@@ -2102,7 +2104,7 @@ export function createConversationClient(
         void checkAvailability();
       } else window.clearTimeout(availabilityTimer);
     },
-    async sendMessage(value, selectedProduct) {
+    async sendMessage(value, selectedProduct, requestId) {
       if (state.availability === "suspended")
         throw new Error(UNAVAILABLE_MESSAGE);
       const choice = selectedProduct
@@ -2131,12 +2133,17 @@ export function createConversationClient(
           "Choose a product shown in this conversation's completed carousel. Remove an unavailable queued choice and choose a blind from Roman's latest results.",
         );
       if (disposed) throw new Error("Roman has been removed.");
+      if (
+        requestId !== undefined &&
+        (typeof requestId !== "string" || !UUID.test(requestId))
+      )
+        throw new Error("Use a valid message request identity.");
       if (!text || text.length > MAX_MESSAGE_LENGTH)
         throw new Error(
           `Enter a message of up to ${MAX_MESSAGE_LENGTH} characters.`,
         );
       if (state.voice.status === "starting" || state.voice.status === "active")
-        return sendVoiceSelection(choice ?? { text });
+        return sendVoiceSelection(choice ?? { text }, requestId);
       cancelVoiceRecovery();
       if (
         ending ||
@@ -2158,11 +2165,12 @@ export function createConversationClient(
       const startedEpoch = epoch;
       const submission =
         uncertainSubmission?.text === text &&
+        (requestId === undefined || uncertainSubmission.requestId === requestId) &&
         JSON.stringify(uncertainSubmission.productChoice) ===
           JSON.stringify(choice)
           ? uncertainSubmission
           : {
-              requestId: window.crypto.randomUUID(),
+              requestId: requestId ?? window.crypto.randomUUID(),
               text,
               ...(choice ? { productChoice: choice } : {}),
             };

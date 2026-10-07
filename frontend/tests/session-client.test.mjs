@@ -722,6 +722,38 @@ test("a lost POST reconciles without replay and an explicit identical retry keep
   await retry;
 });
 
+test("supplied message identities survive transport failure and distinguish a new same-text continuation", async (t) => {
+  const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const secondId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  for (const retryId of [requestId, secondId]) await t.test(retryId === requestId ? "same request retry" : "new same-text request", async (t) => {
+    const ctx = setup(t);
+    const sending = ctx.client.sendMessage("My image is saved.", undefined, requestId);
+    const rejected = assert.rejects(sending, /could not connect/);
+    assert.equal(ctx.client.getSnapshot().optimisticMessage.requestId, requestId);
+    ctx.respond(0, {...access, conversation: empty});
+    await until(() => ctx.calls.length === 2, "Supplied-ID message did not dispatch");
+    assert.equal(ctx.calls[1].body.requestId, requestId);
+    ctx.calls[1].reject(new TypeError("Connection lost"));
+    await until(() => ctx.calls.length === 3, "Lost message was not reconciled");
+    ctx.respond(2, empty);
+    await rejected;
+    const retry = ctx.client.sendMessage("My image is saved.", undefined, retryId);
+    assert.equal(ctx.client.getSnapshot().optimisticMessage.requestId, retryId);
+    await until(() => ctx.calls.length === 4, "Explicit continuation retry did not dispatch");
+    assert.equal(ctx.calls[3].body.requestId, retryId);
+    ctx.respond(3, pending);
+    await retry;
+  });
+});
+
+test("an invalid supplied message identity is rejected before changing state or contacting the backend", async (t) => {
+  const ctx = setup(t);
+  await assert.rejects(ctx.client.sendMessage("My image is saved.", undefined, "not-a-request-id"), /valid message request identity/);
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+  assert.equal(ctx.client.getSnapshot().pending, false);
+});
+
 test("bootstrap failure removes unconfirmed local text and retry retains the original submission identity", async (t) => {
   const ctx = setup(t);
   const sending = ctx.client.sendMessage("Hello");
@@ -3914,12 +3946,39 @@ function acceptedVoiceText(input, voice) {
   };
 }
 
+test("supplied voice continuation identities survive failure without adopting another same-text request", async (t) => {
+  const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const secondId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  for (const retryId of [requestId, secondId]) await t.test(retryId === requestId ? "same voice request retry" : "new same-text voice request", async (t) => {
+    const ctx = setup(t, {mediaOptions: {}});
+    const voice = await activeVoice(ctx);
+    const sending = ctx.client.sendMessage("My image is saved.", undefined, requestId);
+    const rejected = assert.rejects(sending, /could not connect/);
+    assert.equal(ctx.calls[3].body.requestId, requestId);
+    ctx.calls[3].reject(new TypeError("Connection lost"));
+    await until(() => ctx.calls.length === 5, "Lost voice continuation did not reconcile");
+    ctx.respond(4, {...empty, revision: 1, voice});
+    await rejected;
+    const retry = ctx.client.sendMessage("My image is saved.", undefined, retryId);
+    assert.equal(ctx.client.getSnapshot().optimisticMessage.requestId, retryId);
+    assert.equal(ctx.calls[5].body.requestId, retryId);
+    ctx.respond(5, acceptedVoiceText(ctx.calls[5].body, voice));
+    await retry;
+    assert.equal(ctx.client.getSnapshot().voice.status, "active");
+    assert.equal(ctx.media.tracks[0].stopped, false);
+    assert.ok(!ctx.calls.some((call) => /\/(?:messages|stop)$/.test(call.url)));
+  });
+});
+
 test("a typed welcome reply enters the connected voice without stopping audio", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx);
-  const sending = ctx.client.sendMessage(" Help me measure my windows. ");
+  const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const sending = ctx.client.sendMessage(" Help me measure my windows. ", undefined, requestId);
   const call = ctx.calls[3];
   assert.match(call.url, /\/answers$/);
+  assert.equal(call.body.requestId, requestId);
+  assert.equal(ctx.client.getSnapshot().optimisticMessage.requestId, requestId);
   assert.equal(call.body.text, "Help me measure my windows.");
   assert.equal(
     ctx.client.getSnapshot().optimisticMessage.parts[0].text,
@@ -3939,9 +3998,12 @@ test("a welcome tile clicked while connecting is immediate and included once in 
   const starting = ctx.client.startVoice();
   const sending = ctx.client.sendMessage(
     "Help me find no-drill blinds for my home.",
+    undefined,
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   );
   const optimistic = ctx.client.getSnapshot().optimisticMessage;
   assert.equal(optimistic.role, "user");
+  assert.equal(optimistic.requestId, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
   assert.equal(ctx.client.getSnapshot().pending, true);
   await assert.rejects(
     ctx.client.sendMessage("duplicate"),

@@ -280,6 +280,7 @@ export async function startVisualization(
         kind: "visualization",
         jobId: job.id,
         customerIntent: true,
+        continuationRequestId: input.requestId,
       },
       job.id,
     );

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { ConversationMessage, ConversationSnapshot } from "../../../shared/conversation";
 import { activeProduct } from "../../../shared/active-product";
-import { isCustomerMediaIntent, windowTitle, type MediaPart, type VisualizationJobDto, type WindowPhotoDto } from "../../../shared/visualizations";
+import { DEFAULT_UPLOAD_TITLE, isCustomerMediaIntent, windowTitle, type MediaPart, type VisualizationJobDto, type WindowPhotoDto } from "../../../shared/visualizations";
 import { imageCanvasForPhoto } from "../../../shared/visualizations/image-canvas";
 import { VisualizationViewer } from "../../../shared/visualizations/VisualizationViewer";
 import type { ConversationClient } from "../session/types";
@@ -43,7 +43,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
   conversation: ConversationSnapshot | null;
   view: "chat" | "cart" | "gallery";
   onCustomerIntent: () => void;
-  sendMessage: (message: string) => Promise<void>;
+  sendMessage: (message: string, requestId?: string) => Promise<void>;
   showChat: () => void;
 }) {
   const client = useMemo(() => createGalleryClient(session), [session]);
@@ -238,9 +238,11 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
         setSelectedWindow(photo.id);
         if ((!attempt.product || attempt.draft.file) && !advisorStarted.current.has(attempt.requestId)) {
           advisorStarted.current.add(attempt.requestId);
+          const savedMessage = photo.title === DEFAULT_UPLOAD_TITLE ? "My image is saved." : `My image “${photo.title}” is saved.`;
           await sendMessage(attempt.product
-            ? `My image “${photo.title}” is uploaded and its preview with ${attempt.product.title} has already started.`
-            : attempt.draft.file ? `I've uploaded “${photo.title}”.` : `Use my uploaded image “${photo.title}”.`);
+            ? `My image “${photo.title}” is saved and its preview with ${attempt.product.title} has already started.`
+            : attempt.draft.file ? savedMessage : `Use my uploaded image “${photo.title}”.`,
+            attempt.product && attempt.draft.file ? attempt.generationId : undefined);
         }
       }
       release(attempt.draft);
@@ -291,11 +293,18 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     .filter((job) => job.productPath === selectedProductPath && job.status === "completed" && job.resultAvailable)
     .map((job) => ({kind: "visualization", id: `visualization:${job.id}`, alt: `AI preview for ${job.windowTitle}`, width: job.width, height: job.height, sourceKey: `${job.id}:result`, source: () => client.resultSource(job), onOpen: () => { session.noteMediaActivity?.(); setViewer(job); }})), [client, gallery.visualizations, selectedProductPath, session]);
   const viewerMedia = useMemo(() => viewer ? {before: () => client.beforeSource(viewer), after: () => client.resultSource(viewer), resultAsset: () => client.resultAsset(viewer)} : null, [client, viewer]);
-  const renderMedia = (part: MediaPart): ReactNode => {
+  const renderMedia = (part: MediaPart, messageCreatedAt: string): ReactNode => {
     const missing = (label: string) => referenceError === sourceVersion ? `${label} could not load. Open Gallery to retry.` : loadedReferences !== sourceVersion ? `Loading your ${label.toLowerCase()}…` : `${label} removed.`;
     if (part.kind === "renamed" || part.kind === "outcome") return null;
-    if (part.kind === "upload") return <WindowCarousel windows={gallery.windows} windowSource={client.windowSource}
-      onUpload={() => openUpload(part.suggestedTitle)} uploadDisabled={!gallery.enabled} onSelect={(photo) => { void chooseWindow(photo); }} />;
+    if (part.kind === "upload") {
+      // Each saved picker owns the uploads offered at that moment. Keep current
+      // names/deletions authoritative without adding later uploads to history.
+      const windows = part.windowIds
+        ? part.windowIds.flatMap((id) => gallery.windows.find((photo) => photo.id === id) ?? [])
+        : gallery.windows.filter((photo) => Date.parse(photo.createdAt) <= Date.parse(messageCreatedAt));
+      return <WindowCarousel windows={windows} windowSource={client.windowSource}
+        onUpload={() => openUpload(part.suggestedTitle)} uploadDisabled={!gallery.enabled} onSelect={(photo) => { void chooseWindow(photo); }} />;
+    }
     if (part.kind === "windows") {
       const windows = part.windowIds.flatMap((id) => gallery.windows.find((photo) => photo.id === id) ?? []);
       return windows.length ? <WindowCarousel windows={windows} windowSource={client.windowSource} referenceOnly={part.purpose === "reference"}
