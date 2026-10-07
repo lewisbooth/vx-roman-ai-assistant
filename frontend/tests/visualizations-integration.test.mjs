@@ -497,8 +497,12 @@ test("new photo saves before product selection, publishes immediate normalized p
   assert.doesNotMatch(uploadCard.textContent, /visualization|AI preview/i);
   const card = ctx.container.querySelector(".roman-local-media .roman-visualization-card-image");
   assert.equal(card.style.aspectRatio, "864 / 1152");
-  ctx.xhrs[0].upload.onprogress({lengthComputable: true, loaded: 4, total: 10}); await delay(0);
-  assert.equal(ctx.container.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"), "40");
+  const uploadProgress = () => ctx.container.querySelector('[role="progressbar"][aria-label="Upload progress"]');
+  assert.equal(uploadProgress().getAttribute("aria-valuenow"), "0");
+  ctx.xhrs[0].upload.onprogress({lengthComputable: true, loaded: 4, total: 10});
+  await until(() => uploadProgress()?.getAttribute("aria-valuenow") === "40", "Normalized upload progress did not render");
+  assert.equal(uploadProgress().getAttribute("aria-valuenow"), "40");
+  assert.equal(uploadProgress().getAttribute("aria-valuetext"), "40% uploaded.");
   ctx.completeUpload();
   await until(() => ctx.sent.length === 1 && !ctx.container.querySelector(".roman-local-media"), "Saved photo did not continue the existing conversation once");
   assert.equal(ctx.sent[0], 'My image is saved.');
