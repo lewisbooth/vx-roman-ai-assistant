@@ -32,7 +32,7 @@ export const productGuidesToolDefinition = {
   type: "function",
   name: "get_product_guides",
   description:
-    "Read selected original measuring/fitting PDFs and diagrams for the verified current productPath. A fresh browser discovery includes native configuration, supported measurement inputs and limits in the same operation. kinds chooses only originals needed for this question. refresh:false reuses matching cached originals without browser lookup/download; cached files do not provide fresh configuration. refresh:true discovers fresh current-page links. Files attach for this turn and return source provenance; inventory alone is not document content.",
+    "Look up guidance and native configuration for the verified current productPath. library selects original written blinds/curtains guidance in the same lookup, or null when unnecessary. Start readOriginals:false for routine measuring; true reads only the selected kinds of original PDFs when a missing detail or diagram requires them. refresh:false reuses valid source provenance; refresh:true refreshes requested sources. Cached files never provide fresh configuration. Written guidance retains its source provenance across follow-ups; links alone are not document content.",
   strict: true,
   parameters: {
     type: "object",
@@ -45,8 +45,10 @@ export const productGuidesToolDefinition = {
         maxItems: 2,
       },
       refresh: { type: "boolean" },
+      library: { type: ["string", "null"], enum: ["blinds", "curtains", null] },
+      readOriginals: { type: "boolean" },
     },
-    required: ["productPath", "kinds", "refresh"],
+    required: ["productPath", "kinds", "refresh", "library", "readOriginals"],
     additionalProperties: false,
   },
 } as const;
@@ -98,21 +100,27 @@ export function parseProductGuideRead(input: unknown): {
   productPath: string;
   kinds: ProductGuideKind[];
   refresh: boolean;
+  library: "blinds" | "curtains" | null;
+  readOriginals: boolean;
 } {
   const value = object(input);
   exact(value, [
     "productPath",
     "kinds",
-    ...(Object.hasOwn(value, "refresh") ? ["refresh"] : []),
+    "refresh", "library", "readOriginals",
   ]);
-  if (Object.hasOwn(value, "refresh") && typeof value.refresh !== "boolean")
-    throw new Error("Guide refresh must be a boolean.");
+  if (typeof value.refresh !== "boolean" || typeof value.readOriginals !== "boolean")
+    throw new Error("Guide refresh and original selection must be booleans.");
+  if (value.library !== null && value.library !== "blinds" && value.library !== "curtains")
+    throw new Error("Choose a supported guide library or null.");
   return {
     ...parseGuideSelection({
       productPath: value.productPath,
       kinds: value.kinds,
     }),
     refresh: value.refresh === true,
+    library: value.library,
+    readOriginals: value.readOriginals,
   };
 }
 

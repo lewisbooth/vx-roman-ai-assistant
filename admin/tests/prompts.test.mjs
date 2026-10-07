@@ -286,6 +286,8 @@ test("guide tool exposes source retrieval rather than a second advisor workflow"
     "productPath",
     "kinds",
     "refresh",
+    "library",
+    "readOriginals",
   ]);
   assert.equal(
     productGuidesToolDefinition.parameters.additionalProperties,

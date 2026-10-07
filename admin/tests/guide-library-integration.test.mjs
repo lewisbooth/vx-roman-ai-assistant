@@ -133,7 +133,8 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const call = (name, args, callId = `call_${randomUUID()}`) => ({
   type: "function_call",
   name,
-  arguments: JSON.stringify(["ask_question", "ask_measurement"].includes(name) ? { productIds: [], ...args } : args),
+  arguments: JSON.stringify(["ask_question", "ask_measurement"].includes(name) ? { productIds: [], ...args }
+    : name === "get_product_guides" ? { refresh: false, library: null, readOriginals: true, ...args } : args),
   call_id: callId,
 });
 const narration = (text) => ({
@@ -155,7 +156,7 @@ const outputs = (request) =>
     .filter((item) => item.type === "function_call_output")
     .map((item) => JSON.parse(item.output));
 
-function setup() {
+function setup({ onExecute } = {}) {
   const module = { exports: {} };
   const requests = [],
     browser = [],
@@ -194,6 +195,7 @@ function setup() {
   };
   const execute = async (callId, name, args) => {
     browser.push({ callId, name, args: plain(args) });
+    await onExecute?.(callId, name, args);
     if (name === "discover_guides") return libraryResult;
     if (name === "get_product_guides") return productGuides;
     if (name === "get_store_support")
@@ -239,7 +241,7 @@ function setup() {
   const reuse = () => ({
     inventory: inventory(),
     bound: api.readBoundLibrarySource(id, origin, currentPage),
-    recall: (library) => api.readCachedLibraryDiscovery(id, origin, library),
+    recall: (library, refresh) => api.readCachedLibraryDiscovery(id, origin, library, refresh),
     discover: (sourceCallId, result) =>
       api.saveLibraryDiscovery(id, origin, result, {
         sourceCallId,
@@ -323,6 +325,172 @@ function setup() {
   };
 }
 
+test("one model lookup returns written guidance and native configuration without PDFs; follow-ups reuse original text", async () => {
+  const state = setup();
+  const configuration = {
+    status: "available", productPath,
+    configurationId: randomUUID(), controls: [],
+    measurements: { unit: "mm", width: null, height: null, availableUnits: ["mm"] },
+    configuredPrice: null, message: "Native setup.",
+  };
+  state.productGuides({ status: "found", productPath, guides: [{
+    kind: "measuring", url: `${origin}/cdn/shop/files/wrong-family.pdf?v=1`,
+  }], configuration });
+  const result = await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false }, "combined_lookup")],
+    [call("ask_measurement", measurement())],
+  ]);
+  assert.equal(state.requests.length, 2);
+  assert.deepEqual(state.browser.map(({ name }) => name), ["get_product_guides", "discover_guides"]);
+  assert.deepEqual(state.browser[0].args, { productPath });
+  assert.notEqual(state.browser[1].callId, "combined_lookup");
+  assert.equal(result.questionPresentation.sourceCallId, state.browser[1].callId);
+  assert.equal(state.downloads.length, 0, "An irrelevant linked PDF must not be eagerly downloaded");
+  assert.deepEqual(files(state.requests[1]), []);
+  const combined = outputs(state.requests[1])[0];
+  assert.deepEqual(combined.configuration, configuration);
+  assert.equal(combined.originalsAttached, false);
+  assert.equal(combined.librarySource.source.sourceCallId, state.browser[1].callId);
+  assert.deepEqual(combined.libraryGuidance.sections, library().sections);
+  assert.equal(JSON.stringify(state.requests[1].input).split("Synthetic native method").length - 1, 1,
+    "First lookup must not duplicate the written sections in extra context");
+  const previousExpiry = state.inventory()[0].source.expiresAt;
+  const beforeBrowser = state.browser.length;
+  const beforeRequests = state.requests.length;
+  await state.run([[call("ask_measurement", { ...measurement(), label: "Drop" })]]);
+  assert.equal(state.requests.length, beforeRequests + 1);
+  assert.equal(state.browser.length, beforeBrowser);
+  assert.equal(state.downloads.length, 0);
+  assert.match(JSON.stringify(state.requests.at(-1).input), /Synthetic native method/);
+  assert.equal(state.inventory()[0].source.expiresAt, previousExpiry);
+});
+
+test("combined written lookup uses cached library, while explicit refresh obtains a new source and navigation removes bound text", async () => {
+  const state = setup();
+  await state.seed({ read: false });
+  const old = state.inventory()[0].source;
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false })],
+    [call("ask_measurement", measurement())],
+  ]);
+  assert.deepEqual(state.browser.map(({ name }) => name), ["get_product_guides"]);
+  assert.equal(state.inventory()[0].source.sourceCallId, old.sourceCallId);
+  assert.equal(state.inventory()[0].source.expiresAt, old.expiresAt);
+  const before = state.browser.length;
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false, refresh: true })],
+    [call("ask_measurement", measurement())],
+  ]);
+  assert.deepEqual(state.browser.slice(before).map(({ name }) => name), ["get_product_guides", "discover_guides"]);
+  assert.notEqual(state.inventory()[0].source.sourceCallId, old.sourceCallId);
+  state.page({ productPath: "/products/another-blind", pageId: randomUUID() });
+  await state.run([[message("Choose the next product before continuing measuring.")]]);
+  assert.doesNotMatch(JSON.stringify(state.requests.at(-1).input), /Synthetic native method/);
+});
+
+test("an explicit original request still reads the selected PDF and preserves diagram demand", async () => {
+  const state = setup();
+  state.productGuides({ status: "found", productPath, guides: [{
+    kind: "measuring", url: `${origin}/cdn/shop/files/actual-measuring.pdf?v=1`,
+  }] });
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false })],
+    [message("The written guide is available; no diagram has been read yet.")],
+  ]);
+  assert.equal(state.downloads.length, 0);
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: null, readOriginals: true })],
+    [message("The original illustrated guide supports this requested detail.")],
+  ]);
+  assert.equal(state.downloads.length, 1);
+  assert.equal(files(state.requests.at(-1)).length, 1);
+  assert.equal(outputs(state.requests.at(-1))[0].originalsAttached, true);
+});
+
+test("failed explicit written refresh removes earlier text and receipt instead of appearing refreshed", async () => {
+  const state = setup();
+  await state.seed({ read: false });
+  state.library({ error: "Library read unavailable." });
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false, refresh: true })],
+    [message("The refreshed source could not be verified.")],
+  ]);
+  assert.equal(state.inventory().length, 0);
+  const input = JSON.stringify(state.requests.at(-1).input);
+  assert.doesNotMatch(input, /Synthetic native method|earlier_library/);
+  assert.equal(outputs(state.requests.at(-1))[0].librarySource, undefined);
+  await state.run([[message("Choose an independently supported next action.")]]);
+  assert.doesNotMatch(JSON.stringify(state.requests.at(-1).input), /Synthetic native method|earlier_library/);
+});
+
+test("aborting the combined lookup after its PDP read prevents discovery, source caching and PDF work", async () => {
+  const controller = new AbortController();
+  const state = setup({ onExecute: (_id, name) => {
+    if (name === "get_product_guides") controller.abort();
+  } });
+  await assert.rejects(state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false })],
+  ], { signal: controller.signal }), { name: "AbortError" });
+  assert.deepEqual(state.browser.map(({ name }) => name), ["get_product_guides"]);
+  assert.equal(state.inventory().length, 0);
+  assert.equal(state.downloads.length, 0);
+});
+
+test("navigation during a combined lookup cannot bind written guidance to its departed product", async () => {
+  let state;
+  state = setup({ onExecute: (_id, name) => {
+    if (name === "get_product_guides") state.page({ productPath: "/products/other-blind", pageId: randomUUID() });
+  } });
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false })],
+    [message("The product changed; choose the current product before measuring.")],
+  ]);
+  assert.equal(outputs(state.requests.at(-1))[0].librarySource, undefined);
+  await state.run([[message("Continue with the actual current product.")]]);
+  assert.doesNotMatch(JSON.stringify(state.requests.at(-1).input), /Synthetic native method/);
+});
+
+test("paired lookup consumes two physical allowances and cached library recall consumes only the fresh PDP allowance", async () => {
+  const state = setup();
+  const combined = () => call("get_product_guides", {
+    productPath, kinds: ["measuring"], library: "blinds", readOriginals: false,
+  });
+  await state.run([
+    [combined()],
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: null, readOriginals: false })],
+    [combined()],
+    request => {
+      assert.equal(request.tool_choice.tools.some(tool => tool.name === "get_product_guides"), false,
+        "The pair, fresh PDP and cached-library PDP use all four physical read allowances");
+      return [message("Use the verified written guidance for the next question.")];
+    },
+  ]);
+  assert.deepEqual(state.browser.map(({ name }) => name), [
+    "get_product_guides", "discover_guides", "get_product_guides", "get_product_guides",
+  ]);
+  assert.equal(outputs(state.requests.at(-1)).at(-1).libraryGuidance.library, "blinds");
+  assert.equal(state.downloads.length, 0);
+});
+
+test("exhausted physical allowance retains the completed PDP result without dispatching or fabricating library evidence", async () => {
+  const state = setup();
+  await state.run([
+    ...Array.from({ length: 3 }, () => [call("get_product_guides", {
+      productPath, kinds: ["measuring"], library: null, readOriginals: false,
+    })]),
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false })],
+    [message("The product was read, but the library could not be read within this reply.")],
+  ]);
+  assert.equal(state.browser.length, 4);
+  assert.ok(state.browser.every(({ name }) => name === "get_product_guides"));
+  const last = outputs(state.requests.at(-1)).at(-1);
+  assert.equal(last.productPath, productPath);
+  assert.equal(last.originalsAttached, false);
+  assert.match(last.libraryGuidance.error, /read budget.*No library read was performed/);
+  assert.equal(last.librarySource, undefined);
+  assert.equal(state.inventory().length, 0);
+});
+
 test("failed PDP read falls back to a discovered library, selected same-kind originals and one sourced numeric input", async () => {
   const state = setup();
   const result = await state.run([
@@ -379,7 +547,7 @@ test("failed PDP read falls back to a discovered library, selected same-kind ori
   );
 });
 
-test("cached grounded numeric follow-up uses one request without automatic PDFs or discovery text", async () => {
+test("cached grounded numeric follow-up reuses original written text in one request without automatic PDFs", async () => {
   const state = setup();
   await state.seed();
   const downloads = state.downloads.length;
@@ -406,7 +574,7 @@ test("cached grounded numeric follow-up uses one request without automatic PDFs 
   assert.equal(state.browser.length, 0);
   assert.deepEqual(state.activity, []);
   assert.equal(result.questionPresentation.measurement.label, "Drop");
-  assert.doesNotMatch(
+  assert.match(
     JSON.stringify(state.requests[0].input),
     /Synthetic native method/,
   );
@@ -511,7 +679,7 @@ test("a matching written library method survives a wrong product PDF and later m
   assert.equal(sources.library.sourceCallId, "matching_written_library");
   assert.deepEqual(sources.library.guideIds, []);
   assert.equal(sources.priorProductRead.productPath, productPath);
-  assert.doesNotMatch(firstFollowup, /Synthetic verified Roman method/);
+  assert.match(firstFollowup, /Synthetic verified Roman method/);
   await state.run(
     [
       [

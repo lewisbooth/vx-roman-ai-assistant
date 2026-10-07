@@ -36,10 +36,10 @@ const configuration = {
   configuredPrice: null, message: "Native setup.",
 };
 const browserResult = { status: "found", productPath, guides: [source], configuration };
-const call = { name: "get_product_guides", call_id: "guide-read", arguments: JSON.stringify({ productPath, kinds: ["measuring"], refresh: false }) };
+const call = { name: "get_product_guides", call_id: "guide-read", arguments: JSON.stringify({ productPath, kinds: ["measuring"], refresh: false, library: null, readOriginals: true }) };
 const plain = (value) => JSON.parse(JSON.stringify(value));
-function setup({ failed = false, cached, result = browserResult, libraryReuse } = {}) {
-  const module = { exports: {} }, calls = [], observed = [], saved = [], controller = new AbortController();
+function setup({ failed = false, cached, result = browserResult, libraryReuse, onExecute } = {}) {
+  const module = { exports: {} }, calls = [], observed = [], saved = [], cleared = [], controller = new AbortController();
   const mock = { read: async () => failed
     ? { status: "unavailable", reason: "download_failed" }
     : { status: "ready", sources: [source], files: [file] } };
@@ -48,14 +48,14 @@ function setup({ failed = false, cached, result = browserResult, libraryReuse } 
   });
   const actions = new module.exports.StorefrontTurn();
   const turn = module.exports.createGuideTurn({
-    execute: async (...args) => { calls.push(args); return result; },
+    execute: async (...args) => { calls.push(args); await onExecute?.(...args); return typeof result === "function" ? result(...args) : result; },
     signal: controller.signal, storefrontOrigin: origin,
     trackTool: (_, action) => action(),
     onConfiguration: (value) => { observed.push(value); actions.observeConfiguration(value); },
-    guideReuse: { cached, read: (value) => saved.push(value), clear() {} },
+    guideReuse: { cached, read: (value) => saved.push(value), clear() { cleared.push(true); } },
     libraryReuse,
   });
-  return { turn, actions, calls, observed, saved, controller,
+  return { turn, actions, calls, observed, saved, cleared, controller,
     MissingMeasuringSourceError: module.exports.MissingMeasuringSourceError };
 }
 
@@ -150,4 +150,54 @@ test("cancelled guide reads publish neither configuration nor mutation authority
   assert.equal(ctx.calls.length, 0);
   assert.equal(ctx.observed.length, 0);
   assert.equal(ctx.actions.allows("configure_product"), false);
+});
+
+const priorGuide = () => ({
+  origin, productPath, sourceCallId: "earlier-original", sourceAssistantId: "earlier-assistant",
+  pageId: "current-visit", expiresAt: Date.now() + 10000, kinds: ["measuring"], sources: [source], files: [file],
+});
+const writtenCall = (refresh = false) => ({ ...call,
+  arguments: JSON.stringify({ productPath, kinds: ["measuring"], refresh, library: null, readOriginals: false }),
+});
+
+test("a link/configuration lookup retains only exactly matching valid prior PDF authority", async () => {
+  const cached = priorGuide();
+  const ctx = setup({ cached });
+  const result = await ctx.turn.read(writtenCall());
+  assert.equal(result.output.originalsAttached, false);
+  assert.equal(ctx.calls.length, 1, "Native capability comes from a fresh read, not cached originals");
+  assert.equal(ctx.observed.length, 1);
+  assert.equal(ctx.saved.length, 0);
+  assert.equal(ctx.cleared.length, 0);
+  assert.deepEqual(plain(await ctx.turn.questionSource(productPath)), { sourceCallId: cached.sourceCallId });
+  assert.equal(ctx.turn.context().flatMap(item => Array.isArray(item.content) ? item.content : []).filter(part => part.type === "input_file").length, 0);
+});
+
+test("changed product links invalidate retained original authority during a written-only lookup", async () => {
+  const ctx = setup({ cached: priorGuide(), result: { ...browserResult,
+    guides: [{ ...source, url: `${origin}/cdn/shop/files/replacement.pdf?v=2` }],
+  } });
+  await ctx.turn.read(writtenCall());
+  assert.equal(ctx.cleared.length, 1);
+  assert.equal(ctx.turn.cachedSource(), undefined);
+  await assert.rejects(ctx.turn.questionSource(productPath), { name: "MissingMeasuringSourceError" });
+  assert.doesNotMatch(JSON.stringify(ctx.turn.context()), /priorProductRead/);
+});
+
+test("failed explicit product refresh revokes earlier PDF authority", async () => {
+  const ctx = setup({ cached: priorGuide(), result: { error: "Native read failed." } });
+  await ctx.turn.read(writtenCall(true));
+  assert.ok(ctx.cleared.length > 0);
+  assert.equal(ctx.turn.cachedSource(), undefined);
+  await assert.rejects(ctx.turn.questionSource(productPath), { name: "MissingMeasuringSourceError" });
+  assert.doesNotMatch(JSON.stringify(ctx.turn.context()), /priorProductRead/);
+});
+
+test("expired retained PDF evidence cannot authorize another physical reading", async () => {
+  const cached = priorGuide();
+  const ctx = setup({ cached });
+  cached.expiresAt = Date.now() - 1;
+  await assert.rejects(ctx.turn.questionSource(productPath), { name: "MissingMeasuringSourceError" });
+  assert.equal(ctx.turn.cachedSource(), undefined);
+  assert.equal(ctx.cleared.length, 1);
 });

@@ -1417,6 +1417,8 @@ function catalogCall(
         : JSON.stringify(
             name === "ask_question" || name === "ask_measurement"
               ? { productIds: [], ...args }
+              : name === "get_product_guides"
+                ? { refresh: false, library: null, readOriginals: true, ...args }
               : args,
           ),
   };

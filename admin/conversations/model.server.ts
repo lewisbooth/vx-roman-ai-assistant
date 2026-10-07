@@ -393,6 +393,14 @@ export async function generateReply(
     libraryReuse,
     resumeQuestion,
     trackTool,
+    beforeAdditionalBrowserRead: () => {
+      if (!(withinToolBudget("discover_guides") ||
+        (sourceRecovery && sourceRecoveryReads < 2 && browserCalls < MAX_TURN_TOOL_CALLS)))
+        return false;
+      browserCalls++;
+      if (sourceRecovery) sourceRecoveryReads++;
+      return true;
+    },
   });
   const resumePresentation = resumeQuestion?.measurement
     ? "ask_measurement"

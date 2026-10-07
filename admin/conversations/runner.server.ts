@@ -271,7 +271,7 @@ async function completeTurn(
       {
         inventory: readLibraryInventory(id, origin),
         bound: boundLibrary,
-        recall: (library) => readCachedLibraryDiscovery(id, origin, library),
+        recall: (library, refresh) => readCachedLibraryDiscovery(id, origin, library, refresh),
         discover: (sourceCallId, result) => {
           signal.throwIfAborted();
           if (active.get(id) !== turn)

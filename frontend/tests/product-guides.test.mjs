@@ -516,13 +516,10 @@ test("guide calls and selections reject invented URLs, duplicate kinds and nonca
   );
 });
 
-test("model PDF reads validate refresh without widening link presentation or browser discovery", (t) => {
+test("model guide lookup selects written libraries and demand PDFs without widening browser discovery", (t) => {
   const { api } = setup(t);
-  const selection = { productPath, kinds: ["measuring"] };
-  assert.deepEqual(plain(api.parseProductGuideRead(selection)), {
-    ...selection,
-    refresh: false,
-  });
+  const selection = { productPath, kinds: ["measuring"], library: null, readOriginals: true };
+  assert.throws(() => api.parseProductGuideRead(selection));
   for (const refresh of [true, false]) {
     assert.deepEqual(
       plain(api.parseProductGuideRead({ ...selection, refresh })),
@@ -541,7 +538,15 @@ test("model PDF reads validate refresh without widening link presentation or bro
     "productPath",
     "kinds",
     "refresh",
+    "library",
+    "readOriginals",
   ]);
+  for (const library of ["blinds", "curtains", null])
+    assert.equal(api.parseProductGuideRead({ ...selection, refresh: false, library, readOriginals: false }).library, library);
+  for (const library of [undefined, "roller", 1, {}])
+    assert.throws(() => api.parseProductGuideRead({ ...selection, refresh: false, library }));
+  for (const readOriginals of [undefined, null, "false", 0, {}])
+    assert.throws(() => api.parseProductGuideRead({ ...selection, refresh: false, readOriginals }));
 });
 
 test("PDF URL validation requires an exact supported storefront or Shopify CDN path and clean version query", (t) => {

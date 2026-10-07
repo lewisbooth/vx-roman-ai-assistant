@@ -290,6 +290,7 @@ export function readCachedLibraryDiscovery(
   conversationId: string,
   origin: string,
   library: GuideLibrary,
+  refresh = false,
 ): { inventory: LibraryInventory; result: GuideLibraryResult } | undefined {
   scope(conversationId, origin);
   expire();
@@ -300,6 +301,10 @@ export function readCachedLibraryDiscovery(
       item.discovery.library === library,
   );
   if (!entry) return;
+  if (refresh) {
+    entries.delete(entry.discoveryId);
+    return;
+  }
   touch(entry);
   return {
     inventory: inventory(entry),

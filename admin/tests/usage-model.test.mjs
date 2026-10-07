@@ -1283,6 +1283,8 @@ test("unreadable PDP guides preserve usage while the model chooses a supported n
             productPath: "/products/blind",
             kinds: ["measuring"],
             refresh: false,
+            library: null,
+            readOriginals: true,
           }),
         },
       ]),
