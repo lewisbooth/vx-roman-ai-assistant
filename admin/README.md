@@ -32,7 +32,7 @@ Prisma's `Session` model stores Shopify authentication. Separate `Conversation` 
 
 ## Text conversations
 
-The same backend advisor serves text and voice briefings through the Responses API: `gpt-5.6-terra`, Fast tier, medium reasoning and `store: false`. The database owns conversation history; provider conversation IDs are not used. Keep `OPENAI_API_KEY` in the private root `.env`; recreate Docker after environment changes.
+The same backend advisor serves text and voice briefings through the Responses API: `gpt-6.1-sol`, Fast tier, medium reasoning and `store: false`. The database owns conversation history; provider conversation IDs are not used. Keep `OPENAI_API_KEY` in the private root `.env`; recreate Docker after environment changes.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -97,7 +97,7 @@ Fresh `get_product_guides` includes the current native configuration within the 
 
 Each provider response allows 8,192 output tokens, including reasoning and structured output. An output-limit truncation retries the same round once per turn with 16,384 tokens, retaining that budget for subsequent rounds. Partial output is discarded; completed tools are not replayed. The turn deadline still applies. A completed tool round followed by `max_messages` may use the separate, single terminal-only repair.
 
-The advisor uses `gpt-6.1-sol` with Medium reasoning and Fast requests; `FALLBACK_TEXT_MODEL` is null, so availability failures suspend input and voice without switching to a lower model. Synthetic recovery probes retry this primary at 1, 2, 4, 8, 16 then 30 seconds. A persisted fallback incident from an earlier model configuration becomes an outage until the current primary recovers. If a fallback is explicitly configured later, existing failover retains confirmed tool outcomes without replaying actions. Policy, invalid-prompt, malformed and incomplete responses do not trigger availability failover. Incidents and each billable attempt persist separately; logs exclude provider bodies and customer text.
+The advisor uses `gpt-6.1-sol` with Medium reasoning and Fast requests; `FALLBACK_TEXT_MODEL` is null, so availability failures suspend input and voice without switching to a lower model. Synthetic recovery probes retry this primary at 1, 2, 4, 8, 16 then 30 seconds. Each probe uses the advisor's streamed strict-function, required-tool and cache envelope, with a harmless health call which is validated and never executed. Only a completed response from the expected model with that exact health result restores availability; plain text or incomplete streams do not. A ten-second abort deadline also bounds stream consumption, with no provider retries. A persisted fallback incident from an earlier model configuration becomes an outage until the current primary recovers. If a fallback is explicitly configured later, existing failover retains confirmed tool outcomes without replaying actions. Policy, invalid-prompt, malformed and incomplete responses do not trigger availability failover. Incidents and each billable attempt persist separately; logs exclude provider bodies and customer text.
 
 ### Latency verification
 

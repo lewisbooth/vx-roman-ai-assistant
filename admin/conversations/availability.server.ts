@@ -32,15 +32,50 @@ function scheduleProbe() {
 async function checkModel(model: string): Promise<boolean> {
   try {
     probeClient ??= new OpenAI({ maxRetries: 0, timeout: 10_000 });
-    const response = await probeClient.responses.create({
+    const healthTool = "report_api_health";
+    const stream = await probeClient.responses.create({
       model,
       service_tier: "fast",
       reasoning: { effort: "medium" },
-      input: "Reply with OK.",
-      max_output_tokens: 256,
+      input: "Call report_api_health with ok set to true.",
+      tools: [{
+        type: "function",
+        name: healthTool,
+        description: "Report API readiness without performing any action.",
+        strict: true,
+        parameters: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      }],
+      tool_choice: {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "function", name: healthTool }],
+      },
+      parallel_tool_calls: false,
+      prompt_cache_key: `roman-api-health-${model}`,
+      prompt_cache_options: { mode: "implicit", ttl: "30m" },
+      include: ["reasoning.encrypted_content"],
+      max_output_tokens: 1024,
       store: false,
-    });
-    return response.status === "completed";
+      stream: true,
+    }, { signal: AbortSignal.timeout(10_000) });
+    let healthy = false;
+    for await (const event of stream) {
+      if (["response.failed", "response.incomplete", "error"].includes(event.type))
+        return false;
+      if (event.type !== "response.completed") continue;
+      const calls = event.response.output.filter((item) => item.type === "function_call");
+      // Plain text readiness does not prove the advisor's streamed, strict
+      // function path works. This synthetic call is validated, never executed.
+      healthy = event.response.status === "completed" &&
+        event.response.model === model && calls.length === 1 &&
+        calls[0].name === healthTool && /^\{\s*"ok"\s*:\s*true\s*\}$/.test(calls[0].arguments.trim());
+    }
+    return healthy;
   } catch {
     // Probe failures are represented by the open incident, not a log entry
     // containing a provider error body every few seconds.

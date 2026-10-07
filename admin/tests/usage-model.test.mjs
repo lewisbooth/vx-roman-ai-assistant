@@ -65,7 +65,7 @@ const buildModelBundle = (withFallbackFixture = false) => build({
           namespace: "stub",
         }));
         build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-          contents: `export default class OpenAI { static APIError = mock.APIError; static APIConnectionError = mock.APIConnectionError; constructor() { this.responses={create:(...args)=>mock.create(...args)}; } }`,
+          contents: `export default class OpenAI { static APIError = mock.APIError; static APIConnectionError = mock.APIConnectionError; constructor(options) { mock.clients.push(options); this.responses={create:(...args)=>mock.create(...args)}; } }`,
         }));
       },
     },
@@ -125,12 +125,15 @@ function setup(scripts, initialAvailability = "healthy", singleModel = false) {
   const requests = [];
   const incidents = [];
   const timers = [];
+  const probeDeadlines = [];
+  const clients = [];
   const controller = new AbortController();
   const mock = {
     APIError: StubAPIError,
     APIConnectionError: StubAPIConnectionError,
     availability: initialAvailability,
     incidents,
+    clients,
     create: async (...args) => {
       requests.push(args);
       const script = scripts.shift();
@@ -144,6 +147,11 @@ function setup(scripts, initialAvailability = "healthy", singleModel = false) {
     exports: module.exports,
     require,
     mock,
+    AbortSignal: { timeout: (ms) => {
+      const deadline = new AbortController();
+      probeDeadlines.push({ ms, controller: deadline });
+      return deadline.signal;
+    } },
     setTimeout: (callback, ms) => {
       const timer = { callback, ms, unref() {}, cancelled: false };
       timers.push(timer);
@@ -159,6 +167,8 @@ function setup(scripts, initialAvailability = "healthy", singleModel = false) {
     requests,
     incidents,
     timers,
+    probeDeadlines,
+    clients,
     primaryModel: module.exports.PRIMARY_TEXT_MODEL,
     fallbackModel: module.exports.FALLBACK_TEXT_MODEL,
     status: () => module.exports.getAvailabilityStatus(),
@@ -198,6 +208,14 @@ const events = (...values) =>
   async function* () {
     yield* values;
   };
+const healthTerminal = (model = "gpt-6.1-sol", argumentsJson = '{"ok":true}') => ({
+  type: "response.completed",
+  response: {
+    status: "completed",
+    model,
+    output: [{ type: "function_call", name: "report_api_health", arguments: argumentsJson }],
+  },
+});
 
 test("saved-photo terminal has no question and uses server tools without a browser operation", async () => {
   const windowId = "abbf52a1-79c2-41b5-aafc-90089c6f3c34",
@@ -452,7 +470,7 @@ test("the configured single advisor rejects outages without a lower-model attemp
 });
 
 test("a saved retired fallback incident suspends until the sole current advisor recovers", async () => {
-  const app = setup([async () => ({ status: "completed" })], "fallback", true);
+  const app = setup([events(healthTerminal())], "fallback", true);
   assert.equal(await app.status(), "suspended");
   assert.deepEqual(app.incidents, ["outage"]);
   await assert.rejects(app.run(), { status: 503 });
@@ -467,7 +485,7 @@ test("single-advisor recovery keeps capped backoff and probes only the configure
   const unavailable = new StubAPIError(503, "server_error");
   const app = setup([
     ...Array.from({ length: 6 }, () => async () => { throw unavailable; }),
-    async () => ({ status: "completed" }),
+    events(healthTerminal()),
   ], "outage", true);
   assert.equal(await app.status(), "suspended");
   const delays = [];
@@ -478,9 +496,96 @@ test("single-advisor recovery keeps capped backoff and probes only the configure
   assert.equal(await app.status(), "available");
   assert.deepEqual(app.incidents, ["healthy"]);
   assert.ok(app.requests.every(([request]) =>
-    request.model === app.primaryModel && request.input === "Reply with OK." &&
+    request.model === app.primaryModel && request.input === "Call report_api_health with ok set to true." &&
     request.reasoning.effort === "medium" && request.service_tier === "fast" &&
     request.store === false));
+});
+
+test("recovery exercises the advisor's strict streamed function envelope without executing it", async () => {
+  const app = setup([events(healthTerminal("gpt-6.1-sol", ' { "ok" : true } '))], "outage", true);
+  assert.equal(await app.status(), "suspended");
+  await app.tick();
+  assert.equal(await app.status(), "available");
+  assert.equal(app.requests.length, 1);
+  const [request, options] = app.requests[0];
+  assert.equal(request.model, app.primaryModel);
+  assert.equal(request.stream, true);
+  assert.equal(request.service_tier, "fast");
+  assert.equal(request.reasoning.effort, "medium");
+  assert.equal(request.max_output_tokens, 1024);
+  assert.equal(request.store, false);
+  assert.equal(request.parallel_tool_calls, false);
+  assert.deepEqual(plain(request.prompt_cache_options), { mode: "implicit", ttl: "30m" });
+  assert.ok(request.prompt_cache_key);
+  assert.deepEqual(plain(request.include), ["reasoning.encrypted_content"]);
+  assert.deepEqual(plain(request.tool_choice), {
+    type: "allowed_tools", mode: "required",
+    tools: [{ type: "function", name: "report_api_health" }],
+  });
+  assert.equal(request.tools.length, 1);
+  assert.equal(request.tools[0].strict, true);
+  assert.equal(request.tools[0].parameters.additionalProperties, false);
+  assert.deepEqual(plain(request.tools[0].parameters.required), ["ok"]);
+  assert.equal(request.context_management, undefined);
+  assert.equal(options.signal, app.probeDeadlines[0].controller.signal);
+  assert.equal(app.probeDeadlines[0].ms, 10_000);
+  assert.deepEqual(plain(app.clients), [{ maxRetries: 0, timeout: 10_000 }]);
+  assert.deepEqual(app.records, []);
+});
+
+test("plain, incomplete or incorrect health responses cannot reopen suspended input", async () => {
+  const wrongModel = healthTerminal("gpt-6-luna");
+  const wrongFunction = healthTerminal();
+  wrongFunction.response.output[0].name = "add_to_cart";
+  const multipleCalls = healthTerminal();
+  multipleCalls.response.output.push({ ...multipleCalls.response.output[0] });
+  const wrongStatus = healthTerminal();
+  wrongStatus.response.status = "incomplete";
+  const scripts = [
+    async () => ({ status: "completed" }),
+    events(),
+    events({ type: "response.incomplete" }),
+    events({ type: "response.failed" }),
+    events({ type: "error" }),
+    events(wrongModel),
+    events(wrongFunction),
+    events(multipleCalls),
+    events(wrongStatus),
+    ...['{"ok":false}', '{"ok":true,"other":true}', '{"ok":false,"ok":true}', 'not JSON'].map(
+      (args) => events(healthTerminal("gpt-6.1-sol", args)),
+    ),
+  ];
+  for (const script of scripts) {
+    const app = setup([script], "outage", true);
+    assert.equal(await app.status(), "suspended");
+    await app.tick();
+    assert.equal(await app.status(), "suspended");
+    assert.deepEqual(app.incidents, []);
+    assert.equal(app.requests.length, 1);
+  }
+});
+
+test("the explicit health deadline cancels a started stream which never completes", async () => {
+  let app;
+  app = setup([async function* () {
+    yield { type: "response.created" };
+    const signal = app.requests[0][1].signal;
+    await new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  }], "outage", true);
+  assert.equal(await app.status(), "suspended");
+  await app.tick();
+  assert.equal(app.requests.length, 1);
+  assert.equal(app.probeDeadlines[0].ms, 10_000);
+  app.probeDeadlines[0].controller.abort(new Error("Synthetic deadline elapsed."));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await app.status(), "suspended");
+  assert.deepEqual(app.incidents, []);
+  assert.equal(app.requests.length, 1);
+  assert.equal(app.timers.filter((timer) => !timer.ran && !timer.cancelled).length, 1);
+  assert.equal(app.timers.find((timer) => !timer.ran && !timer.cancelled).ms, 2_000);
 });
 
 test("a sole-advisor failure after a tool result preserves the completed action without replay", async () => {
@@ -614,8 +719,8 @@ test("suspended service probes both models with capped backoff and resumes on fa
       async () => { throw unavailable; },
     ]).flat(),
     async () => { throw unavailable; },
-    async () => ({ status: "completed" }),
-    async () => ({ status: "completed" }),
+    events(healthTerminal("gpt-5.6-luna")),
+    events(healthTerminal()),
   ];
   const app = setup(scripts);
   await assert.rejects(app.run(), (error) => error === unavailable);
@@ -629,8 +734,8 @@ test("suspended service probes both models with capped backoff and resumes on fa
   assert.equal(await app.tick(), 1_000);
   assert.equal(await app.status(), "available");
   assert.deepEqual(app.incidents, ["fallback", "outage", "fallback", "healthy"]);
-  assert.equal(app.requests.slice(2).every(([request]) => request.input === "Reply with OK."), true);
-  assert.equal(app.requests.slice(2).every(([request]) => request.max_output_tokens === 256), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.input === "Call report_api_health with ok set to true."), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.max_output_tokens === 1024), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.reasoning.effort === "medium"), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.service_tier === "fast" && request.store === false), true);
 });
@@ -667,7 +772,7 @@ test("a later provider round falls back using prior tool results without replayi
 });
 
 test("a persisted outage remains suspended after restart until a probe succeeds", async () => {
-  const app = setup([async () => ({ status: "completed" })], "outage");
+  const app = setup([events(healthTerminal())], "outage");
   assert.equal(await app.status(), "suspended");
   assert.equal(app.requests.length, 0);
   assert.equal(await app.tick(), 1_000);
