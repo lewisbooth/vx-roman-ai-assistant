@@ -2813,7 +2813,7 @@ function libraryContext() {
       {
         id: section,
         title: "Bay windows",
-        text: "FULL_LIBRARY_SECTIONS_NOT_REPEATED_IN_ROUTINE_CONTEXT",
+        text: "ORIGINAL_LIBRARY_WRITTEN_METHOD",
       },
     ],
     guides: ["a", "b", "c"].map((letter) => ({
@@ -2850,9 +2850,15 @@ function libraryContext() {
   };
   const reuse = {
     inventory: [],
-    recall: () => undefined,
+    recall: (library, refresh = false) => {
+      if (refresh) reuse.inventory = [];
+      return !refresh && library === source.library && reuse.inventory.length
+        ? { inventory, result } : undefined;
+    },
     discover: (callId, discovery) => {
       discoveries.push({ callId, discovery });
+      source.sourceCallId = callId;
+      reuse.inventory = [inventory];
       return inventory;
     },
     read: async (call, signal) => {
@@ -2954,7 +2960,8 @@ test("cached library authority supports the next numeric step without reattachin
     request,
     /guideIds.*discoveryId/,
   );
-  assert.doesNotMatch(request, /FULL_LIBRARY_SECTIONS|file_data/);
+  assert.match(request, /ORIGINAL_LIBRARY_WRITTEN_METHOD/);
+  assert.doesNotMatch(request, /file_data/);
   assert.equal(reply.questionPresentation.measurement.label, "Width");
   assert.deepEqual(
     plain(reply.questionPresentation.librarySource.source.guideIds),
