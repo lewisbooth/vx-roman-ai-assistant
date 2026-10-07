@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { cwd } from "node:process";
 import { test } from "node:test";
 import { build } from "esbuild";
 
 const bundle = await build({
-  entryPoints: ["admin/visualizations/tools.server.ts"],
+  stdin: {
+    contents: "export * from './admin/visualizations/tools.server'; export { ConversationError } from './admin/conversations/errors.server';",
+    resolveDir: cwd(),
+  },
   bundle: true,
   write: false,
   format: "cjs",
@@ -103,6 +107,8 @@ function setup() {
     },
     rename: async (...args) => {
       calls.push(["rename", args]);
+      if (args[3] !== photo.revision)
+        throw new module.exports.ConversationError(409, "This image name changed in another tab.");
       return { ...photo, title: args[2], revision: 4 };
     },
     start: async (...args) => {
@@ -198,18 +204,20 @@ test("cached observations are retrievable and reference cards cannot resurrect d
   await assert.rejects(turn.validatePresentation({ kind: "windows", windowIds: [app.photoId], purpose: "reference" }), /no longer available/);
 });
 
-test("unknown photo IDs cannot rename or dispatch generation; renaming uses the authoritative revision", async () => {
+test("unknown photo IDs cannot rename or dispatch generation; renaming uses the supplied observed revision", async () => {
   const app = setup(),
     turn = await app.create();
   const refused = await turn.execute("foreign", "rename_window", {
     windowId: randomUUID(),
     title: "Other",
+    revision: 3,
   });
   assert.match(refused.error, /known saved window/);
   assert.equal(app.calls.filter(([name]) => name === "rename").length, 0);
   const renamed = await turn.execute("rename", "rename_window", {
     windowId: app.photoId,
     title: "  Nursery  ",
+    revision: 3,
   });
   assert.equal(renamed.title, "Nursery");
   assert.deepEqual(app.calls.find(([name]) => name === "rename")[1], [
@@ -220,13 +228,41 @@ test("unknown photo IDs cannot rename or dispatch generation; renaming uses the 
   ]);
 });
 
-test("generation uses saved cleanup and a durable request ID; replay does not repeat a side effect", async () => {
-  const app = setup(),
-    turn = await app.create();
+test("a Gallery rename after the naming decision conflicts rather than overwriting the customer's title", async () => {
+  const app = setup();
+  const turn = await app.create();
+  const observedRevision = app.photo.revision;
+  Object.assign(app.photo, {title: "My daughter's bedroom", revision: observedRevision + 1});
+  const result = await turn.execute("inferred-name", "rename_window", {
+    windowId: app.photoId, title: "Blush bedroom", revision: observedRevision,
+  });
+  assert.match(result.error, /name changed/);
+  assert.equal(app.photo.title, "My daughter's bedroom");
+  assert.equal(app.photo.revision, observedRevision + 1);
+  assert.equal(app.calls.find(([name]) => name === "rename")[1][3], observedRevision,
+    "the tool must not silently replace the observed revision with a fresh one");
+  assert.equal(app.receipts.get("inferred-name").status, "failed");
+});
+
+test("rename requires a valid observed revision without guessing it from a newer photo read", async () => {
+  for (const revision of [undefined, 0, -1, 1.5, "3"]) {
+    const app = setup();
+    const turn = await app.create();
+    const result = await turn.execute("invalid-revision", "rename_window", {
+      windowId: app.photoId, title: "Bedroom", ...(revision === undefined ? {} : {revision}),
+    });
+    assert.ok(result.error);
+    assert.equal(app.calls.filter(([name]) => name === "rename").length, 0);
+  }
+});
+
+test("generation includes cleanup even for historical photos and uses one durable request on replay", async () => {
+  const app = setup();
+  app.photo.cleanup = false;
+  const turn = await app.create();
   const args = {
     windowId: app.photoId,
     productPath: "/products/blind",
-    cleanup: null,
     targetDescription: null,
   };
   const job = await turn.execute("create", "create_visualization", args);
@@ -248,7 +284,6 @@ test("unconfirmed failures are not replayed and cancellation preserves already a
   const args = {
     windowId: app.photoId,
     productPath: "/products/blind",
-    cleanup: false,
     targetDescription: null,
   };
   app.mock.start = async () => {

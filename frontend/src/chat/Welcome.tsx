@@ -20,7 +20,7 @@ const tiles = [
     description: "Upload a mood board",
     image: "roman-tile-style.png",
     width: 100,
-    starter: "Help me find blinds that suit my room and style.",
+    starter: "Help me find blinds that suit my room and style. I'd like to share a room photo or mood board for inspiration.",
   },
   {
     title: "Explore No-Drill",

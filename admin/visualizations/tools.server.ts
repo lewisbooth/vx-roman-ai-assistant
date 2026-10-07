@@ -212,35 +212,33 @@ export async function createVisualizationTurn(
               400,
               "Use a known saved window from current application state or list_windows first.",
             );
-          const photo = await ownedPhoto(owner.id, id);
           if (name === "rename_window") {
-            exact(raw, ["windowId", "title"]);
+            exact(raw, ["windowId", "title", "revision"]);
             const title = windowTitle(raw.title);
-            result = await renameWindow(owner.id, id, title, photo.revision);
+            if (!Number.isSafeInteger(raw.revision) || Number(raw.revision) < 1)
+              throw new ConversationError(400, "Use the image revision from its current metadata.");
+            result = await renameWindow(owner.id, id, title, raw.revision as number);
           } else {
             exact(raw, [
               "windowId",
               "productPath",
-              "cleanup",
               "targetDescription",
             ]);
             if (
               typeof raw.productPath !== "string" ||
               !isStorefrontPagePath(raw.productPath, owner.origin) ||
-              (raw.cleanup !== null && typeof raw.cleanup !== "boolean") ||
               (raw.targetDescription !== null &&
                 typeof raw.targetDescription !== "string")
             )
               throw new ConversationError(
                 400,
-                "Send the active product path, cleanup preference and optional target description.",
+                "Send the active product path and optional target description.",
               );
             result = await startVisualization(owner, conversationId, {
               requestId: receipt.id,
               windowId: id,
               productPath: raw.productPath,
-              cleanup:
-                raw.cleanup === null ? photo.cleanup : (raw.cleanup as boolean),
+              cleanup: true,
               ...(raw.targetDescription
                 ? { targetDescription: raw.targetDescription as string }
                 : {}),

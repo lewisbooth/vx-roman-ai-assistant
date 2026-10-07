@@ -244,10 +244,10 @@ export function createGalleryClient(session: ConversationClient) {
     async rename(item: WindowPhotoDto, title: string) { const value = await api("rename", { windowId: item.id, title, revision: item.revision }); if (!photo(value)) throw new Error("The name could not be saved."); update({ windows: state.windows.map((row) => row.id === value.id ? value : row) }); await session.refreshMediaContext(); return value; },
     async deleteWindow(item: WindowPhotoDto) { await api("delete-window", { windowId: item.id }); const dependent = state.visualizations.filter((row) => row.windowId === item.id).map((row) => row.id); invalidate([item.id, ...dependent]); update({ windows: state.windows.filter((row) => row.id !== item.id), visualizations: state.visualizations.filter((row) => row.windowId !== item.id) }); await session.refreshMediaContext(); },
     async deleteVisualization(item: VisualizationJobDto) { await api("delete-job", { jobId: item.id }); invalidate([item.id]); update({ visualizations: state.visualizations.filter((row) => row.id !== item.id) }); },
-    async start(item: WindowPhotoDto, productPath: string, cleanup = item.cleanup, requestId: string = crypto.randomUUID(), onAccepted?: (job: VisualizationJobDto) => void) {
+    async start(item: WindowPhotoDto, productPath: string, requestId: string = crypto.randomUUID(), onAccepted?: (job: VisualizationJobDto) => void) {
       const conversation = await link();
       let result;
-      try { result = await api("start", { ...conversation, requestId, windowId: item.id, productPath, cleanup }); }
+      try { result = await api("start", { ...conversation, requestId, windowId: item.id, productPath, cleanup: true }); }
       catch (error) { const status = await api(`request-status?requestId=${requestId}`); if (!record(status) || !job(status.job)) throw error; result = status.job; }
       const accepted = acceptJob(result);
       onAccepted?.(accepted);
@@ -269,7 +269,7 @@ export function createGalleryClient(session: ConversationClient) {
       if (value.status === "saving") throw new Error("Your photo is still being saved. Check its status in a moment.");
       return null;
     },
-    async upload(input: { file: File; title: string; cleanup: boolean; requestId: string }, onProgress: (percentage: number) => void, onSaved?: (photo: WindowPhotoDto) => void) {
+    async upload(input: { file: File; title: string; requestId: string }, onProgress: (percentage: number) => void, onSaved?: (photo: WindowPhotoDto) => void) {
       const conversation = await link();
       if (uncertainUploads.has(input.requestId)) {
         const status = await api(`upload-status?requestId=${input.requestId}`);
@@ -277,7 +277,7 @@ export function createGalleryClient(session: ConversationClient) {
         if (!record(status) || status.status !== "not_found") throw new Error("This upload has not finished. Check its status before uploading again.");
       }
       const form = new FormData();
-      Object.entries({ ...conversation, requestId: input.requestId, title: input.title, cleanup: String(input.cleanup), consent: "true" }).forEach(([key, value]) => form.set(key, value));
+      Object.entries({ ...conversation, requestId: input.requestId, title: input.title, cleanup: "true", consent: "true" }).forEach(([key, value]) => form.set(key, value));
       form.set("photo", input.file);
       let value: unknown;
       try {

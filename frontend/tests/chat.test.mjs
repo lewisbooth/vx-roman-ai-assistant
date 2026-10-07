@@ -698,7 +698,7 @@ test("the conversation welcome tiles start normal text conversations without cle
   const starters = [
     "Help me measure my windows for blinds.",
     null,
-    "Help me find blinds that suit my room and style.",
+    "Help me find blinds that suit my room and style. I'd like to share a room photo or mood board for inspiration.",
     "Help me find no-drill blinds for my home.",
   ];
   for (const [index, starter] of starters.entries()) {
@@ -2511,7 +2511,7 @@ test("desktop and mobile End Chat cancellation preserves the current draft or ac
       const dialog = ctx.container.querySelector(".roman-dialog");
       const cancel = [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Cancel");
       assert.equal(dialog.querySelector("h2").textContent, "End this chat?");
-      assert.match(dialog.textContent, /cart, saved windows and visualizations will remain/);
+      assert.match(dialog.textContent, /cart, saved uploads and visualizations will remain/);
       assert.equal(ctx.container.getRootNode().activeElement, cancel);
       assert.deepEqual(ctx.endCalls, [], "Opening confirmation does not end the session");
       if (escape) dialog.dispatchEvent(new ctx.window.Event("cancel", { cancelable: true }));

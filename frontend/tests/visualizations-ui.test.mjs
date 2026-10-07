@@ -66,14 +66,14 @@ function pointer(window, element, type, values) {
   element.dispatchEvent(event);
 }
 
-test("window picker offers one upload card before named photos and keeps upload and selection separate", (t) => {
+test("image picker offers one upload card before named images and keeps upload and selection separate", (t) => {
   const {mount, api} = setup(t, "windows");
   const windows = [{id: "kitchen", title: "Kitchen window"}, {id: "study", title: "Study window"}];
   const selected = []; let uploads = 0;
   api.render({windows, windowSource: (photo) => `/${photo.id}.jpg`, onUpload: () => uploads++, onSelect: (photo) => selected.push(photo.id)});
   const choices = [...mount.querySelectorAll(".roman-window-carousel button")];
-  assert.equal(mount.querySelector('[role="region"]').getAttribute("aria-label"), "window photos");
-  assert.deepEqual(choices.map((button) => button.getAttribute("aria-label") ?? button.textContent), ["Upload a room photo", "Use Kitchen window", "Use Study window"]);
+  assert.equal(mount.querySelector('[role="region"]').getAttribute("aria-label"), "uploaded images");
+  assert.deepEqual(choices.map((button) => button.getAttribute("aria-label") ?? button.textContent), ["Upload a room photo or mood board", "Use Kitchen window", "Use Study window"]);
   choices[0].click();
   assert.equal(uploads, 1);
   assert.deepEqual(selected, []);
@@ -98,7 +98,7 @@ test("reference photo carousels show the named photos without upload, selection 
   api.render({windows: [{id: "kitchen", title: "Kitchen window"}, {id: "study", title: "Study window"}], referenceOnly: true, windowSource: (photo) => `/${photo.id}.jpg`, onUpload: forbidden, onSelect: forbidden});
   assert.equal(mount.querySelectorAll(".roman-window-carousel li").length, 2);
   assert.equal(mount.querySelector("button"), null);
-  assert.doesNotMatch(mount.textContent, /Upload|Use this window/);
+  assert.doesNotMatch(mount.textContent, /Upload|Use this image/);
 });
 
 test("photo analysis progress estimates three seconds but stops immediately at terminal state or the ten-second deadline", (t) => {
@@ -226,44 +226,70 @@ test("private Gallery images resolve only near view and release decoded pixels o
   assert.equal(requests, 2);
 });
 
-test("upload review requires name and consent, focuses close and saves before a product exists", async (t) => {
+test("ordinary upload asks only for consent and uses a provisional name until Roman supplies one from context", async (t) => {
   const {window, mount, api} = setup(t, "upload");
   const submitted = [];
   const props = {
-    draft: {file: new window.File(["jpeg"], "room.jpg", {type: "image/jpeg"}), window: null, preview: "/room.jpg", title: "Kitchen", cleanup: true, consent: false},
+    draft: {file: new window.File(["jpeg"], "room.jpg", {type: "image/jpeg"}), window: null, preview: "/room.jpg", title: "", consent: false},
     onDraftChange() {}, onFile() {}, onSubmit: (draft) => submitted.push(draft), onClose() {},
   };
   window.document.querySelector("[data-roman-upload]").focus();
   api.render(props);
   assert.equal(window.document.activeElement.getAttribute("aria-label"), "Close");
   assert.equal(mount.querySelector("[role='tablist']"), null);
+  assert.equal(mount.querySelector('[type="text"]'), null);
+  assert.equal(mount.querySelectorAll('[type="checkbox"]').length, 1);
+  assert.doesNotMatch(mount.textContent, /Clean up my room/);
   await delay(10);
   mount.querySelector("img").dispatchEvent(new window.Event("load"));
   await delay(5);
   assert.equal(mount.querySelector("button[type='submit']").disabled, true);
-  api.render({...props, draft: {...props.draft, consent: true, title: "  Kitchen  "}});
+  api.render({...props, draft: {...props.draft, consent: true}});
   await delay(5);
   const button = mount.querySelector("button[type='submit']");
-  assert.equal(button.textContent, "Save window");
+  assert.equal(button.textContent, "Upload image");
   assert.equal(button.disabled, false);
   mount.querySelector("form").dispatchEvent(new window.Event("submit", {bubbles: true, cancelable: true}));
   assert.equal(submitted.length, 1);
-  assert.equal(submitted[0].title, "Kitchen");
+  assert.equal(submitted[0].title, "Uploaded image");
+  assert.equal("cleanup" in submitted[0], false);
   api.dispose();
   assert.equal(window.document.activeElement.getAttribute("data-roman-upload"), "");
 });
 
-test("saved-window review reuses consent and identity without reuploading", async (t) => {
+test("Gallery upload retains an editable name and validates it together with consent", async (t) => {
   const {window, mount, api} = setup(t, "upload");
-  const photo = {id: "window-1", title: "Kitchen", revision: 3, width: 600, height: 800, cleanup: true, createdAt: "2026-10-06"};
   const submitted = [];
-  api.render({draft: {file: null, window: photo, preview: "/saved.jpg", title: "Breakfast room", cleanup: true, consent: true},
-    productTitle: "Blue blind", onDraftChange() {}, onFile() {}, onSubmit: (draft) => submitted.push(draft), onClose() {}});
+  const props = {
+    editableName: true,
+    draft: {file: new window.File(["jpeg"], "mood-board.jpg", {type: "image/jpeg"}), window: null, preview: "/board.jpg", title: "", consent: true},
+    onDraftChange() {}, onFile() {}, onSubmit: (draft) => submitted.push(draft), onClose() {},
+  };
+  api.render(props);
   await delay(10);
   mount.querySelector("img").dispatchEvent(new window.Event("load"));
   await delay(5);
-  assert.equal(mount.querySelectorAll("input[type='checkbox']").length, 1);
-  assert.equal(mount.querySelector("button[type='submit']").textContent, "Visualize in your room");
+  assert.equal(mount.querySelector('[type="text"]').value, "");
+  assert.equal(mount.querySelector("button[type='submit']").disabled, true);
+  api.render({...props, draft: {...props.draft, title: "  Bedroom inspiration  "}});
+  await delay(5);
+  assert.equal(mount.querySelector("button[type='submit']").disabled, false);
+  mount.querySelector("form").dispatchEvent(new window.Event("submit", {bubbles: true, cancelable: true}));
+  assert.equal(submitted[0].title, "Bedroom inspiration");
+});
+
+test("saved-image review reuses consent and identity while Gallery keeps the title editable", async (t) => {
+  const {window, mount, api} = setup(t, "upload");
+  const photo = {id: "window-1", title: "Kitchen", revision: 3, width: 600, height: 800, cleanup: true, createdAt: "2026-10-06"};
+  const submitted = [];
+  api.render({draft: {file: null, window: photo, preview: "/saved.jpg", title: "Breakfast room", consent: true},
+    editableName: true, onDraftChange() {}, onFile() {}, onSubmit: (draft) => submitted.push(draft), onClose() {}});
+  await delay(10);
+  mount.querySelector("img").dispatchEvent(new window.Event("load"));
+  await delay(5);
+  assert.equal(mount.querySelectorAll("input[type='checkbox']").length, 0);
+  assert.equal(mount.querySelector('[type="text"]').value, "Breakfast room");
+  assert.equal(mount.querySelector("button[type='submit']").textContent, "Use image");
   mount.querySelector("form").dispatchEvent(new window.Event("submit", {bubbles: true, cancelable: true}));
   assert.equal(submitted[0].window.id, "window-1");
   assert.equal(submitted[0].file, null);

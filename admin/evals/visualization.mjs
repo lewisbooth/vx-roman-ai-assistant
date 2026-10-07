@@ -44,6 +44,7 @@ export function createVisualizationFixture(sample) {
         return {status: "shown", view: args.view};
       if (name === "rename_window") {
         if (args.windowId !== visualizationWindow.id) violations.push("Renaming must use the owned selected window.");
+        if (args.revision !== visualizationWindow.revision) violations.push("Renaming must preserve the revision from verified image metadata.");
         return {...visualizationWindow, title: args.title, revision: 2};
       }
       if (name === "create_visualization") {

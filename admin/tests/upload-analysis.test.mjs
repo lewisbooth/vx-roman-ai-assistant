@@ -20,7 +20,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 function setup(options = {}) {
   let now = 12_000;
   const requests = [], waits = [], contextReads = [];
-  const current = {galleryFacts: {selectedWindow: {id: "photo", title: "Kitchen"}, selectedWindowAnalysis: {
+  const current = {galleryFacts: {selectedWindow: {id: "photo", title: "Kitchen", revision: 1}, selectedWindowAnalysis: {
     status: "completed", completedAt: new Date(13_000).toISOString(), observations: {summary: "Warm wood and green decor."},
   }}, ...options.context};
   const dependencies = {
@@ -49,7 +49,7 @@ test("first reply joins the exact owned upload, refreshes facts and includes a f
   const ctx = setup();
   const signal = new AbortController().signal;
   const gallery = await ctx.api.prepareUploadAnalysis("conversation", "reply", signal);
-  assert.deepEqual(plain(gallery.uploadSummary), {windowId: "photo", includeSummary: true});
+  assert.deepEqual(plain(gallery.uploadSummary), {windowId: "photo", suggestName: false, includeSummary: true});
   assert.equal(gallery.selectedWindowAnalysis.observations.summary, "Warm wood and green decor.");
   assert.deepEqual(ctx.waits, [{ownerId: "owner", photoId: "photo", timeout: 8000, signal}]);
   assert.deepEqual(ctx.contextReads, ["conversation"]);
@@ -59,6 +59,20 @@ test("first reply joins the exact owned upload, refreshes facts and includes a f
   assert.deepEqual(ctx.requests.find(([table]) => table === "conversation")[1].where, {
     id: "conversation", status: "active", galleryOwner: {revokedAt: null},
   });
+});
+
+test("only a fresh default title permits an inferred name and a customer rename during analysis wins", async () => {
+  for (const [title, revision, suggestName] of [["Uploaded image", 1, true], ["Kitchen", 1, false], ["Uploaded image", 2, false]]) {
+    const ctx = setup();
+    Object.assign(ctx.current.galleryFacts.selectedWindow, {title, revision});
+    const gallery = await ctx.api.prepareUploadAnalysis("conversation", "reply", new AbortController().signal);
+    assert.equal(gallery.uploadSummary.suggestName, suggestName);
+  }
+  const ctx = setup({wait: ({current}) => { Object.assign(current.galleryFacts.selectedWindow, {title: "My study", revision: 2}); }});
+  Object.assign(ctx.current.galleryFacts.selectedWindow, {title: "Uploaded image", revision: 1});
+  const gallery = await ctx.api.prepareUploadAnalysis("conversation", "reply", new AbortController().signal);
+  assert.equal(gallery.uploadSummary.suggestName, false);
+  assert.equal(gallery.selectedWindow.title, "My study");
 });
 
 test("upload waiting budget is measured from queuedAt rather than restarted for the advisor", async () => {

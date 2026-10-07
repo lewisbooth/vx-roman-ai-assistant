@@ -725,9 +725,7 @@ function Assistant({
                       busy={suspended || ending || state.restoring}
                       onStart={(text) => void startTopic(text)}
                       onVisualize={visualization.enabled ? () => {
-                        if (currentVisualizationProduct())
-                          void startTopic("I'd like to visualize blinds in my room.");
-                        else visualization.openUpload(undefined, null);
+                        void startTopic("I'd like to visualize blinds in my room.");
                       } : undefined}
                     />
                   )}
@@ -808,7 +806,7 @@ function Assistant({
         {confirmingEnd && (
           <BrandedDialog
             title="End this chat?"
-            description="Your conversation will be cleared. Your cart, saved windows and visualizations will remain."
+            description="Your conversation will be cleared. Your cart, saved uploads and visualizations will remain."
             pending={ending}
             error={endError}
             onClose={() => setConfirmingEnd(false)}

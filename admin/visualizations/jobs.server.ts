@@ -118,19 +118,22 @@ export async function startVisualization(
       "Send a valid window and visualization request.",
     );
   const productPath = parseProductPath(input.productPath);
-  const hash = requestHash({
+  const hashForCleanup = (cleanup: boolean) => requestHash({
     windowId: input.windowId,
     productPath,
-    cleanup: input.cleanup,
+    cleanup,
     targetDescription: input.targetDescription ?? null,
   });
+  const hash = hashForCleanup(true);
   const existing = await prisma.visualizationJob.findUnique({
     where: {
       ownerId_requestId: { ownerId: owner.id, requestId: input.requestId },
     },
   });
   if (existing) {
-    if (existing.requestHash !== hash || existing.deletedAt)
+    // Replaying a historical request keeps its recorded cleanup policy; only
+    // newly created jobs adopt the current always-on policy.
+    if (existing.requestHash !== hashForCleanup(existing.cleanup) || existing.deletedAt)
       throw new ConversationError(
         409,
         "This request was already used for a different visualization.",
@@ -157,7 +160,7 @@ export async function startVisualization(
       },
     });
     if (duplicate) {
-      if (duplicate.requestHash !== hash || duplicate.deletedAt)
+      if (duplicate.requestHash !== hashForCleanup(duplicate.cleanup) || duplicate.deletedAt)
         throw new ConversationError(
           409,
           "This request was already used for a different visualization.",
@@ -256,7 +259,7 @@ export async function startVisualization(
         productPath,
         productTitle: product.title,
         productJson: JSON.stringify({ ...product, configurationSummary }),
-        cleanup: input.cleanup,
+        cleanup: true,
         targetDescription: input.targetDescription?.trim() || null,
         promptVersion: VISUALIZATION_PROMPT_VERSION,
         width: photo.width,

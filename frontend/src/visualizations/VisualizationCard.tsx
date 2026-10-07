@@ -35,6 +35,7 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const analyzing = analysisProgress !== undefined && analysisProgress !== null;
+  const hasProduct = !!job.productPath;
   useEffect(() => {
     if (!pending || uploadProgress !== undefined || analyzing) return;
     let timer: number | undefined;
@@ -46,7 +47,7 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [pending, uploadProgress, analyzing]);
   const progress = analyzing ? analysisProgress : uploadProgress === undefined ? estimatedGenerationProgress(Date.parse(job.startedAt ?? job.createdAt), tick) : Math.min(100, Math.max(0, uploadProgress));
-  const label = analyzing ? "Analyzing your room" : uploadProgress !== undefined ? "Uploading your room photo" : statusCopy[job.status];
+  const label = analyzing ? "Analyzing your room" : uploadProgress !== undefined ? "Uploading your image" : hasProduct ? statusCopy[job.status] : pending ? "Saving your image" : "Checking your upload";
   const complete = job.status === "completed" && job.resultAvailable;
   const image = complete ? result : source;
   const preview = <div className="roman-visualization-card-image" style={{ aspectRatio: `${job.width || 1} / ${job.height || 1}` }}>
@@ -73,7 +74,7 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
   return <article className="roman-media-card roman-visualization-card" data-pending={pending} aria-busy={deleting}>
     {complete && onOpen ? <button type="button" className="roman-window-choice" onClick={() => onOpen(job)} aria-label={`View ${job.productTitle} in ${job.windowTitle}`}>{preview}</button> : preview}
     <div className="roman-visualization-card-copy"><h3 className="roman-media-card-title">{job.windowTitle}</h3><p>{job.productTitle}</p>
-      <p className="roman-media-disclaimer">AI preview only. Colour, fit and scale may differ from the finished product.</p>
+      {hasProduct && <p className="roman-media-disclaimer">AI preview only. Colour, fit and scale may differ from the finished product.</p>}
       {job.status === "failed" && onRetry && <button type="button" className="roman-media-button" onClick={() => onRetry(job)}>Try again</button>}
       {job.status === "unknown" && onCheck && <button type="button" className="roman-media-button" onClick={() => onCheck(job)}>Check status</button>}
       {onDelete && <button type="button" className="roman-media-delete" disabled={deleting} onClick={() => { void remove(); }}>Delete visualization</button>}

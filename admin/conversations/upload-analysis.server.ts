@@ -1,5 +1,6 @@
 import prisma from "../db.server";
 import { ROOM_ANALYSIS_WAIT_MS } from "../../shared/room-analysis";
+import { DEFAULT_UPLOAD_TITLE } from "../../shared/visualizations";
 import { waitForWindowAnalysis } from "../visualizations/analysis.server";
 import { getCurrentContext } from "./repository.server";
 import type { ModelMessage } from "./history.server";
@@ -38,7 +39,8 @@ export async function prepareUploadAnalysis(conversationId: string, assistantId:
   const gallery = context.galleryFacts;
   const analysis = gallery?.selectedWindowAnalysis;
   return { ...gallery, ...(gallery?.selectedWindow?.id === photo.id ? {
-    uploadSummary: { windowId: photo.id, includeSummary: analysis?.status === "completed" &&
+    uploadSummary: { windowId: photo.id, suggestName: gallery.selectedWindow.title === DEFAULT_UPLOAD_TITLE &&
+      gallery.selectedWindow.revision === 1, includeSummary: analysis?.status === "completed" &&
       !!analysis.observations && !!analysis.completedAt && Date.parse(analysis.completedAt) <= deadline },
   } : {}) };
 }

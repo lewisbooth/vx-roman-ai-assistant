@@ -44,12 +44,12 @@ test("A lost start acknowledgement recovers the exact request without another pa
   const requestId = randomUUID();
   const job = { id, windowId: photoId, windowTitle: "Kitchen", productPath: "/products/blind", productTitle: "Blind", status: "generating", width: 1024, height: 1024, createdAt: photo.createdAt, startedAt: photo.createdAt, completedAt: null, error: null, resultAvailable: false };
   let starts = 0;
-  const { client, contextRefreshes } = setup(t, async (url) => {
-    if (url.endsWith("/start")) { starts++; throw new TypeError("Lost acknowledgement"); }
+  const { client, contextRefreshes } = setup(t, async (url, init) => {
+    if (url.endsWith("/start")) { assert.equal(JSON.parse(init.body).cleanup, true); starts++; throw new TypeError("Lost acknowledgement"); }
     assert.ok(url.endsWith(`/request-status?requestId=${requestId}`));
     return Response.json({ job });
   });
-  const result = await client.start(photo, job.productPath, true, requestId);
+  const result = await client.start({ ...photo, cleanup: false }, job.productPath, requestId);
   assert.equal(result.id, id);
   assert.equal(starts, 1);
   assert.equal((await client.recoverStart(requestId)).id, id);

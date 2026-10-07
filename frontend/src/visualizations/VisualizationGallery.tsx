@@ -30,12 +30,12 @@ export function VisualizationGallery({ windows, visualizations, windowSource, re
 }) {
   return <div className="roman-gallery roman-visualization-gallery" aria-label="Your gallery" aria-busy={loading}>
     {error && <p role="alert" className="roman-media-error">{error}</p>}
-    <section aria-labelledby="roman-gallery-windows">
-      <div className="roman-gallery-section-heading"><h2 id="roman-gallery-windows">Your Windows</h2>
-        <button type="button" className="roman-media-button" disabled={!enabled} onClick={onUpload}>Upload a room photo</button></div>
+    <section aria-labelledby="roman-gallery-uploads">
+      <div className="roman-gallery-section-heading"><h2 id="roman-gallery-uploads">Your Uploads</h2>
+        <button type="button" className="roman-media-button" disabled={!enabled} onClick={onUpload}>Upload a room photo or mood board</button></div>
       {windows.length ? <ul className="roman-media-grid">{windows.map((photo) => <li key={photo.id}><WindowCard photo={photo} source={() => windowSource(photo)} selected={selectedWindowId === photo.id}
         onSelect={() => onSelectWindow(photo)} onRename={onRenameWindow} onDelete={onDeleteWindow} /></li>)}</ul>
-        : <p className="roman-media-empty">{loading ? "Loading your windows…" : "Save a photo of your window to see your chosen blind in your room."}</p>}
+        : <p className="roman-media-empty">{loading ? "Loading your uploads…" : "Save a room photo or mood board to help Roman understand your space and style."}</p>}
       <LoadMoreSentinel key={windows.at(-1)?.id} enabled={hasMoreWindows && !loading} onLoadMore={onLoadMoreWindows} />
     </section>
     <section aria-labelledby="roman-gallery-visualizations">

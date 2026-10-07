@@ -31,25 +31,25 @@ export function WindowCard({ photo, source, selected = false, disabled = false, 
       setError(null); setPending(true);
       if (valid !== photo.title) await onRename(photo, valid);
       setEditing(false);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "We could not rename this window."); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "We could not rename this image."); }
     finally { setPending(false); }
   };
   const remove = async () => {
     if (!onDelete || pending) return;
     setPending(true); setError(null);
     try { await onDelete(photo); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "We could not delete this window."); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "We could not delete this image."); }
     finally { setPending(false); }
   };
   const analyzing = analysisProgress !== undefined && analysisProgress !== null;
   const image = <><PrivateImage source={source} sourceKey={photo.id} alt={photo.title} />{analyzing && <PhotoAnalysisProgress progress={analysisProgress} />}</>;
   return <article className="roman-media-card roman-window-card" data-selected={selected} aria-busy={pending}>
     {onSelect ? <button type="button" className="roman-window-choice" disabled={disabled || pending} onClick={onSelect} aria-label={`Use ${photo.title}`}>
-      <span className="roman-window-image">{image}{!analyzing && <span className="roman-window-use" aria-hidden="true">Use this window →</span>}</span>
+      <span className="roman-window-image">{image}{!analyzing && <span className="roman-window-use" aria-hidden="true">Use this image →</span>}</span>
       {!editing && <span className="roman-media-card-title">{photo.title}</span>}
     </button> : <><span className="roman-window-image">{image}</span>{!editing && <h3 className="roman-media-card-title">{photo.title}</h3>}</>}
     {editing && <form className="roman-window-rename" onSubmit={(event) => { void rename(event); }}>
-      <label htmlFor={id}>Window name</label>
+      <label htmlFor={id}>Image name</label>
       <input ref={field} id={id} type="text" className="roman-media-input" maxLength={100} required value={title} disabled={pending}
         onChange={(event) => setTitle(event.currentTarget.value)} onKeyDown={(event) => {
           if (event.key === "Escape") { event.stopPropagation(); event.preventDefault(); setTitle(photo.title); setEditing(false); setError(null); }
@@ -59,9 +59,9 @@ export function WindowCard({ photo, source, selected = false, disabled = false, 
     </form>}
     {!editing && (onRename || onDelete) && <details className="roman-window-actions">
       <summary aria-label={`Actions for ${photo.title}`}>•••</summary>
-      <div>{onRename && <button type="button" disabled={disabled || pending} onClick={() => { setTitle(photo.title); setError(null); setEditing(true); }}>Rename window</button>}
+      <div>{onRename && <button type="button" disabled={disabled || pending} onClick={() => { setTitle(photo.title); setError(null); setEditing(true); }}>Rename image</button>}
         {onDelete && <button type="button" disabled={disabled || pending} onClick={() => { void remove(); }}>
-          {visualizationCount === undefined ? "Delete window and its visualizations" : visualizationCount ? `Delete window and its ${visualizationCount} visualization${visualizationCount === 1 ? "" : "s"}` : "Delete window"}
+          {visualizationCount === undefined ? "Delete image and its visualizations" : visualizationCount ? `Delete image and its ${visualizationCount} visualization${visualizationCount === 1 ? "" : "s"}` : "Delete image"}
         </button>}</div>
     </details>}
     {error && <p role="alert" className="roman-media-error">{error}</p>}
@@ -76,13 +76,13 @@ export function WindowCarousel({ windows, windowSource, onUpload, uploadDisabled
   onSelect: (photo: WindowPhotoDto) => void;
   referenceOnly?: boolean;
 }) {
-  return <ProductCarousel itemLabel="window photos"><ul className="roman-product-list roman-window-carousel">
+  return <ProductCarousel itemLabel="uploaded images"><ul className="roman-product-list roman-window-carousel">
     {!referenceOnly && <li><article className="roman-media-card roman-window-card roman-window-upload-card">
       <button type="button" className="roman-window-choice" disabled={uploadDisabled} onClick={onUpload}>
         <span className="roman-window-image roman-window-upload-image" aria-hidden="true">
           <svg viewBox="0 0 48 48"><path d="M8 29v9a3 3 0 0 0 3 3h26a3 3 0 0 0 3-3v-9M24 32V7m-9 9 9-9 9 9" /></svg>
         </span>
-        <span className="roman-media-card-title">Upload a room photo</span>
+        <span className="roman-media-card-title">Upload a room photo or mood board</span>
       </button>
     </article></li>}
     {windows.map((photo) => <li key={photo.id}><WindowCard photo={photo} source={() => windowSource(photo)} onSelect={referenceOnly ? undefined : () => onSelect(photo)} /></li>)}

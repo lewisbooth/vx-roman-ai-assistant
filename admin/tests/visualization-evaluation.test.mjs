@@ -56,7 +56,7 @@ test("paused named-answer and card fixtures keep newer customer intent above mod
   for (const sample of cases) {
     const fixture = createVisualizationFixture(sample);
     assert.deepEqual(gradeVisualizationReply(sample, fixture, {text: "The photo is selected. Let's continue fitting."}), []);
-    await fixture.execute("paid", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path, cleanup: true});
+    await fixture.execute("paid", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path});
     assert.match(gradeVisualizationReply(sample, fixture, {})[0], /does not authorize/);
   }
 });
@@ -79,9 +79,9 @@ test("accepted pending and completed previews do not authorize another job when 
 test("a genuine pending or newly resumed preview uses the selected window once without another list or confirmation", async () => {
   for (const sample of visualizationCases.filter((item) => item.expected === "preview")) {
     const fixture = createVisualizationFixture(sample);
-    await fixture.execute("preview", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path, cleanup: true});
+    await fixture.execute("preview", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path});
     assert.deepEqual(gradeVisualizationReply(sample, fixture, {text: "Your preview is being prepared and should be ready soon."}), []);
-    await fixture.execute("duplicate", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path, cleanup: true});
+    await fixture.execute("duplicate", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path});
     assert.match(gradeVisualizationReply(sample, fixture, {})[0], /exactly one/);
   }
 });
@@ -91,7 +91,7 @@ test("an explicit additional preview returns a new accepted job rather than the 
   const fixture = createVisualizationFixture(sample);
   const result = await fixture.execute("additional-preview", "create_visualization", {
     windowId: visualizationWindow.id, productPath: visualizationProduct.path,
-    cleanup: true, targetDescription: visualizationWindow.title,
+    targetDescription: visualizationWindow.title,
   });
   assert.ok(sample.jobs.every(({id}) => id !== result.id),
     "reusing the old ID wrongly suggests the requested new job was not accepted");
@@ -118,6 +118,6 @@ test("explicit PDP photo preparation does not reuse an older selected photo to s
   assert.ok(fixture.history.at(-1).text.includes(visualizationWindow.id));
   await fixture.execute("prepare", "navigate", {path: visualizationProduct.path});
   assert.deepEqual(gradeVisualizationReply(sample, fixture, {text: "The blind is selected for your photo setup."}), []);
-  await fixture.execute("old-photo", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path, cleanup: true});
+  await fixture.execute("old-photo", "create_visualization", {windowId: visualizationWindow.id, productPath: visualizationProduct.path});
   assert.match(gradeVisualizationReply(sample, fixture, {}).join(" "), /does not authorize/);
 });

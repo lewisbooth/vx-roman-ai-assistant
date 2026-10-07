@@ -457,13 +457,12 @@ test("generation needs an actively selected blind, admission is idempotent, and 
     (await api.startVisualization(f.owner, f.conversation.id, f.input)).id,
     job.id,
   );
-  await assert.rejects(
-    api.startVisualization(f.owner, f.conversation.id, {
-      ...f.input,
-      cleanup: false,
-    }),
-    errorStatus(409),
-  );
+  assert.equal((await api.startVisualization(f.owner, f.conversation.id, {
+    ...f.input, cleanup: false,
+  })).id, job.id, "the retired cleanup choice cannot change an existing request");
+  await assert.rejects(api.startVisualization(f.owner, f.conversation.id, {
+    ...f.input, targetDescription: "A different opening",
+  }), errorStatus(409));
   assert.equal(await database.visualizationJob.count(), 1);
   assert.equal(
     await database.conversationMessage.count({ where: { id: job.id } }),
@@ -489,6 +488,36 @@ test("generation needs an actively selected blind, admission is idempotent, and 
     errorStatus(409),
   );
   assert.equal(calls.length, 0);
+});
+
+test("new uploads and previews include cleanup while historical false records replay unchanged", async () => {
+  const f = await fixture();
+  const upload = {...f.upload, requestId: randomUUID(), cleanup: false};
+  const photo = await api.saveWindow(f.owner, f.conversation.id, upload);
+  const saved = await database.windowPhoto.findUniqueOrThrow({where: {id: photo.id}});
+  assert.equal(saved.cleanup, true);
+  assert.equal((await api.saveWindow(f.owner, f.conversation.id, {...upload, cleanup: true})).id, photo.id);
+
+  const historicalUploadHash = api.requestHash({
+    title: upload.title, cleanup: false,
+    sha256: createHash("sha256").update(upload.bytes).digest("hex"),
+    consent: saved.consentVersion,
+  });
+  await database.windowPhoto.update({where: {id: photo.id}, data: {cleanup: false, requestHash: historicalUploadHash}});
+  assert.equal((await api.saveWindow(f.owner, f.conversation.id, upload)).cleanup, false);
+  assert.equal((await database.windowPhoto.findUniqueOrThrow({where: {id: photo.id}})).cleanup, false);
+
+  const input = {...f.input, windowId: photo.id, cleanup: false};
+  const job = await api.startVisualization(f.owner, f.conversation.id, input);
+  assert.equal((await database.visualizationJob.findUniqueOrThrow({where: {id: job.id}})).cleanup, true);
+  const historicalJobHash = api.requestHash({
+    windowId: photo.id, productPath: input.productPath, cleanup: false, targetDescription: null,
+  });
+  await database.visualizationJob.update({where: {id: job.id}, data: {cleanup: false, requestHash: historicalJobHash}});
+  assert.equal((await api.startVisualization(f.owner, f.conversation.id, input)).id, job.id);
+  assert.equal((await database.visualizationJob.findUniqueOrThrow({where: {id: job.id}})).cleanup, false);
+  assert.equal(await database.visualizationJob.count(), 1);
+  assert.equal(calls.length, 0, "a replay never dispatches another image request");
 });
 
 test("one paid receipt, one immutable result, no repeat generation and linked deletion", async () => {

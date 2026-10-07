@@ -1,6 +1,7 @@
 import { isPhotoAnalysisStatusDto, type PhotoAnalysisStatusDto } from "./room-analysis";
 
 export const GALLERY_STORAGE_KEY = "roman-gallery-v1";
+export const DEFAULT_UPLOAD_TITLE = "Uploaded image";
 
 /** Private Gallery DTOs contain metadata only, never credentials or image bytes. */
 export interface WindowPhotoDto {
@@ -83,10 +84,10 @@ export function isVisualizationJobDto(value: unknown): value is VisualizationJob
   return object(value) && isMediaId(value.id) && isMediaId(value.windowId) && titleValid(value.windowTitle) && titleValid(value.productTitle, 200) && typeof value.productPath === "string" && /^\/products\/[a-z0-9][a-z0-9-]*$/i.test(value.productPath) && typeof value.status === "string" && (VISUALIZATION_STATUSES as readonly string[]).includes(value.status) && typeof value.resultAvailable === "boolean" && Number.isSafeInteger(value.width) && Number.isSafeInteger(value.height) && Number(value.width) > 0 && Number(value.height) > 0 && Number(value.width) < 2048 && Number(value.height) < 2048 && date(value.createdAt) && (value.startedAt === null || date(value.startedAt)) && (value.completedAt === null || date(value.completedAt)) && (value.error === null || typeof value.error === "string" && value.error.length <= 500);
 }
 export function windowTitle(value: unknown): string {
-  if (typeof value !== "string") throw new Error("Name your window.");
+  if (typeof value !== "string") throw new Error("Name your image.");
   const title = value.trim();
   if (!title || title.length > 100 || /\p{Cc}/u.test(title))
-    throw new Error("Use a window name between 1 and 100 characters.");
+    throw new Error("Use an image name between 1 and 100 characters.");
   return title;
 }
 export function parsePhotoPresentation(value: unknown): PhotoPresentation | null {

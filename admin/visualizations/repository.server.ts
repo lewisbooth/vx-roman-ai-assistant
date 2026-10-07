@@ -283,19 +283,21 @@ export async function saveWindow(
       "Use a window name between 1 and 100 characters.",
     );
   }
-  const hash = requestHash({
+  const uploadedHash = createHash("sha256").update(input.bytes).digest("hex");
+  const hashForCleanup = (cleanup: boolean) => requestHash({
     title,
-    cleanup: input.cleanup,
-    sha256: createHash("sha256").update(input.bytes).digest("hex"),
+    cleanup,
+    sha256: uploadedHash,
     consent: MEDIA_CONSENT_VERSION,
   });
+  const hash = hashForCleanup(true);
   const existing = await prisma.windowPhoto.findUnique({
     where: {
       ownerId_requestId: { ownerId: owner.id, requestId: input.requestId },
     },
   });
   if (existing) {
-    if (existing.requestHash !== hash)
+    if (existing.requestHash !== hashForCleanup(existing.cleanup))
       throw new ConversationError(
         409,
         "This upload request was already used for another photo.",
@@ -330,7 +332,7 @@ export async function saveWindow(
       },
     });
     if (duplicate) {
-      if (duplicate.requestHash !== hash)
+      if (duplicate.requestHash !== hashForCleanup(duplicate.cleanup))
         throw new ConversationError(
           409,
           "This upload request was already used for another photo.",
@@ -366,7 +368,7 @@ export async function saveWindow(
         width: image.width,
         height: image.height,
         bytes: image.bytes.length,
-        cleanup: input.cleanup,
+        cleanup: true,
         consentVersion: MEDIA_CONSENT_VERSION,
         consentAt: new Date(),
       },

@@ -45,7 +45,7 @@ export function action({ request, params }: ActionFunctionArgs) {
         const conversationId = await linkGalleryConversation(owner, String(form.get("conversationId") ?? ""), String(form.get("conversationToken") ?? ""));
         const photo = form.get("photo");
         if (!(photo instanceof File)) throw new ConversationError(400, "Choose a room photo.");
-        return await saveWindow(owner, conversationId, { requestId: String(form.get("requestId") ?? ""), title: String(form.get("title") ?? ""), cleanup: form.get("cleanup") === "true", consent: form.get("consent") === "true", bytes: Buffer.from(await photo.arrayBuffer()), contentType: photo.type });
+        return await saveWindow(owner, conversationId, { requestId: String(form.get("requestId") ?? ""), title: String(form.get("title") ?? ""), cleanup: true, consent: form.get("consent") === "true", bytes: Buffer.from(await photo.arrayBuffer()), contentType: photo.type });
       } finally { uploadOwners.delete(owner.id); }
     }
     const body = await readJsonObject(request);
@@ -72,7 +72,7 @@ export function action({ request, params }: ActionFunctionArgs) {
       case "delete-job": await deleteVisualization(owner.id, string(body, "jobId")); return { deleted: true };
       case "start": {
         const conversationId = await linkGalleryConversation(owner, string(body, "conversationId"), string(body, "conversationToken"));
-        return startVisualization(owner, conversationId, { requestId: string(body, "requestId"), windowId: string(body, "windowId"), productPath: string(body, "productPath"), cleanup: body.cleanup as boolean, targetDescription: body.targetDescription as string | undefined });
+        return startVisualization(owner, conversationId, { requestId: string(body, "requestId"), windowId: string(body, "windowId"), productPath: string(body, "productPath"), cleanup: true, targetDescription: body.targetDescription as string | undefined });
       }
       case "claim": return claimPreparation(owner.id, string(body, "jobId"), string(body, "clientId"));
       case "prepare": return completePreparation(owner, string(body, "jobId"), string(body, "claimToken"), body.preparation as VisualizationPreparation | undefined, body.error as string | undefined);

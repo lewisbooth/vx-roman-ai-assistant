@@ -168,7 +168,7 @@ async function setup(t, options = {}) {
   const loaded = async () => { await until(() => dialog()?.querySelector(".roman-photo-preview img"), "Review preview did not load"); dialog().querySelector(".roman-photo-preview img").dispatchEvent(new window.Event("load")); await delay(0); };
   return {window, container, session, update, calls, sent, voiceAnswers, xhrs, activity, camera, dialog, setText, loaded,
     launchProduct(path) { return dispose.navigate("/", {state: {visualizeProduct: path, requestId: window.crypto.randomUUID()}}); },
-    completeUpload(loseAck = false, analysis) { windows = [{...photo(), ...(analysis ? {analysis} : {})}]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
+    completeUpload(loseAck = false, analysis) { windows = [{...photo(), title: xhrs[0].body.get("title"), ...(analysis ? {analysis} : {})}]; pendingParts.push({type: "media", version: 1, kind: "window", windowId, title: windows[0].title, customerIntent: true}); if (loseAck) xhrs[0].fail(); else xhrs[0].complete(windows[0]); },
     finishAnalysis() { windows = windows.map((item) => ({...item, analysis: {...item.analysis, status: "completed", completedAt: new Date().toISOString()}})); },
     async selectTab(name) { const tab = () => [...container.querySelectorAll(".roman-view-nav a")].find((item) => item.textContent === name); tab().click(); await until(() => tab()?.getAttribute("aria-current") === "page", "Gallery did not become active"); },
     setCompletedJob() { visualizations = [{...job(), status: "completed", resultAvailable: true, completedAt: new Date().toISOString()}]; },
@@ -226,39 +226,38 @@ test("an optional preview read failure retries once when Gallery is opened and l
   assert.equal(ctx.container.querySelector('.roman-gallery [role="alert"]'), null);
 });
 
-test("camera and visualizer welcome open the same non-conversational modal while voice and pending chat retain their state", async (t) => {
+test("camera opens a neutral upload without changing voice, pending chat or the mounted composer", async (t) => {
   const ctx = await setup(t, {voice: true, pending: true, saved: true});
   const form = ctx.container.querySelector(".roman-composer form"), voice = ctx.container.querySelector(".roman-voice-bar");
   ctx.camera().click(); await until(ctx.dialog, "Camera did not open upload");
   assert.equal(ctx.dialog().querySelector(".roman-window-choice"), null, "Upload does not duplicate saved-photo selection");
-  assert.equal(ctx.dialog().querySelector('[aria-label="Your Windows"]'), null);
+  assert.equal(ctx.dialog().querySelector('[aria-label="Your Uploads"]'), null);
   assert.equal(ctx.container.querySelector(".roman-chat").getAttribute("data-welcome-theme"), "true");
   assert.deepEqual(ctx.sent, []);
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
   ctx.dialog().querySelector('[aria-label="Close"]').click(); await delay(0);
-  [...ctx.container.querySelectorAll(".roman-welcome-tile")].find((tile) => tile.textContent.includes("Visualize in room")).click();
-  await until(ctx.dialog, "Welcome did not open the shared upload modal");
-  assert.equal(ctx.dialog().querySelector(".roman-window-choice"), null);
   assert.equal(ctx.container.querySelector(".roman-composer form"), form);
   assert.deepEqual(ctx.sent, []);
   assert.equal(ctx.calls.filter((call) => call.path === "/apps/roman/gallery").length, 1, "StrictMode must not duplicate bootstrap");
-  ctx.dialog().querySelector('[aria-label="Close"]').click(); await delay(0);
   await ctx.selectTab("Gallery");
-  assert.equal(ctx.container.querySelector("#roman-gallery-windows").textContent, "Your Windows");
+  assert.equal(ctx.container.querySelector("#roman-gallery-uploads").textContent, "Your Uploads");
   assert.ok(ctx.container.querySelector('.roman-gallery [aria-label="Use Kitchen window"]'));
   assert.equal(ctx.container.querySelector(".roman-voice-bar"), voice);
   assert.deepEqual(ctx.sent, []);
 });
 
-test("the home visualization tile asks Roman about the verified open product while the camera stays direct", async (t) => {
-  const ctx = await setup(t, {nativeProduct: {path: "/products/background", title: "Background blind"}});
-  [...ctx.container.querySelectorAll(".roman-welcome-tile")].find((tile) => tile.textContent.includes("Visualize in room")).click();
-  await until(() => ctx.sent.length === 1, "Tile did not enter the canonical advisor");
-  assert.match(ctx.sent[0], /visualize/);
-  assert.equal(ctx.dialog(), null);
-  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
-  ctx.camera().click(); await until(ctx.dialog, "Camera did not remain direct");
-  assert.equal(ctx.sent.length, 1);
+test("the home visualization tile supplies its real intent with or without an open product while the camera stays neutral", async (t) => {
+  for (const nativeProduct of [null, {path: "/products/background", title: "Background blind"}]) await t.test(nativeProduct ? "with PDP" : "without PDP", async (t) => {
+    const ctx = await setup(t, {nativeProduct});
+    [...ctx.container.querySelectorAll(".roman-welcome-tile")].find((tile) => tile.textContent.includes("Visualize in room")).click();
+    await until(() => ctx.sent.length === 1, "Tile did not enter the canonical advisor");
+    assert.equal(ctx.sent[0], "I'd like to visualize blinds in my room.");
+    assert.equal(ctx.dialog(), null);
+    assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+    ctx.camera().click(); await until(ctx.dialog, "Camera did not remain direct");
+    assert.equal(ctx.sent.length, 1);
+    assert.doesNotMatch(ctx.dialog().textContent, /Visualizing/);
+  });
 });
 
 test("explicit PDP entry opens upload directly and waits for matching activation without adopting a later product", async (t) => {
@@ -271,8 +270,8 @@ test("explicit PDP entry opens upload directly and waits for matching activation
   const picker = ctx.dialog().querySelector('[type="file"]');
   Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
   picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
-  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  assert.equal(ctx.dialog().querySelector('[type="text"]'), null);
+  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
   const submit = () => ctx.dialog().querySelector('[type="submit"]');
   assert.equal(submit().disabled, true);
   const active = conversation({active: true}); active.current.activeProduct = {path: "/products/background", title: "Background blind"};
@@ -296,7 +295,7 @@ test("normalized restored photo pickers retain their historical words without du
     assert.equal(ctx.container.querySelector(".roman-question"), null);
     assert.equal(ctx.session.getSnapshot().conversation.current.pendingQuestion, null);
     assert.equal([...ctx.container.querySelectorAll(".roman-message-text")].filter((paragraph) => paragraph.textContent === prompt).length, 1);
-    assert.equal([...ctx.container.querySelectorAll(".roman-window-carousel button")].filter((button) => button.textContent === "Upload a room photo").length, 1);
+    assert.equal([...ctx.container.querySelectorAll(".roman-window-carousel button")].filter((button) => button.textContent === "Upload a room photo or mood board").length, 1);
     assert.deepEqual(ctx.sent, []);
     assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
   });
@@ -319,7 +318,7 @@ test("reference photos keep one measurement clarification actionable through the
     assert.equal(image.alt, "Kitchen window");
     assert.equal(carousel.querySelector("button"), null, "A reference photo offers neither upload nor selection");
     assert.equal(carousel.textContent.includes("Upload a room photo"), false);
-    assert.equal(carousel.textContent.includes("Use this window"), false);
+    assert.equal(carousel.textContent.includes("Use this image"), false);
     assert.equal(ctx.container.querySelectorAll(".roman-question").length, 1);
     assert.equal([...ctx.container.querySelectorAll(".roman-message-text")].filter((paragraph) => paragraph.textContent === prompt).length, 1, "The normal QuestionPart owns the sole clarification text");
     assert.deepEqual([...ctx.container.querySelectorAll(".roman-question button")].map((button) => button.textContent), answers);
@@ -349,10 +348,10 @@ test("saved-photo cards submit neutral selection rather than implicitly requesti
   await until(() => ctx.container.querySelector('.roman-window-carousel [aria-label="Use Kitchen window"]'), "Saved window card did not load");
   const choices = [...ctx.container.querySelectorAll(".roman-window-carousel .roman-window-choice")];
   assert.equal(choices.length, 2);
-  assert.equal(choices[0].textContent, "Upload a room photo");
+  assert.equal(choices[0].textContent, "Upload a room photo or mood board");
   ctx.container.querySelector('.roman-window-carousel [aria-label="Use Kitchen window"]').click();
   await until(() => ctx.sent.length === 1, "Selection did not enter chat");
-  assert.match(ctx.sent[0], /selection alone is not a request for a new preview/);
+  assert.equal(ctx.sent[0], 'Use my uploaded image “Kitchen window”.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
 });
 
@@ -362,7 +361,7 @@ test("photo upload presentations use the same picker with or without saved windo
     await until(() => ctx.container.querySelector(".roman-window-carousel"), "Photo picker did not load");
     await until(() => ctx.container.querySelectorAll(".roman-window-carousel li").length === (saved ? 2 : 1), "Saved windows did not join the picker");
     const choices = [...ctx.container.querySelectorAll(".roman-window-carousel .roman-window-choice")];
-    assert.equal(choices[0].textContent, "Upload a room photo");
+    assert.equal(choices[0].textContent, "Upload a room photo or mood board");
     assert.equal(ctx.container.querySelectorAll(".roman-inline-media > .roman-media-button").length, 0);
     assert.equal(ctx.container.querySelector(".roman-question"), null);
     choices[0].click(); await until(ctx.dialog, "Upload review did not open");
@@ -370,7 +369,7 @@ test("photo upload presentations use the same picker with or without saved windo
     const picker = ctx.dialog().querySelector('[type="file"]');
     Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
     picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-    assert.equal(ctx.dialog().querySelector('[type="text"]').value, "Office window");
+    assert.equal(ctx.dialog().querySelector('[type="text"]'), null, "Chat uploads leave naming to Roman rather than asking again");
     assert.deepEqual(ctx.sent, []);
     assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select") || call.path.endsWith("/start")).length, 0);
   });
@@ -378,7 +377,7 @@ test("photo upload presentations use the same picker with or without saved windo
 
 test("a deleted historical photo picker remains a tombstone rather than pretending its photo is available", async (t) => {
   const ctx = await setup(t, {conversation: conversation({parts: [{type: "media", version: 1, kind: "windows", windowIds: [windowId], purpose: "selection"}]})});
-  await until(() => ctx.container.textContent.includes("Window photos removed."), "Deleted photo state did not settle");
+  await until(() => ctx.container.textContent.includes("Uploaded images removed."), "Deleted photo state did not settle");
   assert.equal(ctx.container.querySelector(".roman-window-carousel"), null);
   assert.equal(ctx.container.querySelector(".roman-question"), null);
   assert.deepEqual(ctx.sent, []);
@@ -430,32 +429,38 @@ test("new photo saves before product selection, publishes immediate normalized p
   Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
   picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true}));
   await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
-  const consent = ctx.dialog().querySelectorAll('[type="checkbox"]')[1]; consent.click(); await delay(0);
+  assert.equal(ctx.dialog().querySelector('[type="text"]'), null);
+  const consent = ctx.dialog().querySelector('[type="checkbox"]'); consent.click(); await delay(0);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.xhrs.length === 1, "Upload did not start");
+  assert.equal(ctx.xhrs[0].body.get("title"), "Uploaded image", "The transport uses a provisional name until Roman knows the context");
+  assert.equal(ctx.xhrs[0].body.get("cleanup"), "true");
   assert.equal(ctx.dialog(), null);
   assert.equal(ctx.container.querySelector("textarea"), textarea);
   assert.equal(ctx.container.querySelector(".roman-chat").getAttribute("data-welcome-theme"), null);
+  const uploadCard = ctx.container.querySelector(".roman-local-media .roman-visualization-card");
+  assert.equal(uploadCard.querySelector('[role="status"]').textContent, "Uploading your image");
+  assert.equal(uploadCard.querySelector(".roman-media-disclaimer"), null, "A neutral upload does not claim an AI product preview");
+  assert.doesNotMatch(uploadCard.textContent, /visualization|AI preview/i);
   const card = ctx.container.querySelector(".roman-local-media .roman-visualization-card-image");
   assert.equal(card.style.aspectRatio, "864 / 1152");
   ctx.xhrs[0].upload.onprogress({lengthComputable: true, loaded: 4, total: 10}); await delay(0);
   assert.equal(ctx.container.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"), "40");
   ctx.completeUpload();
-  await until(() => ctx.sent.length === 1 && !ctx.container.querySelector(".roman-local-media"), "Saved photo did not continue discovery once");
-  assert.match(ctx.sent[0], /choose a blind.*Kitchen window.*visualize/);
+  await until(() => ctx.sent.length === 1 && !ctx.container.querySelector(".roman-local-media"), "Saved photo did not continue the existing conversation once");
+  assert.equal(ctx.sent[0], 'I\'ve uploaded “Uploaded image”.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0, "Upload already selects its window without another request or photo card");
   assert.equal(ctx.session.getSnapshot().conversation.messages.flatMap((message) => message.parts).filter((part) => part.type === "media" && part.kind === "window").length, 1);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
   assert.ok(ctx.window.localStorage.getItem("roman-gallery-v1"));
   await endChat(ctx); await until(() => ctx.container.querySelector(".roman-welcome"), "End Chat did not clear chat");
   await ctx.selectTab("Gallery");
-  assert.match(ctx.container.querySelector(".roman-gallery").textContent, /Kitchen window/);
+  assert.match(ctx.container.querySelector(".roman-gallery").textContent, /Uploaded image/);
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
   assert.equal(ctx.container.querySelector(".roman-chat").getAttribute("data-welcome-theme"), null, "Gallery never inherits the burgundy welcome");
 });
 
-test("a slow discovery message retains only the persisted photo after a no-product upload", async (t) => {
+test("a slow upload continuation retains only the persisted photo after a no-product upload", async (t) => {
   let finishSend;
   let sendFinished = false;
   const pending = new Promise((resolve) => { finishSend = resolve; });
@@ -464,28 +469,32 @@ test("a slow discovery message retains only the persisted photo after a no-produ
   const picker = ctx.dialog().querySelector('[type="file"]');
   Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
   picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
-  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.xhrs.length === 1, "Upload did not start");
   ctx.completeUpload();
   try {
-    await until(() => ctx.sent.length === 1 && ctx.container.querySelector(".roman-inline-window"), "Saved window did not hand off to discovery");
+    await until(() => ctx.sent.length === 1 && ctx.container.querySelector(".roman-inline-window"), "Saved image did not hand off to the advisor");
     await delay(30);
-    assert.equal(sendFinished, false, "Discovery transport should still be blocked");
+    assert.equal(sendFinished, false, "Advisor transport should still be blocked");
     assert.equal(ctx.container.querySelectorAll(".roman-inline-window").length, 1);
-    assert.equal(ctx.container.querySelector(".roman-local-media"), null, "Queued slow discovery must not retain the optimistic upload card");
+    assert.equal(ctx.container.querySelector(".roman-local-media"), null, "Queued slow continuation must not retain the optimistic upload card");
     assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
   } finally { finishSend(); await delay(0); }
 });
 
 async function uploadRoom(ctx) {
   ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
+  await submitRoomFile(ctx);
+}
+
+async function submitRoomFile(ctx) {
   const picker = ctx.dialog().querySelector('[type="file"]');
   Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
   picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
-  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  assert.equal(ctx.dialog().querySelector('[type="text"]'), null);
+  assert.equal(ctx.dialog().querySelectorAll('[type="checkbox"]').length, 1, "Only consent remains editable");
+  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.xhrs.length === 1, "Upload did not start");
 }
@@ -541,13 +550,26 @@ test("analysis progress expires at ten seconds and a late result never adds a re
   assert.equal(ctx.container.querySelector('[aria-label="Estimated room analysis progress"]'), null);
 });
 
-test("a new product-bound upload starts one preview and one continuation without requesting generation again", async (t) => {
+test("a camera upload stays neutral even when a blind is selected", async (t) => {
   const ctx = await setup(t, {active: true});
   await uploadRoom(ctx);
   ctx.completeUpload();
+  await until(() => ctx.sent.length === 1, "Neutral upload did not reach the advisor");
+  assert.equal(ctx.sent[0], 'I\'ve uploaded “Uploaded image”.');
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
+  assert.equal(ctx.container.querySelector(".roman-local-media"), null);
+});
+
+test("an explicit PDP upload starts one preview with cleanup enabled and reports the accepted job without requesting it again", async (t) => {
+  const ctx = await setup(t, {active: true});
+  await ctx.launchProduct("/products/linen"); await until(ctx.dialog, "Explicit PDP launch did not open upload");
+  await submitRoomFile(ctx);
+  ctx.completeUpload();
   await until(() => ctx.sent.length === 1, "Product-bound upload did not reach the advisor");
-  assert.match(ctx.sent[0], /Kitchen window.*Linen blind.*already started/);
+  assert.equal(ctx.sent[0], 'My image “Uploaded image” is uploaded and its preview with Linen blind has already started.');
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 1);
+  assert.equal(ctx.calls.find((call) => call.path.endsWith("/start")).body.cleanup, true);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 0);
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
 });
@@ -575,15 +597,59 @@ test("a new caption extending the same customer voice bubble suppresses the stal
   assert.equal(ctx.session.getSnapshot().voice.status, "active");
 });
 
-test("saved photo rename is committed once and lost generation acknowledgements recover the original job without another paid start", async (t) => {
-  const ctx = await setup(t, {active: true, saved: true, loseStart: true});
+test("Gallery image review edits its title once and selects without creating a preview", async (t) => {
+  const ctx = await setup(t, {active: true, saved: true});
   await reviewSavedWindow(ctx);
   await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Breakfast window");
-  assert.equal(ctx.dialog().querySelectorAll('[type="checkbox"]').length, 1, "Saved consent must not be requested again");
+  assert.equal(ctx.dialog().querySelectorAll('[type="checkbox"]').length, 0, "Saved consent must not be requested again and cleanup is not a choice");
+  ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => !ctx.dialog() && ctx.sent.length === 1, "Image review did not finish");
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/rename")).length, 1);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select")).length, 1);
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  assert.equal(ctx.sent[0], 'Use my uploaded image “Breakfast window”.');
+  assert.equal(ctx.xhrs.length, 0);
+});
+
+test("Gallery uploads retain a customer-entered title without implying a visualization request", async (t) => {
+  const ctx = await setup(t, {active: true});
+  await ctx.selectTab("Gallery");
+  [...ctx.container.querySelectorAll(".roman-gallery button")].find((button) => button.textContent === "Upload a room photo or mood board").click();
+  await until(ctx.dialog, "Gallery upload did not open");
+  const picker = ctx.dialog().querySelector('[type="file"]');
+  Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
+  picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
+  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Bedroom inspiration");
+  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
+  ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => ctx.xhrs.length === 1, "Gallery upload did not start");
+  assert.equal(ctx.xhrs[0].body.get("title"), "Bedroom inspiration");
+  ctx.completeUpload();
+  await until(() => ctx.sent.length === 1, "Gallery upload did not reach the advisor");
+  assert.equal(ctx.sent[0], 'I\'ve uploaded “Bedroom inspiration”.');
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+});
+
+test("Gallery card rename and explicit retry recover a lost generation acknowledgement without another paid start", async (t) => {
+  const failed = {...job(), status: "failed", error: "Generation failed"};
+  const ctx = await setup(t, {active: true, saved: true, jobs: [failed], loseStart: true});
+  await ctx.selectTab("Gallery");
+  await until(() => ctx.container.querySelector(".roman-window-actions button"), "Saved image actions did not load");
+  [...ctx.container.querySelectorAll(".roman-window-actions button")].find((button) => button.textContent === "Rename image").click();
+  await until(() => ctx.container.querySelector('.roman-window-rename [type="text"]'), "Gallery title editor did not open");
+  await ctx.setText(ctx.container.querySelector('.roman-window-rename [type="text"]'), "Breakfast window");
+  ctx.container.querySelector(".roman-window-rename").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => ctx.calls.some((call) => call.path.endsWith("/rename")) && !ctx.container.querySelector(".roman-window-rename"), "Gallery rename did not finish");
+  [...ctx.container.querySelectorAll(".roman-visualization-card button")].find((button) => button.textContent === "Try again").click();
+  await until(ctx.dialog, "Explicit retry did not open upload review"); await ctx.loaded();
+  assert.equal(ctx.dialog().querySelectorAll('[type="checkbox"]').length, 0);
+  assert.match(ctx.dialog().textContent, /Visualizing Linen blind/);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => [...ctx.container.querySelectorAll(".roman-local-media button")].some((button) => button.textContent === "Check status"), "Lost acknowledgement did not retain a recoverable draft");
   const start = ctx.calls.find((call) => call.path.endsWith("/start"));
   assert.equal(start.body.windowId, windowId);
+  assert.equal(start.body.productPath, "/products/linen");
+  assert.equal(start.body.cleanup, true);
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/rename")).length, 1);
   assert.equal(ctx.xhrs.length, 0);
   [...ctx.container.querySelectorAll(".roman-local-media button")].find((button) => button.textContent === "Check status").click();
@@ -601,8 +667,7 @@ test("lost upload acknowledgements keep the original file and request identity u
   const picker = ctx.dialog().querySelector('[type="file"]');
   Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
   picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
-  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.xhrs.length, "Upload did not start");
   const requestId = ctx.xhrs[0].body.get("requestId");
@@ -617,14 +682,40 @@ test("lost upload acknowledgements keep the original file and request identity u
   assert.equal(ctx.session.getSnapshot().conversation.messages.flatMap((message) => message.parts).filter((part) => part.type === "media" && part.kind === "window").length, 1, "Status recovery must retain one uploaded-photo card");
 });
 
+test("lost upload acknowledgement recovery preserves a later saved-image name instead of restoring the provisional title", async (t) => {
+  const ctx = await setup(t, {loseUpload: true});
+  await uploadRoom(ctx);
+  const requestId = ctx.xhrs[0].body.get("requestId");
+  assert.equal(ctx.xhrs[0].body.get("title"), "Uploaded image");
+  ctx.completeUpload(true);
+  await until(() => [...ctx.container.querySelectorAll(".roman-local-media button")].some((button) => button.textContent === "Check status"), "Interrupted upload did not retain its recoverable attempt");
+  await ctx.selectTab("Gallery");
+  await until(() => ctx.container.querySelector('.roman-gallery [aria-label="Use Uploaded image"]'), "Saved upload did not appear in Gallery");
+  [...ctx.container.querySelectorAll(".roman-window-actions button")].find((button) => button.textContent === "Rename image").click();
+  await until(() => ctx.container.querySelector('.roman-window-rename [type="text"]'), "Gallery title editor did not open");
+  await ctx.setText(ctx.container.querySelector('.roman-window-rename [type="text"]'), "Daughter's bedroom");
+  ctx.container.querySelector(".roman-window-rename").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
+  await until(() => !ctx.container.querySelector(".roman-window-rename") && ctx.calls.some((call) => call.path.endsWith("/rename")), "Saved image rename did not finish");
+  await ctx.selectTab("Chat");
+  [...ctx.container.querySelectorAll(".roman-local-media button")].find((button) => button.textContent === "Check status").click();
+  await until(() => !ctx.container.querySelector(".roman-local-media") && ctx.sent.length === 1, "Renamed upload did not recover");
+  assert.equal(ctx.xhrs.length, 1, "A recovered upload is never submitted twice");
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/rename")).length, 1, "Recovery must not undo a later user or Roman name");
+  assert.equal(ctx.sent[0], "I've uploaded “Daughter's bedroom”.");
+  assert.ok(ctx.calls.filter((call) => call.path.endsWith("/upload-status")).every((call) => call.query.get("requestId") === requestId));
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  await ctx.selectTab("Gallery");
+  assert.ok(ctx.container.querySelector('.roman-gallery [aria-label="Use Daughter\'s bedroom"]'));
+  assert.equal(ctx.container.querySelector('.roman-gallery [aria-label="Use Uploaded image"]'), null);
+});
+
 test("End Chat during an accepted photo upload preserves the photo without silently creating another chat or discovery turn", async (t) => {
   const ctx = await setup(t);
   ctx.camera().click(); await until(ctx.dialog, "Upload dialog missing");
   const picker = ctx.dialog().querySelector('[type="file"]');
   Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
   picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Kitchen window");
-  ctx.dialog().querySelectorAll('[type="checkbox"]')[1].click(); await delay(0);
+  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
   ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
   await until(() => ctx.xhrs.length, "Upload did not start");
   await endChat(ctx);
@@ -635,7 +726,7 @@ test("End Chat during an accepted photo upload preserves the photo without silen
   assert.equal(ctx.calls.filter((call) => call.path.endsWith("/select") || call.path.endsWith("/start")).length, 0);
   assert.equal(ctx.container.querySelector(".roman-local-media"), null);
   await ctx.selectTab("Gallery");
-  assert.match(ctx.container.querySelector(".roman-gallery").textContent, /Kitchen window/);
+  assert.match(ctx.container.querySelector(".roman-gallery").textContent, /Uploaded image/);
 });
 
 test("late selection acknowledgement after End Chat cannot clear a new review of the same saved window", async (t) => {
