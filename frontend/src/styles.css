@@ -28,6 +28,22 @@
   display: none !important;
 }
 
+/* Focused regions must not draw a frame around the conversation or cards.
+   Controls keep a small neutral shadow; text fields own their input outline. */
+.roman-content :is(
+  button,
+  summary,
+  a,
+  [tabindex]:not(input):not(textarea),
+  input[type="checkbox"],
+  input[type="file"]
+):focus-visible {
+  outline: none;
+}
+.roman-content :is(button, summary, a, input[type="checkbox"]):focus-visible {
+  box-shadow: 0 3px 0 #79736680;
+}
+
 @layer components {
   .roman-chat,
   .roman-conversation {
@@ -173,11 +189,6 @@
   }
   .roman-cart-notice svg {
     flex-shrink: 0;
-  }
-  .roman-view-nav a:focus-visible,
-  .roman-choose-blind:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 3px;
   }
   .roman-secondary-view {
     flex: 1 0 auto;
@@ -388,10 +399,6 @@
   .roman-checkout:hover {
     background: #681c1c;
   }
-  .roman-checkout:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 4px;
-  }
   @media (min-width: 1024px) {
     .roman-cart-layout {
       grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
@@ -547,11 +554,6 @@
     @apply text-[#4e0e0e] underline underline-offset-2;
   }
 
-  .roman-rich-text a:focus-visible {
-    outline: 2px solid currentColor;
-    outline-offset: 3px;
-  }
-
   .roman-rich-text blockquote {
     @apply border-0 border-l-2 border-solid border-[#d1cbc0] pl-[12px] text-[#545046];
   }
@@ -631,10 +633,6 @@
     opacity: 0;
     pointer-events: none;
   }
-  .roman-product-carousel button:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 2px;
-  }
   .roman-product-carousel svg {
     width: 20px;
     height: 20px;
@@ -648,10 +646,6 @@
   }
   .roman-product-scroll[data-dragging="true"] * {
     cursor: grabbing;
-  }
-  .roman-product-scroll:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: -3px;
   }
 
   @media (hover: hover) and (pointer: fine) {
@@ -785,9 +779,6 @@
   }
   .roman-choose-blind:disabled .roman-choose-blind-label {
     opacity: 0;
-  }
-  .roman-product-carousel button.roman-choose-blind:focus-visible {
-    outline-offset: -4px;
   }
   @media (hover: hover) and (pointer: fine) {
     .roman-choose-blind-label {
@@ -958,11 +949,6 @@
     color: #f7f5ef;
   }
 
-  .roman-action-buttons button:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 3px;
-  }
-
   .roman-question-hint {
     @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#716b60];
   }
@@ -988,8 +974,8 @@
     font-family: inherit;
   }
 
-  .roman-measurement-field:focus-within {
-    outline: 2px solid #4e0e0e;
+  .roman-measurement-field input:focus-visible {
+    outline: 2px solid #797366;
     outline-offset: 3px;
   }
 
@@ -1024,6 +1010,7 @@
   }
   .roman-dialog p {
     margin: 0;
+    font-family: DMSansSite, "DM Sans", sans-serif;
     line-height: 1.5;
   }
   .roman-dialog .roman-action-buttons {
@@ -1227,14 +1214,9 @@
     box-shadow: none;
   }
 
-  .roman-composer textarea:is(:focus, :focus-visible) {
-    outline: none;
-    box-shadow: none;
-  }
-
-  .roman-composer form:has(textarea:focus-visible) {
+  .roman-composer textarea:focus-visible {
     outline: 2px solid #797366;
-    outline-offset: 3px;
+    outline-offset: 0;
   }
 
   .roman-composer button {
@@ -1323,11 +1305,6 @@
 
   .roman-composer .roman-chat-retry {
     @apply mt-[8px] flex min-h-[36px] cursor-pointer items-center rounded-full border border-solid border-[#8d2525] bg-transparent px-[12px] text-[13px] text-[#8d2525];
-  }
-
-  .roman-chat :is(button, summary, a, [tabindex]):focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: 3px;
   }
 
   .roman-welcome {

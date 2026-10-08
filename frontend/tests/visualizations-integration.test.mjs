@@ -207,6 +207,9 @@ test("newly completed and removed previews update the selected gallery without a
   assert.deepEqual(ctx.session.getSnapshot().conversation.current.activeProduct, active);
   await ctx.selectTab("Gallery");
   ctx.container.querySelector('.roman-gallery .roman-visualization-card .roman-media-delete').click();
+  await until(() => ctx.container.querySelector("[data-roman-confirm-delete-visualization]"), "Deletion confirmation did not open");
+  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/delete-job")).length, 0);
+  ctx.container.querySelector("[data-roman-confirm-delete-visualization]").click();
   await until(() => !ctx.container.querySelector(".roman-gallery .roman-visualization-card"), "Deleted preview stayed in Gallery");
   await ctx.selectTab("Chat");
   assert.equal(ctx.container.querySelector('.roman-gallery-thumbnails [aria-label*="AI preview"]'), null);
@@ -669,23 +672,14 @@ test("Gallery image review edits its title once and selects without creating a p
   assert.equal(ctx.xhrs.length, 0);
 });
 
-test("Gallery uploads retain a customer-entered title without implying a visualization request", async (t) => {
+test("Gallery has no upload button while Chat retains its upload action", async (t) => {
   const ctx = await setup(t, {active: true});
   await ctx.selectTab("Gallery");
-  [...ctx.container.querySelectorAll(".roman-gallery button")].find((button) => button.textContent === "Upload a room photo or mood board").click();
-  await until(ctx.dialog, "Gallery upload did not open");
-  const picker = ctx.dialog().querySelector('[type="file"]');
-  Object.defineProperty(picker, "files", {value: [new ctx.window.File(["photo"], "room.jpg", {type: "image/jpeg"})]});
-  picker.dispatchEvent(new ctx.window.Event("change", {bubbles: true})); await ctx.loaded();
-  await ctx.setText(ctx.dialog().querySelector('[type="text"]'), "Bedroom inspiration");
-  ctx.dialog().querySelector('[type="checkbox"]').click(); await delay(0);
-  ctx.dialog().querySelector("form").dispatchEvent(new ctx.window.Event("submit", {bubbles: true, cancelable: true}));
-  await until(() => ctx.xhrs.length === 1, "Gallery upload did not start");
-  assert.equal(ctx.xhrs[0].body.get("title"), "Bedroom inspiration");
-  ctx.completeUpload();
-  await until(() => ctx.sent.length === 1, "Gallery upload did not reach the advisor");
-  assert.equal(ctx.sent[0], 'My image “Bedroom inspiration” is saved.');
-  assert.equal(ctx.calls.filter((call) => call.path.endsWith("/start")).length, 0);
+  assert.equal(ctx.container.querySelector(".roman-gallery-section-heading button"), null);
+  await ctx.selectTab("Chat");
+  ctx.container.querySelector("[data-roman-upload]").click();
+  await until(ctx.dialog, "Chat upload did not open");
+  assert.equal(ctx.dialog().querySelector('[type="text"]'), null, "Roman still names ordinary uploads from context");
 });
 
 test("Gallery card rename and explicit retry recover a lost generation acknowledgement without another paid start", async (t) => {

@@ -243,7 +243,16 @@ export function createGalleryClient(session: ConversationClient) {
     async select(item: WindowPhotoDto) { const conversation = await link(); const value = await api("select", { ...conversation, windowId: item.id }); if (!photo(value)) throw new Error("The window could not be selected."); await session.refreshMediaContext(); return value; },
     async rename(item: WindowPhotoDto, title: string) { const value = await api("rename", { windowId: item.id, title, revision: item.revision }); if (!photo(value)) throw new Error("The name could not be saved."); update({ windows: state.windows.map((row) => row.id === value.id ? value : row) }); await session.refreshMediaContext(); return value; },
     async deleteWindow(item: WindowPhotoDto) { await api("delete-window", { windowId: item.id }); const dependent = state.visualizations.filter((row) => row.windowId === item.id).map((row) => row.id); invalidate([item.id, ...dependent]); update({ windows: state.windows.filter((row) => row.id !== item.id), visualizations: state.visualizations.filter((row) => row.windowId !== item.id) }); await session.refreshMediaContext(); },
-    async deleteVisualization(item: VisualizationJobDto) { await api("delete-job", { jobId: item.id }); invalidate([item.id]); update({ visualizations: state.visualizations.filter((row) => row.id !== item.id) }); },
+    async deleteVisualization(item: VisualizationJobDto) {
+      try { await api("delete-job", { jobId: item.id }); }
+      catch (error) {
+        // A lost acknowledgement must not leave a deleted preview stuck in its
+        // confirmation dialog. Verify the owner's live IDs without replaying it.
+        const status = await api("list").catch(() => null);
+        if (!snapshot(status) || status.liveVisualizationIds.includes(item.id)) throw error;
+      }
+      invalidate([item.id]); update({ visualizations: state.visualizations.filter((row) => row.id !== item.id) });
+    },
     async start(item: WindowPhotoDto, productPath: string, requestId: string = crypto.randomUUID(), onAccepted?: (job: VisualizationJobDto) => void) {
       const conversation = await link();
       let result;

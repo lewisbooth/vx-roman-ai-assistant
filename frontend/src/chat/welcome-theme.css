@@ -145,16 +145,6 @@
   border-color: currentColor;
 }
 
-.roman-panel[data-welcome-theme] .roman-close:focus-visible,
-.roman-chat[data-welcome-theme] :is(.roman-menu-toggle, .roman-header-actions button, .roman-view-nav a):focus-visible,
-.roman-chat[data-welcome-theme] .roman-composer form:has(textarea:focus-visible) {
-  outline-color: #f7f5ef;
-}
-
-.roman-chat[data-welcome-theme] .roman-welcome-tile:focus-visible {
-  outline-color: #ea9a49;
-}
-
 @keyframes roman-welcome-beam {
   0%, 100% { transform: var(--beam-start); opacity: 0.02; }
   28% { transform: var(--beam-middle); opacity: var(--beam-peak); }

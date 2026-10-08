@@ -36,7 +36,7 @@
     top: -7px;
   }
   .roman-edge-fill-bottom {
-    /* The composer's focus outline reaches 5px from the visible bottom. */
+    /* Keep the composer clear of the visible bottom edge. */
     bottom: -7px;
   }
   /* Hidden overflow is still scrollable by focus reveal. These are covers,

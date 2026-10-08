@@ -123,13 +123,13 @@
   .r-retry {
     @apply mt-[16px] min-h-[44px] bg-transparent px-[24px] text-[16px];
   }
-  /* Explicit borders and outlines avoid @property dependencies in Shadow DOM. */
+  /* Explicit borders and shadows avoid @property dependencies in Shadow DOM. */
   .r-retry {
     border: 1px solid currentColor;
   }
   button:focus-visible {
-    outline: 2px solid currentColor;
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: 0 3px 0 #79736680;
   }
   @media (hover: hover) {
     .roman-close:hover,

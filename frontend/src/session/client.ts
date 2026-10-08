@@ -523,6 +523,8 @@ export function createConversationClient(
   let voiceId: string | undefined;
   let voiceConnection: ReturnType<typeof createVoiceConnection> | undefined;
   let heartbeatTimer: number | undefined;
+  let heartbeatTimeoutTimer: number | undefined;
+  let heartbeatController: AbortController | undefined;
   let voiceRecoveryEnabled = false;
   let voiceRecoveryAttempts = 0;
   let voiceRecoveryEpoch = 0;
@@ -1337,6 +1339,9 @@ export function createConversationClient(
     voiceConnection?.close();
     voiceConnection = undefined;
     window.clearTimeout(heartbeatTimer);
+    window.clearTimeout(heartbeatTimeoutTimer);
+    heartbeatController?.abort();
+    heartbeatController = undefined;
     window.clearTimeout(voiceStableTimer);
     if (abortTool && !(isSuspended() && activeToolClaimed))
       toolController?.abort();
@@ -1781,13 +1786,23 @@ export function createConversationClient(
       .catch(() => { if (recover) scheduleVoiceRecovery(); });
   }
 
-  function scheduleHeartbeat(id: string, startedVoiceEpoch: number) {
+  function scheduleHeartbeat(id: string, startedVoiceEpoch: number, retry = false) {
     window.clearTimeout(heartbeatTimer);
-    if (disposed || voiceId !== id || startedVoiceEpoch !== voiceEpoch) return;
+    const current = () => !disposed && !ending && !isSuspended() &&
+      voiceId === id && startedVoiceEpoch === voiceEpoch;
+    if (!current()) return;
     heartbeatTimer = window.setTimeout(() => {
+      heartbeatTimer = undefined;
+      if (!current()) return;
       const activityVersion = voiceActivityVersion;
-      void rawApi(`/voice/${id}/heartbeat`, { clientId })
+      const controller = new AbortController();
+      heartbeatController = controller;
+      // 20s interval + two 5s attempts + 1s retry stays within the 45s lease.
+      const timeout = window.setTimeout(() => controller.abort(), 5_000);
+      heartbeatTimeoutTimer = timeout;
+      void rawApi(`/voice/${id}/heartbeat`, { clientId }, controller.signal)
         .then((result) => {
+          if (!current() || controller.signal.aborted) return;
           if (!record(result) || result.ok !== true)
             throw new Error("Voice heartbeat failed.");
           if (
@@ -1800,14 +1815,25 @@ export function createConversationClient(
             });
           scheduleHeartbeat(id, startedVoiceEpoch);
         })
-        .catch(() => {
-          if (voiceId !== id || startedVoiceEpoch !== voiceEpoch || disposed)
+        .catch((error: unknown) => {
+          if (!current()) return;
+          if (!retry && error instanceof SessionRequestError &&
+              (error.status === 0 || error.status >= 500)) {
+            scheduleHeartbeat(id, startedVoiceEpoch, true);
             return;
+          }
           const message =
             "Voice lost its connection. Your microphone has stopped; start voice again to reconnect.";
           failVoice(message, "transport_lost");
+        })
+        .finally(() => {
+          window.clearTimeout(timeout);
+          if (heartbeatController === controller) {
+            heartbeatController = undefined;
+            heartbeatTimeoutTimer = undefined;
+          }
         });
-    }, 20_000);
+    }, retry ? 1_000 : 20_000);
   }
 
   function startVoice(recovery = false) {

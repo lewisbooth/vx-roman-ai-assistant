@@ -16,12 +16,12 @@ const bundle = await build({
       import {WindowCard,WindowCarousel} from './frontend/src/visualizations/WindowCard';
       import {PrivateImage} from './frontend/src/visualizations/PrivateImage';
       import {VisualizationViewer} from './shared/visualizations/VisualizationViewer';
-      import {estimatedGenerationProgress} from './frontend/src/visualizations/VisualizationCard';
+      import {VisualizationCard,estimatedGenerationProgress} from './frontend/src/visualizations/VisualizationCard';
       import {photoAnalysisProgress} from './frontend/src/visualizations/photo-analysis-progress';
       export {saveVisualization, estimatedGenerationProgress, photoAnalysisProgress};
       export function mount(target, kind) {
         const root=createRoot(target);
-        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,windows:WindowCarousel,image:PrivateImage,viewer:VisualizationViewer}[kind];
+        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,windows:WindowCarousel,image:PrivateImage,viewer:VisualizationViewer,visualization:VisualizationCard}[kind];
         return {render(props){flushSync(()=>root.render(<Component {...props}/>));},dispose(){flushSync(()=>root.unmount());}};
       }
     `,
@@ -65,6 +65,48 @@ function pointer(window, element, type, values) {
   Object.assign(event, {pointerId: 1, pointerType: "touch", button: 0, isPrimary: true, clientX: 100, clientY: 0}, values);
   element.dispatchEvent(event);
 }
+
+const completedPreview = {id: "preview", windowId: "room", windowTitle: "Kitchen", productPath: "/products/linen", productTitle: "Linen blind", status: "completed", width: 800, height: 600, createdAt: "2026-10-08T12:00:00Z", startedAt: null, completedAt: "2026-10-08T12:00:20Z", error: null, resultAvailable: true};
+
+test("visualization deletion requires confirmation and blocks repeated or cancelled pending requests", async (t) => {
+  const {window, mount, api} = setup(t, "visualization");
+  let calls = 0, finish;
+  api.render({job: completedPreview, onDelete: () => { calls++; return new Promise((resolve) => { finish = resolve; }); }});
+  const open = async () => { mount.querySelector(".roman-media-delete").click(); await delay(5); return mount.querySelector("dialog"); };
+  let dialog = await open();
+  assert.equal(calls, 0);
+  assert.match(dialog.textContent, /Linen blind.*Kitchen/);
+  assert.equal(window.document.activeElement.textContent, "Cancel");
+  dialog.querySelector(".roman-dialog-secondary").click(); await delay(5);
+  assert.equal(mount.querySelector("dialog"), null);
+  assert.equal(calls, 0);
+  dialog = await open();
+  dialog.dispatchEvent(new window.Event("cancel", {cancelable: true})); await delay(5);
+  assert.equal(mount.querySelector("dialog"), null);
+  dialog = await open();
+  dialog.querySelector("[data-roman-confirm-delete-visualization]").click(); await delay(5);
+  assert.equal(calls, 1);
+  assert.equal(dialog.getAttribute("aria-busy"), "true");
+  assert.ok([...dialog.querySelectorAll("button")].every((button) => button.disabled));
+  dialog.dispatchEvent(new window.Event("cancel", {cancelable: true})); await delay(5);
+  assert.equal(mount.querySelector("dialog"), dialog);
+  finish(); await delay(5);
+  assert.equal(mount.querySelector("dialog"), null);
+  assert.equal(calls, 1);
+});
+
+test("failed visualization deletion keeps the dialog and allows an explicit retry", async (t) => {
+  const {window, mount, api} = setup(t, "visualization");
+  let calls = 0;
+  api.render({job: completedPreview, onDelete: async () => { if (++calls === 1) throw new window.Error("Please retry."); }});
+  mount.querySelector(".roman-media-delete").click(); await delay(5);
+  mount.querySelector("[data-roman-confirm-delete-visualization]").click(); await delay(5);
+  assert.equal(mount.querySelector('[role="alert"]').textContent, "Please retry.");
+  assert.equal(mount.querySelector("[data-roman-confirm-delete-visualization]").disabled, false);
+  mount.querySelector("[data-roman-confirm-delete-visualization]").click(); await delay(5);
+  assert.equal(calls, 2);
+  assert.equal(mount.querySelector("dialog"), null);
+});
 
 test("image picker offers one upload card before named images and keeps upload and selection separate", (t) => {
   const {mount, api} = setup(t, "windows");

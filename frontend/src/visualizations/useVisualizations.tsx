@@ -140,12 +140,12 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     if (viewer && !gallery.loading && !gallery.visualizations.some((job) => job.id === viewer.id)) setViewer(null);
   }, [gallery.loading, gallery.visualizations, viewer]);
   const activity = () => session.noteMediaActivity?.();
-  const openUpload = (suggestedTitle?: string | null, product?: {path: string; title: string}, allowNaming = false) => {
+  const openUpload = (suggestedTitle?: string | null, product?: {path: string; title: string}) => {
     activity();
     setDraftError(null); setMediaError(null);
     if (suggestedTitle) setDraft((current) => ({...current, title: current.title || suggestedTitle}));
     setModalProduct(product);
-    setEditableName(allowNaming);
+    setEditableName(false);
     setModal(true);
   };
   const release = (value: UploadDraft) => {
@@ -322,7 +322,7 @@ export function useVisualizations({ session, conversation, view, onCustomerInten
     enabled: gallery.enabled, openUpload, renderMedia, productPreviews,
     analyzingRoom: conversation?.status === "active" && gallery.windows.some((photo) => photoAnalysisProgress(photo.analysis, analysisNow) !== null && (attempts.some((attempt) => attempt.conversationId === conversation.id && attempt.photo?.id === photo.id) || conversation.messages.some((message) => message.parts.some((part) => part.type === "media" && part.kind === "window" && part.customerIntent && part.windowId === photo.id)))),
     galleryView: <VisualizationGallery {...gallery} error={mediaError ?? gallery.error} selectedWindowId={selectedWindow} windowSource={client.windowSource} resultSource={client.resultSource}
-      onUpload={() => openUpload(undefined, undefined, true)} onSelectWindow={(photo) => selectForReview(photo, undefined, true)}
+      onSelectWindow={(photo) => selectForReview(photo, undefined, true)}
       onRenameWindow={async (photo, title) => { activity(); await client.rename(photo, title); }}
       onDeleteWindow={async (photo) => { activity(); await client.deleteWindow(photo); if (selectedWindow === photo.id) setSelectedWindow(null); if (viewer?.windowId === photo.id) setViewer(null); }}
       onOpenVisualization={openViewer} onDeleteVisualization={async (job) => { activity(); await client.deleteVisualization(job); if (viewer?.id === job.id) setViewer(null); }}

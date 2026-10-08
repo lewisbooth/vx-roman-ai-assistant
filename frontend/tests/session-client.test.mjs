@@ -3161,6 +3161,150 @@ test("voice warning follows server remaining time despite a skewed device clock"
   assert.equal(ctx.client.getSnapshot().voiceIdleWarningAt, null);
 });
 
+test("a transient heartbeat failure retries once without stopping media or replaying input", async (t) => {
+  for (const failure of ["network", "gateway"]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    fireVoiceTimer(ctx, 20_000);
+    if (failure === "network") ctx.calls[3].reject(new Error("Temporary network loss"));
+    else ctx.respond(3, { error: { message: "Temporary gateway failure" } }, 502);
+    await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 1_000), "Heartbeat retry missing");
+    assert.equal(ctx.media.tracks[0].stopped, false);
+    assert.notEqual(ctx.media.peers[0].closed, true);
+    assert.equal(ctx.client.getSnapshot().voice.status, "active");
+    assert.equal(ctx.calls.length, 4);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 5_000));
+
+    fireVoiceTimer(ctx, 1_000);
+    assert.equal(ctx.calls[4].url, ctx.calls[3].url);
+    assert.deepEqual(ctx.calls[4].body, { clientId: voice.clientId });
+    ctx.respond(4, { ok: true, idleRemainingMs: 40_000 });
+    await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 20_000), "Normal heartbeat cadence did not resume");
+    assert.equal(ctx.media.calls.microphone, 1);
+    assert.equal(ctx.client.getSnapshot().voice.status, "active");
+    assert.ok(!ctx.calls.some(({ url }) => /\/(stop|messages|answers|tools)$/.test(url)));
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 1_000 || ms === 5_000));
+  }
+});
+
+test("heartbeat timeouts are bounded and persistent failure enters normal recovery only after one retry", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  fireVoiceTimer(ctx, 20_000);
+  const first = ctx.calls[3];
+  first.init.signal.addEventListener("abort", () => first.reject(new Error("Heartbeat timed out")), { once: true });
+  fireVoiceTimer(ctx, 5_000);
+  assert.equal(first.init.signal.aborted, true);
+  await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 1_000), "Timed out heartbeat did not retry");
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  fireVoiceTimer(ctx, 1_000);
+  const second = ctx.calls[4];
+  second.init.signal.addEventListener("abort", () => second.reject(new Error("Retry timed out")), { once: true });
+  fireVoiceTimer(ctx, 5_000);
+  await until(() => ctx.calls.length === 6, "Persistent heartbeat loss did not stop the old connection");
+  assert.equal(second.init.signal.aborted, true);
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.deepEqual(ctx.calls[5].body, { clientId: voice.clientId, reason: "connection_lost" });
+  ctx.respond(5, { ...empty, revision: 2, voice: { ...voice, status: "failed", closeReason: "transport_lost" } });
+  await until(() => ctx.client.getSnapshot().voice.status === "error", "Transport loss did not settle");
+  await delay(0);
+  assert.equal(ctx.calls.filter(({ url }) => url.endsWith("/heartbeat")).length, 2);
+  assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 1_000 || ms === 5_000));
+  fireVoiceTimer(ctx, 500);
+  await until(() => ctx.calls.length === 7, "Normal voice recovery did not reconcile history");
+  assert.equal(ctx.calls[6].init.method, "GET");
+  assert.equal(ctx.media.calls.microphone, 1, "Recovery must reconcile before opening another microphone");
+});
+
+test("terminal heartbeat responses do not get a transport retry", async (t) => {
+  for (const response of [
+    { status: 409, body: { error: { message: "Voice is idle" } } },
+    { status: 200, body: { ok: false } },
+  ]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    fireVoiceTimer(ctx, 20_000);
+    ctx.respond(3, response.body, response.status);
+    await until(() => ctx.calls.length === 5, "Terminal heartbeat did not reconcile its ended session");
+    assert.equal(ctx.media.tracks[0].stopped, true);
+    ctx.respond(4, { ...empty, revision: 2, voice: { ...voice, status: "closed", closeReason: "idle" } });
+    await delay(0);
+    assert.equal(ctx.calls.filter(({ url }) => url.endsWith("/heartbeat")).length, 1);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => [500, 1_000, 1_500, 3_000, 5_000, 20_000].includes(ms)));
+    assert.equal(ctx.media.calls.microphone, 1);
+  }
+});
+
+test("intentional stop, End chat, page exit and disposal cancel a queued heartbeat retry", async (t) => {
+  for (const action of ["stop", "end", "pagehide", "dispose"]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    fireVoiceTimer(ctx, 20_000);
+    ctx.calls[3].reject(new Error("Transient loss"));
+    await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 1_000), "Retry missing before cleanup");
+    const staleRetry = [...ctx.timers.values()].find(({ ms }) => ms === 1_000).callback;
+    if (action === "stop") {
+      const stopping = ctx.client.stopVoice();
+      ctx.respond(4, { ...empty, revision: 2, voice: { ...voice, status: "closed", closeReason: "user_stop" } });
+      await stopping;
+    } else if (action === "end") {
+      const ending = ctx.client.end();
+      ctx.respond(4, { ...empty, revision: 2, status: "ended" });
+      await ending;
+    } else if (action === "pagehide") ctx.window.dispatchEvent(new ctx.window.PageTransitionEvent("pagehide"));
+    else ctx.client.dispose();
+    staleRetry();
+    await delay(0);
+    assert.equal(ctx.media.tracks[0].stopped, true, action);
+    assert.equal(ctx.calls.filter(({ url }) => url.endsWith("/heartbeat")).length, 1, action);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 1_000 || ms === 5_000 || ms === 20_000), action);
+    assert.equal(ctx.media.calls.microphone, 1, action);
+  }
+});
+
+test("shutdown aborts an in-flight heartbeat and ignores its late successful response", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  const voice = await activeVoice(ctx);
+  fireVoiceTimer(ctx, 20_000);
+  const heartbeat = ctx.calls[3];
+  const stopping = ctx.client.stopVoice();
+  assert.equal(heartbeat.init.signal.aborted, true);
+  assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 5_000));
+  ctx.respond(4, { ...empty, revision: 2, voice: { ...voice, status: "closed", closeReason: "user_stop" } });
+  await stopping;
+  ctx.respond(3, { ok: true, idleRemainingMs: 60_000 });
+  await delay(0);
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.client.getSnapshot().voiceIdleWarningAt, null);
+  assert.equal(ctx.timers.size, 0);
+});
+
+test("a service outage or server idle closure cancels a pending heartbeat retry", async (t) => {
+  for (const cause of ["outage", "idle"]) {
+    const ctx = setup(t, { mediaOptions: {} });
+    const voice = await activeVoice(ctx);
+    fireVoiceTimer(ctx, 20_000);
+    ctx.calls[3].reject(new Error("Transient loss"));
+    await until(() => [...ctx.timers.values()].some(({ ms }) => ms === 1_000), "Retry missing before terminal state");
+    const staleRetry = [...ctx.timers.values()].find(({ ms }) => ms === 1_000).callback;
+    if (cause === "outage") {
+      ctx.client.setOpen(true);
+      ctx.respondAvailability(0, { status: "suspended" });
+      await until(() => ctx.client.getSnapshot().availability === "suspended", "Outage did not suspend voice");
+    } else {
+      fireVoiceTimer(ctx, 500);
+      ctx.respond(4, { ...empty, revision: 2, voice: { ...voice, status: "closed", closeReason: "idle" } });
+      await until(() => ctx.client.getSnapshot().voice.status === "idle", "Server idle closure did not stop voice");
+    }
+    staleRetry();
+    await delay(0);
+    assert.equal(ctx.media.tracks[0].stopped, true, cause);
+    assert.equal(ctx.calls.filter(({ url }) => url.endsWith("/heartbeat")).length, 1, cause);
+    assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 1_000 || ms === 5_000 || ms === 20_000), cause);
+    assert.equal(ctx.media.calls.microphone, 1, cause);
+  }
+});
+
 test("new voice captions clear an approaching idle warning before the next heartbeat", async (t) => {
   const ctx = setup(t, {
     mediaOptions: {},

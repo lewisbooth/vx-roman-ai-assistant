@@ -1,7 +1,8 @@
 @import "../../../shared/visualizations/image-comparison.css";
 @import "../../../shared/visualizations/visualization-dialog.css";
 
-.roman-media-card :is(button, input, summary):focus-visible { outline: 2px solid #4e0e0e; outline-offset: 3px; }
+.roman-content .roman-media-input:focus-visible { outline: 2px solid #797366; outline-offset: 3px; }
+.roman-content .roman-image-comparison:has(.roman-comparison-slider:focus-visible) .roman-comparison-handle span { background: #e5ddcf; }
 .roman-media-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 18px; border: 1px solid #4e0e0e66; border-radius: 999px; background: #fdfbf6; color: #4e0e0e; font-family: DMSansSite, "DM Sans", sans-serif; font-size: 14px; line-height: 1.35; text-align: center; cursor: pointer; }
 .roman-media-button:disabled { opacity: .5; cursor: default; }
 .roman-media-primary { width: 100%; background: #4e0e0e; color: #f7f5ef; border-color: #4e0e0e; }

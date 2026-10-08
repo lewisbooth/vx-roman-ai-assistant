@@ -124,10 +124,6 @@
 .roman-product-actions .roman-product-sample:hover {
   background: #ebe6dc;
 }
-.roman-product-actions button:focus-visible {
-  outline: 2px solid #4e0e0e;
-  outline-offset: 3px;
-}
 .roman-product-actions button:disabled {
   opacity: 0.5;
   cursor: default;
@@ -335,13 +331,6 @@
   .roman-gallery-zoom header button:hover {
     background: #ebe6dc;
   }
-  .roman-gallery-enlarge:focus-visible,
-  .roman-gallery-controls button:focus-visible,
-  .roman-gallery-thumbnails button:focus-visible,
-  .roman-gallery-zoom button:focus-visible {
-    outline: 2px solid #4e0e0e;
-    outline-offset: -3px;
-  }
   .roman-gallery-thumbnails {
     position: relative;
     display: flex;
@@ -471,10 +460,6 @@
 }
 .roman-product-expand:hover {
   background: #ebe6dc;
-}
-.roman-product-expand:focus-visible {
-  outline: 2px solid #4e0e0e;
-  outline-offset: -3px;
 }
 .roman-product-expand svg {
   width: 20px;

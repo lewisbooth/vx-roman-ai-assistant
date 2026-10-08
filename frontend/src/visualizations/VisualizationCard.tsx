@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { VisualizationJobDto, VisualizationStatus } from "../../../shared/visualizations";
 import type { ImageSource } from "../../../shared/visualizations/ImageComparison";
 import { PrivateImage } from "./PrivateImage";
+import { BrandedDialog } from "../chat/BrandedDialog";
 
 const statusCopy: Record<VisualizationStatus, string> = {
   awaiting_product: "Preparing your visualization",
@@ -33,6 +34,7 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
   const pending = ["awaiting_product", "preparing_assets", "generating", "saving"].includes(job.status);
   const [tick, setTick] = useState(Date.now());
   const [deleting, setDeleting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const analyzing = analysisProgress !== undefined && analysisProgress !== null;
   const hasProduct = !!job.productPath;
@@ -67,7 +69,7 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
   const remove = async () => {
     if (!onDelete || deleting) return;
     setDeleting(true); setDeleteError(null);
-    try { await onDelete(job); }
+    try { await onDelete(job); setConfirmingDelete(false); }
     catch (reason) { setDeleteError(reason instanceof Error ? reason.message : "We could not delete this visualization."); }
     finally { setDeleting(false); }
   };
@@ -77,8 +79,13 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
       {hasProduct && <p className="roman-media-disclaimer">AI preview only. Colour, fit and scale may differ from the finished product.</p>}
       {job.status === "failed" && onRetry && <button type="button" className="roman-media-button" onClick={() => onRetry(job)}>Try again</button>}
       {job.status === "unknown" && onCheck && <button type="button" className="roman-media-button" onClick={() => onCheck(job)}>Check status</button>}
-      {onDelete && <button type="button" className="roman-media-delete" disabled={deleting} onClick={() => { void remove(); }}>Delete visualization</button>}
-      {deleteError && <p role="alert" className="roman-media-error">{deleteError}</p>}
+      {onDelete && <button type="button" className="roman-media-delete" disabled={deleting} onClick={() => { setDeleteError(null); setConfirmingDelete(true); }}>Delete visualization</button>}
     </div>
+    {confirmingDelete && <BrandedDialog title="Delete this visualization?"
+      description={`The preview of ${job.productTitle} in “${job.windowTitle}” will be permanently deleted. Your uploaded image will remain.`}
+      pending={deleting} error={deleteError} onClose={() => setConfirmingDelete(false)}>
+      <button type="button" className="roman-dialog-secondary" disabled={deleting} onClick={() => setConfirmingDelete(false)}>Cancel</button>
+      <button type="button" className="roman-dialog-primary" data-roman-confirm-delete-visualization disabled={deleting} onClick={() => { void remove(); }}>{deleting ? "Deleting…" : "Delete visualization"}</button>
+    </BrandedDialog>}
   </article>;
 }

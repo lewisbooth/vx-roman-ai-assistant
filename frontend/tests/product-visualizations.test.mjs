@@ -10,7 +10,7 @@ const id = (number) => `a0000000-0000-4000-8000-${String(number).padStart(12, "0
 const preview = (number, productPath = "/products/linen", status = "completed") => ({id: id(number), windowId: id(900), windowTitle: "Kitchen window", productPath, productTitle: "Linen blind", status, width: 1024, height: 1024, createdAt: "2026-10-06T12:00:00Z", startedAt: "2026-10-06T12:00:00Z", completedAt: status === "completed" ? "2026-10-06T12:00:10Z" : null, error: null, resultAvailable: status === "completed"});
 const json = (value) => new Response(JSON.stringify(value), {headers: {"content-type": "application/json"}});
 async function until(condition) { for (let i = 0; i < 100; i++) { if (condition()) return; await delay(5); } assert.fail("The metadata read did not start"); }
-function setup(t, {visible = [], all = visible, enabled = false, blocked = false} = {}) {
+function setup(t, {visible = [], all = visible, enabled = false, blocked = false, onDelete, onList} = {}) {
   const dom = new JSDOM("", {url: "https://shop.example", runScripts: "outside-only"}), w = dom.window;
   Object.assign(w, {Response, Headers, Request, AbortSignal, AbortController});
   let rows = visible, live = all.map((item) => item.id), selected = all, current = all[0], result, nextUrl = 0;
@@ -22,7 +22,7 @@ function setup(t, {visible = [], all = visible, enabled = false, blocked = false
     const parsed = new URL(String(url)), operation = parsed.pathname.split("/").at(-1);
     calls.push({operation, productPath: parsed.searchParams.get("productPath"), signal: init.signal});
     if (operation === "gallery") return json({credential: {ownerId: id(999), token: "a".repeat(43), apiBaseUrl: "https://roman.example/api/gallery"}, gallery: gallery()});
-    if (operation === "list") return json(gallery());
+    if (operation === "list") { await onList?.(); return json(gallery()); }
     if (operation === "product-visualizations") {
       const value = result ?? {productPath: parsed.searchParams.get("productPath"), visualizations: selected.filter((item) => item.productPath === parsed.searchParams.get("productPath") && item.status === "completed" && item.resultAvailable)};
       if (blocked) return new Promise((resolve, reject) => {
@@ -33,7 +33,7 @@ function setup(t, {visible = [], all = visible, enabled = false, blocked = false
       return json(value);
     }
     if (operation === "job") return json(current);
-    if (operation === "delete-job") return json({});
+    if (operation === "delete-job") { await onDelete?.(); return json({}); }
     if (parsed.pathname.includes("/media/")) return new Response(new Uint8Array([1, 2, 3]), {headers: {"content-type": "image/jpeg"}});
     assert.fail(`Unexpected operation: ${operation}`);
   };
@@ -124,6 +124,27 @@ test("metadata captured before local deletion cannot restore the removed preview
   await ctx.client.deleteVisualization(completed);
   ctx.deferred[0](); await loading;
   assert.equal(ctx.client.getSnapshot().visualizations.length, 0);
+});
+
+test("a lost deletion acknowledgement reconciles the owner's live IDs without another mutation", async (t) => {
+  const completed = preview(1);
+  const ctx = setup(t, {visible: [completed], onDelete: () => { ctx.setGallery([]); throw new Error("Receipt lost"); }});
+  await ctx.client.initialize();
+  await ctx.client.deleteVisualization(completed);
+  assert.equal(ctx.client.getSnapshot().visualizations.length, 0);
+  assert.equal(ctx.calls.filter((call) => call.operation === "delete-job").length, 1);
+  assert.equal(ctx.calls.filter((call) => call.operation === "list").length, 1);
+});
+
+test("failed deletion retains the preview and original error when reconciliation cannot prove removal", async (t) => {
+  for (const unreadable of [false, true]) await t.test(unreadable ? "unavailable gallery" : "preview still present", async (t) => {
+    const completed = preview(1);
+    const ctx = setup(t, {visible: [completed], onDelete: () => { throw new Error("Deletion failed"); }, onList: () => { if (unreadable) throw new Error("Read failed"); }});
+    await ctx.client.initialize();
+    await assert.rejects(ctx.client.deleteVisualization(completed), /Deletion failed/);
+    assert.equal(ctx.client.getSnapshot().visualizations.length, 1);
+    assert.equal(ctx.calls.filter((call) => call.operation === "delete-job").length, 1);
+  });
 });
 
 test("deleting another product does not cancel the selected product's older previews", async (t) => {
