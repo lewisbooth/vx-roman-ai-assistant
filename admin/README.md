@@ -67,6 +67,8 @@ Category examples live in the knowledge base as exploration directions, not clai
 
 Response policy keeps research narration private and gives each question one owner. Decisions and source failures use clickable answers; measurement fields request physical distances with an applicable verified method. A missing or mismatched product guide triggers relevant library research in the same reply, without asking the customer for permission. If that also fails, Roman offers supported alternatives instead of a measurement field.
 
+When a verified guide takes three width or drop readings and uses the smallest, Roman asks “What is the width/height at the narrowest point?” The measurement dialogue retains the guide's tape type, exact positions and minimum-selection instructions for reference. Live skips reciting that routine unless asked, while keeping additional fit-critical conditions audible. Single-position, largest-reading and other methods keep their normal guidance.
+
 ### Long conversations and private memory
 
 There is no cumulative Roman turn, voice-connection or caption quota. Operation deadlines, concurrency limits, idle shutdown and authorization still apply; provider/network interruptions remain possible.
