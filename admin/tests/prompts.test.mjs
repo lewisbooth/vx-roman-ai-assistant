@@ -318,6 +318,38 @@ test("Live shares identity and notation but delegates instead of copying the kno
   assert.doesNotMatch(live, /Irish English/);
 });
 
+test("spoken answers hand off the displayed question even when they interrupt its delivery", () => {
+  const live = romanVoicePrompt("marin");
+  const delegation = live
+    .split("## Delegation policy\n")[1]
+    .split("Backchannel policy:")[0];
+  assert.match(
+    delegation,
+    /Delegate every spoken answer to the current displayed question/,
+  );
+  assert.match(
+    delegation,
+    /short choices, numeric readings and answers spoken before you finish asking it/,
+  );
+  assert.match(
+    delegation,
+    /acknowledgement is not a handoff: delegate the answer so the backend can continue/,
+  );
+  assert.match(
+    delegation,
+    /Do not delegate.*greeting, listening or repeating a verified non-guidance result/,
+  );
+  assert.match(
+    live,
+    /listen to the full answer or correction, then delegate its latest meaning/,
+  );
+  assert.match(
+    live,
+    /Typed replies and clicked choices are already handled by the backend/,
+  );
+  assert.match(live, /without delegating them again/);
+});
+
 test("welcome and voice resumption use canonical UI copy without raw private-state scaffolding", () => {
   assert.equal(ROMAN_PREAMBLE, "Hi! I'm Roman.");
   assert.equal(ROMAN_WELCOME_QUESTION.question, "Where would you like to start?");

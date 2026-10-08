@@ -3352,7 +3352,7 @@ test("activating a focused easy answer submits ordinary customer text once and r
   );
 });
 
-test("journey activity leaves choices available but text and voice customer replies retire them", async (t) => {
+test("journey and raw captions retain choices until text or an accepted voice turn retires them", async (t) => {
   for (const spoken of [false, true]) {
     const row = questionMessage();
     const journey = {
@@ -3389,7 +3389,26 @@ test("journey activity leaves choices available but text and voice customer repl
           endMs: 20,
         },
       ];
-    ctx.update({ conversation: engagedConversation([row, journey, reply]) });
+    const messages = [row, journey, reply];
+    if (spoken) {
+      ctx.update({ conversation: engagedConversation(messages) });
+      await until(
+        () => ctx.container.querySelector(".roman-voice-caption"),
+        "Raw customer caption did not render",
+      );
+      assert.ok(ctx.container.querySelector(".roman-question button:not(:disabled)"),
+        "Raw caption must not retire or disable offered answers");
+      messages.push({
+        ...message("accepted-spoken-reply", "context", ""),
+        status: "pending",
+        parts: [{
+          type: "voice_turn", version: 1,
+          voiceId: "22222222-2222-4222-8222-222222222222",
+          throughSequence: 3, offsetMs: 20,
+        }],
+      });
+    }
+    ctx.update({ conversation: engagedConversation(messages) });
     await until(
       () => !ctx.container.querySelector(".roman-question"),
       "Customer reply retained choices",
@@ -3469,6 +3488,22 @@ test("voice restart retains saved choices and a re-asked question replaces them 
   };
   ctx.update({
     conversation: engagedConversation([row, greeting, repeated, answer]),
+  });
+  await until(
+    () => ctx.container.querySelector(".roman-message-user .roman-voice-caption"),
+    "Spoken answer caption did not render",
+  );
+  assert.ok(ctx.container.querySelector(".roman-question button:not(:disabled)"),
+    "The re-asked choices must remain usable until the spoken answer is accepted");
+  ctx.update({
+    conversation: engagedConversation([row, greeting, repeated, answer, {
+      ...message("accepted-spoken-answer", "context", ""),
+      parts: [{
+        type: "voice_turn", version: 1,
+        voiceId: "33333333-3333-4333-8333-333333333333",
+        throughSequence: 4, offsetMs: 3000,
+      }],
+    }]),
   });
   await until(
     () => !ctx.container.querySelector(".roman-question"),

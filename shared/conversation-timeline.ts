@@ -3,7 +3,7 @@ import type {
   ConversationPart,
   ConversationHistoryEntry,
 } from "./conversation";
-import { groupVoiceTranscript } from "./voice-transcript";
+import { groupVoiceTranscript, VOICE_CAPTION_PAUSE_MS } from "./voice-transcript";
 import { isCustomerMediaIntent } from "./visualizations";
 
 function voiceAssociation(part: ConversationPart) {
@@ -55,6 +55,10 @@ export function projectConversationTimeline(
       return reply ? [reply] : [];
     }),
   );
+  const acceptedSpeech = rows.flatMap((row) => row.message.parts.flatMap((part) =>
+    part.type === "voice_turn" ? [{ ...part, sequence: row.sequence }] : [],
+  ));
+  const acceptedBoundaries: { voiceId: string; sequence: number; startMs: number }[] = [];
   const captionBoundaries = voicePlacements.flatMap((reply) => {
     const nextMessage = rows.find(
       (row) =>
@@ -80,6 +84,7 @@ export function projectConversationTimeline(
       nextMessage.message.role === "context" &&
       nextMessage.message.status !== "failed" &&
       (nextMessage.message.parts.length === 0 ||
+        nextMessage.message.parts.some((part) => part.type === "voice_turn") ||
         nextMessage.message.parts.some(voiceAssociation)) &&
       voiceTranscripts.some(
         (fragment) =>
@@ -97,6 +102,30 @@ export function projectConversationTimeline(
     // happen midway through Roman's sentence; the projector handles it below.
     return [nextMessage.sequence];
   });
+  // Acceptance closes the pending customer bubble, independently of when its
+  // bookkeeping row arrives. Use the acknowledged caption's audio time so a
+  // delayed ASR packet cannot split Roman's acknowledgement mid-sentence.
+  for (const accepted of acceptedSpeech) {
+    const previous = acceptedSpeech.filter((part) =>
+      part.voiceId === accepted.voiceId && part.sequence < accepted.sequence,
+    ).at(-1);
+    const speech = voiceTranscripts.filter((fragment) =>
+      fragment.voiceId === accepted.voiceId && fragment.role === "user" &&
+      fragment.sequence > (previous?.throughSequence ?? -1) &&
+      fragment.sequence <= accepted.throughSequence,
+    );
+    let first = speech.at(-1);
+    for (let index = speech.length - 2; first && index >= 0; index--) {
+      if (first.startMs - speech[index].endMs > VOICE_CAPTION_PAUSE_MS) break;
+      first = speech[index];
+    }
+    if (!first) continue;
+    acceptedBoundaries.push({
+      voiceId: accepted.voiceId,
+      sequence: accepted.sequence,
+      startMs: first.startMs,
+    });
+  }
   const captions = groupVoiceTranscript(
     voiceTranscripts.map((fragment) => {
       if (fragment.role !== "user" && fragment.role !== "assistant")
@@ -112,18 +141,21 @@ export function projectConversationTimeline(
     // adds one only when customer speech has not already separated the replies.
     rows
       .filter(
-        (row) =>
-          (row.message.parts.length === 0 && row.message.status !== "failed") ||
+        (row) => row.message.status !== "failed" && (
+          row.message.parts.length === 0 ||
+          (row.message.parts.length > 0 && row.message.parts.every((part) => part.type === "voice_turn")) ||
           isBackgroundObservation(row.message) ||
           row.message.parts.some(
             (part) =>
               voiceAssociation(part) ||
               (part.type === "voice_event" && part.event === "started"),
-          ),
+          )
+        ),
       )
       .map((row) => row.sequence),
     captionBoundaries,
     voicePlacements.map((reply) => reply.afterSequence),
+    acceptedBoundaries,
   );
   for (const caption of captions)
     rows.push({
@@ -157,7 +189,7 @@ export function projectConversationTimeline(
   rows.sort((left, right) => left.sequence - right.sequence);
   // Delegation reserves a hidden row before tools run. Place its cards at
   // completion, then beneath the following spoken response as captions arrive.
-  // Never cross a customer turn, different voice or another result.
+  // Never cross accepted customer input, a different voice or another result.
   const positions = new Map<string, number>();
   for (const row of rows) {
     const reply = row.message.parts.map(voiceAssociation).find(Boolean);
@@ -165,7 +197,17 @@ export function projectConversationTimeline(
     let position = reply.afterSequence - 0.5;
     for (const next of rows) {
       if (next === row || next.endSequence < reply.afterSequence) continue;
+      const speech = next.message.parts.find((part) => part.type === "voice");
+      if (acceptedBoundaries.some((boundary) =>
+        boundary.voiceId === reply.voiceId &&
+        boundary.sequence >= reply.afterSequence &&
+        speech?.voiceId === boundary.voiceId &&
+        speech.startMs >= boundary.startMs,
+      )) break;
       if (isBackgroundObservation(next.message)) continue;
+      if (next.message.role === "user" && next.message.parts.every(
+        (part) => part.type === "voice" && part.voiceId === reply.voiceId,
+      )) continue;
       if (
         next.message.role !== "assistant" ||
         !next.message.parts.every(

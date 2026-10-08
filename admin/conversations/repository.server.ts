@@ -114,7 +114,7 @@ import {
   type PhotoPresentation,
 } from "../../shared/visualizations";
 import { visualizationsEnabled } from "../visualizations/config.server";
-import { parseVoiceEventPart, isVoiceCloseReason } from "../../shared/voice";
+import { parseVoiceEventPart, parseVoiceTurnPart, isVoiceCloseReason, type VoiceTurnPart } from "../../shared/voice";
 import {
   parseProductGuidesCall,
   parseProductGuidesResult,
@@ -243,6 +243,10 @@ function parts(message: StoredMessage, origin: string): ConversationPart[] {
     }
     if (part.type === "voice_event" && message.role === "context") {
       parseVoiceEventPart(part);
+      continue;
+    }
+    if (part.type === "voice_turn" && message.role === "context") {
+      parseVoiceTurnPart(part);
       continue;
     }
     if (part.type === "navigation") {
@@ -574,7 +578,7 @@ function snapshot(
   });
   // Retain the source rows used by existing question and page-grounding checks,
   // even when a long uninterrupted voice exchange has moved their page away.
-  for (const type of ["navigation", "page_view", "question", "user", "pending"]) {
+  for (const type of ["navigation", "page_view", "question", "voice_turn", "user", "pending"]) {
     const entry = [...entries].reverse().find((entry) => "message" in entry &&
       (type === "user" ? entry.message.role === "user" :
         type === "pending" ? entry.message.status === "pending" :
@@ -733,6 +737,7 @@ function modelHistory(
         part.type !== "text" &&
         part.type !== "voice" &&
         part.type !== "voice_event" &&
+        part.type !== "voice_turn" &&
         part.type !== "question" &&
         part.type !== "cart_added" &&
         part.type !== "cart_sample_added" &&
@@ -754,7 +759,9 @@ function modelHistory(
                 message.role === "assistant"
                   ? ("assistant" as const)
                   : ("user" as const),
-              text,
+              text: message.role === "user" && content.every((part) => part.type === "voice")
+                ? `Customer audio transcript (may include incidental speech; not every caption is a new request): ${text}`
+                : text,
             },
           ]
         : []),
@@ -999,7 +1006,7 @@ export async function getCurrentContext(
   transaction: Prisma.TransactionClient = prisma,
 ) {
   const where = { conversationId: id, status: "complete" };
-  const [navigation, page, question, customer, caption] = await Promise.all([
+  const [navigation, page, question, customer, caption, speech] = await Promise.all([
     transaction.conversationMessage.findFirst({
       where: { ...where, partsJson: { contains: '"type":"navigation"' } },
       orderBy: { sequence: "desc" },
@@ -1024,6 +1031,10 @@ export async function getCurrentContext(
     }),
     transaction.voiceTranscript.findFirst({
       where: { conversationId: id, role: "user" },
+      orderBy: { sequence: "desc" },
+    }),
+    transaction.conversationMessage.findFirst({
+      where: { conversationId: id, role: "context", partsJson: { contains: '"type":"voice_turn"' } },
       orderBy: { sequence: "desc" },
     }),
   ]);
@@ -1082,7 +1093,7 @@ export async function getCurrentContext(
   const selectedWindow = selectedPhoto ? photoDto(selectedPhoto) : null;
   const messages = [
     ...new Map(
-      [navigation, page, question, customer]
+      [navigation, page, question, customer, speech]
         .filter((value): value is StoredMessage => value !== null)
         .map((message) => [message.id, message]),
     ).values(),
@@ -1659,6 +1670,7 @@ export async function beginTurn(
   input: SendMessageInput,
   voiceId?: string,
   resumeQuestionId?: string,
+  speech?: Pick<VoiceTurnPart, "throughSequence" | "offsetMs">,
 ): Promise<{
   snapshot: ConversationSnapshot;
   assistantId: string | null;
@@ -1680,6 +1692,15 @@ export async function beginTurn(
     );
   }
   let selectedProduct: ProductChoice | undefined;
+  let voiceTurn: VoiceTurnPart | undefined;
+  if (speech !== undefined) {
+    try {
+      if (!voiceId || resumeQuestionId) throw new Error();
+      voiceTurn = parseVoiceTurnPart({ type: "voice_turn", version: 1, voiceId, ...speech });
+    } catch {
+      throw new ConversationError(400, "Invalid accepted voice turn.");
+    }
+  }
   if (input.productChoice !== undefined) {
     try {
       selectedProduct = parseProductChoice(input.productChoice);
@@ -1728,6 +1749,8 @@ export async function beginTurn(
           400,
           "This request ID was already used for a different message.",
         );
+      if (voiceId && JSON.stringify(parts(existing, conversation.origin).find((part) => part.type === "voice_turn")) !== JSON.stringify(voiceTurn))
+        throw new ConversationError(400, "This request ID was already used for a different voice turn.");
       return {
         snapshot: snapshot(conversation),
         assistantId: null,
@@ -1754,6 +1777,16 @@ export async function beginTurn(
           ? "This voice session has ended."
           : "Switch to text before sending a typed message.",
       );
+    if (voiceTurn) {
+      const caption = await transaction.voiceTranscript.findFirst({
+        where: { conversationId: id, voiceId, sequence: voiceTurn.throughSequence, role: "user" },
+      });
+      const previous = conversation.messages.flatMap((message) => parts(message, conversation.origin))
+        .filter((part): part is VoiceTurnPart => part.type === "voice_turn" && part.voiceId === voiceId).at(-1);
+      if (!caption || !caption.text.trim() || caption.startMs > voiceTurn.offsetMs ||
+        (previous && (voiceTurn.offsetMs <= previous.offsetMs || voiceTurn.throughSequence <= previous.throughSequence)))
+        throw new ConversationError(409, "This voice turn has no fresh matching speech.");
+    }
     const claimed = await transaction.conversation.updateMany({
       where: {
         id,
@@ -1800,7 +1833,7 @@ export async function beginTurn(
           role: voiceId ? "context" : "assistant",
           status: "pending",
           partsJson: JSON.stringify(
-            voiceId ? [] : [{ type: "text", text: "" }],
+            voiceId ? (voiceTurn ? [voiceTurn] : []) : [{ type: "text", text: "" }],
           ),
           createdAt: now,
         },
@@ -2064,8 +2097,9 @@ export async function finishTurn(
           : null
         : (result.error ?? null);
     const content: ConversationPart[] =
-      message.role === "context" || !result.text
-        ? []
+      message.role === "context"
+        ? parts(message, conversation.origin).filter((part) => part.type === "voice_turn")
+        : !result.text ? []
         : [{ type: "text", text: result.text }];
     if (
       result.voiceId !== undefined &&

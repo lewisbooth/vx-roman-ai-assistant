@@ -96,6 +96,9 @@ async function caption(session, text, startMs, role = "user") {
 function textInput(text) {
   return { requestId: randomUUID(), text };
 }
+function audioTranscriptText(text) {
+  return `Customer audio transcript (may include incidental speech; not every caption is a new request): ${text}`;
+}
 async function journey() {
   return conversation.appendJourney(id, {
     requestId: randomUUID(),
@@ -429,7 +432,7 @@ test("text, exact voice captions and journey observations share one ordered hist
     [
       "I want blackout.",
       "Which window?",
-      "300 x 400 mm",
+      audioTranscriptText("300 x 400 mm"),
       "I can help.",
       "What next?",
     ],
@@ -468,7 +471,7 @@ test("late input ASR projects before Roman's reply on reload and in model histor
     { role: "assistant", text: "Great. Let's continue." },
   ];
   const expectedHistory = [
-    { ...expected[0], sequence: 1, endSequence: 2 },
+    { ...expected[0], text: audioTranscriptText(expected[0].text), sequence: 1, endSequence: 2 },
     { ...expected[1], sequence: 0, endSequence: 3 },
   ];
   for (let read = 0; read < 2; read++) {
@@ -513,7 +516,7 @@ test("voice delegation has one hidden context owner and never fabricates spoken 
   assert.equal(delegated.snapshot.busy, true);
   assert.equal(delegated.snapshot.messages.length, 1);
   assert.deepEqual(delegated.history, [
-    { role: "user", text: "Show me blackout options", sequence: 0, endSequence: 0 },
+    { role: "user", text: audioTranscriptText("Show me blackout options"), sequence: 0, endSequence: 0 },
   ]);
   const pending = await database.conversationMessage.findUniqueOrThrow({
     where: { id: delegated.assistantId },
@@ -833,7 +836,7 @@ for (const widgetKinds of [
       status: "complete",
       createdAt: new Date(),
       partsJson: JSON.stringify(
-        widgetKinds.map((type) => ({
+        [{ type: "voice_turn", version: 1, voiceId, throughSequence: 0, offsetMs: 0 }, ...widgetKinds.map((type) => ({
           type,
           version: 1,
           invocationId: randomUUID(),
@@ -851,7 +854,7 @@ for (const widgetKinds of [
                   ],
                 }),
           voiceReply: { voiceId, afterSequence: 4 },
-        })),
+        }))],
       ),
     };
     const fragment = (sequence, text, role = "assistant", extra = {}) => ({
@@ -889,6 +892,10 @@ for (const widgetKinds of [
     // later arrival sequence, or it crosses the customer's next utterance.
     rows = conversation.conversationTimeline({
       ...base,
+      messages: [...base.messages, {
+        id: "accepted-next-speech", sequence: 8, role: "context", status: "complete", createdAt: new Date(),
+        partsJson: JSON.stringify([{ type: "voice_turn", version: 1, voiceId, throughSequence: 5, offsetMs: 1900 }]),
+      }],
       voiceTranscripts: [
         ...base.voiceTranscripts.slice(0, 4),
         fragment(5, "Thanks", "user", { startMs: 1900, endMs: 2000 }),
@@ -903,7 +910,7 @@ for (const widgetKinds of [
       ],
     });
     assert.deepEqual(
-      rows.map((row) => row.id),
+      rows.filter((row) => !(row.parts.length > 0 && row.parts.every((part) => part.type === "voice_turn"))).map((row) => row.id),
       ["caption-0", "caption-2", widgetId, "caption-5", "caption-7"],
     );
     assert.equal(rows[1].parts[0].text, "Let me check. Here are the options.");
@@ -989,6 +996,10 @@ for (const widgetKinds of [
     for (const extra of [{ role: "user" }, { voiceId: randomUUID() }]) {
       rows = conversation.conversationTimeline({
         ...base,
+        messages: extra.role === "user" ? [...base.messages, {
+          id: "accepted-customer-turn", sequence: 8, role: "context", status: "complete", createdAt: new Date(),
+          partsJson: JSON.stringify([{ type: "voice_turn", version: 1, voiceId, throughSequence: 6, offsetMs: 1800 }]),
+        }] : base.messages,
         voiceTranscripts: [
           ...base.voiceTranscripts,
           fragment(6, "New turn", "assistant", extra),
@@ -1038,6 +1049,8 @@ test("a delayed delegation does not split Roman's acknowledgement after a new sp
   ]) {
     const previousQuestion = question("previous-question", 0, 1);
     const nextQuestion = question("next-question", 5, 7);
+    const marker = { type: "voice_turn", version: 1, voiceId, throughSequence: 2, offsetMs: 500 };
+    nextQuestion.partsJson = JSON.stringify([marker, ...JSON.parse(nextQuestion.partsJson)]);
     const voiceTranscripts = [
       fragment(1, "Which", "assistant", 0, 100),
       // The end of the old response arrives after the customer's ASR, but its
@@ -1053,7 +1066,7 @@ test("a delayed delegation does not split Roman's acknowledgement after a new sp
       const messages = [
         previousQuestion,
         pending
-          ? { ...nextQuestion, status: "pending", partsJson: "[]" }
+          ? { ...nextQuestion, status: "pending", partsJson: JSON.stringify([marker]) }
           : nextQuestion,
       ];
       const input = {
@@ -1099,13 +1112,15 @@ test("a delayed delegation does not split Roman's acknowledgement after a new sp
   // mistaken for a newer customer turn solely because its sequence is later.
   const previousQuestion = question("previous-question", 0, 1);
   const nextQuestion = question("next-question", 4, 6);
+  const marker = { type: "voice_turn", version: 1, voiceId, throughSequence: 2, offsetMs: 0 };
+  nextQuestion.partsJson = JSON.stringify([marker, ...JSON.parse(nextQuestion.partsJson)]);
   for (const pending of [true, false]) {
     const rows = conversation.conversationTimeline({
       origin: "https://hd-dev-single.myshopify.com",
       messages: [
         previousQuestion,
         pending
-          ? { ...nextQuestion, status: "pending", partsJson: "[]" }
+          ? { ...nextQuestion, status: "pending", partsJson: JSON.stringify([marker]) }
           : nextQuestion,
       ],
       voiceTranscripts: [
@@ -1242,7 +1257,7 @@ test("restart recovery fails hidden delegation ownership and voice without dupli
   assert.equal(state.messages[1].id, delegated.assistantId);
   assert.equal(state.messages[1].status, "failed");
   assert.deepEqual(await restarted.conversation.getModelHistory(id), [
-    { role: "user", text: "Find a blind", sequence: 0, endSequence: 0 },
+    { role: "user", text: audioTranscriptText("Find a blind"), sequence: 0, endSequence: 0 },
   ]);
 });
 
@@ -1321,6 +1336,193 @@ async function questionDuringVoice(measurement = false, measurementOverrides = {
   };
   return { session, input, question };
 }
+
+test("raw customer captions retain a saved voice question and its durable quick answer", async () => {
+  const { session, input, question } = await questionDuringVoice();
+  await caption(session, "Mm-hmm", 200);
+  const snapshot = await conversation.getSnapshot(id);
+  assert.equal(snapshot.current.pendingQuestion.invocationId, question.invocationId);
+  assert.equal(load().latestQuestion(snapshot.messages).invocationId, question.invocationId);
+  assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion.invocationId, question.invocationId);
+  const saved = await conversation.appendVoiceQuestionAnswer(id, session.id, input);
+  assert.equal(saved.created, true);
+  assert.equal(saved.question, question.question);
+  assert.equal((await conversation.getSnapshot(id)).current.pendingQuestion, null);
+});
+
+test("accepted speech retires the old question in its existing hidden context owner and is idempotent", async () => {
+  const { session, input } = await questionDuringVoice();
+  const speech = await caption(session, "Actually, show kitchen blinds", 200);
+  const request = textInput("");
+  const boundary = { throughSequence: speech.sequence, offsetMs: speech.startMs };
+  const before = await database.conversationMessage.count({ where: { conversationId: id } });
+  const turn = await conversation.beginTurn(id, request, session.id, undefined, boundary);
+  const marker = { type: "voice_turn", version: 1, voiceId: session.id, ...boundary };
+  assert.equal(turn.snapshot.current.pendingQuestion, null);
+  assert.equal(load().latestQuestion(turn.snapshot.messages), undefined);
+  assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion, null);
+  const stored = await database.conversationMessage.findUniqueOrThrow({ where: { id: turn.assistantId } });
+  assert.equal(stored.role, "context");
+  assert.equal(stored.status, "pending");
+  assert.deepEqual(JSON.parse(stored.partsJson), [marker]);
+  assert.equal(await database.conversationMessage.count({ where: { conversationId: id } }), before + 1);
+  assert.equal(await database.conversationMessage.count({ where: { conversationId: id, role: "user" } }), 0, "Speech remains its exact caption rather than a fabricated text submission");
+  const replay = await conversation.beginTurn(id, request, session.id, undefined, boundary);
+  assert.equal(replay.assistantId, null);
+  assert.equal(replay.snapshot.revision, turn.snapshot.revision);
+  await conversation.finishTurn(id, turn.assistantId, { text: "The old question is no longer current.", status: "complete" });
+  assert.deepEqual(JSON.parse((await database.conversationMessage.findUniqueOrThrow({ where: { id: turn.assistantId } })).partsJson), [marker]);
+  assert.equal((await conversation.getVoiceStartupContext(id)).pendingQuestion, undefined);
+  await assert.rejects(conversation.appendVoiceQuestionAnswer(id, session.id, input), { status: 409 });
+});
+
+test("a completed accepted speech turn preserves its marker while its new question becomes current", async () => {
+  const { session, input, question: previous } = await questionDuringVoice();
+  const speech = await caption(session, "I mean the kitchen", 200);
+  const boundary = { throughSequence: speech.sequence, offsetMs: speech.startMs + 20 };
+  const turn = await conversation.beginTurn(id, textInput(""), session.id, undefined, boundary);
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "Which colour?", status: "complete", voiceId: session.id,
+    questionPresentation: { callId: "accepted-speech-colour", question: "Which colour?", answers: ["White", "Grey"] },
+  });
+  const stored = await database.conversationMessage.findUniqueOrThrow({ where: { id: turn.assistantId } });
+  const parts = JSON.parse(stored.partsJson);
+  assert.deepEqual(parts[0], { type: "voice_turn", version: 1, voiceId: session.id, ...boundary });
+  assert.equal(parts[1].type, "question");
+  const snapshot = await conversation.getSnapshot(id);
+  const current = snapshot.current.pendingQuestion;
+  assert.equal(current.question, "Which colour?");
+  assert.notEqual(current.invocationId, previous.invocationId);
+  assert.equal(load().latestQuestion(snapshot.messages).invocationId, current.invocationId);
+  assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion.invocationId, current.invocationId);
+  await caption(session, "White or grey?", 450, "assistant");
+  await caption(session, "Mm-hmm", 600);
+  assert.equal((await conversation.getVoiceStartupContext(id)).pendingQuestion.invocationId, current.invocationId);
+  await assert.rejects(conversation.appendVoiceQuestionAnswer(id, session.id, input), { status: 409 });
+  const answer = await conversation.appendVoiceQuestionAnswer(id, session.id, { ...input, requestId: randomUUID(), questionId: current.invocationId, answer: "White" });
+  assert.equal(answer.created, true);
+});
+
+for (const status of ["failed", "cancelled"]) {
+  test(`${status} accepted speech retains retirement without reviving the previous question`, async () => {
+    const { session, input } = await questionDuringVoice();
+    const speech = await caption(session, "Different blinds, please", 200);
+    const boundary = { throughSequence: speech.sequence, offsetMs: speech.startMs };
+    const turn = await conversation.beginTurn(id, textInput(""), session.id, undefined, boundary);
+    await conversation.finishTurn(id, turn.assistantId, { text: "", status, ...(status === "failed" ? { error: "A test reply failed." } : {}) });
+    const stored = await database.conversationMessage.findUniqueOrThrow({ where: { id: turn.assistantId } });
+    assert.deepEqual(JSON.parse(stored.partsJson), [{ type: "voice_turn", version: 1, voiceId: session.id, ...boundary }]);
+    const snapshot = await conversation.getSnapshot(id);
+    assert.equal(snapshot.busy, false);
+    assert.equal(snapshot.current.pendingQuestion, null);
+    assert.equal(load().latestQuestion(snapshot.messages), undefined);
+    assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion, null);
+    assert.equal((await conversation.getVoiceStartupContext(id)).pendingQuestion, undefined);
+    await assert.rejects(conversation.appendVoiceQuestionAnswer(id, session.id, input), { status: 409 });
+  });
+}
+
+test("accepted speech requires a fresh exact customer caption, valid voice ownership and nondecreasing offsets", async () => {
+  const { session, question } = await questionDuringVoice();
+  const speech = await caption(session, "Show other blinds", 200);
+  const assistant = await caption(session, "Of course", 300, "assistant");
+  const valid = { throughSequence: speech.sequence, offsetMs: speech.startMs };
+  const invalid = [
+    { voiceId: randomUUID(), boundary: valid, status: 409 },
+    { voiceId: undefined, boundary: valid, text: "Typed text", status: 400 },
+    { boundary: { ...valid, throughSequence: assistant.sequence }, status: 409 },
+    { boundary: { ...valid, throughSequence: assistant.sequence + 100 }, status: 409 },
+    { boundary: { ...valid, throughSequence: -1 }, status: 400 },
+    { boundary: { ...valid, throughSequence: speech.sequence + 0.5 }, status: 400 },
+    { boundary: { ...valid, offsetMs: speech.startMs - 1 }, status: 409 },
+    { boundary: { ...valid, offsetMs: -1 }, status: 400 },
+    { boundary: { ...valid, offsetMs: Number.NaN }, status: 400 },
+    { boundary: { ...valid, offsetMs: Number.POSITIVE_INFINITY }, status: 400 },
+    { boundary: valid, resumeQuestionId: question.invocationId, status: 400 },
+  ];
+  const before = await database.conversation.findUniqueOrThrow({ where: { id } });
+  for (const entry of invalid) {
+    const voiceId = Object.hasOwn(entry, "voiceId") ? entry.voiceId : session.id;
+    await assert.rejects(conversation.beginTurn(id, textInput(entry.text ?? ""), voiceId, entry.resumeQuestionId, entry.boundary), { status: entry.status });
+    assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion.invocationId, question.invocationId);
+  }
+  const after = await database.conversation.findUniqueOrThrow({ where: { id } });
+  assert.equal(after.nextSequence, before.nextSequence);
+  assert.equal(after.turnCount, before.turnCount);
+  assert.equal(after.pendingRequestId, null);
+});
+
+test("an accepted speech boundary cannot be replayed or rebound to another caption", async () => {
+  const { session } = await questionDuringVoice();
+  const speech = await caption(session, "Show kitchen blinds", 200);
+  const input = textInput("");
+  const boundary = { throughSequence: speech.sequence, offsetMs: speech.startMs };
+  const turn = await conversation.beginTurn(id, input, session.id, undefined, boundary);
+  await conversation.finishTurn(id, turn.assistantId, {
+    text: "Which colour?", status: "complete", voiceId: session.id,
+    questionPresentation: { callId: "fresh-question-after-speech", question: "Which colour?", answers: ["White", "Grey"] },
+  });
+  const question = (await conversation.getCurrentContext(id)).current.pendingQuestion;
+  const next = await caption(session, "White", 400);
+  for (const replay of [
+    boundary,
+    { throughSequence: speech.sequence, offsetMs: next.startMs },
+    { throughSequence: next.sequence, offsetMs: speech.startMs },
+  ]) {
+    await assert.rejects(conversation.beginTurn(id, textInput(""), session.id, undefined, replay), { status: 409 });
+    assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion.invocationId, question.invocationId);
+  }
+  await assert.rejects(conversation.beginTurn(id, input, session.id, undefined, { throughSequence: next.sequence, offsetMs: next.startMs }), { status: 400 });
+  assert.equal((await conversation.beginTurn(id, input, session.id, undefined, boundary)).assistantId, null);
+  const fresh = await conversation.beginTurn(id, textInput(""), session.id, undefined, { throughSequence: next.sequence, offsetMs: next.startMs });
+  assert.ok(fresh.assistantId);
+  assert.equal(fresh.snapshot.current.pendingQuestion, null);
+  await conversation.finishTurn(id, fresh.assistantId, { text: "", status: "complete" });
+});
+
+async function manyRawCaptions(session, count = 300) {
+  const { nextSequence } = await database.conversation.findUniqueOrThrow({ where: { id } });
+  const rows = Array.from({ length: count }, (_, index) => ({
+    id: randomUUID(), voiceId: session.id, conversationId: id, providerEventId: randomUUID(),
+    sequence: nextSequence + index, role: "user", text: "Mm-hmm", startMs: 1000 + index * 200, endMs: 1100 + index * 200,
+  }));
+  await database.voiceTranscript.createMany({ data: rows });
+  await database.conversation.update({ where: { id }, data: { nextSequence: nextSequence + count, revision: { increment: count } } });
+}
+
+test("a pending voice question remains clickable after its source leaves the 256-caption history page", async () => {
+  const { session, input, question } = await questionDuringVoice();
+  await manyRawCaptions(session);
+  const snapshot = await conversation.getSnapshot(id);
+  assert.ok(snapshot.history.start > 0);
+  assert.ok(snapshot.history.entries.length <= 256);
+  assert.equal(snapshot.current.pendingQuestion.invocationId, question.invocationId);
+  assert.equal(load().latestQuestion(snapshot.messages).invocationId, question.invocationId);
+  assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion.invocationId, question.invocationId);
+  assert.equal((await conversation.getVoiceStartupContext(id)).pendingQuestion.invocationId, question.invocationId);
+  const answer = await conversation.appendVoiceQuestionAnswer(id, session.id, input);
+  assert.equal(answer.created, true);
+  assert.equal((await conversation.getSnapshot(id)).current.pendingQuestion, null);
+});
+
+test("accepted speech retirement survives more than 256 later raw captions and older history reads", async () => {
+  const { session, input } = await questionDuringVoice();
+  const speech = await caption(session, "A different room", 200);
+  const boundary = { throughSequence: speech.sequence, offsetMs: speech.startMs };
+  const turn = await conversation.beginTurn(id, textInput(""), session.id, undefined, boundary);
+  await conversation.finishTurn(id, turn.assistantId, { text: "", status: "complete" });
+  await manyRawCaptions(session);
+  const snapshot = await conversation.getSnapshot(id);
+  assert.ok(snapshot.history.start > 0);
+  assert.ok(snapshot.history.entries.length <= 256);
+  assert.equal(snapshot.current.pendingQuestion, null);
+  assert.equal(load().latestQuestion(snapshot.messages), undefined);
+  assert.ok(snapshot.historyUpdates.some((entry) => entry.message?.id === turn.assistantId && entry.message.parts.some((part) => part.type === "voice_turn")));
+  await conversation.getHistoryPage(id, snapshot.history.before);
+  assert.equal((await conversation.getCurrentContext(id)).current.pendingQuestion, null);
+  assert.equal((await conversation.getVoiceStartupContext(id)).pendingQuestion, undefined);
+  await assert.rejects(conversation.appendVoiceQuestionAnswer(id, session.id, input), { status: 409 });
+});
 
 test("voice startup projects coherent history, question and page with bounded transcript reads", async () => {
   const { question } = await questionDuringVoice();
@@ -1449,7 +1651,7 @@ test("startup refresh cannot reserve an answered saved choice", async () => {
   );
 });
 
-for (const interrupt of ["speech", "departure", "stop"])
+for (const interrupt of ["accepted speech", "departure", "stop"])
   test(`startup refresh atomically discards its question and briefing after ${interrupt}`, async () => {
     const { session, question } = await questionDuringVoice(true);
     const started = await conversation.beginTurn(
@@ -1471,8 +1673,11 @@ for (const interrupt of ["speech", "departure", "stop"])
           path,
           occurredAt: new Date(clock).toISOString(),
         });
-    } else if (interrupt === "speech") {
-      await caption(session, "Actually, stop measuring", 300);
+    } else if (interrupt === "accepted speech") {
+      const speech = await caption(session, "Actually, stop measuring", 300);
+      await conversation.finishTurn(id, started.assistantId, { text: "", status: "cancelled" });
+      const acceptedSpeech = await conversation.beginTurn(id, textInput(""), session.id, undefined, { throughSequence: speech.sequence, offsetMs: speech.startMs });
+      await conversation.finishTurn(id, acceptedSpeech.assistantId, { text: "", status: "complete" });
     } else {
       await voice.closeVoiceSession(id, session.id, clientId);
     }
@@ -1527,6 +1732,7 @@ test("an unchanged saved choice refresh commits once and becomes the latest ques
     session.id,
     question.invocationId,
   );
+  await caption(session, "Mm-hmm", 250);
   await caption(session, "Hi, it's Roman again.", 300, "assistant");
   assert.equal(
     await conversation.finishTurn(id, started.assistantId, {
@@ -1622,11 +1828,13 @@ for (const channel of ["typed", "spoken"])
         assert.equal(receipt.customerText, text);
         assert.equal(receipt.question, "");
       } else {
-        await caption(session, text, 500);
+        const speech = await caption(session, text, 500);
+        const turn = await conversation.beginTurn(id, textInput(""), session.id, undefined, { throughSequence: speech.sequence, offsetMs: speech.startMs });
+        await conversation.finishTurn(id, turn.assistantId, { text: "", status: "complete" });
       }
       const context = await conversation.getVoiceStartupContext(id);
       assert.equal(context.pendingQuestion, undefined);
-      assert.deepEqual(context.history.at(-1), { role: "user", text, sequence: 2, endSequence: 2 });
+      assert.deepEqual(context.history.at(-1), { role: "user", text: channel === "spoken" ? audioTranscriptText(text) : text, sequence: 2, endSequence: 2 });
       assert.ok(context.history.some((message) => message.text.includes(question.question)));
       assert.equal((await conversation.getSnapshot(id)).voice.status, "active");
       assert.equal(await database.measurementDraft.count(), before);
@@ -2210,7 +2418,9 @@ test("only an exact offered answer to the current question can become durable cu
       }),
       { status: 400 },
     );
-  await caption(session, "Actually, another room", 500);
+  const speech = await caption(session, "Actually, another room", 500);
+  const accepted = await conversation.beginTurn(id, textInput(""), session.id, undefined, { throughSequence: speech.sequence, offsetMs: speech.startMs });
+  await conversation.finishTurn(id, accepted.assistantId, { text: "", status: "complete" });
   await assert.rejects(
     conversation.appendVoiceQuestionAnswer(id, session.id, input),
     { status: 409 },

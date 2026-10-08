@@ -352,3 +352,90 @@ test("completion still separates customer speech before and after a new question
     [1, 3],
   );
 });
+
+test("interleaved input stays in one stable bubble while Roman continues speaking", () => {
+  const captions = [
+    fragment(1, "I", 18200, 18400),
+    fragment(2, " Hmm", 18400, 18600, { role: "user" }),
+    fragment(3, " pulled", 18400, 18600),
+    fragment(4, " together some", 18600, 19800),
+    fragment(5, " Mm", 19800, 20000, { role: "user" }),
+    fragment(6, " nursery choices", 19800, 21000),
+    fragment(7, " with different benefits", 21000, 23600),
+    fragment(8, " Need", 23600, 23800, { role: "user" }),
+    fragment(9, " for you.", 23600, 24000),
+    fragment(10, " to", 24000, 24200, { role: "user" }),
+    fragment(11, " Which matters most?", 24000, 26000),
+  ];
+  const original = structuredClone(captions);
+  for (let count = 1; count <= captions.length; count++) {
+    const received = captions.slice(0, count);
+    const groups = groupVoiceTranscript(received);
+    for (const role of ["assistant", "user"]) {
+      const expected = received.filter((caption) => caption.role === role);
+      const actual = groups.filter((group) => group.role === role);
+      assert.equal(actual.length, expected.length ? 1 : 0);
+      if (!expected.length) continue;
+      assert.equal(actual[0].id, expected[0].id);
+      assert.deepEqual(actual[0].fragments, expected);
+      assert.equal(actual[0].text, expected.map((caption) => caption.text).join(""));
+    }
+  }
+  assert.equal(groupVoiceTranscript(captions)[1].text, " Hmm Mm Need to");
+  assert.deepEqual(captions, original);
+});
+
+test("an accepted turn boundary separates overlapping one-word and numeric input", () => {
+  const captions = [
+    fragment(1, "Ye", 0, 100, { role: "user" }),
+    fragment(2, "You can choose", 50, 200),
+    fragment(3, "s", 100, 200, { role: "user" }),
+    fragment(5, "I will use", 300, 400),
+    fragment(6, "180", 350, 400, { role: "user" }),
+    fragment(7, " centimetres.", 400, 500),
+    fragment(8, " cm", 400, 600, { role: "user" }),
+  ];
+  const groups = groupVoiceTranscript(captions, [4], [4]);
+  assert.deepEqual(
+    groups.map((group) => group.text),
+    ["Yes", "You can choose", "I will use centimetres.", "180 cm"],
+  );
+  assert.deepEqual(groups.flatMap((group) => group.fragments).map((row) => row.id).sort(),
+    captions.map((row) => row.id).sort());
+});
+
+test("opposite-speaker output cannot bridge input that does not overlap it", () => {
+  const captions = [
+    fragment(1, "First", 0, 100, { role: "user" }),
+    fragment(2, "A separate sentence.", 500, 4000),
+    fragment(3, "Next", 5000, 5100, { role: "user" }),
+  ];
+  assert.deepEqual(groupVoiceTranscript(captions).map((group) => group.text),
+    captions.map((caption) => caption.text));
+});
+
+test("completion keeps Roman's continuing group when input was the last caption", () => {
+  const captions = [
+    fragment(1, "Which option", 0, 200),
+    fragment(2, " Hmm", 100, 200, { role: "user" }),
+    fragment(4, " would you like?", 200, 400),
+    fragment(5, " Yes", 300, 400, { role: "user" }),
+  ];
+  const groups = groupVoiceTranscript(captions, [3], [], [4]);
+  assert.deepEqual(groups.map((group) => group.text),
+    ["Which option would you like?", " Hmm", " Yes"]);
+  assert.equal(groups[0].id, captions[0].id);
+  assert.deepEqual(groups[0].fragments, [captions[0], captions[2]]);
+});
+
+test("a later completion cannot revive Roman's group from before a hard boundary", () => {
+  const captions = [
+    fragment(1, "Old response", 0, 100),
+    fragment(3, "New request", 200, 300, { role: "user" }),
+    fragment(5, "New response", 400, 500),
+  ];
+  assert.deepEqual(
+    groupVoiceTranscript(captions, [2, 4], [3], [5]).map((group) => group.text),
+    captions.map((caption) => caption.text),
+  );
+});

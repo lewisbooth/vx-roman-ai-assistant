@@ -56,6 +56,7 @@ export function Timeline({
           part.type !== "question" &&
           part.type !== "page_view" &&
           part.type !== "navigation" &&
+          part.type !== "voice_turn" &&
           part.type !== "guides",
       )
       .filter((part) => part.type !== "media" || (part.kind !== "renamed" && part.kind !== "outcome"))

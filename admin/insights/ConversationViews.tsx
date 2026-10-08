@@ -168,7 +168,8 @@ export function ConversationTimeline({
       message.error ||
       message.parts.length === 0 ||
       message.parts.some(
-        (part) => part.type !== "voice" || voiceCaptionText(part.text),
+        (part) => part.type !== "voice_turn" &&
+          (part.type !== "voice" || voiceCaptionText(part.text)),
       ),
   );
 
@@ -196,6 +197,7 @@ export function ConversationTimeline({
           </div>
           <div className="space-y-3 break-words">
             {message.parts.map((part, index) => {
+              if (part.type === "voice_turn") return null;
               if (part.type === "media")
                 return (
                   <InspectedMedia

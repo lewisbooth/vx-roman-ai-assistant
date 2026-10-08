@@ -435,7 +435,7 @@ export function parseVoiceInputReference(input: unknown): VoiceInputReference {
   return { voiceId: value.voiceId };
 }
 
-/** Customer turns retire questions; leaving a product also retires its measurement input. */
+/** Accepted customer turns retire questions; raw voice captions remain observations. */
 export function latestQuestion(
   messages: readonly ConversationMessage[],
   storefrontPath?: string,
@@ -443,14 +443,16 @@ export function latestQuestion(
   const laterPaths: string[] = storefrontPath ? [storefrontPath] : [];
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
-    if (message.role === "user") return;
-    if (message.status !== "complete") continue;
+    if (message.role === "user" &&
+      !(message.parts.length > 0 && message.parts.every((part) => part.type === "voice"))) return;
     for (
       let partIndex = message.parts.length - 1;
       partIndex >= 0;
       partIndex--
     ) {
       const part = message.parts[partIndex];
+      if (part.type === "voice_turn") return;
+      if (message.status !== "complete") continue;
       if (part.type === "page_view" || part.type === "navigation")
         laterPaths.push(part.path);
       if (part.type === "question") {

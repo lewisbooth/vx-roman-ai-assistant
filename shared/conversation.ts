@@ -6,6 +6,7 @@ export type MessageStatus = "pending" | "complete" | "failed";
 import type {
   VoiceCaptionPart,
   VoiceEventPart,
+  VoiceTurnPart,
   VoiceSessionSnapshot,
 } from "./voice";
 import type {
@@ -94,6 +95,7 @@ export type ConversationPart =
   | CartSampleAddedPart
   | PageViewPart
   | VoiceEventPart
+  | VoiceTurnPart
   | VoiceCaptionPart
   | MediaPart;
 

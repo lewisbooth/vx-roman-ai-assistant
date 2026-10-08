@@ -404,6 +404,7 @@ export async function runVoiceDelegation(
   signal: AbortSignal,
   options?: {
     resumeQuestionId?: string;
+    speech?: { throughSequence: number; offsetMs: number };
     onToolActivity?: (name: string, active: boolean) => void;
   },
 ): Promise<ModelReply | undefined> {
@@ -440,11 +441,12 @@ export async function runVoiceDelegation(
       { requestId, text: "" },
       voiceId,
       options?.resumeQuestionId,
+      options?.speech,
     );
     turn.assistantId = started.assistantId;
     initialized();
     if (!started.assistantId) return;
-    if (options) {
+    if (options?.resumeQuestionId) {
       const question = latestQuestion(started.snapshot.messages);
       if (question?.invocationId !== options.resumeQuestionId) {
         await finishTurn(id, started.assistantId, {

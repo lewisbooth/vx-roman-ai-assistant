@@ -57,6 +57,33 @@ function caption(sequence, text, role = "assistant", extra = {}) {
 function page(entries, start, end) {
   return { start, end, before: start || null, entries };
 }
+function acceptedVoice(throughSequence, offsetMs) {
+  return {
+    type: "voice_turn",
+    version: 1,
+    voiceId: "11111111-1111-4111-8111-111111111111",
+    throughSequence,
+    offsetMs,
+  };
+}
+function voiceProducts(sequence, afterSequence, ...parts) {
+  return message(sequence, "", {
+    role: "context",
+    parts: [
+      ...parts,
+      {
+        type: "products",
+        version: 1,
+        invocationId: `products-${sequence}`,
+        productIds: [`gid://shopify/Product/${sequence}`],
+        voiceReply: {
+          voiceId: "11111111-1111-4111-8111-111111111111",
+          afterSequence,
+        },
+      },
+    ],
+  });
+}
 
 test("late ASR changes display order without rewriting exact source provenance", () => {
   const rows = projectConversationTimeline([
@@ -151,8 +178,89 @@ test("captions recombine across a page boundary, including delayed customer spee
   );
   assert.equal(
     history.messages().find((row) => row.id === "caption-1").parts[0].text,
-    "Let me check. These are the options.",
+    "Let me check. These are the options. You're welcome.",
   );
+});
+
+test("interleaved observations preserve one bubble per speaker and keep cards below Roman", () => {
+  const rows = [
+    voiceProducts(0, 1),
+    caption(1, "I", "assistant", { startMs: 18200, endMs: 18400 }),
+    caption(2, " Hmm", "user", { startMs: 18400, endMs: 18600 }),
+    caption(3, " pulled", "assistant", { startMs: 18400, endMs: 18600 }),
+    caption(4, " together nursery choices", "assistant", { startMs: 18600, endMs: 21000 }),
+    caption(5, " Mm", "user", { startMs: 19800, endMs: 20000 }),
+    caption(6, " for you.", "assistant", { startMs: 21000, endMs: 23600 }),
+    caption(7, " Need", "user", { startMs: 23600, endMs: 23800 }),
+    caption(8, " Which matters most?", "assistant", { startMs: 23600, endMs: 26000 }),
+    caption(9, " to", "user", { startMs: 24000, endMs: 24200 }),
+  ];
+  const original = structuredClone(rows);
+  for (let count = 2; count <= rows.length; count++) {
+    const received = rows.slice(0, count);
+    const projected = projectConversationTimeline(received);
+    const assistant = projected.filter((row) => row.role === "assistant");
+    const user = projected.filter((row) => row.role === "user");
+    assert.equal(assistant.length, 1);
+    assert.equal(assistant[0].id, "caption-1");
+    assert.equal(user.length, count > 2 ? 1 : 0);
+    if (user.length) assert.equal(user[0].id, "caption-2");
+    assert.ok(projected.findIndex((row) => row.id === "message-0") >
+      projected.findIndex((row) => row.id === "caption-1"));
+  }
+  const projected = projectConversationTimeline(rows);
+  assert.equal(projected.find((row) => row.id === "caption-2").parts[0].text,
+    " Hmm Mm Need to");
+  const history = createConversationHistory();
+  history.merge(page(rows.slice(5), 5, 10), { revision: 10, streamRevision: 0 });
+  history.merge(page(rows.slice(0, 5), 0, 5), { revision: 10, streamRevision: 0 });
+  assert.deepEqual(history.messages(), projected);
+  assert.deepEqual(rows, original);
+  assert.deepEqual(projected.filter((row) => row.role !== "context").map((row) =>
+    [row.id, row.sourceSequence, row.sourceEndSequence]),
+  [["caption-1", 1, 8], ["caption-2", 2, 9]]);
+});
+
+test("accepted speech separates an early acknowledgement and its cards from the prior response", () => {
+  const rows = [
+    caption(0, "Find nursery blinds", "user", { startMs: 0, endMs: 300 }),
+    voiceProducts(1, 2, acceptedVoice(0, 300)),
+    caption(2, "Which type", "assistant", { startMs: 1000, endMs: 1600 }),
+    caption(3, " Hmm", "user", { startMs: 1200, endMs: 1300 }),
+    caption(4, " of window?", "assistant", { startMs: 1600, endMs: 2000 }),
+    caption(5, "Got", "assistant", { startMs: 5400, endMs: 5500 }),
+    caption(6, "It's a standard", "user", { startMs: 5000, endMs: 5100 }),
+    caption(7, " it.", "assistant", { startMs: 5500, endMs: 5600 }),
+    caption(8, " recessed window", "user", { startMs: 5100, endMs: 5200 }),
+    voiceProducts(9, 10, acceptedVoice(8, 5200)),
+    caption(10, "Does avoiding drilling matter?", "assistant", { startMs: 5600, endMs: 6500 }),
+  ];
+  const original = structuredClone(rows);
+  const projected = projectConversationTimeline(rows);
+  const voices = projected.filter((row) => row.parts[0]?.type === "voice");
+  assert.deepEqual(voices.map((row) => [row.id, row.parts[0].text]), [
+    ["caption-0", "Find nursery blinds"],
+    ["caption-2", "Which type of window?"],
+    ["caption-3", " Hmm"],
+    ["caption-6", "It's a standard recessed window"],
+    ["caption-5", "Got it. Does avoiding drilling matter?"],
+  ]);
+  const index = (id) => projected.findIndex((row) => row.id === id);
+  assert.ok(index("message-1") < index("caption-6"));
+  assert.ok(index("message-1") < index("caption-5"));
+  assert.ok(index("message-9") > index("caption-5"));
+  assert.deepEqual(voices.map((row) => [row.id, row.sourceSequence, row.sourceEndSequence]), [
+    ["caption-0", 0, 0],
+    ["caption-2", 2, 4],
+    ["caption-3", 3, 3],
+    ["caption-6", 6, 8],
+    ["caption-5", 5, 10],
+  ]);
+  const history = createConversationHistory();
+  history.merge(page(rows.slice(5), 5, 11), { revision: 11, streamRevision: 0 });
+  history.merge(page(rows.slice(0, 5), 0, 5), { revision: 11, streamRevision: 0 });
+  assert.deepEqual(history.messages(), projected);
+  assert.deepEqual(rows, original);
 });
 
 test("late history cannot overwrite live text or current reserved-row results", () => {

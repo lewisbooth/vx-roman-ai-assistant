@@ -2461,7 +2461,7 @@ test("a displayed carousel keeps its ID-title mapping before a spoken partial-ti
     entry.text.includes(carousel.invocationId),
   );
   const spokenIndex = history.findIndex((entry) =>
-    entry.role === "user" && entry.text === "The green one",
+    entry.role === "user" && entry.text.endsWith(": The green one"),
   );
   assert.ok(observationIndex >= 0 && spokenIndex > observationIndex);
   const observations = JSON.parse(
@@ -4096,7 +4096,7 @@ test("post-compaction turns read bounded caption tails and load another model's 
   } });
   queries.length = 0;
   const fallback = await turn.memory.historyForModel("gpt-5.6-luna");
-  assert.ok(fallback.some((item) => item.text.startsWith("Synthetic original 0:")), "empty memory cannot silently discard unsummarized history");
+  assert.ok(fallback.some((item) => item.text.includes("Synthetic original 0:")), "empty memory cannot silently discard unsummarized history");
   assert.ok(!fallback.some((item) => item.text.includes("later correction")), "the callback pins the turn's inclusive source frontier");
   assert.ok(queries.some((query) => /VoiceTranscript/.test(query) && /sequence[`"] >/.test(query) && /sequence[`"] <=/.test(query)), queries.join("\n"));
   queries.length = 0;

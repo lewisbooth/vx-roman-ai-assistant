@@ -324,8 +324,14 @@ function receiveDelegation(
     if (
       owner.latestUserStartMs !== undefined &&
       owner.latestUserStartMs > event.offsetMs
-    )
+    ) {
+      console.warn("[Roman] Voice delegation discarded.", {
+        reason: "caption_past_cutoff",
+        stage: "delegation_received",
+        gapMs: Math.round(owner.latestUserStartMs - event.offsetMs),
+      });
       return;
+    }
     scheduleAdvisorReply(owner, {
       kind: "speech",
       delegationId: event.delegationId,
@@ -342,7 +348,12 @@ function receiveDelegation(
     timer: setTimeout(() => {
       // Captions already received must finish saving before expiry is checked.
       void owner.events.then(() => {
-        if (owner.pendingSpeech === pending) clearPendingSpeech(owner);
+        if (owner.pendingSpeech === pending) {
+          console.warn("[Roman] Voice delegation discarded.", {
+            reason: "caption_wait_expired",
+          });
+          clearPendingSpeech(owner);
+        }
       });
     }, DELEGATION_TRANSCRIPT_WAIT_MS),
   };
@@ -512,8 +523,14 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         request.kind === "speech" &&
         owner.latestUserStartMs !== undefined &&
         owner.latestUserStartMs > request.offsetMs
-      )
+      ) {
+        console.warn("[Roman] Voice delegation discarded.", {
+          reason: "caption_past_cutoff",
+          stage: "caption_drain",
+          gapMs: Math.round(owner.latestUserStartMs - request.offsetMs),
+        });
         return;
+      }
       if (
         request.kind === "input" &&
         owner.latestUserCaption !== request.caption
@@ -521,34 +538,46 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
         return;
       const resumeQuestionId =
         request.kind === "resume" ? request.questionId : undefined;
-      if (resumeQuestionId && owner.userSpeechObserved) return;
-      if (owner.latestUserCaption || owner.userSpeechObserved)
-        owner.resumeQuestionId = undefined;
+      if (request.kind !== "resume") owner.resumeQuestionId = undefined;
       if (
         request.kind === "speech" &&
         !resumeQuestionId &&
         (!owner.latestUserCaption ||
+          owner.latestUserSequence === undefined ||
           owner.latestUserCaption === owner.delegatedCaption)
       ) {
         // A provider cue is not customer speech. Repeated or unsolicited
         // delegations must not fabricate a request to repeat an unheard answer.
         return;
       }
-      owner.delegatedCaption = owner.latestUserCaption;
+      // A resume reads existing intent. Incidental ASR received while it runs
+      // stays an observation until Live explicitly delegates that speech.
+      if (request.kind === "speech")
+        owner.delegatedCaption = owner.latestUserCaption;
       startInputProgress();
       const reply = await runVoiceDelegation(
         owner.conversationId,
         owner.voiceId,
         request.kind === "input" ? request.requestId : randomUUID(),
         signal,
-        { ...(resumeQuestionId ? { resumeQuestionId } : {}), onToolActivity },
+        {
+          ...(resumeQuestionId ? { resumeQuestionId } : {}),
+          ...(request.kind === "speech"
+            ? {
+                speech: {
+                  throughSequence: owner.latestUserSequence!,
+                  offsetMs: request.offsetMs,
+                },
+              }
+            : {}),
+          onToolActivity,
+        },
       );
       // The result is ready; a pending courtesy cue must not overtake it while
       // caption/event persistence drains before the verified briefing.
       clearProgressTimer();
       await owner.events;
       if (signal.aborted) return;
-      if (resumeQuestionId && owner.userSpeechObserved) return;
       const question = reply?.questionPresentation;
       const briefing =
         reply?.text.trim() ||
@@ -653,17 +682,6 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
   if (event.type === "transcript" && event.role === "user") {
     owner.userSpeechObserved = true;
   }
-  const interruptedResume =
-    event.type === "transcript" && event.role === "user"
-      ? owner.resumeController
-      : undefined;
-  interruptedResume?.abort();
-  // Capture the active runner synchronously, before its aborted task can retire
-  // process ownership. Caption persistence may be slower than that cleanup.
-  const cancelledResume = interruptedResume
-    ? cancelVoiceDelegation(owner.conversationId, owner.voiceId)
-    : undefined;
-  void cancelledResume?.catch(() => undefined);
   // Final captions remain accepted while close() drains the trusted sideband.
   if (owner.eventCount >= 128) {
     fail(
@@ -704,9 +722,14 @@ function receive(owner: VoiceOwner, event: VoiceProviderEvent) {
                 delegationId: pending.delegationId,
                 offsetMs: pending.offsetMs,
               });
+            else if (event.startMs > pending.offsetMs)
+              console.warn("[Roman] Voice delegation discarded.", {
+                reason: "caption_past_cutoff",
+                stage: "caption_received",
+                gapMs: Math.round(event.startMs - pending.offsetMs),
+              });
           }
         }
-        await cancelledResume;
       } else receiveDelegation(owner, event);
     })
     .catch(() => {

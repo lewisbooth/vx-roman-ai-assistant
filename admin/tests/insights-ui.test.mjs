@@ -690,6 +690,53 @@ test("inspection cleans both speakers' voice captions without changing stored pa
   assert.deepEqual(messages, original);
 });
 
+test("inspection hides accepted voice bookkeeping while retaining questions and failed work", (t) => {
+  const { render, container } = setupView(t);
+  const marker = {
+    type: "voice_turn",
+    version: 1,
+    voiceId: ID,
+    throughSequence: 92,
+    offsetMs: 43600,
+  };
+  const row = (id, parts, extra = {}) => ({
+    id,
+    role: "context",
+    status: "complete",
+    createdAt: NOW,
+    parts,
+    ...extra,
+  });
+  const messages = [
+    row("marker-only", [marker]),
+    row("question", [marker, {
+      type: "question",
+      version: 1,
+      invocationId: "question-1",
+      question: "Does avoiding drilling matter?",
+      answers: ["Yes", "Regular fitting is fine"],
+      voiceReply: { voiceId: ID, afterSequence: 94 },
+    }]),
+    row("pending", [marker], { status: "pending" }),
+    row("failed", [marker], {
+      status: "failed",
+      error: "The accepted reply could not be completed.",
+    }),
+  ];
+  const original = structuredClone(messages);
+  render("ConversationTimeline", { origin: ORIGIN, messages });
+  const rows = [...container.querySelectorAll('ol[aria-label="Conversation transcript"] > li')];
+  assert.equal(rows.length, 3);
+  assert.match(rows[0].textContent, /Offered question.*Does avoiding drilling matter\?.*Regular fitting is fine/s);
+  assert.match(rows[1].textContent, /pending/);
+  assert.match(rows[2].textContent, /failed.*The accepted reply could not be completed/s);
+  assert.doesNotMatch(container.textContent, /voice_turn|throughSequence|offsetMs|43600|78b1ba71/);
+  assert.deepEqual(messages, original);
+  render("ConversationTimeline", { origin: ORIGIN, messages: [messages[0]] });
+  assert.equal(container.querySelectorAll("li").length, 0);
+  assert.match(container.textContent, /No messages recorded/);
+});
+
 test("transcript links reject other origins, credentials and private routes", (t) => {
   const { api } = setupView(t);
   assert.equal(

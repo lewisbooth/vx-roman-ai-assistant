@@ -73,6 +73,34 @@ export interface VoiceEventPart {
   event: "started" | "ended" | "disconnected";
 }
 
+/** Trusted backend acceptance of speech; captions alone never imply a new task. */
+export interface VoiceTurnPart {
+  type: "voice_turn";
+  version: 1;
+  voiceId: string;
+  throughSequence: number;
+  offsetMs: number;
+}
+
+export function parseVoiceTurnPart(input: unknown): VoiceTurnPart {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid accepted voice turn.");
+  const value = input as Record<string, unknown>;
+  if (
+    Object.keys(value).length !== 5 ||
+    value.type !== "voice_turn" || value.version !== 1 ||
+    typeof value.voiceId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.voiceId) ||
+    typeof value.throughSequence !== "number" ||
+    !Number.isSafeInteger(value.throughSequence) || value.throughSequence < 0 ||
+    typeof value.offsetMs !== "number" || !Number.isFinite(value.offsetMs) || value.offsetMs < 0
+  ) throw new Error("Invalid accepted voice turn.");
+  return {
+    type: "voice_turn", version: 1, voiceId: value.voiceId,
+    throughSequence: value.throughSequence, offsetMs: value.offsetMs,
+  };
+}
+
 export const VOICE_EVENT_LABELS = {
   started: "Voice chat started",
   ended: "Voice chat ended",

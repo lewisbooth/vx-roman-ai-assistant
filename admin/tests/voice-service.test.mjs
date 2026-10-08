@@ -1088,12 +1088,16 @@ test("captions alone never trigger actions and repeated delegation events run on
   state.emit(transcript());
   await flush();
   assert.equal(state.calls.delegate.length, 0);
-  state.emit({ type: "delegation", delegationId: "item_1" });
-  state.emit({ type: "delegation", delegationId: "item_1" });
+  state.emit({ type: "delegation", delegationId: "item_1", offsetMs: 200 });
+  state.emit({ type: "delegation", delegationId: "item_1", offsetMs: 200 });
   await flush();
   assert.equal(state.calls.delegate.length, 1);
   assert.equal(state.providers[0].commentaries.length, 1);
   assert.equal(state.providers[0].commentaries[0][0], "item_1");
+  assert.deepEqual(plain(state.calls.delegate[0][4].speech), {
+    throughSequence: 0,
+    offsetMs: 200,
+  });
   assert.deepEqual(plain(state.calls.caption[0][2]), {
     providerEventId: "event_1",
     role: "user",
@@ -1514,6 +1518,7 @@ test("the server resumes one saved question silently at readiness without a Live
   assert.deepEqual(plain(state.calls.delegate[0][4]), {
     resumeQuestionId: question.invocationId,
   });
+  assert.equal("speech" in state.calls.delegate[0][4], false);
   assert.deepEqual(plain(state.providers[0].replies), [
     question.measurement.instructions + " " + question.question,
   ]);
@@ -1530,10 +1535,18 @@ test("the server resumes one saved question silently at readiness without a Live
   assert.equal(state.providers[0].replies.length, 1);
   assert.deepEqual(state.providers[0].commentaries, []);
   state.emit(transcript());
-  state.emit({ type: "delegation", delegationId: "fresh_customer" });
+  state.emit({
+    type: "delegation",
+    delegationId: "fresh_customer",
+    offsetMs: 200,
+  });
   await flush();
   assert.equal(state.calls.delegate.length, 2);
   assert.equal(typeof state.calls.delegate[1][4].onToolActivity, "function");
+  assert.deepEqual(plain(state.calls.delegate[1][4].speech), {
+    throughSequence: 0,
+    offsetMs: 200,
+  });
   await state.stop();
 });
 
@@ -1623,7 +1636,7 @@ test("an unchanged startup page observation preserves eligibility, while early s
   await speaking.stop();
 });
 
-for (const interruption of ["speech", "answer", "page", "stop"]) {
+for (const interruption of ["delegated speech", "answer", "page", "stop"]) {
   test(`a ${interruption} during startup revalidation cancels work without stale speech`, async () => {
     const state = setup();
     state.mock.onDelegate = async (_id, _voiceId, _requestId, signal) =>
@@ -1638,7 +1651,14 @@ for (const interruption of ["speech", "answer", "page", "stop"]) {
     state.emit({ type: "delegation", delegationId: "resume_pending" });
     await flush();
     assert.equal(state.calls.delegate.length, 1);
-    if (interruption === "speech") state.emit(transcript());
+    if (interruption === "delegated speech") {
+      state.emit(transcript());
+      state.emit({
+        type: "delegation",
+        delegationId: "new_customer_intent",
+        offsetMs: 200,
+      });
+    }
     if (interruption === "answer")
       await state.api.answerVoiceQuestion(
         state.conversationId,
@@ -1669,28 +1689,105 @@ for (const interruption of ["speech", "answer", "page", "stop"]) {
   });
 }
 
-test("speech captures startup cancellation before slow caption persistence can lose runner ownership", async () => {
+test("raw background captions preserve an active resume without accepting a new workflow turn", async () => {
+  const state = setup();
+  const resumeGate = deferred();
+  state.mock.onDelegate = (_id, _voiceId, _requestId, _signal, options) => {
+    if (options.resumeQuestionId) return resumeGate.promise;
+    return { text: "I have your width." };
+  };
+  const question = await readySavedQuestion(state);
+  const before = state.calls.cancelDelegation.length;
+  state.emit(transcript({ eventId: "background_1", text: "Hmm" }));
+  state.emit(
+    transcript({
+      eventId: "background_2",
+      text: "Mm",
+      startMs: 200,
+      endMs: 250,
+    }),
+  );
+  await flush();
+  assert.equal(state.calls.delegate[0][3].aborted, false);
+  assert.equal(state.calls.cancelDelegation.length, before);
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.calls.caption.length, 2);
+  resumeGate.resolve({
+    text: "",
+    questionPresentation: { ...question, callId: "resumed-question" },
+  });
+  await flush();
+  assert.deepEqual(plain(state.providers[0].replies), [
+    question.measurement.instructions + " " + question.question,
+  ]);
+  assert.equal(state.providers[0].commentaries.length, 0);
+  assert.equal("speech" in state.calls.delegate[0][4], false);
+
+  state.emit(
+    transcript({
+      eventId: "accepted_width",
+      text: "The width is 300 mm",
+      startMs: 300,
+      endMs: 500,
+    }),
+  );
+  state.emit({
+    type: "delegation",
+    delegationId: "width_request",
+    offsetMs: 600,
+  });
+  await flush();
+  assert.equal(state.calls.delegate.length, 2);
+  assert.deepEqual(plain(state.calls.delegate[1][4].speech), {
+    throughSequence: 2,
+    offsetMs: 600,
+  });
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["width_request", "I have your width."],
+  ]);
+  await state.stop();
+});
+
+test("accepted speech waits for slow caption persistence before cancelling a resume", async () => {
   const state = setup();
   const captionGate = deferred();
   state.mock.beforeCaption = () => captionGate.promise;
-  state.mock.onDelegate = async (_id, _voiceId, _requestId, signal) =>
-    new Promise((resolve) =>
+  state.mock.onDelegate = async (_id, _voiceId, _requestId, signal, options) => {
+    if (!options.resumeQuestionId) return { text: "Your new request is ready." };
+    return new Promise((resolve) =>
       signal.addEventListener("abort", () => resolve({ text: "Old reply" }), {
         once: true,
       }),
     );
+  };
   await readySavedQuestion(state);
   state.emit({ type: "delegation", delegationId: "resume_pending" });
   await flush();
   const before = state.calls.cancelDelegation.length;
   state.emit(transcript());
-  assert.equal(state.calls.cancelDelegation.length, before + 1);
+  state.emit({
+    type: "delegation",
+    delegationId: "accepted_speech",
+    offsetMs: 200,
+  });
+  assert.equal(state.calls.cancelDelegation.length, before);
   await flush();
   assert.equal(state.calls.caption.length, 0);
+  assert.equal(state.calls.delegate[0][3].aborted, false);
   captionGate.resolve();
   await flush();
   assert.equal(state.calls.caption.length, 1);
-  assert.equal(state.providers[0].commentaries.length, 0);
+  assert.equal(state.calls.delegate[0][3].aborted, true);
+  assert.equal(state.calls.cancelDelegation.length, before + 1);
+  assert.equal(state.calls.delegate.length, 2);
+  assert.deepEqual(plain(state.calls.delegate[1][4].speech), {
+    throughSequence: 0,
+    offsetMs: 200,
+  });
+  assert.deepEqual(plain(state.providers[0].replies), []);
+  assert.deepEqual(plain(state.providers[0].commentaries), [
+    ["accepted_speech", "Your new request is ready."],
+  ]);
   await state.stop();
 });
 
@@ -1817,6 +1914,12 @@ test("an old delegation cannot turn later unrelated speech into an unrequested t
   state.emit(transcript({ eventId: "later-speech", startMs: 500, endMs: 800 }));
   await flush();
   assert.equal(state.calls.delegate.length, 0);
+  assert.deepEqual(plain(state.logs), [
+    [
+      "[Roman] Voice delegation discarded.",
+      { reason: "caption_past_cutoff", stage: "caption_received", gapMs: 300 },
+    ],
+  ]);
   state.emit({
     type: "delegation",
     delegationId: "actual-request",
@@ -1825,6 +1928,51 @@ test("an old delegation cannot turn later unrelated speech into an unrequested t
   await flush();
   assert.equal(state.calls.delegate.length, 1);
   assert.equal(state.providers[0].commentaries[0][0], "actual-request");
+  assert.equal(state.logs.length, 1);
+  await state.stop();
+});
+
+test("a new delegation behind its caption logs only a reason and timing gap while replays stay quiet", async () => {
+  const state = setup();
+  await state.start();
+  state.emit(
+    transcript({
+      eventId: "private-caption-id",
+      text: "Private customer speech must never appear in diagnostics",
+      startMs: 500,
+      endMs: 800,
+    }),
+  );
+  await flush();
+  state.emit({
+    type: "delegation",
+    delegationId: "private-delegation-id",
+    offsetMs: 200,
+  });
+  await flush();
+  assert.equal(state.calls.delegate.length, 0);
+  assert.deepEqual(plain(state.logs), [
+    [
+      "[Roman] Voice delegation discarded.",
+      {
+        reason: "caption_past_cutoff",
+        stage: "delegation_received",
+        gapMs: 300,
+      },
+    ],
+  ]);
+  state.emit({
+    type: "delegation",
+    delegationId: "private-delegation-id",
+    offsetMs: 200,
+  });
+  state.emit({ type: "delegation", delegationId: "older", offsetMs: 100 });
+  await flush();
+  assert.equal(state.logs.length, 1);
+  state.emit({ type: "delegation", delegationId: "current", offsetMs: 900 });
+  await flush();
+  assert.equal(state.calls.delegate.length, 1);
+  assert.equal(state.logs.length, 1);
   await state.stop();
 });
 
@@ -1889,6 +2037,12 @@ test("newer speech during caption drain requires its own delegation cutoff befor
     "Later input must not run under authority-a",
   );
   assert.equal(state.providers[0].commentaries.length, 0);
+  assert.deepEqual(plain(state.logs), [
+    [
+      "[Roman] Voice delegation discarded.",
+      { reason: "caption_past_cutoff", stage: "caption_drain", gapMs: 300 },
+    ],
+  ]);
   state.emit({
     type: "delegation",
     delegationId: "authority-b",
@@ -1897,6 +2051,10 @@ test("newer speech during caption drain requires its own delegation cutoff befor
   await flush();
   assert.equal(state.calls.delegate.length, 1);
   assert.equal(state.providers[0].commentaries[0][0], "authority-b");
+  assert.deepEqual(plain(state.calls.delegate[0][4].speech), {
+    throughSequence: 1,
+    offsetMs: 900,
+  });
   await state.stop();
 });
 
@@ -1929,6 +2087,17 @@ test("pending delegation expires or stops without letting a late caption replay 
       await flush();
     } else await state.stop();
     assert.equal(state.timers.has(timer), false);
+    assert.deepEqual(
+      plain(state.logs),
+      ending === "expiry"
+        ? [
+            [
+              "[Roman] Voice delegation discarded.",
+              { reason: "caption_wait_expired" },
+            ],
+          ]
+        : [],
+    );
     if (ending === "expiry") {
       state.emit(transcript({ eventId: "late", startMs: 500, endMs: 800 }));
       state.emit({
@@ -1938,6 +2107,7 @@ test("pending delegation expires or stops without letting a late caption replay 
       });
       await flush();
       assert.equal(state.calls.delegate.length, 0);
+      assert.equal(state.logs.length, 1);
       await state.stop();
     }
   }
@@ -1982,6 +2152,7 @@ test("a timely caption being saved survives pending-delegation expiry until pers
   await flush();
   assert.equal(state.calls.delegate.length, 1);
   assert.equal(state.providers[0].commentaries[0][0], "waiting");
+  assert.deepEqual(state.logs, []);
   await state.stop();
 });
 
@@ -2693,6 +2864,7 @@ test("ordinary typed inputs keep connected voice and durable delivery idempotenc
   assert.deepEqual(state.providers[0].inputs, [input.text]);
   await flush();
   assert.equal(state.calls.delegate.length, 1);
+  assert.equal("speech" in state.calls.delegate[0][4], false);
   assert.deepEqual(state.providers[0].replies, [
     "Here is a verified product result.",
   ]);
@@ -3088,6 +3260,7 @@ test("clicked voice answers persist before direct advisor work without another d
   );
   await flush();
   assert.equal(state.calls.delegate.length, 1);
+  assert.equal("speech" in state.calls.delegate[0][4], false);
   assert.deepEqual(state.providers[0].replies, [
     "Here is a verified product result.",
   ]);
@@ -3153,6 +3326,7 @@ test("carousel choices use the same durable input boundary and directly request 
   assert.equal(state.providers[0].closed, false);
   await flush();
   assert.equal(state.calls.delegate.length, 1);
+  assert.equal("speech" in state.calls.delegate[0][4], false);
   assert.deepEqual(state.providers[0].replies, [
     "Here is a verified product result.",
   ]);

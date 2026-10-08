@@ -1706,6 +1706,32 @@ for (const [name, role, changes] of [
   );
 }
 
+test("accepted voice boundaries restore as context and malformed boundaries preserve the last valid snapshot", async (t) => {
+  const part = { type: "voice_turn", version: 1,
+    voiceId: "22222222-2222-4222-8222-222222222222", throughSequence: 12, offsetMs: 4000 };
+  const marker = { id: "accepted-speech", role: "context", status: "complete",
+    createdAt: "2026-09-16T10:00:00Z", parts: [part] };
+  const ctx = setup(t, { saved: access, mediaOptions: {} });
+  await resume(ctx, { ...complete, messages: [marker] });
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.client.getSnapshot().conversation.messages[0].parts)), [part]);
+  assert.equal(ctx.media.calls.microphone, 0);
+  for (const [role, changes] of [
+    ["user", {}], ["context", { throughSequence: -1 }],
+    ["context", { offsetMs: "4000" }], ["context", { text: "untrusted request" }],
+  ]) {
+    const before = ctx.client.getSnapshot().conversation;
+    const requestIndex = ctx.calls.length;
+    ctx.client.clearError();
+    await until(() => ctx.calls.length > requestIndex, "Chat was not refreshed");
+    ctx.respond(requestIndex, { ...complete, revision: 3,
+      messages: [{ ...marker, role, parts: [{ ...part, ...changes }] }] });
+    await until(() => !!ctx.client.getSnapshot().error, "Invalid voice boundary accepted");
+    assert.match(ctx.client.getSnapshot().error, /invalid conversation response/);
+    assert.equal(ctx.client.getSnapshot().conversation, before);
+  }
+});
+
 test("only a tab granted the tool claim executes the catalog command", async (t) => {
   const executions = [];
   const first = setup(t, {

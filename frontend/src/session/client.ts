@@ -78,6 +78,7 @@ import {
   canRecoverVoice,
   isLiveVoice,
   parseVoiceEventPart,
+  parseVoiceTurnPart,
   isVoiceCloseReason,
   VOICE_IDLE_WARNING_MS,
   type LiveVoice,
@@ -192,6 +193,11 @@ function validVoiceEvent(value: unknown) {
   } catch {
     return false;
   }
+}
+
+function validVoiceTurn(value: unknown) {
+  try { parseVoiceTurnPart(value); return true; }
+  catch { return false; }
 }
 
 function validNavigationPart(value: unknown) {
@@ -374,6 +380,8 @@ function validMessage(message: unknown): message is ConversationMessage {
               (part.type === "voice_event" &&
                 message.role === "context" &&
                 validVoiceEvent(part)) ||
+              (part.type === "voice_turn" &&
+                message.role === "context" && validVoiceTurn(part)) ||
               (part.type === "navigation" && validNavigationPart(part)) ||
               (part.type === "cart_added" && validCartAddedPart(part)) ||
               (part.type === "cart_sample_added" &&

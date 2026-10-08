@@ -11,6 +11,7 @@ const bundle = await build({
       import { createRoot } from 'react-dom/client';
       import { flushSync } from 'react-dom';
       import { Timeline } from './frontend/src/chat/Timeline';
+      export { latestQuestion } from './shared/questions';
       export function mount(container) {
         const root = createRoot(container);
         return {
@@ -73,7 +74,7 @@ function setup(t) {
     dom.window.close();
     assert.deepEqual(errors, []);
   });
-  return { container, render: view.render };
+  return { container, render: view.render, latestQuestion: dom.window.api.latestQuestion };
 }
 
 test("an upload-started preview follows the saved-image reply and precedes its quick answers", (t) => {
@@ -219,6 +220,76 @@ test("answering a voice question retires its controls without adding a second tr
     ctx.container.querySelectorAll(".roman-message-assistant").length,
     1,
   );
+});
+
+test("incidental input captions keep the offered voice answers visible and clickable", async (t) => {
+  const ctx = setup(t);
+  const offered = question();
+  const messages = [
+    message("context", offered),
+    message("assistant", caption("Would you like a sample?")),
+  ];
+  const answers = [];
+  const render = () => ctx.render({
+    messages,
+    activeQuestionId: ctx.latestQuestion(messages)?.invocationId,
+    voice: true,
+    onAnswer: async (...args) => answers.push(args),
+  });
+  render();
+  const originalPanel = ctx.container.querySelector(".roman-question");
+  for (const text of [" Hmm", " Mm", " Need to"]) {
+    messages.push(message("user", caption(text)));
+    render();
+    assert.equal(ctx.container.querySelector(".roman-question"), originalPanel);
+    assert.equal(originalPanel.querySelectorAll("button:not(:disabled)").length, 2);
+  }
+  ctx.container.querySelector(".roman-question button").click();
+  await delay(0);
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0][0], offered);
+  assert.equal(answers[0][1], "Yes, a sample");
+});
+
+test("an accepted voice marker retires old controls without a visible transcript entry", (t) => {
+  const ctx = setup(t);
+  const offered = question();
+  const marker = {
+    type: "voice_turn",
+    version: 1,
+    voiceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    throughSequence: 3,
+    offsetMs: 43600,
+  };
+  const messages = [
+    message("context", offered),
+    message("user", caption("Yes, a sample")),
+  ];
+  for (const status of ["pending", "complete"]) {
+    const accepted = [...messages, { ...message("context", marker), status }];
+    ctx.render({
+      messages: accepted,
+      activeQuestionId: ctx.latestQuestion(accepted)?.invocationId,
+      voice: true,
+      onAnswer: async () => assert.fail("An accepted answer cannot be submitted again."),
+    });
+    assert.equal(ctx.container.querySelector(".roman-question"), null);
+    assert.equal(ctx.container.querySelectorAll(".roman-message").length, 1);
+    assert.equal(ctx.container.querySelector(".roman-message-user p").textContent,
+      "Yes, a sample");
+    assert.doesNotMatch(ctx.container.textContent, /voice_turn|43600|eeeeeeee/);
+  }
+  const next = question({ question: "Would you like help measuring?", answers: ["Help me measure", "Keep browsing"] });
+  const completed = [...messages, message("context", marker, next)];
+  ctx.render({
+    messages: completed,
+    activeQuestionId: ctx.latestQuestion(completed)?.invocationId,
+    voice: true,
+    onAnswer: async () => {},
+  });
+  assert.equal(ctx.container.querySelector(".roman-question p").textContent, next.question);
+  assert.deepEqual([...ctx.container.querySelectorAll(".roman-question button")].map((button) => button.textContent), next.answers);
+  assert.doesNotMatch(ctx.container.textContent, /voice_turn|43600|eeeeeeee/);
 });
 
 test("widget arrival does not erase complete or split captions", (t) => {

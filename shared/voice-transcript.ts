@@ -27,7 +27,7 @@ export interface VoiceTranscriptGroup {
   fragments: VoiceTranscriptFragment[];
 }
 
-const maxCaptionPauseMs = 3000;
+export const VOICE_CAPTION_PAUSE_MS = 3000;
 
 function joinedCaptionText(
   fragments: readonly VoiceTranscriptFragment[],
@@ -84,6 +84,7 @@ export function groupVoiceTranscript(
   hiddenSequences: readonly number[] = [],
   breakBeforeSequences: readonly number[] = [],
   replyCompletedSequences: readonly number[] = [],
+  acceptedAudioBoundaries: readonly { voiceId: string; startMs: number }[] = [],
 ): VoiceTranscriptGroup[] {
   const groups: VoiceTranscriptGroup[] = [];
   const hidden = new Set(hiddenSequences);
@@ -92,6 +93,7 @@ export function groupVoiceTranscript(
   );
   let segment: VoiceTranscriptFragment[] = [];
   let continueAssistant = false;
+  let assistantGroup: VoiceTranscriptGroup | undefined;
 
   function appendSegment() {
     // Input ASR can arrive after Roman's response caption. Both streams carry
@@ -106,10 +108,10 @@ export function groupVoiceTranscript(
     // A tool can complete in the middle of Roman's sentence. Keep its response
     // continuous, but never combine customer speech from before and after a
     // newly offered question or reorder speech across that completion.
-    let previous =
-      continueAssistant && groups.at(-1)?.role === "assistant"
-        ? groups.at(-1)
-        : undefined;
+    const previousByRole: Partial<
+      Record<VoiceTranscriptFragment["role"], VoiceTranscriptGroup>
+    > = {};
+    if (continueAssistant) previousByRole.assistant = assistantGroup;
     for (const slot of segment) {
       const user = users[userIndex];
       const assistant = assistants[assistantIndex];
@@ -122,27 +124,44 @@ export function groupVoiceTranscript(
       const fragment = takeUser
         ? users[userIndex++]
         : assistants[assistantIndex++];
+      const previous = previousByRole[fragment.role];
+      const other =
+        previousByRole[fragment.role === "user" ? "assistant" : "user"];
+      // Interleaved captions belong to two independent audio streams. Keep each
+      // growing bubble stable; one continuous speaker can also bridge pauses in
+      // overlapping input without treating that input as a completed turn.
+      const overlappingSpeech =
+        previous &&
+        other &&
+        other.startMs <= previous.endMs &&
+        other.endMs >= fragment.startMs;
       if (
         previous &&
         previous.voiceId === fragment.voiceId &&
-        previous.role === fragment.role &&
-        adjacentInTimeline(previous.endSequence, slot.sequence, hidden) &&
         fragment.startMs >= previous.startMs &&
-        // Natural pauses within speech should not create separate chat bubbles.
-        fragment.startMs <= previous.endMs + maxCaptionPauseMs
+        !acceptedAudioBoundaries.some((boundary) =>
+          boundary.voiceId === fragment.voiceId &&
+          boundary.startMs > previous.startMs &&
+          boundary.startMs <= fragment.startMs,
+        ) &&
+        (fragment.startMs <= previous.endMs + VOICE_CAPTION_PAUSE_MS ||
+          overlappingSpeech)
       ) {
         previous.fragments.push(fragment);
         previous.endMs = Math.max(previous.endMs, fragment.endMs);
         previous.endSequence = slot.sequence;
       } else {
-        previous = {
+        const group = {
           ...fragment,
           sequence: slot.sequence,
           endSequence: slot.sequence,
           fragments: [fragment],
         };
-        groups.push(previous);
+        previousByRole[fragment.role] = group;
+        groups.push(group);
       }
+      if (fragment.role === "assistant")
+        assistantGroup = previousByRole.assistant;
     }
   }
 
@@ -166,6 +185,7 @@ export function groupVoiceTranscript(
       appendSegment();
       segment = [];
       continueAssistant = !!replyBoundary && !hardBoundary;
+      if (hardBoundary) assistantGroup = undefined;
     }
     segment.push(fragment);
   }

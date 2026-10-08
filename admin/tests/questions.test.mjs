@@ -420,6 +420,83 @@ test("measurement questions retire on replies or leaving their product, but reta
   );
 });
 
+test("raw voice captions preserve offered answers until a real customer turn is accepted", () => {
+  const offered = {
+    type: "question",
+    version: 1,
+    invocationId: randomUUID(),
+    ...selection,
+    voiceReply: { voiceId: randomUUID(), afterSequence: 3 },
+  };
+  const messages = [questionMessage(offered)];
+  const rawCaption = (text) => ({
+    type: "voice",
+    version: 1,
+    voiceId: offered.voiceReply.voiceId,
+    text,
+    startMs: 18000,
+    endMs: 19000,
+  });
+  for (const text of [" Hmm", "Yes", "180", "Hello", " Please repeat that"]) {
+    messages.push({ role: "user", status: "complete", parts: [rawCaption(text)] });
+    assert.equal(latestQuestion(messages), offered);
+  }
+  const original = structuredClone(messages);
+  assert.equal(latestQuestion([
+    ...messages,
+    { role: "assistant", status: "complete", parts: [rawCaption("Which room?")] },
+  ]), offered);
+  for (const parts of [
+    [{ type: "text", text: "Bedroom" }],
+    [rawCaption("Bedroom"), { type: "text", text: "Bedroom" }],
+    [],
+  ]) {
+    assert.equal(latestQuestion([
+      ...messages,
+      { role: "user", status: "pending", parts },
+    ]), undefined);
+  }
+  assert.deepEqual(messages, original);
+});
+
+test("an accepted voice turn retires its prior question even while pending or failed", () => {
+  const offered = {
+    type: "question",
+    version: 1,
+    invocationId: randomUUID(),
+    ...selection,
+  };
+  const accepted = {
+    type: "voice_turn",
+    version: 1,
+    voiceId: randomUUID(),
+    throughSequence: 9,
+    offsetMs: 43600,
+  };
+  for (const status of ["pending", "failed", "complete"]) {
+    assert.equal(latestQuestion([
+      questionMessage(offered),
+      { role: "context", status, parts: [accepted] },
+    ]), undefined);
+  }
+  const next = {
+    ...offered,
+    invocationId: randomUUID(),
+    question: "Does avoiding drilling matter?",
+    answers: ["Yes", "Regular fitting is fine"],
+  };
+  assert.equal(latestQuestion([
+    questionMessage(offered),
+    { role: "context", status: "complete", parts: [accepted, next] },
+  ]), next);
+  for (const status of ["pending", "failed"]) {
+    assert.equal(latestQuestion([
+      questionMessage(offered),
+      { role: "context", status, parts: [accepted, next] },
+    ]), undefined);
+  }
+});
+
 test("persisted questions reject malformed ownership and voice associations", () => {
   const part = {
     type: "question",
