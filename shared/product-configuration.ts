@@ -8,7 +8,7 @@ export interface ProductConfigurationChoice {
   selected: boolean;
   /** Whether this native choice is selectable now, never a stock/fit claim. */
   available: boolean;
-  /** Native displayed option charge, separate from the configured product total. */
+  /** Native displayed surcharge. An available ordinary choice without one adds no charge. */
   priceLabel?: string;
 }
 export interface ProductConfigurationControl {
@@ -99,7 +99,7 @@ export const productConfigurationToolDefinitions = [
     type: "function",
     name: "get_product_configuration",
     description:
-      "Read listed native options, dependencies, dimensions, native limits and settled configuredPrice for the loaded verified productPath. Returns short-lived single-use IDs. available means selectable now, not stock or permanent compatibility; parent IDs describe prerequisites. A missing priceLabel means unknown cost; configuredPrice excludes separate measurement guarantees and null means unknown. Unsupported widgets and purchase controls are excluded.",
+      "Read listed native options, dependencies, dimensions, native limits and settled configuredPrice for the loaded verified productPath. Returns short-lived single-use IDs. available means selectable now, not stock or permanent compatibility; parent IDs describe prerequisites. An available ordinary choice without a priceLabel adds no surcharge; unavailable choices may reveal pricing later. configuredPrice excludes separate measurement guarantees and null means the total is unknown. Unsupported widgets and purchase controls are excluded.",
     strict: true,
     parameters: {
       type: "object",

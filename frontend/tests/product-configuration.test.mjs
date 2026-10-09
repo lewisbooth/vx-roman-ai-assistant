@@ -123,6 +123,29 @@ test("display-only configuration reads preserve the model's mutation capability"
   assert.equal(result.status, "applied");
 });
 
+test("visible option charges survive missing totals and an unreadable fee invalidates configuration rather than becoming free", async (t) => {
+  const ctx = setup(t);
+  const fieldset = ctx.form.querySelector('fieldset[data-feature="1"]');
+  fieldset.insertAdjacentHTML(
+    "beforeend",
+    '<span data-second-label="1##7">+£19.95</span>',
+  );
+  const read = ctx.read();
+  assert.equal(read.status, "available");
+  assert.equal(read.configuredPrice, null);
+  assert.equal(read.controls[0].options[0].priceLabel, undefined);
+  assert.equal(read.controls[0].options[1].priceLabel, "+£19.95");
+
+  fieldset.querySelector("[data-second-label]").textContent = "+£19.95 +£25.00";
+  const failed = ctx.read();
+  assert.equal(failed.status, "unavailable");
+  assert.equal(failed.configurationId, null);
+  assert.deepEqual(Array.from(failed.controls), []);
+  assert.equal(ctx.diagnostics.at(-1)[1].reason, "native_inspection_failed");
+  assert.equal((await ctx.configure(selection(read))).status, "unsupported");
+  assert.deepEqual(ctx.events, []);
+});
+
 function guaranteeControls(ctx) {
   const { window, form } = ctx;
   form.querySelector("product-level-insurance").remove();

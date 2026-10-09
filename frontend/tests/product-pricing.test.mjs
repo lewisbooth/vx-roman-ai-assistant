@@ -163,7 +163,11 @@ test("pending, invalid, ambiguous or unowned native prices are unavailable", asy
         );
       }
       assert.equal(ctx.read(), null);
-      assert.equal(ctx.option(), undefined);
+      assert.equal(
+        ctx.option(),
+        "+£19.95",
+        "A missing total does not erase a visible option surcharge",
+      );
     });
 });
 
@@ -179,25 +183,18 @@ test("a settled multistep quote requires its visible post-price screen", (t) => 
   assert.equal(ctx.read(), null);
 });
 
-test("native surcharge labels require current positive option pricing and matching visible fieldset evidence", async (t) => {
+test("native surcharge labels remain authoritative when private feature metadata is missing or ambiguous", async (t) => {
   for (const scenario of [
-    "zero",
+    "absent-features",
     "missing-feature",
     "duplicate-feature",
     "duplicate-option",
-    "wrong-marker",
-    "hidden",
-    "disagreement",
-    "empty",
-    "two-prices",
-    "foreign-fieldset",
-    "stale-total",
+    "missing-price",
+    "invalid-price",
   ])
     await t.test(scenario, (t) => {
-      const ctx = setup(t),
-        labels = [...ctx.form.querySelectorAll("[data-second-label]")];
-      if (scenario === "zero")
-        ctx.product._features[0].featureOptions[0].priceInfo.retailPrice = 0;
+      const ctx = setup(t);
+      if (scenario === "absent-features") delete ctx.product._features;
       if (scenario === "missing-feature") ctx.product._features = [];
       if (scenario === "duplicate-feature")
         ctx.product._features.push(ctx.product._features[0]);
@@ -205,6 +202,28 @@ test("native surcharge labels require current positive option pricing and matchi
         ctx.product._features[0].featureOptions.push(
           ctx.product._features[0].featureOptions[0],
         );
+      if (scenario === "missing-price")
+        delete ctx.product._features[0].featureOptions[0].priceInfo;
+      if (scenario === "invalid-price")
+        ctx.product._features[0].featureOptions[0].priceInfo.retailPrice = NaN;
+      assert.equal(ctx.option(), "+£19.95");
+    });
+});
+
+test("only absent displays or a corroborated settled zero omit the surcharge", async (t) => {
+  for (const scenario of [
+    "zero",
+    "wrong-marker",
+    "hidden",
+    "empty",
+    "missing",
+    "foreign-fieldset",
+  ])
+    await t.test(scenario, (t) => {
+      const ctx = setup(t),
+        labels = [...ctx.form.querySelectorAll("[data-second-label]")];
+      if (scenario === "zero")
+        ctx.product._features[0].featureOptions[0].priceInfo.retailPrice = 0;
       if (scenario === "wrong-marker")
         labels.forEach((e) =>
           e.setAttribute("data-second-label", "6917##other"),
@@ -213,19 +232,67 @@ test("native surcharge labels require current positive option pricing and matchi
         labels.forEach((e) => {
           e.hidden = true;
         });
-      if (scenario === "disagreement") labels[1].textContent = "+£30.00";
-      if (scenario === "empty") labels[0].textContent = "";
-      if (scenario === "two-prices")
+      if (scenario === "empty")
         labels.forEach((e) => {
-          e.textContent = "+£19.95 +£25.00";
+          e.textContent = " ";
         });
+      if (scenario === "missing") labels.forEach((e) => e.remove());
       if (scenario === "foreign-fieldset") {
         const other = ctx.window.document.createElement("fieldset");
         other.dataset.feature = "other";
         ctx.form.append(other);
         labels.forEach((e) => other.append(e));
       }
-      if (scenario === "stale-total") ctx.form.classList.add("variant-loading");
       assert.equal(ctx.option(), undefined);
     });
+});
+
+test("unsettled private zero does not hide a displayed surcharge, and blank copies do not hide an agreed price", (t) => {
+  const ctx = setup(t);
+  ctx.product._features[0].featureOptions[0].priceInfo.retailPrice = 0;
+  ctx.form.classList.add("variant-loading");
+  assert.equal(ctx.read(), null);
+  assert.equal(ctx.option(), "+£19.95");
+  ctx.form.querySelector("[data-second-label]").textContent = "";
+  assert.equal(ctx.option(), "+£19.95");
+});
+
+test("visible ambiguous or unreadable option prices fail instead of implying an included choice", async (t) => {
+  for (const scenario of [
+    "disagreement",
+    "two-prices",
+    "old-only",
+    "error",
+    "too-long",
+    "too-many",
+  ])
+    await t.test(scenario, (t) => {
+      const ctx = setup(t),
+        labels = [...ctx.form.querySelectorAll("[data-second-label]")];
+      if (scenario === "disagreement") labels[1].textContent = "+£30.00";
+      if (scenario === "two-prices")
+        labels.forEach((e) => {
+          e.textContent = "+£19.95 +£25.00";
+        });
+      if (scenario === "old-only") labels[0].innerHTML = "<s>+£19.95</s>";
+      if (scenario === "error")
+        labels[0].innerHTML = '<span class="text-error">Price unavailable</span>';
+      if (scenario === "too-long") labels[0].textContent = "£" + "1".repeat(120);
+      if (scenario === "too-many")
+        for (let index = 0; index < 3; index++)
+          labels[0].parentElement.append(labels[0].cloneNode(true));
+      assert.throws(ctx.option, /Visible native option pricing is ambiguous/);
+    });
+});
+
+test("option labels preserve exact locale currency displays without deriving a configured total", (t) => {
+  const ctx = setup(t);
+  ctx.measurements.width = null;
+  for (const price of ["+£1,234.56", "+1.234,56 €", "USD 19.95", "−£5.00"]) {
+    ctx.form.querySelectorAll("[data-second-label]").forEach((e) => {
+      e.textContent = price;
+    });
+    assert.equal(ctx.option(), price);
+    assert.equal(ctx.read(), null);
+  }
 });

@@ -80,7 +80,7 @@ export function readConfiguredProductPrice(
   }
 }
 
-/** Native option labels are surcharges, separate from the displayed configured total. */
+/** Read visible native surcharges independently of the configured product total. */
 export function readProductOptionPrice(
   form: HTMLFormElement,
   control: HTMLInputElement | HTMLSelectElement,
@@ -88,7 +88,6 @@ export function readProductOptionPrice(
   configuredPrice: string | null,
 ): string | undefined {
   if (
-    !configuredPrice ||
     !/^\d{1,12}##\d{1,12}$/.test(marker) ||
     control.form !== form
   )
@@ -96,28 +95,28 @@ export function readProductOptionPrice(
   const product = form.parentElement as PricingElement;
   const [featureId, optionId] = marker.split("##");
   const features = product._features;
-  if (!Array.isArray(features) || features.length > 160) return;
-  const matching = features.filter(
+  const matching = (Array.isArray(features) && features.length <= 160 ? features : []).filter(
     (feature) =>
       feature &&
       typeof feature === "object" &&
       String(feature.featureId) === featureId,
   );
-  if (
-    matching.length !== 1 ||
-    !Array.isArray(matching[0].featureOptions) ||
-    matching[0].featureOptions.length > 160
-  )
-    return;
-  const options = matching[0].featureOptions.filter(
+  const options = (
+    matching.length === 1 &&
+    Array.isArray(matching[0].featureOptions) &&
+    matching[0].featureOptions.length <= 160
+      ? matching[0].featureOptions
+      : []
+  ).filter(
     (option: { featureOptionId?: unknown } | null) =>
       option && String(option.featureOptionId) === optionId,
   );
   const amount =
     options.length === 1 ? options[0].priceInfo?.retailPrice : undefined;
   // The theme does not clear old labels when the refreshed option price is zero.
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0)
-    return;
+  // Only a settled quote and unique native evidence establish that exception;
+  // missing private metadata must not hide a displayed surcharge.
+  if (configuredPrice && amount === 0) return;
   const fieldset = control.closest("fieldset[data-feature]");
   if (!fieldset) return;
   const labels = [
@@ -126,13 +125,17 @@ export function readProductOptionPrice(
     (element) =>
       element.closest("dynamic-pricing") === product &&
       element.closest("fieldset[data-feature]") === fieldset &&
-      controlVisible(element),
+      controlVisible(element) &&
+      (!!element.textContent?.trim() ||
+        !!element.querySelector(".text-error,[role=alert]")),
   );
-  if (!labels.length || labels.length > 4) return;
+  if (!labels.length) return;
+  if (labels.length > 4)
+    throw new Error("Visible native option pricing is ambiguous.");
   const values = labels.map(displayedPrice);
-  return values[0] && values.every((value) => value === values[0])
-    ? values[0]
-    : undefined;
+  if (!values[0] || !values.every((value) => value === values[0]))
+    throw new Error("Visible native option pricing is ambiguous.");
+  return values[0];
 }
 
 /** Advance only the theme's verified quote submitter, never its cart submitter. */

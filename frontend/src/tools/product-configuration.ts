@@ -410,7 +410,7 @@ export function createProductConfigurationTools() {
       controls: current.controls, measurements: current.measurements,
       configuredPrice: current.configuredPrice,
       actions: { sampleAvailable: isSampleAvailable(productPath) },
-      message: "Listed native choices and their current selectability, dependencies, dimensions and settled quote. Disabled choices do not establish stock or permanent incompatibility; missing price labels mean unknown cost.",
+      message: "Listed native choices and their current selectability, dependencies, dimensions and settled quote. Available ordinary choices without a displayed surcharge add no charge. Disabled choices do not establish stock, permanent incompatibility or their eventual price; a missing configured quote remains unknown.",
     });
     snapshot = { ...current, id, productPath, createdAt: Date.now() };
     return configuration;

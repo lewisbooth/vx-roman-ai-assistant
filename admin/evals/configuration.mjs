@@ -742,7 +742,7 @@ export function createGuideContinuationFixture(sample = {}) {
   };
   if (sample.informationalInterruption) snapshot.controls.push({
     id: "c1", label: "Lining", kind: "radio",
-    description: "Lining choices become selectable after width and drop are entered. Missing prices are unknown until the measured quote is calculated.",
+    description: "Lining choices become selectable after width and drop are entered. Their pricing can appear when these dependent choices become selectable.",
     options: [
       { id: "o0", label: "Light filtering lining", selected: true, available: true },
       { id: "o1", label: "Blackout lining", selected: false, available: false, description: "Blocks light. Enter measurements before selecting." },
