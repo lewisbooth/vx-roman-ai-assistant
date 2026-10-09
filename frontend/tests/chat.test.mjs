@@ -2117,6 +2117,10 @@ test("revealed carousel choices stay enabled while Roman works and queue with pr
           () => ctx.container.querySelector(".roman-queued-message"),
           "Choice waits in the shared queue",
         );
+        await until(
+          () => card.isConnected && !card.disabled,
+          "Queued choice releases its transient selection state",
+        );
         assert.equal(
           ctx.container.querySelectorAll(".roman-queued-message").length,
           1,
