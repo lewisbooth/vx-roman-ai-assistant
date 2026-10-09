@@ -244,6 +244,23 @@ export function questionNavigationView(answer: string): "cart" | undefined {
   return answer.trim().toLowerCase() === "view cart" ? "cart" : undefined;
 }
 
+/** Ordered visible actions; direct navigation stays distinct from an answer. */
+export function questionActions(selection: QuestionSelection): (
+  | { kind: "answer"; label: string }
+  | { kind: "navigation"; label: "View Cart"; view: "cart" }
+)[] {
+  return [
+    ...selection.answers.map((label) => ({ kind: "answer" as const, label })),
+    ...(selection.navigationActions ?? [])
+      .filter((action) =>
+        !selection.answers.some(
+          (answer) => questionNavigationView(answer) === action.view,
+        ),
+      )
+      .map((action) => ({ kind: "navigation" as const, ...action })),
+  ];
+}
+
 function questionMessage(
   input: unknown,
   question: string,

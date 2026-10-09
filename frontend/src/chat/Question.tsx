@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import {
   formatMeasurementAnswer,
   MAX_QUESTION_ANSWER_LENGTH,
+  questionActions,
   questionNavigationView,
   type QuestionPart,
 } from "../../../shared/questions";
@@ -85,6 +86,21 @@ export function Question({
   }
 
   const measurement = part.measurement;
+  const actionButtons = questionActions(part)
+    .filter((action) => action.kind !== "navigation" || onNavigate)
+    .map((action) => (
+      <button
+        key={action.label}
+        type="button"
+        disabled={disabled || pending}
+        onClick={() => {
+          if (action.kind === "navigation") onNavigate?.(action.view);
+          else void answer(action.label);
+        }}
+      >
+        {action.label}
+      </button>
+    ));
   // Keep the component mounted when an optimistic voice answer retires it.
   // Failed submissions can restore the numeric draft and error without a
   // manufactured transcript row or a separate question-state cache.
@@ -176,28 +192,13 @@ export function Question({
               <button type="submit" disabled={disabled || pending}>
                 Submit
               </button>
+              {actionButtons}
             </div>
           </form>
         </>
       ) : (
         <div className="roman-action-buttons">
-          {part.answers.map((value) => (
-            <button
-              key={value}
-              type="button"
-              disabled={disabled || pending}
-              onClick={() => void answer(value)}
-            >
-              {value}
-            </button>
-          ))}
-        </div>
-      )}
-      {!!onNavigate && !!part.navigationActions?.length && (
-        <div className="roman-action-buttons">
-          {part.navigationActions.filter((action) => !part.answers.some((answer) => questionNavigationView(answer) === action.view)).map((action) =>
-            <button key={action.view} type="button" disabled={disabled || pending} onClick={() => onNavigate(action.view)}>{action.label}</button>,
-          )}
+          {actionButtons}
         </div>
       )}
       <p className="roman-question-hint">

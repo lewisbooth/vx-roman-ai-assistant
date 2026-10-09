@@ -1126,10 +1126,9 @@ test("a successful question-only delegation speaks the question instead of annou
   assert.deepEqual(plain(state.providers[0].commentaries), [
     ["item_1", "Would you prefer blackout or filtered daylight?"],
   ]);
-  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), {
-    answers: ["Blackout", "Filtered daylight"],
-    navigationActions: [],
-  });
+  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), [
+    "Blackout", "Filtered daylight",
+  ]);
   await state.stop();
 });
 
@@ -1522,10 +1521,7 @@ test("the server resumes one saved question silently at readiness without a Live
   assert.deepEqual(plain(state.providers[0].replies), [
     question.measurement.instructions + " " + question.question,
   ]);
-  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), {
-    answers: [],
-    navigationActions: [],
-  });
+  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), []);
   assert.deepEqual(state.providers[0].commentaries, []);
   state.ready();
   state.emit({ type: "started" });
@@ -2239,10 +2235,7 @@ function deliveredChoices(thoughts) {
     assert.match(text, /silent|quoted|reference/i);
     return JSON.parse(text.slice(text.indexOf("{")));
   });
-  return {
-    answers: batches.flatMap((batch) => batch.answers),
-    navigationActions: batches.flatMap((batch) => batch.navigationActions),
-  };
+  return batches.flatMap((batch) => batch.actions);
 }
 
 test("spoken and clicked turns deliver their exact displayed choices silently before the reply", async () => {
@@ -2276,10 +2269,9 @@ test("spoken and clicked turns deliver their exact displayed choices silently be
     await flush();
     const provider = state.providers[0];
     assert.equal(provider.thoughts.length, 1);
-    assert.deepEqual(deliveredChoices(provider.thoughts), {
-      answers: question.answers,
-      navigationActions: ["View Cart"],
-    });
+    assert.deepEqual(deliveredChoices(provider.thoughts), [
+      ...question.answers, "View Cart",
+    ]);
     assert.doesNotMatch(JSON.stringify(provider.thoughts), /private-question-call/);
     assert.deepEqual(provider.commentaries, []);
     assert.deepEqual(provider.replies, []);
@@ -2314,10 +2306,9 @@ test("long Unicode choice labels reach Live in bounded batches without truncatio
   state.emit({ type: "delegation", delegationId: "unicode-options" });
   await flush();
   assert.ok(state.providers[0].thoughts.length > 1);
-  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), {
-    answers,
-    navigationActions: ["View Cart"],
-  });
+  assert.deepEqual(deliveredChoices(state.providers[0].thoughts), [
+    ...answers, "View Cart",
+  ]);
   assert.ok(
     state.order.lastIndexOf("thinking-sent") < state.order.indexOf("commentary-sent"),
   );
@@ -2325,6 +2316,28 @@ test("long Unicode choice labels reach Live in bounded batches without truncatio
     ["unicode-options", "Choose the option that suits your window."],
   ]);
   await state.stop();
+});
+
+test("the voice action group retains measurement navigation and deduplicates an existing cart answer", async () => {
+  for (const answers of [[], ["Help me measure", "view cart"]]) {
+    const state = setup();
+    state.mock.onDelegate = async () => ({
+      text: "What would you like next?",
+      questionPresentation: {
+        question: "What would you like next?",
+        answers,
+        navigationActions: [{ label: "View Cart", view: "cart" }],
+        ...(answers.length ? {} : { measurement: { instructions: "Use a metal tape.", label: "Width", unit: "cm", productPath: "/products/example-blind" } }),
+      },
+    });
+    await state.start();
+    state.emit(transcript());
+    state.emit({ type: "delegation", delegationId: "group-actions" });
+    await flush();
+    assert.deepEqual(deliveredChoices(state.providers[0].thoughts), answers.length ? answers : ["View Cart"]);
+    assert.ok(state.order.lastIndexOf("thinking-sent") < state.order.indexOf("commentary-sent"));
+    await state.stop();
+  }
 });
 
 test("photo upload and failed replies replace prior choice metadata with an empty current set", async () => {
@@ -2352,10 +2365,7 @@ test("photo upload and failed replies replace prior choice metadata with an empt
     await flush();
     const currentContext = state.providers[0].thoughts.slice(contextCount);
     assert.ok(currentContext.length > 0);
-    assert.deepEqual(deliveredChoices(currentContext), {
-      answers: [],
-      navigationActions: [],
-    });
+    assert.deepEqual(deliveredChoices(currentContext), []);
     assert.equal(state.providers[0].commentaries.length, 2);
     assert.ok(
       state.order.lastIndexOf("thinking-sent") < state.order.lastIndexOf("commentary-sent"),
@@ -2411,10 +2421,9 @@ test("stopping or correcting a turn during choice delivery cannot speak its stal
       assert.equal(state.providers[0].thoughts.length, 1);
       assert.deepEqual(state.providers[0].commentaries, []);
     } else {
-      assert.deepEqual(deliveredChoices(state.providers[0].thoughts.slice(1)), {
-        answers: ["Blue roller", "Blue pleated"],
-        navigationActions: [],
-      });
+      assert.deepEqual(deliveredChoices(state.providers[0].thoughts.slice(1)), [
+        "Blue roller", "Blue pleated",
+      ]);
       assert.deepEqual(plain(state.providers[0].commentaries), [
         ["new-work", "Which corrected blind would you like?"],
       ]);

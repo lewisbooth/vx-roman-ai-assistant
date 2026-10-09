@@ -174,6 +174,9 @@ test("View Cart navigates without submitting or clearing a numeric draft and doe
   const ctx = setup(t, {part: {...part, navigationActions: [{label: "View Cart", view: "cart"}]}, onNavigate: (view) => navigated.push(view)});
   ctx.fill("1 1/2 in");
   const shortcut = [...ctx.container.querySelectorAll("button")].find((button) => button.textContent === "View Cart");
+  assert.equal(ctx.container.querySelectorAll(".roman-action-buttons").length, 1);
+  assert.equal(shortcut.parentElement, ctx.container.querySelector(".roman-measurement-entry"));
+  assert.equal(shortcut.type, "button");
   ctx.flush(() => shortcut.click());
   assert.deepEqual(navigated, ["cart"]);
   assert.deepEqual(ctx.calls, []);
@@ -181,10 +184,58 @@ test("View Cart navigates without submitting or clearing a numeric draft and doe
   assert.equal(ctx.container.querySelector("section").getAttribute("aria-busy"), "false");
   ctx.render({part: {...part, measurement: undefined, question: "Where next?", answers: ["Help me measure", "View Cart"], navigationActions: [{label: "View Cart", view: "cart"}]}});
   const choices = [...ctx.container.querySelectorAll("button")].filter((button) => button.textContent === "View Cart");
+  assert.equal(ctx.container.querySelectorAll(".roman-action-buttons").length, 1);
   assert.equal(choices.length, 1);
   ctx.flush(() => choices[0].click());
   assert.deepEqual(navigated, ["cart", "cart"]);
   assert.deepEqual(ctx.calls, []);
+});
+
+test("quick answers and direct navigation share one ordered group and lock together while an answer is pending", async (t) => {
+  const navigated = [];
+  let finish;
+  const choicePart = {
+    ...part,
+    measurement: undefined,
+    question: "What would you like next?",
+    answers: ["Help me measure", "Explain blind options", "Order a sample"],
+    navigationActions: [{ label: "View Cart", view: "cart" }],
+  };
+  const ctx = setup(t, {
+    part: choicePart,
+    onNavigate: (view) => navigated.push(view),
+    onAnswer: () => new Promise((resolve) => { finish = resolve; }),
+  });
+  const group = ctx.container.querySelector(".roman-action-buttons");
+  const buttons = [...group.children];
+  assert.equal(ctx.container.querySelectorAll(".roman-action-buttons").length, 1);
+  assert.deepEqual(buttons.map((button) => button.textContent), [...choicePart.answers, "View Cart"]);
+  ctx.flush(() => buttons.at(-1).click());
+  assert.deepEqual(navigated, ["cart"]);
+  assert.deepEqual(ctx.calls, []);
+  ctx.flush(() => buttons[0].click());
+  assert.equal(ctx.calls.length, 1);
+  assert.equal(ctx.calls[0][1], "Help me measure");
+  assert.ok(buttons.every((button) => button.disabled));
+  ctx.flush(() => buttons.at(-1).click());
+  assert.deepEqual(navigated, ["cart"]);
+  finish();
+  await until(() => !buttons[0].disabled);
+  ctx.flush(() => buttons.at(-1).click());
+  assert.deepEqual(navigated, ["cart", "cart"]);
+  assert.equal(ctx.calls.length, 1);
+});
+
+test("navigation shortcuts stay hidden without a navigation owner while legacy cart answers remain usable", async (t) => {
+  const ctx = setup(t, {
+    part: { ...part, measurement: undefined, answers: ["Help me measure"], navigationActions: [{ label: "View Cart", view: "cart" }] },
+  });
+  assert.deepEqual([...ctx.container.querySelectorAll("button")].map((button) => button.textContent), ["Help me measure"]);
+  ctx.render({ part: { ...part, measurement: undefined, answers: ["View Cart"], navigationActions: [{ label: "View Cart", view: "cart" }] } });
+  assert.equal(ctx.container.querySelectorAll("button").length, 1);
+  ctx.flush(() => ctx.container.querySelector("button").click());
+  await until(() => !ctx.container.querySelector("button").disabled);
+  assert.equal(ctx.calls[0][1], "View Cart");
 });
 
 test("unknown units and empty instructions leave a clean, accessible free-text field", async (t) => {
@@ -223,7 +274,10 @@ test("established unit hints do not overwrite explicit units, fractions or uncer
 
 test("decimal submission uses the canonical answer and locks repeated submissions while pending", async (t) => {
   let finish;
+  const navigated = [];
   const ctx = setup(t, {
+    part: { ...part, navigationActions: [{ label: "View Cart", view: "cart" }] },
+    onNavigate: (view) => navigated.push(view),
     onAnswer: () =>
       new Promise((resolve) => {
         finish = resolve;
@@ -233,7 +287,7 @@ test("decimal submission uses the canonical answer and locks repeated submission
   ctx.input().focus();
   ctx.submit();
   assert.equal(ctx.calls.length, 1);
-  assert.equal(ctx.calls[0][0], part);
+  assert.deepEqual(ctx.calls[0][0], { ...part, navigationActions: [{ label: "View Cart", view: "cart" }] });
   assert.equal(ctx.calls[0][1], "Recess clearance: 20.5");
   assert.equal(ctx.input().value, "20.5");
   assert.equal(ctx.input().readOnly, true);
@@ -250,6 +304,7 @@ test("decimal submission uses the canonical answer and locks repeated submission
   ctx.submit();
   for (const button of ctx.container.querySelectorAll("button")) button.click();
   assert.equal(ctx.calls.length, 1);
+  assert.deepEqual(navigated, []);
   finish();
   await until(() => !ctx.input().readOnly);
   assert.equal(ctx.calls.length, 1);

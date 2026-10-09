@@ -460,7 +460,7 @@ test("thinking and commentary require matching acknowledgment and known delegati
     code: "command_failed",
   });
   assert.equal(socket.sent.length, 0);
-  const context = 'Silent displayed choices: {"answers":["Measure another window","Browse products"],"navigationActions":["View Cart"]}';
+  const context = 'Silent displayed choices: {"actions":["Measure another window","Browse products","View Cart"]}';
   const thinking = provider.appendThinking(context);
   assert.equal(socket.sent[0].type, "session.thinking.append");
   assert.equal(socket.sent[0].delegation_id, null);
