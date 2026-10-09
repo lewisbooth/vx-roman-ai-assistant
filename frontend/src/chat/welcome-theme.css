@@ -135,8 +135,8 @@
 
 .roman-chat[data-welcome-theme] .roman-composer form:not([data-unavailable]) {
   background: #f7f5ef;
-  border-color: #f7f5ef80;
-  box-shadow: 0 6px 30px #19030320;
+  border-color: var(--roman-composer-border, #f7f5ef80);
+  box-shadow: var(--roman-composer-shadow, 0 6px 30px #19030320);
 }
 
 .roman-chat[data-welcome-theme] .roman-composer > .roman-chat-error,

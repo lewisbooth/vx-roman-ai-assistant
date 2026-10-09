@@ -1169,7 +1169,51 @@
   }
 
   .roman-composer form {
-    @apply flex items-center gap-[6px] rounded-[26px] border border-solid border-[#e3e0d8] bg-white p-[3px] font-sans;
+    @apply flex items-center gap-[6px] rounded-[26px] border border-solid bg-white p-[3px] font-sans;
+    border-color: var(--roman-composer-border, #e3e0d8);
+    box-shadow: var(--roman-composer-shadow, none);
+  }
+
+  .roman-composer form:has(textarea[data-roman-composer]:focus) {
+    --roman-composer-border: transparent;
+    --roman-composer-shadow:
+      -10px 0 18px #b8796799,
+      10px 0 20px #c597458c,
+      0 0 8px #ea9a4999,
+      0 0 28px #b8796773;
+    animation: roman-composer-focus-glow 3.6s ease-in-out infinite;
+  }
+
+  @keyframes roman-composer-focus-glow {
+    0%, 100% {
+      box-shadow:
+        -10px 0 18px #b8796799,
+        10px 0 20px #c597458c,
+        0 0 8px #ea9a4999,
+        0 0 28px #b8796773;
+    }
+    50% {
+      box-shadow:
+        10px 0 22px #b87967b3,
+        -10px 0 20px #c59745a6,
+        0 0 12px #ea9a49a6,
+        0 0 34px #b879677d;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .roman-composer form:has(textarea[data-roman-composer]:focus) {
+      animation: none;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .roman-composer form:has(textarea[data-roman-composer]:focus) {
+      --roman-composer-shadow: none;
+      animation: none;
+      outline: 2px solid Highlight;
+      outline-offset: 2px;
+    }
   }
 
   .roman-composer form[data-unavailable] {
@@ -1224,11 +1268,6 @@
     font-family: inherit;
     outline: none;
     box-shadow: none;
-  }
-
-  .roman-composer textarea:focus-visible {
-    outline: 2px solid #797366;
-    outline-offset: 0;
   }
 
   .roman-composer button {
