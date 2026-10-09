@@ -1181,12 +1181,12 @@
 
   .roman-composer-glow {
     position: absolute;
-    inset: -6px;
+    inset: var(--roman-composer-glow-inset, -3px);
     z-index: -2;
     overflow: hidden;
     border-radius: 999px;
     pointer-events: none;
-    filter: blur(12px);
+    filter: blur(var(--roman-composer-glow-blur, 8px));
     opacity: 0;
   }
 
@@ -1209,11 +1209,12 @@
     z-index: -1;
     border-radius: inherit;
     background: inherit;
+    box-shadow: 0 0 0 1px #f6865a;
     pointer-events: none;
   }
 
   .roman-composer form:has(textarea[data-roman-composer]:focus) .roman-composer-glow {
-    opacity: 1;
+    opacity: var(--roman-composer-glow-opacity, 0.45);
   }
 
   .roman-composer form:has(textarea[data-roman-composer]:focus) .roman-composer-glow::before {

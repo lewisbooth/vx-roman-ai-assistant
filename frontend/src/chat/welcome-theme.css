@@ -134,6 +134,9 @@
 }
 
 .roman-chat[data-welcome-theme] .roman-composer form:not([data-unavailable]) {
+  --roman-composer-glow-inset: -6px;
+  --roman-composer-glow-blur: 12px;
+  --roman-composer-glow-opacity: 1;
   background: #f7f5ef;
   border-color: var(--roman-composer-border, #f7f5ef80);
   box-shadow: var(--roman-composer-shadow, 0 6px 30px #19030320);
