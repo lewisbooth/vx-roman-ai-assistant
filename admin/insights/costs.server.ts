@@ -4,11 +4,11 @@ import type { CostSummary, ModelPrice, TokenPrices } from "../pricing/contracts"
 import { emptyCostSummary, tokenCostUsd } from "../pricing/estimate.server";
 import { MODEL_PRICES } from "../pricing/rates.server";
 
-interface ConversationTotal {
-  conversationId: string | null;
+interface CostTotal {
+  groupKey: string | null;
 }
 
-interface TokenTotal extends ConversationTotal {
+interface TokenTotal extends CostTotal {
   band: bigint | null;
   count: bigint;
   inputTokens: number | null;
@@ -17,7 +17,7 @@ interface TokenTotal extends ConversationTotal {
   outputTokens: number | null;
 }
 
-interface VoiceTotal extends ConversationTotal {
+interface VoiceTotal extends CostTotal {
   band: bigint | null;
   count: bigint;
   seconds: number | null;
@@ -51,22 +51,39 @@ export async function getConversationCostSummaries(
   prices: readonly ModelPrice[] = MODEL_PRICES,
 ): Promise<Map<string, CostSummary>> {
   if (!conversationIds.length) return new Map();
-  return costSummaries(shop, prices, conversationIds);
+  return costSummaries(shop, prices, { kind: "conversations", conversationIds });
 }
+
+/** The UTC day of each physical request or session, with the same pricing as
+ * lifetime and conversation totals. End is exclusive. */
+export async function getDailyCostSummaries(
+  shop: string,
+  from: Date,
+  toExclusive: Date,
+  prices: readonly ModelPrice[] = MODEL_PRICES,
+): Promise<Map<string, CostSummary>> {
+  return costSummaries(shop, prices, { kind: "days", from, toExclusive });
+}
+
+type CostScope =
+  | { kind: "conversations"; conversationIds: readonly string[] }
+  | { kind: "days"; from: Date; toExclusive: Date };
 
 async function costSummaries(
   shop: string,
   prices: readonly ModelPrice[],
-  conversationIds?: readonly string[],
+  grouping?: CostScope,
 ): Promise<Map<string, CostSummary>> {
-  const conversationId = conversationIds
-    ? Prisma.sql`c."id"`
-    : Prisma.sql`NULL`;
+  const groupKey =
+    grouping?.kind === "conversations"
+      ? Prisma.sql`c."id"`
+      : grouping?.kind === "days"
+        ? Prisma.sql`date(u."createdAt" / 1000.0, 'unixepoch')`
+        : Prisma.sql`NULL`;
   const scope = Prisma.sql`c."shop" = ${shop}
-    ${conversationIds ? Prisma.sql`AND c."id" IN (${Prisma.join(conversationIds)})` : Prisma.empty}`;
-  const conversationGroup = conversationIds
-    ? Prisma.sql`conversationId,`
-    : Prisma.empty;
+    ${grouping?.kind === "conversations" ? Prisma.sql`AND c."id" IN (${Prisma.join(grouping.conversationIds)})` : Prisma.empty}
+    ${grouping?.kind === "days" ? Prisma.sql`AND u."createdAt" >= ${grouping.from} AND u."createdAt" < ${grouping.toExclusive}` : Prisma.empty}`;
+  const costGroup = grouping ? Prisma.sql`groupKey,` : Prisma.empty;
   const tokenBands: { when: Prisma.Sql; charges: TokenPrices }[] = [];
   const voiceBands: { when: Prisma.Sql; perMinute: number }[] = [];
   for (const price of prices) {
@@ -112,7 +129,7 @@ async function costSummaries(
   // transaction while rows are transferred and priced in JavaScript.
   const [model, images, voice] = await Promise.all([
     prisma.$queryRaw<TokenTotal[]>(Prisma.sql`
-      SELECT ${conversationId} AS conversationId,
+      SELECT ${groupKey} AS groupKey,
         CASE WHEN ${validTokens} THEN ${tokenBand} ELSE NULL END AS band,
         COUNT(*) AS count,
         TOTAL(u."inputTokens") AS inputTokens,
@@ -121,15 +138,15 @@ async function costSummaries(
         TOTAL(u."outputTokens") AS outputTokens
       FROM "Conversation" c JOIN "ModelUsage" u ON u."conversationId" = c."id"
       WHERE ${scope}
-      GROUP BY ${conversationGroup} band`),
+      GROUP BY ${costGroup} band`),
     prisma.$queryRaw<
-      (ConversationTotal & {
+      (CostTotal & {
         evidence: string | null;
         count: bigint;
         usd: number | null;
       })[]
     >(Prisma.sql`
-      SELECT ${conversationId} AS conversationId,
+      SELECT ${groupKey} AS groupKey,
         CASE WHEN u."usageValid" = 1
         AND typeof(u."costUsd") IN ('integer', 'real')
         AND u."costUsd" BETWEEN 0 AND ${Number.MAX_VALUE}
@@ -138,20 +155,20 @@ async function costSummaries(
         COUNT(*) AS count, TOTAL(u."costUsd") AS usd
       FROM "Conversation" c JOIN "ImageGenerationAttempt" u ON u."conversationId" = c."id"
       WHERE ${scope}
-      GROUP BY ${conversationGroup} evidence`),
+      GROUP BY ${costGroup} evidence`),
     prisma.$queryRaw<VoiceTotal[]>(Prisma.sql`
-      SELECT ${conversationId} AS conversationId,
+      SELECT ${groupKey} AS groupKey,
         CASE WHEN typeof(u."usageSeconds") IN ('integer', 'real')
         AND u."usageSeconds" BETWEEN 0 AND ${Number.MAX_VALUE}
         THEN ${voiceBand} ELSE NULL END AS band,
         COUNT(*) AS count, TOTAL(u."usageSeconds") AS seconds
       FROM "Conversation" c JOIN "VoiceSession" u ON u."conversationId" = c."id"
       WHERE ${scope}
-      GROUP BY ${conversationGroup} band`),
+      GROUP BY ${costGroup} band`),
   ]);
   const summaries = new Map<string, CostSummary>();
-  function summaryFor(row: ConversationTotal) {
-    const id = row.conversationId ?? "";
+  function summaryFor(row: CostTotal) {
+    const id = row.groupKey ?? "";
     let summary = summaries.get(id);
     if (!summary) {
       summary = emptyCostSummary();

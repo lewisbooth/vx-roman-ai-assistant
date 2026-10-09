@@ -155,6 +155,7 @@ model VisualizationJob {
   @@unique([ownerId, requestId])
   @@index([ownerId, createdAt, id])
   @@index([status, deadlineAt])
+  @@index([conversationId])
 }
 
 model ImageGenerationAttempt {
@@ -241,6 +242,7 @@ model ToolInvocation {
 
   @@unique([conversationId, providerCallId])
   @@index([conversationId, status])
+  @@index([conversationId, name, status])
 }
 
 model MeasurementDraft {

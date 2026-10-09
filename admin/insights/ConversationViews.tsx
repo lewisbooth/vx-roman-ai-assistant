@@ -14,6 +14,7 @@ import type {
   UsageSummary,
 } from "./contracts";
 import { CostValue, ImageCostDetails } from "../pricing/PricingViews";
+import type { SpendRange } from "./spend";
 import {
   estimatedUsd,
   recordedDate,
@@ -60,9 +61,19 @@ export function RecordedUsage({ usage }: { usage: UsageSummary }) {
 
 export function ConversationList({
   overview,
+  range,
 }: {
   overview: ConversationOverview;
+  range?: SpendRange;
 }) {
+  function pageHref(page: number): string {
+    const params = new URLSearchParams({ page: String(page) });
+    if (range) {
+      params.set("from", range.from);
+      params.set("to", range.to);
+    }
+    return `/app?${params.toString()}`;
+  }
   return (
     <s-stack gap="base">
       {overview.conversations.length === 0 ? (
@@ -124,11 +135,11 @@ export function ConversationList({
       )}
       <s-stack direction="inline" gap="base" alignItems="center">
         {overview.page > 1 && (
-          <s-button href={`/app?page=${overview.page - 1}`}>Previous</s-button>
+          <s-button href={pageHref(overview.page - 1)}>Previous</s-button>
         )}
         <s-text>Page {overview.page}</s-text>
         {overview.hasNextPage && (
-          <s-button href={`/app?page=${overview.page + 1}`}>Next</s-button>
+          <s-button href={pageHref(overview.page + 1)}>Next</s-button>
         )}
       </s-stack>
     </s-stack>

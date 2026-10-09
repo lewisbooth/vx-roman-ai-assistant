@@ -4,12 +4,18 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { APP_NAME } from "../../shared/brand";
 import { authenticate } from "../shopify.server";
 import { getConversationOverview } from "../insights/repository.server";
+import { getDailySpendReport } from "../insights/spend.server";
+import { readSpendRange } from "../insights/spend";
+import { DailySpend } from "../insights/SpendViews";
+import { getSessionMetrics } from "../insights/session-metrics.server";
+import { SessionMetricsView } from "../insights/SessionMetricsView";
 import { ConversationList, RecordedUsage } from "../insights/ConversationViews";
 import { EstimatedCosts, PricingHistory } from "../pricing/PricingViews";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const pages = new URL(request.url).searchParams.getAll("page");
+  const params = new URL(request.url).searchParams;
+  const pages = params.getAll("page");
   const page = pages.length === 0 ? 1 : Number(pages[0]);
   if (
     pages.length > 1 ||
@@ -23,7 +29,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       headers: { "Cache-Control": "no-store" },
     });
   }
-  const overview = await getConversationOverview(session.shop, page);
+  let range;
+  try {
+    range = readSpendRange(params);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    throw new Response(error.message, {
+      status: 400,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+  const [overview, spend, metrics] = await Promise.all([
+    getConversationOverview(session.shop, page),
+    getDailySpendReport(session.shop, range),
+    getSessionMetrics(session.shop, range),
+  ]);
   const themeEditorUrl = new URL(
     `https://${session.shop}/admin/themes/current/editor`,
   );
@@ -34,7 +54,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   );
 
   return data(
-    { overview, themeEditorUrl: themeEditorUrl.toString() },
+    { overview, spend, metrics, themeEditorUrl: themeEditorUrl.toString() },
     {
       headers: { "Cache-Control": "no-store" },
     },
@@ -42,7 +62,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export default function Home() {
-  const { overview, themeEditorUrl } = useLoaderData<typeof loader>();
+  const { overview, spend, metrics, themeEditorUrl } =
+    useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
 
   return (
@@ -54,6 +75,8 @@ export default function Home() {
       >
         Refresh
       </s-button>
+      <DailySpend report={spend} page={overview.page} />
+      <SessionMetricsView metrics={metrics} range={spend} />
       <s-section heading="Conversations">
         <s-stack gap="base">
           <s-paragraph>
@@ -61,7 +84,7 @@ export default function Home() {
             {overview.summary.endedConversations} ended ·{" "}
             {overview.summary.failedReplies} failed replies
           </s-paragraph>
-          <ConversationList overview={overview} />
+          <ConversationList overview={overview} range={spend} />
           <s-paragraph color="subdued">
             Showing this store only, newest first. Active means the conversation
             has not been ended, not that a customer is online.

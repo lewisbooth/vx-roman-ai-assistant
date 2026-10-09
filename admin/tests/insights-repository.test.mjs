@@ -377,7 +377,7 @@ test("page cost queries are shop-scoped, bounded to requested IDs and skipped fo
       (query) =>
         /c\."shop" = \?/.test(query) &&
         /c\."id" IN \(\?/.test(query) &&
-        /GROUP BY conversationId,/.test(query),
+        /GROUP BY groupKey,/.test(query),
     ),
   );
   queries.length = 0;
@@ -925,7 +925,7 @@ test("large retained history uses a fixed number of read statements while anothe
       2,
     );
     const pageQueries = queries.filter((query) =>
-      /GROUP BY conversationId,/.test(query),
+      /GROUP BY groupKey,/.test(query),
     );
     assert.equal(pageQueries.length, 3);
     assert.ok(

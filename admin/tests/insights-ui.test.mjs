@@ -13,12 +13,16 @@ const [viewBundle, routeBundle] = await Promise.all([
         import { flushSync } from 'react-dom';
         import * as views from './admin/insights/ConversationViews';
         import * as pricingViews from './admin/pricing/PricingViews';
+        import * as spendViews from './admin/insights/SpendViews';
+        import * as metricsViews from './admin/insights/SessionMetricsView';
         export * from './admin/insights/format';
+        export { readSpendRange } from './admin/insights/spend';
+        export function dispatch(node, event) { flushSync(() => node.dispatchEvent(event)); }
         export function mount(container) {
           const root = createRoot(container);
           return {
             render(name, props) {
-              const View = views[name] ?? pricingViews[name];
+              const View = views[name] ?? pricingViews[name] ?? spendViews[name] ?? metricsViews[name];
               flushSync(() => root.render(<View {...props} />));
             },
             dispose() { root.unmount(); },
@@ -55,7 +59,7 @@ const [viewBundle, routeBundle] = await Promise.all([
         name: "inspection-route-boundaries",
         setup(build) {
           build.onResolve(
-            { filter: /(?:shopify|repository)\.server$/ },
+            { filter: /(?:shopify|repository|spend|session-metrics)\.server$/ },
             (args) => ({ path: args.path, namespace: "mock" }),
           );
           build.onResolve(
@@ -68,11 +72,15 @@ const [viewBundle, routeBundle] = await Promise.all([
           build.onLoad({ filter: /.*/, namespace: "mock" }, (args) => ({
             contents: args.path.endsWith("shopify.server")
               ? "export const authenticate = { admin: (request) => mock.authenticate(request) };"
-              : args.path.endsWith("repository.server")
-                ? "export const getConversationOverview = (...args) => mock.overview(...args); export const getConversationInspection = (...args) => mock.inspection(...args);"
-                : args.path === "react-router"
-                  ? "export const data = (value, init) => ({data:value, init}); export const useLoaderData=()=>{}; export const useRevalidator=()=>{};"
-                  : "export const boundary={headers:()=>({})};",
+              : args.path.endsWith("spend.server")
+                ? "export const getDailySpendReport = (...args) => mock.spend(...args);"
+                : args.path.endsWith("session-metrics.server")
+                  ? "export const getSessionMetrics = (...args) => mock.metrics(...args);"
+                  : args.path.endsWith("repository.server")
+                    ? "export const getConversationOverview = (...args) => mock.overview(...args); export const getConversationInspection = (...args) => mock.inspection(...args);"
+                    : args.path === "react-router"
+                      ? "export const data = (value, init) => ({data:value, init}); export const useLoaderData=()=>{}; export const useRevalidator=()=>{};"
+                      : "export const boundary={headers:()=>({})};",
           }));
         },
       },
@@ -138,6 +146,14 @@ function setupRoutes() {
       calls.push(["overview", ...args]);
       return { page: args[1] };
     },
+    spend: async (...args) => {
+      calls.push(["spend", ...args]);
+      return args[1];
+    },
+    metrics: async (...args) => {
+      calls.push(["metrics", ...args]);
+      return { sessions: 0 };
+    },
     inspection: async (...args) => {
       calls.push(["inspection", ...args]);
       return { conversation: { id: args[1] } };
@@ -150,6 +166,7 @@ function setupRoutes() {
     mock,
     Response,
     URL,
+    URLSearchParams,
     process: { env: { SHOPIFY_API_KEY: "public-app-key" } },
   });
   return { ...module.exports, calls, mock };
@@ -877,6 +894,19 @@ test("conversation list uses bounded paging links and handles empty pages", (t) 
     ["/app?page=1", "/app?page=3"],
   );
   render("ConversationList", {
+    overview,
+    range: { from: "2026-10-01", to: "2026-10-09" },
+  });
+  assert.deepEqual(
+    [...container.querySelectorAll("s-button")].map((node) =>
+      node.getAttribute("href"),
+    ),
+    [
+      "/app?page=1&from=2026-10-01&to=2026-10-09",
+      "/app?page=3&from=2026-10-01&to=2026-10-09",
+    ],
+  );
+  render("ConversationList", {
     overview: { ...overview, page: 1, hasNextPage: false, conversations: [] },
   });
   assert.match(container.textContent, /No conversations yet/);
@@ -931,15 +961,179 @@ test("conversation totals distinguish combined, partial, unavailable and reporte
   );
 });
 
+test("daily spend shows cents, gaps and keyboard-selected day details while retaining range controls", (t) => {
+  const { render, container, api } = setupView(t);
+  const priced = {
+    ...EMPTY_COST,
+    modelUsd: 1.123456,
+    totalUsd: 1.123456,
+    pricedModelCalls: 1,
+  };
+  const partial = {
+    ...priced,
+    modelUsd: 0.2,
+    totalUsd: 0.2,
+    unpricedModelCalls: 1,
+  };
+  const report = {
+    from: "2026-10-01",
+    to: "2026-10-04",
+    cost: {
+      ...priced,
+      modelUsd: 1.323456,
+      totalUsd: 1.323456,
+      pricedModelCalls: 2,
+      unpricedModelCalls: 2,
+    },
+    days: [
+      { day: "2026-10-01", cost: priced },
+      { day: "2026-10-02", cost: { ...EMPTY_COST, unpricedModelCalls: 1 } },
+      { day: "2026-10-03", cost: EMPTY_COST },
+      { day: "2026-10-04", cost: partial },
+    ],
+  };
+  render("DailySpend", { report, page: 2 });
+  assert.equal(container.querySelector("dd").textContent, "USD 1.32");
+  assert.equal(container.querySelector('input[name="page"]').value, "2");
+  assert.equal(
+    container.querySelector('input[name="from"]').value,
+    report.from,
+  );
+  assert.equal(container.querySelector('input[name="to"]').value, report.to);
+  assert.match(
+    container.textContent,
+    /Partial estimate.*Unpriced activity is excluded/,
+  );
+  assert.equal(container.querySelectorAll('path[fill="none"]').length, 2);
+  const points = [...container.querySelectorAll('svg [role="button"]')];
+  assert.equal(
+    points.filter((node) => node.getAttribute("tabindex") === "0").length,
+    1,
+  );
+  assert.match(
+    points[1].getAttribute("aria-label"),
+    /Unavailable.*Unpriced activity only/,
+  );
+  assert.match(
+    points[2].getAttribute("aria-label"),
+    /USD 0.00.*No recorded activity/,
+  );
+  const window = container.ownerDocument.defaultView;
+  api.dispatch(points[1], new window.MouseEvent("click", { bubbles: true }));
+  assert.match(
+    container.querySelector('[role="status"]').textContent,
+    /2026-10-02.*Unavailable/,
+  );
+  api.dispatch(
+    points[1],
+    new window.KeyboardEvent("keydown", { bubbles: true, key: "End" }),
+  );
+  assert.equal(points[3].getAttribute("tabindex"), "0");
+  assert.match(
+    container.querySelector('[role="status"]').textContent,
+    /2026-10-04.*USD 0.20.*Partial/,
+  );
+  render("DailySpend", {
+    page: 1,
+    report: {
+      from: "2026-10-09",
+      to: "2026-10-09",
+      cost: EMPTY_COST,
+      days: [{ day: "2026-10-09", cost: EMPTY_COST }],
+    },
+  });
+  assert.equal(
+    container.querySelector('input[name="from"]').value,
+    "2026-10-09",
+  );
+  assert.equal(container.querySelector('input[name="page"]'), null);
+  assert.match(container.textContent, /No recorded activity in this range/);
+  assert.doesNotMatch(
+    container.querySelector('[role="status"]').textContent,
+    /2026-10-04/,
+  );
+});
+
+test("dashboard ranges default to 30 UTC days and reject duplicate boundaries", (t) => {
+  const { container, api } = setupView(t);
+  const params = container.ownerDocument.defaultView.URLSearchParams;
+  const defaults = api.readSpendRange(
+    new params(),
+    new Date("2026-10-09T23:59:59Z"),
+  );
+  assert.equal(defaults.from, "2026-09-10");
+  assert.equal(defaults.to, "2026-10-09");
+  for (const query of [
+    "from=2026-10-01&from=2026-10-02",
+    "to=2026-10-08&to=2026-10-09",
+  ])
+    assert.throws(
+      () => api.readSpendRange(new params(query)),
+      /one date for each/,
+    );
+});
+
+test("session dashboard uses distinct-session shares and an accessible voice/text donut", (t) => {
+  const { render, container } = setupView(t);
+  const metrics = {
+    sessions: 10,
+    voiceSessions: 4,
+    textSessions: 6,
+    visualizerSessions: 3,
+    sampleCartSessions: 2,
+    productCartSessions: 1,
+  };
+  const range = { from: "2026-10-01", to: "2026-10-09" };
+  render("SessionMetricsView", { metrics, range });
+  assert.equal(
+    container.querySelector('svg[role="img"]').getAttribute("aria-label"),
+    "4 sessions used voice; 6 sessions were text-only",
+  );
+  assert.match(container.textContent, /4 · 40%.*6 · 60%/);
+  assert.match(container.textContent, /Used visualizer30%3 of 10 sessions/);
+  assert.match(
+    container.textContent,
+    /Added sample to cart20%2 of 10 sessions/,
+  );
+  assert.match(
+    container.textContent,
+    /Added product to cart10%1 of 10 sessions/,
+  );
+  assert.match(container.textContent, /confirmed additions/);
+  render("SessionMetricsView", {
+    range,
+    metrics: {
+      sessions: 0,
+      voiceSessions: 0,
+      textSessions: 0,
+      visualizerSessions: 0,
+      sampleCartSessions: 0,
+      productCartSessions: 0,
+    },
+  });
+  assert.equal(container.querySelector('svg[role="img"]'), null);
+  assert.match(container.textContent, /No sessions started in this range/);
+  assert.doesNotMatch(container.textContent, /NaN|Infinity|0%/);
+});
+
 test("overview authenticates independently and scopes data to the authenticated shop", async () => {
   const { overviewLoader, calls } = setupRoutes();
   const request = new Request(
-    "https://roman.example/app?page=2&shop=other.myshopify.com",
+    "https://roman.example/app?page=2&from=2026-10-01&to=2026-10-09&shop=other.myshopify.com",
   );
   const result = await overviewLoader({ request, params: {} });
   assert.equal(calls[0][0], "authenticate");
   assert.equal(calls[0][1], request);
   assert.deepEqual(calls[1], ["overview", "hd-dev-single.myshopify.com", 2]);
+  for (const [index, name] of [
+    [2, "spend"],
+    [3, "metrics"],
+  ]) {
+    assert.equal(calls[index][0], name);
+    assert.equal(calls[index][1], "hd-dev-single.myshopify.com");
+    assert.equal(calls[index][2].from, "2026-10-01");
+    assert.equal(calls[index][2].to, "2026-10-09");
+  }
   assert.equal(result.data.overview.page, 2);
   assert.equal(result.init.headers["Cache-Control"], "no-store");
   assert.match(
@@ -971,6 +1165,28 @@ test("invalid pagination is rejected after authentication and before data access
     );
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "authenticate");
+  }
+});
+
+test("invalid spend dates are rejected after authentication before reporting queries", async () => {
+  for (const query of [
+    "from=2026-02-30&to=2026-03-01",
+    "from=2026-10-09&to=2026-10-01",
+    "from=2026-10-01&from=2026-10-02",
+    "from=2024-01-01&to=2026-10-09",
+  ]) {
+    const { overviewLoader, calls } = setupRoutes();
+    await assert.rejects(
+      overviewLoader({
+        request: new Request(`https://roman.example/app?${query}`),
+        params: {},
+      }),
+      (error) =>
+        error instanceof Response &&
+        error.status === 400 &&
+        error.headers.get("Cache-Control") === "no-store",
+    );
+    assert.equal(calls.length, 1);
   }
 });
 
