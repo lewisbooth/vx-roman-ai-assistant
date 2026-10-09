@@ -950,11 +950,11 @@
   }
 
   .roman-question-hint {
-    @apply mt-[10px] mb-0 text-[12px] leading-[1.4] text-[#716b60];
+    @apply mt-[10px] mb-0 font-sans text-[12px] leading-[1.4] text-[#716b60];
   }
 
   .roman-measurement-instructions {
-    @apply mt-[10px] mb-0 whitespace-pre-line text-[14px] leading-[1.5] [overflow-wrap:anywhere];
+    @apply mt-[10px] mb-0 whitespace-pre-line font-sans text-[14px] leading-[1.5] [overflow-wrap:anywhere];
   }
 
   .roman-measurement-form {
@@ -1031,7 +1031,7 @@
   }
 
   .roman-question .roman-chat-error {
-    @apply mt-[10px] pb-0 text-[#8b2424];
+    @apply mt-[10px] pb-0 font-sans text-[#8b2424];
   }
 
   @media (forced-colors: active) {
