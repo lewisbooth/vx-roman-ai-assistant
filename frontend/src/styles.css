@@ -950,7 +950,7 @@
   }
 
   .roman-question-hint {
-    @apply mt-[10px] mb-0 font-sans text-[12px] leading-[1.4] text-black;
+    @apply mt-[10px] mb-0 font-sans text-[12px] leading-[1.4] text-[#716b60];
   }
 
   .roman-measurement-instructions {
