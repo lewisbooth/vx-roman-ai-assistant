@@ -1,10 +1,14 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../db.server";
-import type { ModelPrice, TokenPrices } from "../pricing/contracts";
+import type { CostSummary, ModelPrice, TokenPrices } from "../pricing/contracts";
 import { emptyCostSummary, tokenCostUsd } from "../pricing/estimate.server";
 import { MODEL_PRICES } from "../pricing/rates.server";
 
-interface TokenTotal {
+interface ConversationTotal {
+  conversationId: string | null;
+}
+
+interface TokenTotal extends ConversationTotal {
   band: bigint | null;
   count: bigint;
   inputTokens: number | null;
@@ -13,7 +17,7 @@ interface TokenTotal {
   outputTokens: number | null;
 }
 
-interface VoiceTotal {
+interface VoiceTotal extends ConversationTotal {
   band: bigint | null;
   count: bigint;
   seconds: number | null;
@@ -37,6 +41,32 @@ export async function getShopCostSummary(
   shop: string,
   prices: readonly ModelPrice[] = MODEL_PRICES,
 ) {
+  return (await costSummaries(shop, prices)).get("") ?? emptyCostSummary();
+}
+
+/** Only the requested merchant page's accounting groups leave SQLite. */
+export async function getConversationCostSummaries(
+  shop: string,
+  conversationIds: readonly string[],
+  prices: readonly ModelPrice[] = MODEL_PRICES,
+): Promise<Map<string, CostSummary>> {
+  if (!conversationIds.length) return new Map();
+  return costSummaries(shop, prices, conversationIds);
+}
+
+async function costSummaries(
+  shop: string,
+  prices: readonly ModelPrice[],
+  conversationIds?: readonly string[],
+): Promise<Map<string, CostSummary>> {
+  const conversationId = conversationIds
+    ? Prisma.sql`c."id"`
+    : Prisma.sql`NULL`;
+  const scope = Prisma.sql`c."shop" = ${shop}
+    ${conversationIds ? Prisma.sql`AND c."id" IN (${Prisma.join(conversationIds)})` : Prisma.empty}`;
+  const conversationGroup = conversationIds
+    ? Prisma.sql`conversationId,`
+    : Prisma.empty;
   const tokenBands: { when: Prisma.Sql; charges: TokenPrices }[] = [];
   const voiceBands: { when: Prisma.Sql; perMinute: number }[] = [];
   for (const price of prices) {
@@ -82,38 +112,55 @@ export async function getShopCostSummary(
   // transaction while rows are transferred and priced in JavaScript.
   const [model, images, voice] = await Promise.all([
     prisma.$queryRaw<TokenTotal[]>(Prisma.sql`
-      SELECT CASE WHEN ${validTokens} THEN ${tokenBand} ELSE NULL END AS band,
+      SELECT ${conversationId} AS conversationId,
+        CASE WHEN ${validTokens} THEN ${tokenBand} ELSE NULL END AS band,
         COUNT(*) AS count,
         TOTAL(u."inputTokens") AS inputTokens,
         TOTAL(u."cachedInputTokens") AS cachedInputTokens,
         TOTAL(u."cacheWriteInputTokens") AS cacheWriteInputTokens,
         TOTAL(u."outputTokens") AS outputTokens
       FROM "Conversation" c JOIN "ModelUsage" u ON u."conversationId" = c."id"
-      WHERE c."shop" = ${shop}
-      GROUP BY band`),
+      WHERE ${scope}
+      GROUP BY ${conversationGroup} band`),
     prisma.$queryRaw<
-      { evidence: string | null; count: bigint; usd: number | null }[]
+      (ConversationTotal & {
+        evidence: string | null;
+        count: bigint;
+        usd: number | null;
+      })[]
     >(Prisma.sql`
-      SELECT CASE WHEN u."usageValid" = 1
+      SELECT ${conversationId} AS conversationId,
+        CASE WHEN u."usageValid" = 1
         AND typeof(u."costUsd") IN ('integer', 'real')
         AND u."costUsd" BETWEEN 0 AND ${Number.MAX_VALUE}
         AND u."costEvidence" IN ('reported', 'estimated')
         THEN u."costEvidence" ELSE NULL END AS evidence,
         COUNT(*) AS count, TOTAL(u."costUsd") AS usd
       FROM "Conversation" c JOIN "ImageGenerationAttempt" u ON u."conversationId" = c."id"
-      WHERE c."shop" = ${shop}
-      GROUP BY evidence`),
+      WHERE ${scope}
+      GROUP BY ${conversationGroup} evidence`),
     prisma.$queryRaw<VoiceTotal[]>(Prisma.sql`
-      SELECT CASE WHEN typeof(u."usageSeconds") IN ('integer', 'real')
+      SELECT ${conversationId} AS conversationId,
+        CASE WHEN typeof(u."usageSeconds") IN ('integer', 'real')
         AND u."usageSeconds" BETWEEN 0 AND ${Number.MAX_VALUE}
         THEN ${voiceBand} ELSE NULL END AS band,
         COUNT(*) AS count, TOTAL(u."usageSeconds") AS seconds
       FROM "Conversation" c JOIN "VoiceSession" u ON u."conversationId" = c."id"
-      WHERE c."shop" = ${shop}
-      GROUP BY band`),
+      WHERE ${scope}
+      GROUP BY ${conversationGroup} band`),
   ]);
-  const summary = emptyCostSummary();
+  const summaries = new Map<string, CostSummary>();
+  function summaryFor(row: ConversationTotal) {
+    const id = row.conversationId ?? "";
+    let summary = summaries.get(id);
+    if (!summary) {
+      summary = emptyCostSummary();
+      summaries.set(id, summary);
+    }
+    return summary;
+  }
   for (const row of model) {
+    const summary = summaryFor(row);
     const count = Number(row.count);
     const band = row.band === null ? undefined : tokenBands[Number(row.band)];
     const usd = band
@@ -134,6 +181,7 @@ export async function getShopCostSummary(
     }
   }
   for (const row of voice) {
+    const summary = summaryFor(row);
     const count = Number(row.count);
     const band = row.band === null ? undefined : voiceBands[Number(row.band)];
     const usd = band ? (Number(row.seconds) * band.perMinute) / 60 : NaN;
@@ -144,6 +192,7 @@ export async function getShopCostSummary(
     }
   }
   for (const row of images) {
+    const summary = summaryFor(row);
     const count = Number(row.count);
     if (row.evidence === null || !Number.isFinite(row.usd))
       summary.unpricedImageAttempts += count;
@@ -153,14 +202,15 @@ export async function getShopCostSummary(
       summary.imageUsd = (summary.imageUsd ?? 0) + Number(row.usd);
     }
   }
-  if (
-    summary.modelUsd !== null ||
-    summary.voiceUsd !== null ||
-    summary.imageUsd !== null
-  )
-    summary.totalUsd =
-      (summary.modelUsd ?? 0) +
-      (summary.voiceUsd ?? 0) +
-      (summary.imageUsd ?? 0);
-  return summary;
+  for (const summary of summaries.values())
+    if (
+      summary.modelUsd !== null ||
+      summary.voiceUsd !== null ||
+      summary.imageUsd !== null
+    )
+      summary.totalUsd =
+        (summary.modelUsd ?? 0) +
+        (summary.voiceUsd ?? 0) +
+        (summary.imageUsd ?? 0);
+  return summaries;
 }

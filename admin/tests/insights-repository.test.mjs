@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { after, before, beforeEach, test } from "node:test";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
@@ -66,56 +67,8 @@ test("image attempts are shop-scoped, retain billed failures and unknown coverag
   const own = await conversation();
   const foreign = await conversation({ shop: otherShop });
   const at = new Date("2026-10-06T12:00:00.000Z");
-  async function imageJob(conversationId, jobShop) {
-    const owner = await database.galleryOwner.create({
-      data: {
-        id: randomUUID(),
-        shop: jobShop,
-        origin: `https://${jobShop}`,
-        tokenHash: `PRIVATE-${randomUUID()}`,
-      },
-    });
-    const window = await database.windowPhoto.create({
-      data: {
-        id: randomUUID(),
-        ownerId: owner.id,
-        title: "Nursery",
-        assetKey: "PRIVATE-IMAGE-KEY",
-        sha256: randomUUID(),
-        width: 1024,
-        height: 1024,
-        bytes: 100,
-        consentVersion: "v1",
-        consentAt: at,
-        conversationId,
-        requestId: randomUUID(),
-        requestHash: randomUUID(),
-      },
-    });
-    return database.visualizationJob.create({
-      data: {
-        id: randomUUID(),
-        ownerId: owner.id,
-        windowId: window.id,
-        conversationId,
-        requestId: randomUUID(),
-        requestHash: randomUUID(),
-        windowRevision: 1,
-        windowTitle: window.title,
-        sourceAssetKey: "PRIVATE-SOURCE",
-        productPath: "/products/blackout",
-        productTitle: "Blackout",
-        cleanup: true,
-        promptVersion: "test",
-        width: 1024,
-        height: 1024,
-        deadlineAt: at,
-        deletedAt: at,
-      },
-    });
-  }
-  const job = await imageJob(own.id, shop);
-  const otherJob = await imageJob(foreign.id, otherShop);
+  const job = await imageJob(own.id, shop, at);
+  const otherJob = await imageJob(foreign.id, otherShop, at);
   const sample = {
     model: "gpt-image-2.5-sunburst",
     createdAt: at,
@@ -265,6 +218,221 @@ async function usage(conversationId, assistantId, overrides = {}) {
     },
   });
 }
+
+async function imageJob(conversationId, jobShop, at = pricedAt) {
+  const owner = await database.galleryOwner.create({
+    data: {
+      id: randomUUID(),
+      shop: jobShop,
+      origin: `https://${jobShop}`,
+      tokenHash: `PRIVATE-${randomUUID()}`,
+    },
+  });
+  const window = await database.windowPhoto.create({
+    data: {
+      id: randomUUID(),
+      ownerId: owner.id,
+      title: "Nursery",
+      assetKey: "PRIVATE-IMAGE-KEY",
+      sha256: randomUUID(),
+      width: 1024,
+      height: 1024,
+      bytes: 100,
+      consentVersion: "v1",
+      consentAt: at,
+      conversationId,
+      requestId: randomUUID(),
+      requestHash: randomUUID(),
+    },
+  });
+  return database.visualizationJob.create({
+    data: {
+      id: randomUUID(),
+      ownerId: owner.id,
+      windowId: window.id,
+      conversationId,
+      requestId: randomUUID(),
+      requestHash: randomUUID(),
+      windowRevision: 1,
+      windowTitle: window.title,
+      sourceAssetKey: "PRIVATE-SOURCE",
+      productPath: "/products/blackout",
+      productTitle: "Blackout",
+      cleanup: true,
+      promptVersion: "test",
+      width: 1024,
+      height: 1024,
+      deadlineAt: at,
+      deletedAt: at,
+    },
+  });
+}
+
+test("conversation totals include text, voice and image costs without mixing sessions", async () => {
+  const first = await conversation();
+  const second = await conversation();
+  const firstReply = await message(first.id);
+  const secondReply = await message(second.id);
+  await usage(first.id, firstReply.id);
+  await usage(second.id, secondReply.id, {
+    inputTokens: 800,
+    outputTokens: 300,
+    totalTokens: 1100,
+  });
+  await usage(second.id, secondReply.id, { model: "unpriced-model" });
+  await voice(first.id, { model: "gpt-live-1", usageSeconds: 60 });
+  await voice(second.id, { model: "gpt-live-1", usageSeconds: 120 });
+  await voice(second.id);
+  const imageAt = new Date("2026-10-06T12:00:00.000Z");
+  const job = await imageJob(first.id, shop, imageAt);
+  const sample = {
+    model: "gpt-image-2.5-sunburst",
+    createdAt: imageAt,
+    textInputTokens: 10,
+    textCachedInputTokens: null,
+    imageInputTokens: 20,
+    imageCachedInputTokens: null,
+    imageOutputTokens: 100,
+    usageValid: true,
+  };
+  const pinned = repository.imageRateFor(sample.model, imageAt);
+  const estimate = repository.estimateImageUsage(sample, pinned);
+  await database.imageGenerationAttempt.create({
+    data: {
+      id: randomUUID(),
+      jobId: job.id,
+      conversationId: first.id,
+      ordinal: 1,
+      ...sample,
+      status: "storage_failed",
+      rateSnapshotJson: JSON.stringify(pinned),
+      costUsd: estimate.usd,
+      costEvidence: estimate.evidence,
+    },
+  });
+  await database.imageGenerationAttempt.create({
+    data: {
+      id: randomUUID(),
+      jobId: job.id,
+      conversationId: first.id,
+      ordinal: 2,
+      ...sample,
+      imageOutputTokens: null,
+      status: "unknown_outcome",
+      rateSnapshotJson: JSON.stringify(pinned),
+      costUsd: null,
+      costEvidence: "unknown",
+    },
+  });
+  const grouped = await repository.getConversationCostSummaries(shop, [
+    first.id,
+    second.id,
+  ]);
+  assert.equal(grouped.size, 2);
+  const overview = await repository.getConversationOverview(shop);
+  for (const id of [first.id, second.id]) {
+    const detail = await repository.getConversationInspection(shop, id);
+    assertCostsEqual(grouped.get(id), detail.cost);
+    assertCostsEqual(
+      overview.conversations.find((row) => row.id === id).cost,
+      detail.cost,
+    );
+  }
+  assert.equal(grouped.get(first.id).pricedImageAttempts, 1);
+  assert.equal(grouped.get(first.id).estimatedImageAttempts, 1);
+  assert.equal(grouped.get(first.id).unpricedImageAttempts, 1);
+  assert.equal(grouped.get(first.id).imageUsd, estimate.usd);
+  assert.equal(grouped.get(second.id).imageUsd, null);
+  assert.equal(grouped.get(second.id).unpricedModelCalls, 1);
+  assert.equal(grouped.get(second.id).unpricedVoiceSessions, 1);
+  assert.notEqual(
+    grouped.get(first.id).totalUsd,
+    grouped.get(second.id).totalUsd,
+  );
+});
+
+test("page cost queries are shop-scoped, bounded to requested IDs and skipped for an empty page", async () => {
+  const selected = await conversation();
+  const offPage = await conversation();
+  const foreign = await conversation({ shop: otherShop });
+  for (const row of [selected, offPage, foreign]) {
+    const reply = await message(row.id);
+    await usage(row.id, reply.id);
+    await voice(row.id, { model: "gpt-live-1", usageSeconds: 10 });
+  }
+  queries.length = 0;
+  const result = await repository.getConversationCostSummaries(shop, [
+    selected.id,
+    selected.id,
+    foreign.id,
+    randomUUID(),
+    "' OR 1=1 --",
+  ]);
+  assert.deepEqual([...result.keys()], [selected.id]);
+  assert.equal(result.get(selected.id).pricedModelCalls, 1);
+  assert.equal(result.get(selected.id).pricedVoiceSessions, 1);
+  assert.equal(queries.length, 3);
+  assert.ok(
+    queries.every(
+      (query) =>
+        /c\."shop" = \?/.test(query) &&
+        /c\."id" IN \(\?/.test(query) &&
+        /GROUP BY conversationId,/.test(query),
+    ),
+  );
+  queries.length = 0;
+  assert.deepEqual(
+    await repository.getConversationCostSummaries(shop, []),
+    new Map(),
+  );
+  assert.equal(queries.length, 0);
+});
+
+test("conversation totals keep unavailable, partial, measured zero and unused costs distinct", async () => {
+  const unused = await conversation();
+  const unknown = await conversation();
+  const zero = await conversation();
+  const partial = await conversation();
+  const unknownReply = await message(unknown.id);
+  await usage(unknown.id, unknownReply.id, { model: "unconfigured-model" });
+  await voice(unknown.id);
+  const zeroReply = await message(zero.id);
+  await usage(zero.id, zeroReply.id, {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  });
+  await voice(zero.id, { model: "gpt-live-1", usageSeconds: 0 });
+  const partialReply = await message(partial.id);
+  await usage(partial.id, partialReply.id);
+  await usage(partial.id, partialReply.id, { cacheWriteInputTokens: null });
+  const result = await repository.getConversationCostSummaries(shop, [
+    unused.id,
+    unknown.id,
+    zero.id,
+    partial.id,
+  ]);
+  assert.equal(result.has(unused.id), false);
+  assert.equal(result.get(unknown.id).totalUsd, null);
+  assert.equal(result.get(unknown.id).unpricedModelCalls, 1);
+  assert.equal(result.get(unknown.id).unpricedVoiceSessions, 1);
+  assert.equal(result.get(zero.id).totalUsd, 0);
+  assert.equal(result.get(zero.id).pricedModelCalls, 1);
+  assert.equal(result.get(zero.id).pricedVoiceSessions, 1);
+  assert.equal(result.get(partial.id).pricedModelCalls, 1);
+  assert.equal(result.get(partial.id).unpricedModelCalls, 1);
+  assert.ok(Math.abs(result.get(partial.id).totalUsd - 0.0000736) < 1e-12);
+  const overview = await repository.getConversationOverview(shop);
+  for (const row of overview.conversations) {
+    const detail = await repository.getConversationInspection(shop, row.id);
+    assertCostsEqual(row.cost, detail.cost);
+  }
+  assert.equal(
+    overview.conversations.find((row) => row.id === unused.id).cost.totalUsd,
+    null,
+  );
+});
 
 test("overview scopes every count, page and usage aggregate to the merchant", async () => {
   const own = await conversation({ turnCount: 1 });
@@ -681,6 +849,12 @@ test("database cost groups match per-call pricing across UTC boundaries, tiers a
       repository.estimateVoiceUsage(row, prices),
     );
   assertCostsEqual(await repository.getShopCostSummary(shop, prices), expected);
+  assertCostsEqual(
+    (await repository.getConversationCostSummaries(shop, [own.id], prices)).get(
+      own.id,
+    ),
+    expected,
+  );
   const unpriced = await repository.getShopCostSummary(shop, []);
   assert.equal(unpriced.totalUsd, null);
   assert.equal(unpriced.unpricedModelCalls, modelRows.length);
@@ -743,12 +917,22 @@ test("large retained history uses a fixed number of read statements while anothe
       "overview must not acquire an interactive transaction",
     );
     assert.ok(
-      queries.length <= 12,
+      queries.length <= 15,
       `overview emitted ${queries.length} queries`,
     );
     assert.equal(
-      queries.filter((query) => /GROUP BY band/.test(query)).length,
+      queries.filter((query) => /GROUP BY\s+band/.test(query)).length,
       2,
+    );
+    const pageQueries = queries.filter((query) =>
+      /GROUP BY conversationId,/.test(query),
+    );
+    assert.equal(pageQueries.length, 3);
+    assert.ok(
+      pageQueries.every((query) => /c\."id" IN \((?:\?,){24}\?\)/.test(query)),
+    );
+    assert.ok(
+      result.conversations.every((row) => row.cost.pricedModelCalls === 40),
     );
     t.diagnostic(
       `100000 usage rows: overview plus concurrent write ${elapsedMs.toFixed(1)} ms; write ${writeMs.toFixed(1)} ms; ${queries.length} reporting statements. Synthetic local timing, not a production latency guarantee.`,

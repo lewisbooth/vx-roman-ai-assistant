@@ -96,6 +96,19 @@ const EMPTY_USAGE = {
   voiceSessions: 1,
   reportedVoiceSessions: 0,
 };
+const EMPTY_COST = {
+  totalUsd: null,
+  modelUsd: null,
+  voiceUsd: null,
+  imageUsd: null,
+  pricedModelCalls: 0,
+  unpricedModelCalls: 0,
+  pricedVoiceSessions: 0,
+  unpricedVoiceSessions: 0,
+  pricedImageAttempts: 0,
+  unpricedImageAttempts: 0,
+  estimatedImageAttempts: 0,
+};
 
 function setupView(t) {
   const dom = new JSDOM("<!doctype html><div id='root'></div>", {
@@ -848,6 +861,7 @@ test("conversation list uses bounded paging links and handles empty pages", (t) 
         updatedAt: NOW,
         turnCount: 2,
         voiceSessions: 1,
+        cost: EMPTY_COST,
       },
     ],
   };
@@ -867,6 +881,54 @@ test("conversation list uses bounded paging links and handles empty pages", (t) 
   });
   assert.match(container.textContent, /No conversations yet/);
   assert.equal(container.querySelectorAll("s-button").length, 0);
+});
+
+test("conversation totals distinguish combined, partial, unavailable and reported zero costs", (t) => {
+  const { render, container } = setupView(t);
+  const complete = {
+    ...EMPTY_COST,
+    modelUsd: 0.106789,
+    voiceUsd: 0.05,
+    imageUsd: 0.3,
+    totalUsd: 0.456789,
+    pricedModelCalls: 1,
+    pricedVoiceSessions: 1,
+    pricedImageAttempts: 1,
+  };
+  const costs = [
+    complete,
+    { ...complete, unpricedImageAttempts: 1 },
+    { ...EMPTY_COST, unpricedModelCalls: 1 },
+    { ...EMPTY_COST, modelUsd: 0, totalUsd: 0, pricedModelCalls: 1 },
+  ];
+  render("ConversationList", {
+    overview: {
+      page: 1,
+      hasNextPage: false,
+      conversations: costs.map((cost, index) => ({
+        id: `${ID}-${index}`,
+        status: "ended",
+        createdAt: NOW,
+        updatedAt: NOW,
+        turnCount: 1,
+        voiceSessions: 1,
+        cost,
+      })),
+    },
+  });
+  const rows = [...container.querySelectorAll("s-table-body s-table-row")];
+  assert.deepEqual(
+    rows.map((row) => row.querySelector("s-table-cell:last-child").textContent),
+    ["USD 0.46", "USD 0.46Partial estimate", "Unavailable", "USD 0.00"],
+  );
+  assert.match(
+    container.textContent,
+    /model calls, voice and image generation/,
+  );
+  assert.match(
+    container.textContent,
+    /Partial totals exclude activity without recorded usage or rates/,
+  );
 });
 
 test("overview authenticates independently and scopes data to the authenticated shop", async () => {
@@ -969,6 +1031,10 @@ test("USD formatting preserves missing values, measured zero and tiny positive e
   assert.equal(api.estimatedUsd(0.000001), "USD 0.000001");
   assert.equal(api.estimatedUsd(1.23456789), "USD 1.234568");
   assert.equal(api.estimatedUsd(1200.1), "USD 1,200.10");
+  assert.equal(api.estimatedUsd(null, "cents"), "Unavailable");
+  assert.equal(api.estimatedUsd(0.004, "cents"), "USD 0.00");
+  assert.equal(api.estimatedUsd(0.005, "cents"), "USD 0.01");
+  assert.equal(api.estimatedUsd(1.23456789, "cents"), "USD 1.23");
 });
 
 test("estimated totals distinguish partial pricing from a complete measured zero", (t) => {

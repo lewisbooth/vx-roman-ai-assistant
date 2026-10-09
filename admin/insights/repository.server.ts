@@ -12,7 +12,10 @@ import {
   estimateImageUsage,
   parseImageRateSnapshot,
 } from "../pricing/image-estimate.server";
-import { getShopCostSummary } from "./costs.server";
+import {
+  getConversationCostSummaries,
+  getShopCostSummary,
+} from "./costs.server";
 import type {
   ConversationInspection,
   ConversationListItem,
@@ -48,6 +51,7 @@ const conversationSummary = {
 
 function listItem(
   row: Prisma.ConversationGetPayload<{ select: typeof conversationSummary }>,
+  cost: ConversationListItem["cost"],
 ): ConversationListItem {
   if (row.status !== "active" && row.status !== "ended")
     throw new Error("Invalid stored conversation status.");
@@ -58,6 +62,7 @@ function listItem(
     updatedAt: row.updatedAt.toISOString(),
     turnCount: row.turnCount,
     voiceSessions: row._count.voiceSessions,
+    cost,
   };
 }
 
@@ -133,6 +138,11 @@ export async function getConversationOverview(
       usageSummary(prisma, shop),
       getShopCostSummary(shop),
     ]);
+  const pageRows = rows.slice(0, pageSize);
+  const conversationCosts = await getConversationCostSummaries(
+    shop,
+    pageRows.map((row) => row.id),
+  );
   return {
     page,
     hasNextPage: rows.length > pageSize,
@@ -143,7 +153,9 @@ export async function getConversationOverview(
       usage,
       cost,
     },
-    conversations: rows.slice(0, pageSize).map(listItem),
+    conversations: pageRows.map((row) =>
+      listItem(row, conversationCosts.get(row.id) ?? emptyCostSummary()),
+    ),
     prices: MODEL_PRICES,
   };
 }
@@ -317,7 +329,7 @@ export async function getConversationInspection(
       },
     );
     return {
-      conversation: { ...listItem(row), origin: row.origin },
+      conversation: { ...listItem(row, cost), origin: row.origin },
       messages,
       tools: row.toolInvocations.map((tool) => ({
         id: tool.id,

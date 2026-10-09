@@ -12,9 +12,17 @@ const usdFormat = new Intl.NumberFormat("en-GB", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 6,
 });
+const usdCentFormat = new Intl.NumberFormat("en-GB", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 
-export function estimatedUsd(value: number | null): string {
+export function estimatedUsd(
+  value: number | null,
+  precision: "detailed" | "cents" = "detailed",
+): string {
   if (value === null) return "Unavailable";
+  if (precision === "cents") return `USD ${usdCentFormat.format(value)}`;
   if (value > 0 && value < 0.000001) return "< USD 0.000001";
   return `USD ${usdFormat.format(value)}`;
 }

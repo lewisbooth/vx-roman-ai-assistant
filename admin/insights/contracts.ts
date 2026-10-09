@@ -28,6 +28,7 @@ export interface ConversationListItem {
   updatedAt: string;
   turnCount: number;
   voiceSessions: number;
+  cost: CostSummary;
 }
 
 export interface ConversationOverview {

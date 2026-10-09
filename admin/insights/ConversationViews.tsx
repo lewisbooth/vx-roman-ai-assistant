@@ -15,6 +15,7 @@ import type {
 } from "./contracts";
 import { CostValue, ImageCostDetails } from "../pricing/PricingViews";
 import {
+  estimatedUsd,
   recordedDate,
   recordedNumber,
   serviceTierLabel,
@@ -78,6 +79,7 @@ export function ConversationList({
             <s-table-header>Last updated</s-table-header>
             <s-table-header format="numeric">Turns</s-table-header>
             <s-table-header format="numeric">Voice sessions</s-table-header>
+            <s-table-header format="currency">Total cost</s-table-header>
           </s-table-header-row>
           <s-table-body>
             {overview.conversations.map((conversation) => (
@@ -96,10 +98,29 @@ export function ConversationList({
                 </s-table-cell>
                 <s-table-cell>{conversation.turnCount}</s-table-cell>
                 <s-table-cell>{conversation.voiceSessions}</s-table-cell>
+                <s-table-cell>
+                  <div>{estimatedUsd(conversation.cost.totalUsd, "cents")}</div>
+                  {conversation.cost.totalUsd !== null &&
+                    conversation.cost.unpricedModelCalls +
+                      conversation.cost.unpricedVoiceSessions +
+                      conversation.cost.unpricedImageAttempts >
+                      0 && (
+                      <div className="text-xs text-gray-600">
+                        Partial estimate
+                      </div>
+                    )}
+                </s-table-cell>
               </s-table-row>
             ))}
           </s-table-body>
         </s-table>
+      )}
+      {overview.conversations.length > 0 && (
+        <s-paragraph color="subdued">
+          Estimated USD totals include model calls, voice and image generation.
+          Partial totals exclude activity without recorded usage or rates. Open
+          a conversation for the breakdown.
+        </s-paragraph>
       )}
       <s-stack direction="inline" gap="base" alignItems="center">
         {overview.page > 1 && (
