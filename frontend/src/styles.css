@@ -1181,18 +1181,25 @@
 
   .roman-composer-glow {
     position: absolute;
-    inset: 0;
+    inset: -4px;
     z-index: -2;
-    width: 100%;
-    height: 100%;
-    overflow: visible;
+    overflow: hidden;
+    border-radius: 999px;
     pointer-events: none;
+    filter: blur(8px);
     opacity: 0;
   }
 
-  .roman-composer-glow rect {
-    stroke-width: 12;
-    stroke-dasharray: 25 75;
+  .roman-composer-glow::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: calc(100% + 64px);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: conic-gradient(#d9d0e8, #c59745, #f6865a, #da9cc1, #d9d0e8);
+    transform: translate(-50%, -50%);
   }
 
   .roman-composer form:has(textarea[data-roman-composer]:focus)::after {
@@ -1209,17 +1216,13 @@
     opacity: 1;
   }
 
-  .roman-composer form:has(textarea[data-roman-composer]:focus) .roman-composer-glow rect {
-    animation: roman-composer-focus-glow 4.8s linear var(--roman-glow-phase, 0s) infinite;
+  .roman-composer form:has(textarea[data-roman-composer]:focus) .roman-composer-glow::before {
+    animation: roman-composer-focus-glow 4.8s linear infinite;
   }
 
-  .roman-composer-glow rect:nth-child(2) { --roman-glow-phase: -1.2s; }
-  .roman-composer-glow rect:nth-child(3) { --roman-glow-phase: -2.4s; }
-  .roman-composer-glow rect:nth-child(4) { --roman-glow-phase: -3.6s; }
-
   @keyframes roman-composer-focus-glow {
-    from { stroke-dashoffset: 0; }
-    to { stroke-dashoffset: -100; }
+    from { transform: translate(-50%, -50%) rotate(0turn); }
+    to { transform: translate(-50%, -50%) rotate(1turn); }
   }
 
   @media (forced-colors: active) {
