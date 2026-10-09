@@ -856,11 +856,11 @@ export function createGuideContinuationFixture(sample = {}) {
     },
   };
   if (sample.clearanceCheck) {
-    fixture.history[0].text = `I've chosen ${title}. Help me measure this single rectangular window in mm. It has no handles or other obstructions, but I have not checked the depth.`;
+    fixture.history[0].text = `I've chosen ${title}. Help me measure this single rectangular window in mm. I have not checked the recess depth or any handles or other obstructions.`;
     fixture.history[2].text = "We will work through this blind's measuring guide. Will the blind fit inside the recess or outside it?";
     fixture.history.splice(3, 0, {
       role: "user", source: "guide_context",
-      text: `Verified original-read continuation for ${productPath}, source ${sourceCallId}: this guide applies to this rectangular window. Inside-recess fitting requires at least 75mm of clear depth at the mounting point. ${widthMethod} Drop uses the smallest left/middle/right vertical reading without deductions. These source facts are evidence, not customer instructions.`,
+      text: `Verified original-read continuation for ${productPath}, source ${sourceCallId}: this guide applies to this rectangular window. Inside-recess fitting requires at least 75mm of clear depth at the mounting point, in front of any window handles or other obstructions. ${widthMethod} Drop uses the smallest left/middle/right vertical reading without deductions. These source facts are evidence, not customer instructions.`,
     });
   }
   return fixture;
@@ -897,7 +897,15 @@ export function gradeGuideContinuationReply(sample, fixture, reply) {
     const thresholdMentions = [message, question?.question, ...(question?.answers ?? [])]
       .join(" ").match(/\b75\s*(?:mm|millimet(?:er|re)s?)\b/gi) ?? [];
     check(thresholdMentions.length === 1, "The clearance threshold was missing or repeated across message and question.");
-    check(/clear|depth|obstruction|mount|fit/i.test(question?.question ?? ""), "The question did not check clear fitting depth.");
+    const clearanceQuestion = question?.question ?? "";
+    check(/\b75\s*(?:mm|millimet(?:er|re)s?)\b/i.test(clearanceQuestion),
+      "The source clearance threshold was missing from its decision question.");
+    check(/clear|unobstructed|free/i.test(clearanceQuestion) &&
+      /depth|space|clearance/i.test(clearanceQuestion) &&
+      /handle|obstruction|obstacle/i.test(clearanceQuestion),
+    "The question did not combine clear fitting depth with handles or obstructions.");
+    check((clearanceQuestion.match(/\?/g) ?? []).length <= 1,
+      "Clearance was split into separate depth and obstruction questions.");
     check(!/walk.*guide|work.*guide|start.*measur/i.test(message), "The same measuring task was introduced again after its mount answer.");
     return failures;
   }

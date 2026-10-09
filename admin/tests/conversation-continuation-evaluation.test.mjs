@@ -128,17 +128,30 @@ test("the retained decline is scoped to disclosed terms and does not suppress a 
   }).some((failure) => /current native fee/.test(failure)));
 });
 
-test("the clearance threshold appears once across prose and its decision question in either channel", () => {
+test("one clearance question combines the source threshold and unresolved obstructions in either channel", () => {
   for (const mode of ["text", "voice"]) {
     const sample = { ...byName("clearance-threshold-once"), mode };
     const fixture = createConfigurationFixture(sample);
-    const question = { question: "Is there at least 75mm of clear depth at the fitting point?", answers: ["Yes", "No", "Not sure"] };
+    assert.match(fixture.history[0].text, /not checked.*depth.*handles.*obstructions/);
+    assert.doesNotMatch(fixture.history[0].text, /\bno\b.*(?:handles|obstructions)/);
+    assert.match(fixture.history.find(({ source }) => source === "guide_context").text,
+      /75mm.*clear depth.*in front of.*handles.*obstructions/);
+    const question = { question: "At the fitting point, is there at least 75mm of clear recess depth in front of any handles or other obstructions?", answers: ["Yes", "No", "Not sure"] };
     const reply = { text: mode === "voice" ? question.question : "", questionPresentation: question };
     assert.deepEqual(gradeConfigurationReply(sample, fixture, reply), []);
     const repeated = { ...reply, text: "This blind requires 75mm of clear depth. " + reply.text };
     assert.ok(gradeConfigurationReply(sample, fixture, repeated).some((failure) => /threshold.*repeated/.test(failure)));
     const introduction = { ...reply, text: "Let's walk through the measuring guide. " + reply.text };
     assert.ok(gradeConfigurationReply(sample, fixture, introduction).some((failure) => /introduced again/.test(failure)));
+    for (const text of ["Do you have any window handles or obstructions?", "Is there at least 75mm of clear depth at the fitting point?"]) {
+      const separate = { text: mode === "voice" ? text : "", questionPresentation: { ...question, question: text } };
+      assert.ok(gradeConfigurationReply(sample, fixture, separate).some((failure) => /combine clear fitting depth/.test(failure)));
+    }
+    const splitQuestion = "Are there window handles or obstructions? Is there at least 75mm of clear depth at the fitting point?";
+    const split = { text: mode === "voice" ? splitQuestion : "", questionPresentation: { ...question, question: splitQuestion } };
+    assert.ok(gradeConfigurationReply(sample, fixture, split).some((failure) => /split into separate/.test(failure)));
+    const thresholdInProse = { text: "The guide requires 75mm of clear depth.", questionPresentation: { ...question, question: "Is there clear fitting space in front of the handles or obstructions?" } };
+    assert.ok(gradeConfigurationReply(sample, fixture, thresholdInProse).some((failure) => /threshold was missing from its decision/.test(failure)));
   }
 });
 
