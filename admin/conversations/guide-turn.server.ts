@@ -145,6 +145,11 @@ export function createGuideTurn({
   let libraryBound = libraryReuse?.bound;
   let librarySource = libraryBound?.source;
   let cachedGuideSource: CachedGuideSource | undefined;
+  let productDiscovery: {
+    sourceCallId: string;
+    productPath: string;
+    guides: ProductGuide[];
+  } | undefined;
   let guideResponsePending = false;
   let writtenGuidanceReturned = false;
   const finishGuideReading = () => {
@@ -294,6 +299,7 @@ export function createGuideTurn({
     ];
   };
   const invalidateForNavigation = () => {
+    productDiscovery = undefined;
     measurementProductPath = undefined;
     libraryBound = undefined;
     librarySource = undefined;
@@ -306,9 +312,13 @@ export function createGuideTurn({
     documentProductPath = undefined;
     writtenGuidanceReturned = false;
   };
-  const beforeOperation = () => {
+  const clearReading = () => {
     guideResponsePending = false;
     onGuideReading?.(undefined);
+  };
+  const beforeOperation = () => {
+    productDiscovery = undefined;
+    clearReading();
   };
   const questionSource = async (
     productPath?: string,
@@ -440,6 +450,7 @@ export function createGuideTurn({
     let outcome: GuideToolOutcome;
     let requestedGuides: ReturnType<typeof parseProductGuideRead> | undefined;
     let cachedRead: GuideSession | undefined;
+    let reusedDiscovery: typeof productDiscovery;
     let recalledLibrary: ReturnType<LibraryReuse["recall"]>;
     let priorRead: GuideSession | undefined;
     let unavailableGuides:
@@ -452,6 +463,7 @@ export function createGuideTurn({
         argumentsValue = { productPath: requestedGuides.productPath };
         if (requestedGuides.refresh || requestedGuides.readOriginals)
           availableGuides.delete(requestedGuides.productPath);
+        if (requestedGuides.refresh) productDiscovery = undefined;
       } else if (call.name === "discover_guides") {
         const selection = parseGuideLibraryCall(value);
         argumentsValue = selection;
@@ -466,7 +478,7 @@ export function createGuideTurn({
         recalledLibrary = refreshLibrary ? undefined : libraryReuse?.recall(selection.library);
       } else throw new Error("Unknown guide tool.");
       signal.throwIfAborted();
-      beforeOperation();
+      clearReading();
       if (recalledLibrary) outcome = recalledLibrary.result;
       else if (
         requestedGuides &&
@@ -483,8 +495,24 @@ export function createGuideTurn({
           productPath: cached.productPath,
           guides: cached.sources,
         };
+      } else if (
+        requestedGuides?.readOriginals &&
+        !requestedGuides.refresh &&
+        productDiscovery?.productPath === requestedGuides.productPath &&
+        requestedGuides.kinds.every((kind) =>
+          productDiscovery!.guides.some((guide) => guide.kind === kind))
+      ) {
+        // A metadata lookup already verified these exact links in this turn.
+        // Reuse their receipt for PDF reading, never its native capability.
+        reusedDiscovery = productDiscovery;
+        outcome = {
+          status: "found",
+          productPath: productDiscovery.productPath,
+          guides: productDiscovery.guides,
+        };
       } else {
         if (call.name === "get_product_guides") {
+          productDiscovery = undefined;
           priorRead = cached;
           cached = undefined;
           if (requestedGuides?.refresh) {
@@ -567,8 +595,14 @@ export function createGuideTurn({
       }
       // Fresh live form evidence is independent of whether the linked PDF can
       // be read or applies to this product. Cached originals have no capability.
-      if (!cachedRead && guides?.configuration)
+      if (!cachedRead && !reusedDiscovery && guides?.configuration)
         onConfiguration?.(guides.configuration);
+      if (requestedGuides && !requestedGuides.readOriginals && guides?.status === "found")
+        productDiscovery = {
+          sourceCallId: call.call_id,
+          productPath: guides.productPath,
+          guides: guides.guides.map((guide) => ({ ...guide })),
+        };
       if (guides && requestedGuides && !requestedGuides.readOriginals) {
         if (priorRead?.productPath === guides.productPath &&
           (requestedGuides.refresh || priorRead.sources.some((source) =>
@@ -729,7 +763,7 @@ export function createGuideTurn({
               });
           }
         availableGuides.set(guides.productPath, {
-          sourceCallId: cachedRead?.sourceCallId ?? call.call_id,
+          sourceCallId: cachedRead?.sourceCallId ?? reusedDiscovery?.sourceCallId ?? call.call_id,
           kinds:
             cachedRead?.kinds ??
             [...reusable.values()].map(({ source }) => source.kind),
@@ -737,7 +771,7 @@ export function createGuideTurn({
         if (!cachedRead)
           guideReuse?.read({
             productPath: guides.productPath,
-            sourceCallId: call.call_id,
+            sourceCallId: reusedDiscovery?.sourceCallId ?? call.call_id,
             sources: [...reusable.values()].map(({ source }) => source),
             files: [...reusable.values()].map(({ file }) => file),
           });

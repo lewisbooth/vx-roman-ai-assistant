@@ -407,6 +407,30 @@ test("an explicit original request still reads the selected PDF and preserves di
   assert.equal(outputs(state.requests.at(-1))[0].originalsAttached, true);
 });
 
+test("a same-turn original request reuses links from the combined written lookup", async () => {
+  const state = setup(), saved = [];
+  const url = `${origin}/cdn/shop/files/actual-measuring.pdf?v=1`;
+  state.productGuides({ status: "found", productPath, guides: [{ kind: "measuring", url }],
+    configuration: { status: "available", productPath, configurationId: randomUUID(), controls: [],
+      measurements: { unit: "mm", width: null, height: null, availableUnits: ["mm"] },
+      configuredPrice: null, message: "Native setup." },
+  });
+  await state.run([
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: "blinds", readOriginals: false }, "written-source")],
+    [call("get_product_guides", { productPath, kinds: ["measuring"], library: null, readOriginals: true }, "original-request")],
+    [call("ask_measurement", measurement())],
+  ], { guideReuse: { read: (value) => saved.push(value), clear() {} } });
+
+  assert.deepEqual(state.browser.map(({ name }) => name), ["get_product_guides", "discover_guides"]);
+  assert.deepEqual(state.downloads, [url]);
+  assert.equal(saved[0].sourceCallId, "written-source", "Use the persisted discovery receipt, not an undispatched call");
+  assert.equal(files(state.requests[1]).length, 0);
+  assert.equal(files(state.requests[2]).length, 1);
+  const original = outputs(state.requests[2]).at(-1);
+  assert.equal(original.originalsAttached, true);
+  assert.equal("configuration" in original, false);
+});
+
 test("failed explicit written refresh removes earlier text and receipt instead of appearing refreshed", async () => {
   const state = setup();
   await state.seed({ read: false });

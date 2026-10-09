@@ -39,10 +39,10 @@ const browserResult = { status: "found", productPath, guides: [source], configur
 const call = { name: "get_product_guides", call_id: "guide-read", arguments: JSON.stringify({ productPath, kinds: ["measuring"], refresh: false, library: null, readOriginals: true }) };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 function setup({ failed = false, cached, result = browserResult, libraryReuse, onExecute } = {}) {
-  const module = { exports: {} }, calls = [], observed = [], saved = [], cleared = [], controller = new AbortController();
-  const mock = { read: async () => failed
+  const module = { exports: {} }, calls = [], reads = [], observed = [], saved = [], cleared = [], controller = new AbortController();
+  const mock = { read: async (...args) => { reads.push(args); return failed
     ? { status: "unavailable", reason: "download_failed" }
-    : { status: "ready", sources: [source], files: [file] } };
+    : { status: "ready", sources: [source], files: [file] }; } };
   runInNewContext(bundle.outputFiles[0].text, {
     exports: module.exports, module, require, mock, Buffer, URL, console, AbortController,
   });
@@ -55,7 +55,7 @@ function setup({ failed = false, cached, result = browserResult, libraryReuse, o
     guideReuse: { cached, read: (value) => saved.push(value), clear() { cleared.push(true); } },
     libraryReuse,
   });
-  return { turn, actions, calls, observed, saved, cleared, controller,
+  return { turn, actions, calls, reads, observed, saved, cleared, controller,
     MissingMeasuringSourceError: module.exports.MissingMeasuringSourceError };
 }
 
@@ -158,6 +158,69 @@ const priorGuide = () => ({
 });
 const writtenCall = (refresh = false) => ({ ...call,
   arguments: JSON.stringify({ productPath, kinds: ["measuring"], refresh, library: null, readOriginals: false }),
+});
+
+test("originals reuse this turn's verified links and source receipt without renewing configuration authority", async () => {
+  const ctx = setup();
+  await ctx.turn.read(writtenCall());
+  assert.equal(ctx.reads.length, 0);
+  await assert.rejects(ctx.turn.questionSource(productPath), { name: "MissingMeasuringSourceError" });
+
+  const result = await ctx.turn.read({ ...call, call_id: "read-originals" });
+  assert.equal(ctx.calls.length, 1, "The original request needs no second product-page lookup");
+  assert.equal(ctx.reads.length, 1, "Originals are still read before measuring is authorized");
+  assert.equal(result.output.documentStatus, "ready");
+  assert.equal(result.output.originalsAttached, true);
+  assert.equal("configuration" in result.output, false);
+  assert.equal(ctx.observed.length, 1, "The old native capability is never observed again");
+  assert.equal(ctx.saved[0].sourceCallId, "guide-read");
+  assert.deepEqual(plain(await ctx.turn.questionSource(productPath)), { sourceCallId: "guide-read" });
+});
+
+test("operation, navigation and explicit refresh invalidate this turn's reusable links", async (t) => {
+  for (const invalidation of ["operation", "navigation", "refresh"])
+    await t.test(invalidation, async () => {
+      const ctx = setup();
+      await ctx.turn.read(writtenCall());
+      if (invalidation === "operation") ctx.turn.beforeOperation();
+      if (invalidation === "navigation") ctx.turn.invalidateForNavigation();
+      await ctx.turn.read({ ...call, call_id: "fresh-originals",
+        arguments: JSON.stringify({ productPath, kinds: ["measuring"],
+          refresh: invalidation === "refresh", library: null, readOriginals: true }),
+      });
+      assert.equal(ctx.calls.length, 2);
+      assert.equal(ctx.observed.length, 2);
+      assert.equal(ctx.saved[0].sourceCallId, "fresh-originals");
+    });
+});
+
+test("a failed subsequent metadata lookup cannot leave older links reusable", async () => {
+  let calls = 0;
+  const ctx = setup({ result: () => ++calls === 2 ? { error: "Lookup failed" } : browserResult });
+  await ctx.turn.read(writtenCall());
+  await ctx.turn.read({ ...writtenCall(), call_id: "failed-lookup" });
+  await ctx.turn.read({ ...call, call_id: "fresh-originals" });
+  assert.equal(ctx.calls.length, 3);
+  assert.equal(ctx.saved[0].sourceCallId, "fresh-originals");
+});
+
+test("metadata-only lookups still read current configuration instead of cached links", async () => {
+  const ctx = setup();
+  await ctx.turn.read(writtenCall());
+  await ctx.turn.read({ ...writtenCall(), call_id: "fresh-configuration" });
+  assert.equal(ctx.calls.length, 2);
+  assert.equal(ctx.observed.length, 2);
+  assert.equal(ctx.reads.length, 0);
+});
+
+test("cancelled original requests neither reuse nor publish this turn's link evidence", async () => {
+  const ctx = setup();
+  await ctx.turn.read(writtenCall());
+  ctx.controller.abort();
+  await assert.rejects(ctx.turn.read({ ...call, call_id: "cancelled-originals" }), { name: "AbortError" });
+  assert.equal(ctx.calls.length, 1);
+  assert.equal(ctx.reads.length, 0);
+  assert.equal(ctx.saved.length, 0);
 });
 
 test("a link/configuration lookup retains only exactly matching valid prior PDF authority", async () => {
