@@ -1181,12 +1181,12 @@
 
   .roman-composer-glow {
     position: absolute;
-    inset: -4px;
+    inset: -6px;
     z-index: -2;
     overflow: hidden;
     border-radius: 999px;
     pointer-events: none;
-    filter: blur(8px);
+    filter: blur(12px);
     opacity: 0;
   }
 
