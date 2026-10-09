@@ -159,6 +159,7 @@ async function setup(t, options = {}) {
       update({ voice: { status: "active", muted: false, error: null } });
     },
     setVoice: (selectedVoice) => update({ selectedVoice }),
+    setMicrophoneMuted: (muted) => update({ voice: { ...state.voice, muted } }),
     stopVoice: async () => {
       stopVoiceCalls.push("stop");
       await options.onStopVoice?.(window);
@@ -279,7 +280,7 @@ test("manual composer voice replaces the empty input in place and preserves the 
   assert.equal(ctx.input(), null);
   assert.equal(form.hidden, false);
   assert.equal(form.closest(".roman-composer").hidden, false);
-  assert.equal(form.querySelectorAll("button").length, 1);
+  assert.equal(form.querySelectorAll("button").length, 2);
   assert.equal(form.querySelector('button[type="submit"]'), null);
   assert.equal(ctx.container.querySelectorAll(".roman-welcome-tile").length, 4);
   const stop = ctx.container.querySelector('[aria-label="End voice"]');
@@ -930,7 +931,7 @@ test("voice startup and greeting keep welcome tiles until a customer chooses a t
         assert.equal(tiles.length, 4);
         assert.ok(tiles.filter((_, index) => index !== 1).every((tile) => !tile.disabled));
         assert.equal(ctx.input(), null);
-        assert.equal(form.querySelectorAll("button").length, 1);
+        assert.equal(form.querySelectorAll("button").length, voiceStatus === "active" ? 2 : 1);
         assert.ok(form.querySelector('[aria-label="End voice"]'));
         assert.equal(ctx.container.querySelector(".roman-timeline"), null);
         if (response === "spoken") {
@@ -2828,10 +2829,17 @@ test("End voice restores the saved text draft without remounting the composer", 
   const waveform = bar.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
   assert.ok(waveform.children.length > 7, "waveform spans the full bar");
-  assert.equal(button("Mute microphone"), undefined);
-  assert.equal(bar.querySelectorAll("button").length, 1);
+  assert.ok(button("Mute microphone"));
+  assert.equal(bar.querySelectorAll("button").length, 2);
   assert.equal(button("End voice").type, "button");
   assert.equal(!!bar.querySelector(".roman-voice-notice"), false);
+  button("Mute microphone").click();
+  await until(() => button("Unmute microphone"), "Mute did not update its control");
+  assert.equal(waveform.dataset.muted, "true");
+  assert.equal(ctx.container.querySelector(".roman-voice-bar") === bar, true);
+  button("Unmute microphone").click();
+  await until(() => button("Mute microphone"), "Unmute did not update its control");
+  assert.equal(waveform.hasAttribute("data-muted"), false);
   button("End voice").click();
   await until(() => ctx.input(), "Stop did not return to text");
   assert.equal(ctx.input().disabled, false);

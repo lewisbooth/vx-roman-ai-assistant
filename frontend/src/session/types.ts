@@ -66,6 +66,8 @@ export interface ConversationClient {
     signal: AbortSignal,
   ): Promise<ProductGallerySnapshot | undefined>;
   startVoice(): Promise<void>;
+  /** Silences local microphone capture without ending voice or Roman's audio. */
+  setMicrophoneMuted(muted: boolean): void;
   setVoice(voice: LiveVoice): void;
   stopVoice(): Promise<void>;
   end(): Promise<void>;

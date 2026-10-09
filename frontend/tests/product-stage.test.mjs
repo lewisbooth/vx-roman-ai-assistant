@@ -297,9 +297,12 @@ test("known theme update states retain same-product choices while hiding the old
     "dynamic-pricing.loading",
   ]) {
     await t.test(state, async (t) => {
-      const { window, container } = await setup(t);
+      const { window, container, messages } = await setup(t);
       const priceSlot = container.querySelector(
         ".roman-product-stage-price-slot",
+      );
+      const cartButton = container.querySelector(
+        ".roman-product-actions button:not(.roman-product-sample)",
       );
       const form = window.document.querySelector("form");
       const target =
@@ -323,17 +326,15 @@ test("known theme update states retain same-product choices while hiding the old
         placeholder.firstElementChild.getAttribute("aria-hidden"),
         "true",
       );
-      assert.ok(
-        container.querySelector(
-          ".roman-product-cart-placeholder[aria-hidden=true]",
-        ),
-      );
       assert.equal(
-        [...container.querySelectorAll("button")].some(
-          (button) => button.textContent === "Add to Cart",
-        ),
-        false,
+        container.querySelector(".roman-product-actions button:not(.roman-product-sample)"),
+        cartButton,
+        "Cart action keeps its original layout node",
       );
+      assert.equal(cartButton.textContent, "Add to Cart");
+      assert.equal(cartButton.disabled, true);
+      cartButton.click();
+      assert.equal(messages.length, 0, "A pending quote cannot submit an add request");
       assert.match(container.querySelector("dl").textContent, /FittingRecess/);
       assert.match(container.textContent, /500 × 600 mm/);
       form.querySelector("[data-width-input]").value = "750";
@@ -357,10 +358,12 @@ test("known theme update states retain same-product choices while hiding the old
       );
       assert.equal(
         container.querySelector(
-          ".roman-product-stage-price-loading, .roman-product-cart-placeholder",
+          ".roman-product-stage-price-loading",
         ),
         null,
       );
+      assert.equal(container.querySelector(".roman-product-actions button:not(.roman-product-sample)"), cartButton);
+      assert.equal(cartButton.disabled, false);
     });
   }
 });
@@ -394,7 +397,7 @@ test("retained transient configuration clears when its form is unsupported, depa
       assert.equal(ctx.messages.length, 0);
       assert.equal(
         ctx.container.querySelector(
-          ".roman-product-stage-price-loading, .roman-product-cart-placeholder",
+          ".roman-product-stage-price-loading, .roman-product-actions button:not(.roman-product-sample)",
         ),
         null,
       );
@@ -962,6 +965,7 @@ test("mobile selection stays compact and expands the existing gallery without fe
 test("expanded mobile selection reflects current native measurements, quote and choices", async (t) => {
   const ctx = await setup(t, { mobile: true });
   const dialog = await expandSelectedProduct(ctx);
+  const cartButton = dialog.querySelector(".roman-product-actions button:not(.roman-product-sample)");
   const form = ctx.window.document.querySelector("form");
   form.classList.add("loading");
   await until(
@@ -980,6 +984,8 @@ test("expanded mobile selection reflects current native measurements, quote and 
   }
   assert.match(dialog.textContent, /500 × 600 mm/);
   assert.match(dialog.querySelector("dl").textContent, /FittingRecess/);
+  assert.equal(dialog.querySelector(".roman-product-actions button:not(.roman-product-sample)"), cartButton);
+  assert.equal(cartButton.disabled, true);
   form.classList.remove("loading");
   form.querySelector("[data-width-input]").value = "750";
   form.querySelector('[value="Exact##7"]').checked = true;
@@ -991,6 +997,8 @@ test("expanded mobile selection reflects current native measurements, quote and 
   );
   assert.match(dialog.textContent, /750 × 600 mm/);
   assert.match(dialog.querySelector("dl").textContent, /FittingExact/);
+  assert.equal(dialog.querySelector(".roman-product-actions button:not(.roman-product-sample)"), cartButton);
+  assert.equal(cartButton.disabled, false);
   assert.equal(
     ctx.container.querySelector(".roman-product-stage-price-loading"),
     null,
@@ -1108,14 +1116,19 @@ test("selection offers Add to Cart only with a current verified price on desktop
       assert.deepEqual(actions(), ["Add to Cart", "Order Sample"]);
       form.classList.add("loading");
       await until(
-        () => actions().length === 1,
-        "Unsettled quote removes Add to Cart",
+        () => surface.querySelector(".roman-product-actions button").disabled,
+        "Unsettled quote disables Add to Cart",
       );
-      assert.deepEqual(actions(), ["Order Sample"]);
+      assert.deepEqual(actions(), ["Add to Cart", "Order Sample"]);
+      surface.querySelector(".roman-product-actions button").click();
+      assert.equal(ctx.messages.length, 0);
       assert.match(surface.querySelector("dl").textContent, /FittingRecess/);
       price.textContent = "";
       form.classList.remove("loading");
-      await delay(35);
+      await until(
+        () => actions().length === 1,
+        "Settled missing price removes Add to Cart",
+      );
       assert.deepEqual(
         actions(),
         ["Order Sample"],

@@ -139,6 +139,7 @@ export interface VoiceStartResult {
 
 export interface VoiceClientState {
   status: "idle" | "starting" | "active" | "stopping" | "error";
+  /** Active capture mute, or stopped local media while finalization is pending. */
   muted: boolean;
   error: string | null;
   errorCode?: "microphone_denied";

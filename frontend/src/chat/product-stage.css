@@ -73,6 +73,7 @@
   font-size: 0.8rem;
 }
 .roman-product-stage-configuration {
+  font-family: DMSansSite, "DM Sans", sans-serif;
   margin-top: 1rem;
   padding-top: 0.7rem;
   border-top: 1px solid #4e0e0e22;
@@ -99,8 +100,7 @@
   gap: 10px;
   margin-top: 24px;
 }
-.roman-product-actions button,
-.roman-product-cart-placeholder {
+.roman-product-actions button {
   min-height: 48px;
   padding: 12px 18px;
   border: 1px solid #4e0e0e;
@@ -110,18 +110,14 @@
   font: inherit;
   cursor: pointer;
 }
-.roman-product-cart-placeholder {
-  visibility: hidden;
-  pointer-events: none;
-}
-.roman-product-actions button:hover {
+.roman-product-actions button:not(:disabled):hover {
   background: #681b1b;
 }
 .roman-product-actions .roman-product-sample {
   background: #f7f5ef;
   color: #4e0e0e;
 }
-.roman-product-actions .roman-product-sample:hover {
+.roman-product-actions .roman-product-sample:not(:disabled):hover {
   background: #ebe6dc;
 }
 .roman-product-actions button:disabled {
@@ -129,6 +125,7 @@
   cursor: default;
 }
 .roman-product-actions [role="alert"] {
+  font-family: DMSansSite, "DM Sans", sans-serif;
   margin: 0;
   font-size: 0.85rem;
 }

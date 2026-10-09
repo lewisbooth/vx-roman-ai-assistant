@@ -2684,6 +2684,8 @@ test("explicit End voice and End chat preserve text mode while manual voice star
 test("End chat followed by manual voice creates a fresh conversation without old credentials or a queued answer", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const earlier = await activeVoice(ctx, complete);
+  ctx.client.setMicrophoneMuted(true);
+  assert.equal(ctx.media.tracks[0].enabled, false);
   const ending = ctx.client.end();
   assert.equal(ctx.calls[3].url, `${access.apiBaseUrl}/${conversationId}/end`);
   ctx.respond(3, { ...complete, status: "ended", revision: 4 });
@@ -2709,6 +2711,8 @@ test("End chat followed by manual voice creates a fresh conversation without old
   await until(() => !!ctx.media.peers[1].remoteDescription, "Fresh voice answer was not applied");
   ctx.media.connect();
   await starting;
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
+  assert.equal(ctx.media.peers[1].added[0].track.enabled, true);
   assert.equal(ctx.readyCalls.length, 2);
   assert.equal(ctx.readyCalls[1].url, `${access.apiBaseUrl}/${nextId}/voice/${nextVoiceId}/ready`);
   assert.equal(ctx.readyCalls[1].body.input, undefined, "The previous turn cannot replace the fresh welcome");
@@ -2769,9 +2773,10 @@ function acceptedVoiceAnswer(request, voice) {
   };
 }
 
-test("suggested voice answers preserve active media, persist once and reject duplicate/stale choices", async (t) => {
+test("suggested voice answers preserve muted capture, persist once and reject duplicate/stale choices", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx, voiceQuestion);
+  ctx.client.setMicrophoneMuted(true);
   const sending = ctx.client.sendVoiceAnswer(voiceQuestionId, "Full blackout");
   assert.equal(ctx.calls.length, 4);
   const call = ctx.calls[3];
@@ -2803,9 +2808,9 @@ test("suggested voice answers preserve active media, persist once and reject dup
   assert.equal(ctx.client.getSnapshot().pending, false);
   assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(ctx.client.getSnapshot().voice.status, "active");
-  assert.equal(ctx.client.getSnapshot().voice.muted, false);
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
   assert.equal(ctx.media.tracks[0].stopped, false);
-  assert.equal(ctx.media.tracks[0].enabled, true);
+  assert.equal(ctx.media.tracks[0].enabled, false);
   assert.equal(ctx.media.peers[0].closed, undefined);
   assert.equal(ctx.media.calls.microphone, 1);
   assert.equal(
@@ -3103,6 +3108,65 @@ test("voice starts explicitly, polls while idle, heartbeats, and drains before t
   assert.match(ctx.calls[5].url, /\/messages$/);
   ctx.respond(5, { ...pending, revision: 3 });
   await sending;
+});
+
+test("capture mute is immediate and idempotent without stopping audio, heartbeats or the session", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  ctx.client.setMicrophoneMuted(true);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
+  const voice = await activeVoice(ctx);
+  const callsBefore = ctx.calls.length;
+  const notificationsBefore = ctx.notifications();
+  ctx.client.setMicrophoneMuted(true);
+  assert.equal(ctx.client.getSnapshot().voice.status, "active");
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.media.tracks[0].enabled, false);
+  ctx.client.setMicrophoneMuted(true);
+  assert.equal(ctx.notifications(), notificationsBefore + 1);
+  assert.equal(ctx.calls.length, callsBefore, "Mute has no backend round trip");
+  await assert.rejects(ctx.client.startVoice(), /current session/);
+  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+
+  const [heartbeatId, heartbeat] = [...ctx.timers].find(([, timer]) => timer.ms === 20_000);
+  ctx.timers.delete(heartbeatId);
+  heartbeat.callback();
+  assert.match(ctx.calls[callsBefore].url, new RegExp(`/voice/${voice.id}/heartbeat$`));
+  ctx.respond(callsBefore, { ok: true });
+  await delay(0);
+  assert.equal(ctx.media.calls.microphone, 1);
+  assert.equal(ctx.media.calls.play, 1);
+  assert.equal(ctx.media.calls.pause, 0);
+  assert.equal(ctx.media.tracks[0].stopped, false);
+  assert.equal(ctx.media.peers[0].closed, undefined);
+  ctx.client.setMicrophoneMuted(false);
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
+  assert.equal(ctx.media.tracks[0].enabled, true);
+
+  const stopping = ctx.client.stopVoice();
+  ctx.client.setMicrophoneMuted(false);
+  assert.equal(ctx.client.getSnapshot().voice.status, "stopping");
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  ctx.respond(callsBefore + 1, { ...empty, revision: 2, voice: { ...voice, status: "closed" } });
+  await stopping;
+  ctx.client.setMicrophoneMuted(true);
+  assert.equal(ctx.client.getSnapshot().voice.status, "idle");
+  assert.equal(ctx.client.getSnapshot().voice.muted, false);
+});
+
+test("disposing muted voice stops capture and ignores later microphone controls", async (t) => {
+  const ctx = setup(t, { mediaOptions: {} });
+  await activeVoice(ctx);
+  ctx.client.setMicrophoneMuted(true);
+  ctx.client.dispose();
+  const callsAfterDisposal = ctx.calls.length;
+  ctx.client.setMicrophoneMuted(false);
+  assert.equal(ctx.media.tracks[0].enabled, false);
+  assert.equal(ctx.media.tracks[0].stopped, true);
+  assert.equal(ctx.media.peers[0].closed, true);
+  assert.equal(ctx.media.calls.pause, 1);
+  assert.equal(ctx.calls.length, callsAfterDisposal);
 });
 
 test("voice warning follows server remaining time despite a skewed device clock", async (t) => {
@@ -4602,9 +4666,10 @@ async function interruptVoice(ctx, voice, closeReason = "provider_expired") {
   return ended;
 }
 
-test("voice expiration recovers in the same conversation without lifetime timer or replaying customer work", async (t) => {
+test("voice expiration preserves microphone mute without replaying customer work", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });
   const voice = await activeVoice(ctx);
+  ctx.client.setMicrophoneMuted(true);
   assert.ok(![...ctx.timers.values()].some(({ ms }) => ms === 600_000));
   const ended = await interruptVoice(ctx, voice);
   assert.equal(ctx.media.peers[0].closed, true);
@@ -4619,8 +4684,10 @@ test("voice expiration recovers in the same conversation without lifetime timer 
   const recovered = { id: request.body.requestId, clientId: voice.clientId, status: "active" };
   ctx.respond(5, { voiceId: recovered.id, sdp: "v=0\r\no=recovered" });
   await until(() => !!ctx.media.peers[1]?.remoteDescription, "Recovery SDP was not applied");
+  assert.equal(ctx.media.peers[1].added[0].track.enabled, false);
   ctx.media.connect();
   await until(() => ctx.client.getSnapshot().voice.status === "active", "Recovery did not activate");
+  assert.equal(ctx.client.getSnapshot().voice.muted, true);
   await until(() => ctx.calls.length === 7, "Recovery did not refresh history");
   ctx.respond(6, { ...empty, revision: 3, voice: recovered });
   assert.ok(!ctx.calls.some(({ url }) => /\/(messages|answers|tools)$/.test(url)));

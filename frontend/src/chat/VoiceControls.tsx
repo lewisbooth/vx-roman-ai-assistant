@@ -99,7 +99,7 @@ export function VoiceControls({
           : "Voice is on";
   if (!needsStop) return null;
   return (
-    <div className="roman-voice-bar">
+    <div className="roman-voice-bar" data-microphone-control={active || undefined}>
       {active ? (
         <div
           className="roman-voice-waveform"
@@ -114,6 +114,43 @@ export function VoiceControls({
         <span className="roman-voice-notice" role="status">
           {status}
         </span>
+      )}
+      {active && (
+        <button
+          type="button"
+          className="roman-composer-action roman-voice-microphone"
+          aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"}
+          data-muted={voice.muted || undefined}
+          onClick={() => session.setMicrophoneMuted(!voice.muted)}
+        >
+          <span className="roman-action-label" aria-hidden="true">
+            {voice.muted ? "Unmute microphone" : "Mute microphone"}
+          </span>
+          <span className="roman-action-icon" aria-hidden="true">
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {voice.muted ? (
+                <>
+                  <path d="m3 3 18 18M9 9v3a3 3 0 0 0 5.1 2.1M9 5V4a3 3 0 0 1 6 0v5M5 10v2a7 7 0 0 0 12 4.9M19 10v2c0 .6-.1 1.2-.2 1.7" />
+                  <path d="M12 19v3M8 22h8" />
+                </>
+              ) : (
+                <>
+                  <rect x="9" y="1" width="6" height="14" rx="3" />
+                  <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+                </>
+              )}
+            </svg>
+          </span>
+        </button>
       )}
       <button
         type="button"

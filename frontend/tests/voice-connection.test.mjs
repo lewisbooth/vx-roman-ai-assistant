@@ -92,6 +92,35 @@ test("stopping while permission is pending stops a late microphone without creat
   assert.equal(conversationPreparations, 0);
 });
 
+test("microphone mute changes capture only and closed capture cannot be re-enabled", async (t) => {
+  const { connection, media, errors } = setup(t);
+  // A recovered connection must apply its saved mute before attaching tracks.
+  connection.setMicrophoneMuted(true);
+  await connection.prepare();
+  assert.equal(media.tracks[0].enabled, false);
+  assert.equal(media.peers[0].added[0].track.enabled, false);
+  const connecting = connection.connect("answer", async () => {});
+  media.connect();
+  await connecting;
+  connection.setMicrophoneMuted(false);
+  assert.equal(media.tracks[0].enabled, true);
+  connection.setMicrophoneMuted(true);
+  connection.setMicrophoneMuted(true);
+  assert.equal(media.tracks[0].enabled, false);
+  assert.equal(media.tracks[0].stopped, false);
+  assert.equal(media.calls.microphone, 1);
+  assert.equal(media.calls.play, 1);
+  assert.equal(media.calls.pause, 0);
+  assert.equal(media.peers[0].closed, undefined);
+  assert.equal(media.peers[0].channel.closed, false);
+  assert.deepEqual(errors, []);
+  connection.close();
+  connection.setMicrophoneMuted(false);
+  assert.equal(media.tracks[0].enabled, false);
+  assert.equal(media.tracks[0].stopped, true);
+  assert.equal(media.calls.pause, 1);
+});
+
 test("conversation preparation starts only after microphone permission and overlaps local SDP work", async (t) => {
   let allowMicrophone;
   let allowConversation;

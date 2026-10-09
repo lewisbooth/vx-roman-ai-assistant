@@ -11,6 +11,7 @@ export class MicrophonePermissionError extends Error {
 export function createVoiceConnection(onFailure: (message: string, closeReason: VoiceCloseReason) => void) {
   let closed = false;
   let stream: MediaStream | undefined;
+  let microphoneMuted = false;
   let peer: RTCPeerConnection | undefined;
   let channel: RTCDataChannel | undefined;
   let audio: HTMLAudioElement | undefined;
@@ -159,6 +160,8 @@ export function createVoiceConnection(onFailure: (message: string, closeReason: 
         stream.getTracks().forEach((track) => track.stop());
         throw new Error("Voice was stopped.");
       }
+      for (const track of stream.getAudioTracks())
+        track.enabled = !microphoneMuted;
       peer = new RTCPeerConnection();
       audio = document.createElement("audio");
       audio.autoplay = true;
@@ -317,6 +320,14 @@ export function createVoiceConnection(onFailure: (message: string, closeReason: 
       mark("answer");
       checkReady();
       await waiting;
+    },
+    setMicrophoneMuted(muted: boolean) {
+      if (closed) return;
+      microphoneMuted = muted;
+      // Capture only: incoming Roman audio and the live transport stay active.
+      stream?.getAudioTracks().forEach((track) => {
+        track.enabled = !muted;
+      });
     },
     close,
   };

@@ -36,7 +36,7 @@ function Details({
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   async function request(action: "cart" | "sample") {
-    if (disabled || inFlight.current) return;
+    if (disabled || (action === "cart" && pricePending) || inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
     setError(null);
@@ -120,19 +120,14 @@ function Details({
       )}
       {!compact && (
         <div className="roman-product-actions">
-          {!pricePending && configuration?.configuredPrice && (
+          {(configuration?.configuredPrice || (pricePending && reserveCart)) && (
             <button
               type="button"
-              disabled={disabled || submitting}
+              disabled={disabled || submitting || pricePending}
               onClick={() => void request("cart")}
             >
               Add to Cart
             </button>
-          )}
-          {pricePending && reserveCart && (
-            <span className="roman-product-cart-placeholder" aria-hidden="true">
-              Add to Cart
-            </span>
           )}
           <button
             type="button"

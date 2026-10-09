@@ -165,10 +165,10 @@
     gap: 10px;
     width: min(320px, calc(100vw - 32px));
     padding: 16px;
-    border: 1px solid #d8c6b8;
+    border: 1px solid #4e0e0e;
     border-radius: 16px;
-    background: #f7f5ef;
-    color: #4e0e0e;
+    background: #4e0e0e;
+    color: #f7f5ef;
     box-shadow: 0 6px 20px #4e0e0e1f;
     font-size: 15px;
     line-height: 1.4;
@@ -183,9 +183,9 @@
     width: 10px;
     height: 10px;
     transform: rotate(45deg);
-    border-top: 1px solid #d8c6b8;
-    border-left: 1px solid #d8c6b8;
-    background: #f7f5ef;
+    border-top: 1px solid #4e0e0e;
+    border-left: 1px solid #4e0e0e;
+    background: #4e0e0e;
   }
   .roman-cart-notice svg {
     flex-shrink: 0;
@@ -1056,6 +1056,36 @@
 
   .roman-voice-bar {
     @apply relative flex h-[44px] min-w-0 w-full items-center pr-[52px];
+  }
+
+  .roman-voice-bar[data-microphone-control] {
+    padding-right: 100px;
+  }
+
+  .roman-voice-bar .roman-voice-microphone {
+    right: 48px;
+    width: 44px;
+    background: transparent;
+    color: #4e0e0e;
+  }
+
+  .roman-voice-microphone[data-muted],
+  .roman-voice-microphone:is(:hover, :focus-visible) {
+    background: #4e0e0e;
+    color: #f7f5ef;
+  }
+
+  .roman-voice-bar .roman-voice-microphone .roman-action-label,
+  .roman-voice-bar .roman-voice-microphone:is(:hover, :focus-visible) .roman-action-label {
+    position: absolute;
+    bottom: 52px;
+    right: 0;
+    max-width: none;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: #4e0e0e;
+    color: #f7f5ef;
+    pointer-events: none;
   }
 
   .roman-voice-waveform {

@@ -41,6 +41,7 @@ function setup(t) {
   const calls = [];
   const view = dom.window.api.mount(container, {
     stopVoice: async () => calls.push(["stop"]),
+    setMicrophoneMuted: (muted) => calls.push(["mute", muted]),
   });
   t.after(() => {
     view.dispose();
@@ -49,22 +50,34 @@ function setup(t) {
   return { ...view, container, calls };
 }
 
-test("active voice fills the bar with decorative activity and only End voice", (t) => {
+test("active voice offers capture mute and End voice without replacing the bar", (t) => {
   const { render, container, calls } = setup(t);
   render({ voice: { status: "active", muted: false, error: null } });
   const waveform = container.querySelector(".roman-voice-waveform");
   assert.equal(waveform.getAttribute("aria-hidden"), "true");
   assert.equal(waveform.children.length, 39);
   assert.equal(container.querySelector('[role="status"]'), null);
-  assert.equal(container.querySelectorAll("button").length, 1);
+  assert.equal(container.querySelectorAll("button").length, 2);
+  const mute = container.querySelector('[aria-label="Mute microphone"]');
+  assert.equal(mute.type, "button");
+  assert.equal(mute.hasAttribute("data-muted"), false);
+  assert.equal(mute.hasAttribute("aria-pressed"), false);
+  mute.click();
+  assert.deepEqual(calls, [["mute", true]]);
   const end = container.querySelector('[aria-label="End voice"]');
   assert.equal(end.type, "button");
   end.click();
-  assert.deepEqual(calls, [["stop"]]);
+  assert.deepEqual(calls, [["mute", true], ["stop"]]);
   assert.equal(container.querySelector("textarea, input"), null);
   render({ voice: { status: "active", muted: true, error: null } });
   assert.ok(container.querySelector(".roman-voice-waveform[data-muted]"));
-  assert.equal(container.querySelectorAll("button").length, 1);
+  assert.equal(container.querySelectorAll("button").length, 2);
+  const unmute = container.querySelector('[aria-label="Unmute microphone"]');
+  assert.equal(unmute, mute, "Mute retains the same focused control");
+  assert.equal(unmute.getAttribute("data-muted"), "true");
+  assert.equal(unmute.hasAttribute("aria-pressed"), false);
+  unmute.click();
+  assert.deepEqual(calls, [["mute", true], ["stop"], ["mute", false]]);
 });
 
 test("connecting, stopping, restored and uncertain voice expose only safe cancellation", (t) => {

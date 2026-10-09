@@ -273,9 +273,9 @@ test("voice takes over the whole bar and preserves an unsent text draft until it
     const embedded = ctx.container.querySelector(".roman-voice-bar");
     assert.equal(embedded.closest("form"), form);
     assert.equal(ctx.container.querySelectorAll("form").length, 1);
-    assert.equal(form.querySelectorAll("button").length, 1);
+    assert.equal(form.querySelectorAll("button").length, status === "active" ? 2 : 1);
     assert.equal(
-      form.querySelector("button").getAttribute("aria-label"),
+      form.querySelector('[aria-label="End voice"]').getAttribute("aria-label"),
       "End voice",
     );
     if (status === "active") {

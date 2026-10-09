@@ -522,6 +522,8 @@ export function createConversationClient(
   let voiceActivityVersion = 0;
   let voiceId: string | undefined;
   let voiceConnection: ReturnType<typeof createVoiceConnection> | undefined;
+  // Customer capture preference survives only this voice session's reconnects.
+  let microphoneMuted = false;
   let heartbeatTimer: number | undefined;
   let heartbeatTimeoutTimer: number | undefined;
   let heartbeatController: AbortController | undefined;
@@ -1028,6 +1030,7 @@ export function createConversationClient(
   function reset() {
     cancelVoiceRecovery();
     closeVoiceLocally();
+    microphoneMuted = false;
     voiceId = undefined;
     voiceStop = undefined;
     toolController?.abort();
@@ -1880,13 +1883,14 @@ export function createConversationClient(
       epoch === startedEpoch &&
       voiceEpoch === startedVoiceEpoch;
     update({
-      voice: { status: "starting", muted: false, error: null },
+      voice: { status: "starting", muted: microphoneMuted, error: null },
       error: null,
     });
     const connection = createVoiceConnection((message, reason) => {
       if (!current()) return;
       failVoice(message, reason);
     });
+    connection.setMicrophoneMuted(microphoneMuted);
     voiceConnection = connection;
     try {
       // Permission precedes bootstrap, so denying the microphone creates no chat.
@@ -1944,7 +1948,7 @@ export function createConversationClient(
           });
       });
       if (!current()) return;
-      update({ voice: { status: "active", muted: false, error: null } });
+      update({ voice: { status: "active", muted: microphoneMuted, error: null } });
       if (voiceRecoveryAttempts > 0)
         voiceStableTimer = window.setTimeout(() => {
           if (current()) voiceRecoveryAttempts = 0;
@@ -2419,12 +2423,24 @@ export function createConversationClient(
     startVoice() {
       if (state.availability === "suspended")
         return Promise.reject(new Error(UNAVAILABLE_MESSAGE));
+      // A refused duplicate start must not unmute the existing microphone.
+      if (!voiceConnection && state.voice.status !== "active")
+        microphoneMuted = false;
       setVoiceAutostartPreference(true);
       return startVoice();
+    },
+    setMicrophoneMuted(muted) {
+      if (disposed || ending || isSuspended() ||
+          state.voice.status !== "active" || !voiceConnection) return;
+      voiceConnection.setMicrophoneMuted(muted);
+      microphoneMuted = muted;
+      if (state.voice.muted !== muted)
+        update({ voice: { ...state.voice, muted } });
     },
     setVoice,
     stopVoice() {
       cancelVoiceRecovery();
+      microphoneMuted = false;
       setVoiceAutostartPreference(false);
       return stopVoice();
     },
@@ -2447,6 +2463,7 @@ export function createConversationClient(
       }
       ending = true;
       closeVoiceLocally();
+      microphoneMuted = false;
       const hadVoice = voiceId || state.voice.status === "starting";
       if (hadVoice)
         update({ voice: { status: "stopping", muted: true, error: null } });
