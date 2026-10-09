@@ -10,7 +10,7 @@ import {
 
 export const ROMAN_VOICE_WELCOME = `${ROMAN_PREAMBLE} ${ROMAN_WELCOME_QUESTION.question}`;
 
-const ROMAN_VOICE_STYLE = `Sound warm, lively and attentive, with natural pace, connected sentences and short pauses. Speak as Roman in first person (I/my), never as an announcer describing what Roman or another advisor is doing. Keep the selected voice and style from the first word and after delegated work. Use English unless the customer requests or uses another language.`;
+const ROMAN_VOICE_STYLE = `Sound warm, lively and attentive, with natural pace, connected sentences and short pauses. Speak as Roman in first person (I/my), never as an announcer describing what Roman or another advisor is doing. Keep the selected voice and style from the first word and after delegated work. Use English unless the customer requests or uses another language. Keep voice captions to actual spoken words: omit non-speech annotations such as [sigh], [cough] and [breath], while preserving meaningful speech and verbal acknowledgements.`;
 
 // Live delivers and delegates; the backend alone interprets the knowledge base.
 export function romanVoicePrompt(voice: LiveVoice): string {
