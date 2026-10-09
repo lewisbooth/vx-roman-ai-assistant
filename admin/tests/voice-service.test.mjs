@@ -2933,6 +2933,90 @@ test("UI input returns after accepted mirroring while the advisor works and Live
   await state.stop();
 });
 
+for (const phase of [
+  "provider mirror acknowledgement",
+  "cancellation/event drain",
+  "advisor result",
+]) {
+  test(`accepted UI input survives incidental raw captions during ${phase}`, async (t) => {
+    const state = setup();
+    const gate = deferred();
+    const question = {
+      callId: "room-question",
+      question: "Which room would you like to find blinds for?",
+      answers: ["Bedroom", "Kitchen", "Living room"],
+    };
+    const result = { text: "", questionPresentation: question };
+    t.after(async () => {
+      gate.resolve(result);
+      await state.stop();
+    });
+    await answerableVoice(state);
+    const input = {
+      clientId: state.input.clientId,
+      requestId: randomUUID(),
+      text: "Help me find blinds that suit my room and style.",
+    };
+    state.mock.onDelegate = async () => result;
+    if (phase === "provider mirror acknowledgement")
+      state.mock.onCustomerInput = () => gate.promise;
+    else if (phase === "cancellation/event drain")
+      state.mock.onCancelDelegation = () => gate.promise;
+    else state.mock.onDelegate = () => gate.promise;
+
+    const submitted = state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    );
+    await flush();
+    assert.equal(state.calls.answer.length, 1);
+    assert.deepEqual(state.providers[0].inputs, [input.text]);
+    assert.equal(state.calls.delegate.length, phase === "advisor result" ? 1 : 0);
+    if (phase === "cancellation/event drain")
+      assert.equal(state.calls.cancelDelegation.length, 1);
+
+    // A saved caption alone is not a newly delegated customer request.
+    state.emit(
+      transcript({
+        eventId: `incidental-${phase}`,
+        text: "two men sit",
+      }),
+    );
+    await flush();
+    assert.equal(state.calls.caption.length, 1);
+    assert.equal(state.calls.delegate.length, phase === "advisor result" ? 1 : 0);
+    if (phase === "advisor result")
+      assert.equal(state.calls.delegate[0][3].aborted, false);
+
+    gate.resolve(result);
+    await submitted;
+    await flush();
+    assert.equal(
+      state.calls.delegate.length,
+      1,
+      "The accepted UI request must reach the advisor despite an unaccepted raw caption",
+    );
+    assert.equal(state.calls.delegate[0][2], input.requestId);
+    assert.equal("speech" in state.calls.delegate[0][4], false);
+    assert.deepEqual(state.providers[0].replies, [question.question]);
+    assert.deepEqual(deliveredChoices(state.providers[0].thoughts), question.answers);
+    assert.deepEqual(state.providers[0].commentaries, []);
+    assert.equal(state.providers[0].closed, false);
+
+    await state.api.answerVoiceQuestion(
+      state.conversationId,
+      state.input.requestId,
+      input,
+    );
+    await flush();
+    assert.equal(state.calls.answer.length, 1);
+    assert.equal(state.providers[0].inputs.length, 1);
+    assert.equal(state.calls.delegate.length, 1);
+    assert.equal(state.providers[0].replies.length, 1);
+  });
+}
+
 test("typed replies, quick answers and carousel choices send only the completed briefing without a second acknowledgement", async () => {
   for (const kind of ["text", "answer", "choice"]) {
     const state = setup();

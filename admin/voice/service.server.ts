@@ -115,6 +115,8 @@ interface VoiceOwner {
   scheduledCaption?: string;
   /** Fresh UI input is handled directly, never delegated a second time by Live. */
   uiInputCaption?: string;
+  /** Only accepted UI input or explicit speech delegation supersedes work. */
+  acceptedIntent?: string;
   latestUserCaption?: string;
   latestUserSequence?: number;
   latestUserStartMs?: number;
@@ -359,9 +361,9 @@ function receiveDelegation(
 
 function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
   if (owner.stopping) return;
-  // A spoken correction can arrive while the silent input mirror is in flight.
-  // Its newer work must not be cancelled when that older acknowledgement lands.
-  if (request.kind === "input" && owner.latestUserCaption !== request.caption)
+  // Raw captions remain observations while the UI mirror is in flight. Only
+  // newer accepted intent makes its acknowledgement stale.
+  if (request.kind === "input" && owner.acceptedIntent !== request.caption)
     return;
   if (request.kind === "speech" && !hasFreshSpeech(owner)) return;
   if (request.kind === "input") clearPendingSpeech(owner);
@@ -373,7 +375,12 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
     );
     return;
   }
-  owner.scheduledCaption = owner.latestUserCaption;
+  if (request.kind === "speech")
+    owner.acceptedIntent = `delegation:${request.delegationId}`;
+  if (request.kind !== "resume")
+    owner.scheduledCaption = request.kind === "input"
+      ? request.caption
+      : owner.latestUserCaption;
   voiceActivity(owner);
   owner.delegationController?.abort();
   const controller = new AbortController();
@@ -529,7 +536,7 @@ function scheduleAdvisorReply(owner: VoiceOwner, request: AdvisorRequest) {
       }
       if (
         request.kind === "input" &&
-        owner.latestUserCaption !== request.caption
+        owner.acceptedIntent !== request.caption
       )
         return;
       const resumeQuestionId =
@@ -1127,6 +1134,7 @@ async function submitVoiceInput(
       // A later Live delegation must see this click as new customer intent,
       // while repeated/draining caption IDs cannot replace its newer sequence.
       owner.latestUserCaption = `answer:${receipt.messageId}`;
+      owner.acceptedIntent = owner.latestUserCaption;
       owner.latestUserSequence = receipt.sequence;
       owner.latestUserStartMs = undefined;
       owner.uiInputCaption = owner.latestUserCaption;
