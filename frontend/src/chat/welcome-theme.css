@@ -133,6 +133,16 @@
   background: transparent;
 }
 
+.roman-chat[data-welcome-theme] .roman-action-label {
+  color: #fff;
+}
+
+.roman-chat[data-welcome-theme] .roman-voice-idle-warning {
+  color: #fff;
+  border-color: #ffffff66;
+  background: #21070766;
+}
+
 .roman-chat[data-welcome-theme] .roman-composer form:not([data-unavailable]) {
   --roman-composer-glow-inset: -6px;
   --roman-composer-glow-blur: 12px;
