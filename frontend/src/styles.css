@@ -1209,7 +1209,7 @@
     z-index: -1;
     border-radius: inherit;
     background: inherit;
-    box-shadow: 0 0 0 1px #4e0e0e;
+    box-shadow: 0 0 0 2px #4e0e0e;
     pointer-events: none;
   }
 
