@@ -92,6 +92,19 @@ export function Composer({
         aria-busy={sending}
         data-unavailable={unavailable || undefined}
       >
+        <svg className="roman-composer-glow" aria-hidden="true" focusable="false">
+          {["#D9D0E8", "#C59745", "#F6865A", "#DA9CC1"].map((colour) => (
+            <rect
+              key={colour}
+              width="100%"
+              height="100%"
+              rx="26"
+              pathLength="100"
+              fill="none"
+              stroke={colour}
+            />
+          ))}
+        </svg>
         {unavailable ? (
           <div
             className="roman-composer-unavailable"
