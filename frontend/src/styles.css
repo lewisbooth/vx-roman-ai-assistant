@@ -1181,7 +1181,7 @@
       10px 0 20px #c597458c,
       0 0 8px #ea9a4999,
       0 0 28px #b8796773;
-    animation: roman-composer-focus-glow 3.6s ease-in-out infinite;
+    animation: roman-composer-focus-glow 4.8s linear infinite;
   }
 
   @keyframes roman-composer-focus-glow {
@@ -1192,12 +1192,26 @@
         0 0 8px #ea9a4999,
         0 0 28px #b8796773;
     }
+    25% {
+      box-shadow:
+        0 -10px 18px #b8796799,
+        0 10px 20px #c597458c,
+        0 0 8px #ea9a4999,
+        0 0 28px #b8796773;
+    }
     50% {
       box-shadow:
-        10px 0 22px #b87967b3,
-        -10px 0 20px #c59745a6,
-        0 0 12px #ea9a49a6,
-        0 0 34px #b879677d;
+        10px 0 18px #b8796799,
+        -10px 0 20px #c597458c,
+        0 0 8px #ea9a4999,
+        0 0 28px #b8796773;
+    }
+    75% {
+      box-shadow:
+        0 10px 18px #b8796799,
+        0 -10px 20px #c597458c,
+        0 0 8px #ea9a4999,
+        0 0 28px #b8796773;
     }
   }
 
