@@ -93,17 +93,31 @@ export function Composer({
         data-unavailable={unavailable || undefined}
       >
         <svg className="roman-composer-glow" aria-hidden="true" focusable="false">
-          {["#D9D0E8", "#C59745", "#F6865A", "#DA9CC1"].map((colour) => (
-            <rect
-              key={colour}
-              width="100%"
-              height="100%"
-              rx="26"
-              pathLength="100"
-              fill="none"
-              stroke={colour}
-            />
-          ))}
+          <defs>
+            <filter
+              id={`${id}-glow`}
+              x="-50%"
+              y="-75%"
+              width="200%"
+              height="250%"
+              colorInterpolationFilters="sRGB"
+            >
+              <feGaussianBlur stdDeviation="32 8" />
+            </filter>
+          </defs>
+          <g filter={`url(#${id}-glow)`}>
+            {["#D9D0E8", "#C59745", "#F6865A", "#DA9CC1"].map((colour) => (
+              <rect
+                key={colour}
+                width="100%"
+                height="100%"
+                rx="26"
+                pathLength="100"
+                fill="none"
+                stroke={colour}
+              />
+            ))}
+          </g>
         </svg>
         {unavailable ? (
           <div

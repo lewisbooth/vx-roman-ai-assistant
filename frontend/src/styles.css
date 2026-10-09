@@ -1187,7 +1187,6 @@
     height: 100%;
     overflow: visible;
     pointer-events: none;
-    filter: blur(8px);
     opacity: 0;
   }
 
