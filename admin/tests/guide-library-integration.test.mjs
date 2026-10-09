@@ -28,6 +28,7 @@ const bundle = await build({
         }));
         build.onLoad({ filter: /.*/, namespace: "availability-stub" }, () => ({
           contents: `export const PRIMARY_TEXT_MODEL="gpt-5.6-terra";
+            export const TEXT_SERVICE_TIER="fast";
             export const FALLBACK_TEXT_MODEL="gpt-5.6-luna";
             export const textModelForRequest=async()=>"gpt-5.6-terra";
             export const assertServiceAvailable=async()=>{};

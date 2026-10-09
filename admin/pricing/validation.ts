@@ -55,7 +55,7 @@ export function validatePrices(prices: readonly ModelPrice[]): void {
     if (new URL(price.sourceUrl).protocol !== "https:")
       throw new Error("Model prices require an HTTPS source.");
     if (price.kind === "tokens") {
-      if (!["default", "priority"].includes(price.serviceTier))
+      if (!["default", "priority", "ultrafast"].includes(price.serviceTier))
         throw new Error(
           "Token pricing requires an explicit supported service tier.",
         );

@@ -22,6 +22,7 @@ export function estimatedUsd(value: number | null): string {
 export function serviceTierLabel(tier: string | null): string {
   if (tier === "default") return "Standard (default)";
   if (tier === "priority") return "Fast (priority)";
+  if (tier === "ultrafast") return "Ultrafast";
   return tier || "Not recorded";
 }
 

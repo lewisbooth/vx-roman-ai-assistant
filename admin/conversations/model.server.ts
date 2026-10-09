@@ -56,6 +56,7 @@ import { MAX_TURN_TOOL_CALLS } from "./limits.server";
 import {
   FALLBACK_TEXT_MODEL,
   PRIMARY_TEXT_MODEL,
+  TEXT_SERVICE_TIER,
   assertServiceAvailable,
   isServiceSuspended,
   reportFallbackUnavailable,
@@ -80,7 +81,6 @@ import {
 } from "./guide-turn.server";
 
 export const TEXT_MODEL = PRIMARY_TEXT_MODEL;
-export const TEXT_SERVICE_TIER = "fast";
 
 const isTerminalTool = (name: string) =>
   name === "ask_question" || name === "ask_measurement" || name === "present_photos";

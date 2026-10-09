@@ -55,6 +55,7 @@ const bundle = await build({
           resolveDir: process.cwd(),
           contents: args.path.endsWith("availability.server")
             ? `export const PRIMARY_TEXT_MODEL="gpt-5.6-terra";
+                export const TEXT_SERVICE_TIER="fast";
                 export const FALLBACK_TEXT_MODEL="gpt-5.6-luna";
                 export const UNAVAILABLE_MESSAGE="Roman is currently unavailable";
                 export const onServiceSuspended=()=>()=>{};

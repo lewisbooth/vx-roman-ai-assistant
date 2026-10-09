@@ -475,6 +475,54 @@ test("per-call prices use recorded start dates and leave historical or unknown r
   assert.equal(overview.summary.usage.cacheWriteInputTokens, 10);
 });
 
+test("Sol Ultrafast costs agree between inspection and grouped overview without repricing other tiers", async () => {
+  const own = await conversation();
+  const reply = await message(own.id);
+  const rows = [];
+  const at = new Date("2026-10-09T00:00:00.000Z");
+  for (const overrides of [
+    { serviceTier: "ultrafast" },
+    { serviceTier: "ultrafast", inputTokens: 272000 },
+    { serviceTier: "ultrafast", inputTokens: 272001, cacheWriteInputTokens: 10 },
+    { serviceTier: "priority" },
+    { serviceTier: "fast" },
+    { serviceTier: "default" },
+    { serviceTier: "ultrafast", createdAt: new Date("2026-10-08T23:59:59.999Z") },
+    { serviceTier: null },
+    { serviceTier: "unknown" },
+  ])
+    rows.push(await usage(own.id, reply.id, {
+      model: "gpt-6.1-sol",
+      createdAt: at,
+      ...overrides,
+    }));
+  const foreign = await conversation({ shop: otherShop });
+  const foreignReply = await message(foreign.id);
+  await usage(foreign.id, foreignReply.id, {
+    model: "gpt-6.1-sol",
+    serviceTier: "ultrafast",
+    createdAt: at,
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+  const expected = repository.emptyCostSummary();
+  for (const row of rows)
+    repository.addCost(expected, "model", repository.estimateModelUsage(row));
+  assert.equal(expected.pricedModelCalls, 6);
+  assert.equal(expected.unpricedModelCalls, 3);
+  assertCostsEqual(await repository.getShopCostSummary(shop), expected);
+  const inspection = await repository.getConversationInspection(shop, own.id);
+  assertCostsEqual(inspection.cost, expected);
+  assert.equal(
+    inspection.modelUsage.find((call) => call.id === rows[0].id).cost.rateId,
+    "gpt-6.1-sol-ultrafast-2026-10-09",
+  );
+  assert.equal(
+    inspection.modelUsage.find((call) => call.id === rows[3].id).cost.rateId,
+    "gpt-6.1-sol-fast-2026-10-07",
+  );
+});
+
 test("shop estimates aggregate all cost metadata without repeating individual calls", async () => {
   const own = await conversation();
   const reply = await message(own.id);

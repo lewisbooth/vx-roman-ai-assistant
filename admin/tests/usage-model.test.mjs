@@ -217,6 +217,28 @@ const healthTerminal = (model = "gpt-6.1-sol", argumentsJson = '{"ok":true}') =>
   },
 });
 
+test("text and voice advisor rounds request Ultrafast and retain the actual served tier", async (t) => {
+  for (const mode of ["text", "voice"]) {
+    await t.test(mode, async () => {
+      const first = toolRound();
+      const last = terminal();
+      first.response.model = last.response.model = "gpt-6.1-sol";
+      first.response.service_tier = "ultrafast";
+      // A returned tier is authoritative even when it differs from the request.
+      last.response.service_tier = "default";
+      const app = setup([events(first), events(last)], "healthy", true);
+      const reply = await app.run(undefined, { mode });
+      assert.equal(app.requests.length, 2);
+      assert.ok(app.requests.every(([request]) =>
+        request.model === app.primaryModel && request.service_tier === "ultrafast" &&
+        request.reasoning.effort === "medium" && request.store === false));
+      assert.deepEqual(app.records.filter((entry) => entry.status === "completed")
+        .map((entry) => entry.serviceTier), ["ultrafast", "default"]);
+      assert.equal(reply.serviceTier, "default");
+    });
+  }
+});
+
 test("saved-photo terminal has no question and uses server tools without a browser operation", async () => {
   const windowId = "abbf52a1-79c2-41b5-aafc-90089c6f3c34",
     calls = [];
@@ -497,7 +519,7 @@ test("single-advisor recovery keeps capped backoff and probes only the configure
   assert.deepEqual(app.incidents, ["healthy"]);
   assert.ok(app.requests.every(([request]) =>
     request.model === app.primaryModel && request.input === "Call report_api_health with ok set to true." &&
-    request.reasoning.effort === "medium" && request.service_tier === "fast" &&
+    request.reasoning.effort === "medium" && request.service_tier === "ultrafast" &&
     request.store === false));
 });
 
@@ -510,7 +532,7 @@ test("recovery exercises the advisor's strict streamed function envelope without
   const [request, options] = app.requests[0];
   assert.equal(request.model, app.primaryModel);
   assert.equal(request.stream, true);
-  assert.equal(request.service_tier, "fast");
+  assert.equal(request.service_tier, "ultrafast");
   assert.equal(request.reasoning.effort, "medium");
   assert.equal(request.max_output_tokens, 1024);
   assert.equal(request.store, false);
@@ -737,7 +759,7 @@ test("suspended service probes both models with capped backoff and resumes on fa
   assert.equal(app.requests.slice(2).every(([request]) => request.input === "Call report_api_health with ok set to true."), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.max_output_tokens === 1024), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.reasoning.effort === "medium"), true);
-  assert.equal(app.requests.slice(2).every(([request]) => request.service_tier === "fast" && request.store === false), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.service_tier === "ultrafast" && request.store === false), true);
 });
 
 test("a later provider round falls back using prior tool results without replaying the action", async () => {

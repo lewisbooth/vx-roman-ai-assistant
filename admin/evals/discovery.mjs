@@ -27,7 +27,7 @@ process.loadEnvFile();
 assert.ok(process.env.OPENAI_API_KEY, "Set the private root OPENAI_API_KEY.");
 // Test the configured advisor without service probes or customer database writes.
 const availability = await readFile("admin/conversations/availability.server.ts", "utf8");
-const declarations = ["PRIMARY_TEXT_MODEL", "FALLBACK_TEXT_MODEL"].map((name) => {
+const declarations = ["PRIMARY_TEXT_MODEL", "FALLBACK_TEXT_MODEL", "TEXT_SERVICE_TIER"].map((name) => {
   const match = availability.match(new RegExp(`export const ${name}(?:\\s*:\\s*string \\| null)? = ("[^"\\r\\n]+"|null);`));
   assert.ok(match, `Cannot read current ${name}; evaluation must not choose a substitute.`);
   return `export const ${name}=${match[1]};`;

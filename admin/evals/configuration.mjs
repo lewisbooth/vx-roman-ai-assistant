@@ -1023,7 +1023,7 @@ async function liveEvaluation(args) {
     "admin/conversations/availability.server.ts",
     "utf8",
   );
-  const declarations = ["PRIMARY_TEXT_MODEL", "FALLBACK_TEXT_MODEL"]
+  const declarations = ["PRIMARY_TEXT_MODEL", "FALLBACK_TEXT_MODEL", "TEXT_SERVICE_TIER"]
     .map((name) => {
       const match = availability.match(
         new RegExp(`export const ${name}(?:\\s*:\\s*string \\| null)? = ("[^"\\r\\n]+"|null);`),

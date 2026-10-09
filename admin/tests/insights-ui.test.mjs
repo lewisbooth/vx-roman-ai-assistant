@@ -1082,10 +1082,25 @@ test("pricing history shows exact UTC boundaries, tier rates, context thresholds
         perMinute: 0.05,
         sourceUrl: "https://developers.openai.com/api/docs/models/gpt-live-1",
       },
+      {
+        ...base,
+        id: "sol-ultrafast-test",
+        model: "gpt-6.1-sol",
+        serviceTier: "ultrafast",
+        effectiveFrom: "2026-10-09T00:00:00.000Z",
+        effectiveTo: null,
+        prices: {
+          inputPerMillion: 12,
+          cachedInputPerMillion: 0.6,
+          cacheWriteInputPerMillion: 15,
+          outputPerMillion: 60,
+        },
+        longContext: null,
+      },
     ],
   });
   const rows = [...container.querySelectorAll("s-table-body s-table-row")];
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 4);
   assert.match(
     container.textContent,
     /From \(inclusive\).*Until \(exclusive\)/s,
@@ -1102,6 +1117,9 @@ test("pricing history shows exact UTC boundaries, tier rates, context thresholds
   assert.match(rows[0].textContent, /Cache-write inputUSD 0\.50/);
   assert.match(rows[1].textContent, /Fast \(priority\).*Open ended/s);
   assert.match(rows[2].textContent, /USD 0\.05 per minute/);
+  assert.match(rows[3].textContent, /gpt-6\.1-solUltrafast/);
+  assert.match(rows[3].textContent, /2026-10-09 00:00:00\.000 UTC/);
+  assert.match(rows[3].textContent, /Cache-write inputUSD 15\.00/);
   assert.match(
     container.textContent,
     /whole request, not just tokens above the threshold/,

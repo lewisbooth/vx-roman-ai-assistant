@@ -38,7 +38,7 @@ export type ModelPrice = PricePeriod &
   (
     | {
         kind: "tokens";
-        serviceTier: "default" | "priority";
+        serviceTier: "default" | "priority" | "ultrafast";
         prices: TokenPrices;
         longContext: { aboveInputTokens: number; prices: TokenPrices } | null;
       }

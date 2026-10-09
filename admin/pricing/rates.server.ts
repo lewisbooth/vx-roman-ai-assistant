@@ -214,6 +214,32 @@ export const MODEL_PRICES: readonly ModelPrice[] = [
     },
   },
   {
+    id: "gpt-6.1-sol-ultrafast-2026-10-09",
+    model: "gpt-6.1-sol",
+    kind: "tokens",
+    serviceTier: "ultrafast",
+    currency: "USD",
+    effectiveFrom: "2026-10-09T00:00:00.000Z",
+    effectiveTo: null,
+    verifiedAt: "2026-10-09T09:16:05.000Z",
+    sourceUrl: "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+    prices: {
+      inputPerMillion: 12,
+      cachedInputPerMillion: 0.6,
+      cacheWriteInputPerMillion: 15,
+      outputPerMillion: 60,
+    },
+    longContext: {
+      aboveInputTokens: 272_000,
+      prices: {
+        inputPerMillion: 24,
+        cachedInputPerMillion: 1.2,
+        cacheWriteInputPerMillion: 30,
+        outputPerMillion: 90,
+      },
+    },
+  },
+  {
     id: "live-2026-09-15",
     model: "gpt-live-1",
     kind: "voice",

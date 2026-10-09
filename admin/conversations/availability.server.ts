@@ -6,6 +6,7 @@ import {
 import { ServiceUnavailableError } from "./errors.server";
 
 export const PRIMARY_TEXT_MODEL = "gpt-6.1-sol";
+export const TEXT_SERVICE_TIER = "ultrafast";
 export const FALLBACK_TEXT_MODEL: string | null = null;
 export const UNAVAILABLE_MESSAGE = "Roman is currently unavailable";
 
@@ -35,7 +36,7 @@ async function checkModel(model: string): Promise<boolean> {
     const healthTool = "report_api_health";
     const stream = await probeClient.responses.create({
       model,
-      service_tier: "fast",
+      service_tier: TEXT_SERVICE_TIER,
       reasoning: { effort: "medium" },
       input: "Call report_api_health with ok set to true.",
       tools: [{
