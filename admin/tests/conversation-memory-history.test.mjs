@@ -31,8 +31,8 @@ after(async () => {
 async function conversation() {
   return database.conversation.create({data: {id: randomUUID(), shop: "test.myshopify.com", origin: "https://test.example", credentialHash: randomUUID(), credentialExpiresAt: new Date(Date.now() + 60000)}});
 }
-async function message(conversationId, sequence, text) {
-  return database.conversationMessage.create({data: {id: randomUUID(), requestId: randomUUID(), conversationId, sequence, role: "assistant", status: "complete", partsJson: JSON.stringify([{type: "text", text}]), completedAt: new Date()}});
+async function message(conversationId, sequence, text, role = "assistant") {
+  return database.conversationMessage.create({data: {id: randomUUID(), requestId: randomUUID(), conversationId, sequence, role, status: "complete", partsJson: JSON.stringify([{type: "text", text}]), completedAt: new Date()}});
 }
 async function receipt(conversationId, assistantId, overrides = {}) {
   return database.toolInvocation.create({data: {id: randomUUID(), providerCallId: randomUUID(), conversationId, assistantId, name: "apply_measurements", status: "complete", argumentsJson: JSON.stringify({productPath: "/products/shared-blind"}), resultJson: JSON.stringify({status: "applied", measurements: {width: 550, height: 1150, unit: "mm"}, configuredPrice: "£110.74"}), completedAt: new Date(), ...overrides}});
@@ -80,4 +80,25 @@ test("matched-turn proof takes priority within the existing eight-receipt and UT
   assert.ok(first.entries.reduce((bytes, entry) => bytes + Buffer.byteLength(entry.text, "utf8"), 0) <= 24000);
   assert.deepEqual(first.entries.map((entry) => entry.sequence), first.entries.map((entry) => entry.sequence).sort((a, b) => a - b));
   await assert.rejects(recall(own.id, {query: "Willow pane", beforeSequence: null}, AbortSignal.abort()));
+});
+
+test("a matched voice advisor context turn recalls its original receipts without expanding customer or neighbouring turns", async () => {
+  const own = await conversation();
+  const matched = await message(own.id, 14, "Willow pane: the first blind was added; the curtain is still pending.", "context");
+  const added = await receipt(own.id, matched.id, {
+    name: "add_to_cart",
+    resultJson: JSON.stringify({status: "added", quantity: 2, itemKey: "first-blind"}),
+  });
+  const customer = await message(own.id, 15, "Willow pane is my next window.", "user");
+  const customerReceipt = await receipt(own.id, customer.id);
+  const adjacent = await message(own.id, 16, "The next blind is still unconfigured.", "context");
+  const adjacentReceipt = await receipt(own.id, adjacent.id);
+  const result = await lookup(own.id, 16);
+  assert.deepEqual(toolEntries(result).map((entry) => entry.source), [`tool:${added.id}`]);
+  assert.deepEqual(JSON.parse(toolEntries(result)[0].text).result, {
+    status: "added", quantity: 2, itemKey: "first-blind",
+  });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(`${customerReceipt.id}|${adjacentReceipt.id}`));
+  assert.ok(result.entries.some((entry) => entry.source === "message:14"));
+  assert.equal((await lookup(own.id, 14)).entries.length, 0);
 });

@@ -6814,6 +6814,7 @@ test("terminal memory patches stay private and use the same completion in text a
     })] })));
     const reply = await memoryReply(env, { mode, onText: (text) => visible.push(text) });
     assert.deepEqual(plain(reply.memoryUpdate), memoryUpdate);
+    assert.equal(reply.memoCheckpoint, 10);
     assert.doesNotMatch(JSON.stringify([visible, reply.text, reply.questionPresentation, reply.presentation]), /PRIVATE_|memoryUpdate|kitchen\/curtain/);
     assert.equal(env.calls.requests.length, 1, "memory uses the terminal answer, not a second model request");
     assert.equal(env.calls.browserTools.length, 0);
@@ -6822,6 +6823,19 @@ test("terminal memory patches stay private and use the same completion in text a
     assert.ok(terminal.parameters.required.includes("memoryUpdate"));
     assert.deepEqual(terminal.parameters.properties.memoryUpdate.type, ["object", "null"]);
   }
+});
+
+test("reviewed rolling history never triggers inline compaction and checkpoints a null memo review", async () => {
+  const env = setup();
+  env.streams.push(events(completed("", { output: [questionCall({ ...questionSelection, memoryUpdate: null })] })));
+  const reply = await memoryReply(env, {
+    history: [{ role: "user", text: "Long current tool context. ".repeat(1500) }],
+    memory: { memo: { kitchen: "Curtains pending" }, memoThroughSequence: 8, throughSequence: 10, checkpoints: [] },
+  });
+  assert.equal(reply.memoCheckpoint, 10);
+  assert.equal(reply.memoryUpdate, undefined);
+  assert.equal(env.calls.requests.length, 1);
+  assert.equal(env.calls.requests[0].input.context_management, undefined);
 });
 
 test("an invalid private patch gets one terminal-only repair without publishing or applying it", async () => {

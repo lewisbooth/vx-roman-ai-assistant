@@ -6,7 +6,7 @@ Home tiles start a conversation about measuring, style, no-drill products or roo
 
 If an add request arrives before the customer has seen the configured quote, Roman gives one priced review with the requested count and applicable separate fees. Accepting it authorizes the addition without a second options review. Existing readings and harmless defaults are retained; only a material change or unresolved paid choice needs another decision.
 
-Long conversations retain original history, private working notes and compacted model context. Roman can pause one window or product layer, work on another and return to unfinished goals. Customer history loads automatically on upward scroll; the [backend README](admin/README.md#long-conversations-and-private-memory) documents memory, recovery and operation limits.
+Long conversations retain original history and private working notes with a bounded recent context. Roman checkpoints her notes as she replies, can recall older evidence, pause one window or product layer, work on another and return to unfinished goals. Customer history loads automatically on upward scroll; the [backend README](admin/README.md#long-conversations-and-private-memory) documents memory, recovery and operation limits.
 
 Two React Router apps with Tailwind CSS 4 share one npm installation and lockfile:
 

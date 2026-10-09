@@ -19,6 +19,7 @@ runInNewContext(bundle.outputFiles[0].text, {
 });
 const {
   MAX_MEMO_BYTES,
+  MAX_RECENT_HISTORY_BYTES,
   MIN_COMPACTION_TEXT_BYTES,
   parseMemoryUpdate,
   parseMemo,
@@ -26,6 +27,7 @@ const {
   memoryMessage,
   parseCheckpoint,
   modelMemoryInput,
+  boundedHistory,
   shouldCompactContext,
   parseRecallHistory,
 } = module.exports;
@@ -37,6 +39,54 @@ const checkpoint = (model, throughSequence, marker = model) => ({
     { type: "compaction", encrypted_content: `encrypted-${marker}` },
     { role: "assistant", content: `Compacted outcome for ${marker}.` },
   ],
+});
+
+test("reviewed history drops whole exchanges by bytes and retains current work and application facts", () => {
+  const history = [];
+  for (let turn = 0; turn < 8; turn++) {
+    history.push({ role: "user", text: `request-${turn}: ` + "x".repeat(4000), sequence: turn * 2, endSequence: turn * 2 });
+    history.push({ role: "assistant", text: `answer-${turn}: ` + "y".repeat(4000), sequence: turn * 2 + 1, endSequence: turn * 2 + 1 });
+  }
+  history.push({ role: "user", text: "New correction", sequence: 16, endSequence: 16 });
+  history.push({ role: "user", source: "application_state", text: "Pending curtain question" });
+  const result = plain(boundedHistory(history, 15, [1, 3, 5, 7, 9, 11, 13, 15]));
+  assert.equal(result[0].source, "history_boundary");
+  assert.match(result[0].text, /recall_history/);
+  for (let turn = 0; turn < 8; turn++)
+    assert.equal(result.some(item => item.text.startsWith(`request-${turn}:`)), result.some(item => item.text.startsWith(`answer-${turn}:`)));
+  assert.ok(result.filter(item => item.sequence <= 15).reduce((bytes, item) => bytes + Buffer.byteLength(item.text) + 32, 0) <= MAX_RECENT_HISTORY_BYTES);
+  assert.ok(result.some(item => item.text === "New correction"));
+  assert.ok(result.some(item => item.text === "Pending curtain question"));
+});
+
+test("unreviewed receipts and crossing voice utterances are not discarded by the reviewed-history budget", () => {
+  const history = [
+    { role: "user", text: "Reviewed old history".repeat(3000), sequence: 0, endSequence: 1 },
+    { role: "assistant", text: "One whole crossing voice utterance".repeat(1500), sequence: 2, endSequence: 45 },
+    { role: "user", text: "Confirmed add despite a failed reply", sequence: 46, endSequence: 46 },
+  ];
+  const result = boundedHistory(history, 20, [1, 20]);
+  assert.equal(result.filter(item => item.sequence !== undefined).length, 2);
+  assert.equal(result[1].text, history[1].text);
+  assert.equal(result[2].text, history[2].text);
+  assert.equal(boundedHistory(history, -1, []), history, "legacy history needs its first actual review");
+});
+
+test("a database boundary is disclosed even when all loaded recent history fits", () => {
+  const history = [{ role: "user", text: "Keep this", sequence: 21, endSequence: 21 }];
+  assert.match(boundedHistory(history, 30, [30], 20)[0].text, /through sequence 20/);
+});
+
+test("a reviewed memo replaces legacy encrypted context while preserving the recall boundary", () => {
+  const input = modelMemoryInput([
+    { role: "user", source: "history_boundary", text: "Historical context boundary: use recall_history." },
+    { role: "user", text: "Current question", sequence: 22, endSequence: 22 },
+  ], "gpt-primary", {
+    memo: { kitchen: "Curtain still pending; blind added." }, memoThroughSequence: 21,
+    throughSequence: 22, checkpoints: [checkpoint("gpt-primary", 21)],
+  });
+  assert.doesNotMatch(JSON.stringify(input), /encrypted/);
+  assert.match(JSON.stringify(input), /recall_history.*Current question.*Curtain still pending/);
 });
 
 test("private notes keep independent window layers and future intentions without a task schema", () => {

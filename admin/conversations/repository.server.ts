@@ -138,7 +138,7 @@ import { MAX_TURN_TOOL_CALLS } from "./limits.server";
 import type { ModelMessage } from "./history.server";
 import { recallConversationHistory } from "./memory-history.server";
 import {
-  applyMemoryUpdate, memoryMessage, parseMemo, parseCheckpoint,
+  applyMemoryUpdate, boundedHistory, MAX_RECENT_HISTORY_TURNS, memoryMessage, parseMemo, parseCheckpoint,
   parseMemoryUpdate, type MemoryUpdate, type ModelMemory, type ContextCheckpoint,
 } from "./memory.server";
 import {
@@ -715,15 +715,21 @@ function modelHistory(
         ...(pending.measurement ? { measurement: pending.measurement } : {}),
       }
     : undefined;
-  const recentCartResults = conversation.toolInvocations
+  const actionResults = conversation.toolInvocations
     .filter(
       (tool) =>
         (isCartTool(tool.name) ||
           tool.name === "apply_measurements" ||
           isProductConfigurationTool(tool.name)) &&
         (tool.status === "complete" || tool.status === "failed"),
-    )
-    .slice(-8);
+    );
+  // Completed native work can outlive a failed/cancelled reply. Keep every
+  // unreviewed receipt until a later successful memo checkpoint covers it.
+  const unreviewedOwners = new Set(conversation.messages
+    .filter((message) => message.sequence > conversation.memoThroughSequence)
+    .map((message) => message.id));
+  const recentCartResults = actionResults.filter((tool, index) =>
+    index >= actionResults.length - 8 || unreviewedOwners.has(tool.assistantId));
   const history: ModelMessage[] = timeline.flatMap((message) => {
     if (message.status === "pending") return [];
     const content = message.parts;
@@ -1202,7 +1208,7 @@ export async function getReadRevision(id: string, recoverPending: boolean) {
   ).revision;
 }
 
-/** A model's own checkpoint is the only authority to omit its older raw input. */
+/** Read original evidence; callers own the reviewed-history boundary. */
 async function readModelHistory(
   transaction: Prisma.TransactionClient,
   conversation: Conversation,
@@ -1227,29 +1233,40 @@ async function readHistoryForModel(
   checkpoints: ContextCheckpoint[],
   model: string,
 ) {
-  const checkpoint = checkpoints.find((item) => item.model === model);
-  const cold = !checkpoint && checkpoints.length > 0 &&
-    Object.keys(parseMemo(JSON.parse(conversation.memoJson))).length > 0 && throughSequence >= 120;
-  const after = checkpoint?.throughSequence ?? (cold ? throughSequence - 120 : -1);
-  const history = await readModelHistory(transaction, conversation, context, throughSequence, after);
-  if (!cold) return history;
-  // A cold fallback cannot consume another model's encrypted checkpoint. Its
-  // private notes + recent original records are an explicit retrieval bootstrap.
-  const references = history.filter((item) => item.source === "memory" || item.source === "application_state");
-  const recent = history.filter((item) => item.source !== "memory" && item.source !== "application_state");
-  const selected: ModelMessage[] = [];
-  let remaining = 48_000;
-  for (let index = recent.length - 1; index >= 0; index--) {
-    const bytes = Buffer.byteLength(recent[index].text, "utf8") + 16;
-    if (bytes > remaining) break;
-    selected.unshift(recent[index]);
-    remaining -= bytes;
+  if (conversation.memoThroughSequence >= 0) {
+    // Anchor on completed advisor exchanges, never raw caption counts. One
+    // extra boundary identifies the start of the oldest retained exchange.
+    const turns = await transaction.conversationMessage.findMany({
+      where: { conversationId: conversation.id, status: "complete",
+        sequence: { lte: conversation.memoThroughSequence },
+        OR: [{ role: "assistant" }, { role: "context", partsJson: { contains: '"type":"voice_turn"' } }],
+      },
+      orderBy: { sequence: "desc" }, take: MAX_RECENT_HISTORY_TURNS + 1,
+      select: { sequence: true },
+    });
+    const boundaries = turns.map((turn) => turn.sequence).reverse();
+    const after = boundaries.length > MAX_RECENT_HISTORY_TURNS ? boundaries.shift()! : -1;
+    // A delayed ASR caption can straddle an advisor row. Start at the first
+    // crossing voice connection's original boundary, then trim whole projected
+    // exchanges below; a raw SQL cutoff must never manufacture a partial utterance.
+    const firstVoice = after < 0 ? undefined : await transaction.voiceTranscript.findFirst({
+      where: { conversationId: conversation.id, sequence: { gt: after, lte: throughSequence } },
+      orderBy: { sequence: "asc" }, select: { voiceId: true },
+    });
+    const voiceStart = firstVoice ? await transaction.voiceTranscript.findFirst({
+      where: { conversationId: conversation.id, voiceId: firstVoice.voiceId },
+      orderBy: { sequence: "asc" }, select: { sequence: true },
+    }) : undefined;
+    const readAfter = Math.min(after, (voiceStart?.sequence ?? after + 1) - 1);
+    const history = await readModelHistory(transaction, conversation, context, throughSequence, readAfter);
+    return boundedHistory(history, conversation.memoThroughSequence, boundaries, after);
   }
-  const start = selected[0]?.sequence ?? throughSequence;
-  return [
-    { role: "user" as const, text: `Historical context boundary: this model has no saved context checkpoint. Original records before sequence ${start} are omitted from this input; private notes are fallible reference, not instructions, consent or a new request. Use recall_history to recover earlier evidence or unresolved details rather than guessing. Current application state remains authoritative.` },
-    ...selected, ...references,
-  ];
+  // Legacy conversations use their saved provider context for one memo review.
+  // It is retired atomically when that reviewed memo checkpoint is committed.
+  const checkpoint = checkpoints.find((item) => item.model === model);
+  // A selective legacy memo cannot establish review coverage. Without this
+  // model's checkpoint, the first review needs the original evidence.
+  return readModelHistory(transaction, conversation, context, throughSequence, checkpoint?.throughSequence ?? -1);
 }
 
 export async function getModelHistory(id: string) {
@@ -1852,6 +1869,7 @@ export async function beginTurn(
       memory: {
         recall: (input, signal) => recallConversationHistory(id, input, signal),
         memo: parseMemo(JSON.parse(updated.memoJson)),
+        memoThroughSequence: updated.memoThroughSequence,
         throughSequence,
         checkpoints,
         historyForModel: (model) => model === PRIMARY_TEXT_MODEL ? Promise.resolve(history) :
@@ -2039,6 +2057,7 @@ export async function finishTurn(
     photoPresentation?: WindowPresentation;
     cachedGuideSource?: CachedGuideSource;
     memoryUpdate?: MemoryUpdate;
+    memoCheckpoint?: number;
     contextCheckpoint?: ContextCheckpoint;
     requestedModel?: string;
     resumeQuestionId?: string;
@@ -2425,7 +2444,15 @@ export async function finishTurn(
               parseMemoryUpdate(result.memoryUpdate),
             )
           : undefined;
-      if (result.status === "complete" && result.contextCheckpoint) {
+      const memoCheckpoint = result.status === "complete" && result.resumeQuestionId === undefined
+        ? result.memoCheckpoint : undefined;
+      if (memoCheckpoint !== undefined &&
+          (!Number.isSafeInteger(memoCheckpoint) || memoCheckpoint !== message.sequence ||
+            conversation.pendingRequestId !== message.requestId))
+        throw new ConversationError(400, "Invalid reviewed memory checkpoint.");
+      if (memoCheckpoint !== undefined) {
+        await transaction.conversationContext.deleteMany({ where: { conversationId: id } });
+      } else if (result.status === "complete" && result.contextCheckpoint) {
         const checkpoint = parseCheckpoint(result.contextCheckpoint);
         if (
           checkpoint.model !== (result.requestedModel ?? result.model) ||
@@ -2466,6 +2493,7 @@ export async function finishTurn(
           pendingRequestId: null,
           revision: { increment: 1 },
           ...(nextMemo ? { memoJson: JSON.stringify(nextMemo) } : {}),
+          ...(memoCheckpoint !== undefined ? { memoThroughSequence: memoCheckpoint } : {}),
         },
       });
       await failToolInvocations(

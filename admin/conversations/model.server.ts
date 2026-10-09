@@ -221,6 +221,7 @@ export interface ModelReply {
   photoPresentation?: WindowPresentation;
   cachedGuideSource?: CachedGuideSource;
   memoryUpdate?: MemoryUpdate;
+  memoCheckpoint?: number;
   contextCheckpoint?: ContextCheckpoint;
 }
 
@@ -525,7 +526,7 @@ export async function generateReply(
         const guideInput = guides.context();
         // Compaction covers the whole request. Keep ephemeral originals out of
         // its checkpoint; durable text can compact on a later guide-free round.
-        const compactionEnabled = !!memory &&
+        const compactionEnabled = !!memory && (memory.memoThroughSequence ?? -1) < 0 &&
           !guideInput.some((item) => "content" in item && Array.isArray(item.content) &&
             item.content.some((part) => part.type === "input_file")) &&
           shouldCompactContext(durableInput);
@@ -794,6 +795,8 @@ export async function generateReply(
             ...publicAnswer
           } = argumentsValue as Record<string, unknown>;
           const memoryUpdate = parseMemoryUpdate(rawMemoryUpdate);
+          if (memory && !Object.hasOwn(argumentsValue, "memoryUpdate"))
+            throw new Error("Review private memory in the terminal answer; use null when unchanged.");
           if (memoryUpdate && !memory)
             throw new Error("Private memory is not available for this reply.");
           if (resumeQuestion && memoryUpdate)
@@ -862,6 +865,7 @@ export async function generateReply(
               photoPresentation: { ...photoSelection, callId: call.call_id },
               ...(questionPresentation ? { questionPresentation } : {}),
               ...(memoryUpdate ? { memoryUpdate } : {}),
+              ...(memory && !resumeQuestion ? { memoCheckpoint: memory.throughSequence } : {}),
               ...(contextCheckpoint ? { contextCheckpoint, requestedModel: model } : {}),
             };
           }
@@ -947,6 +951,7 @@ export async function generateReply(
             questionPresentation,
             ...(cachedGuideSource ? { cachedGuideSource } : {}),
             ...(memoryUpdate ? { memoryUpdate } : {}),
+            ...(memory && !resumeQuestion ? { memoCheckpoint: memory.throughSequence } : {}),
             ...(contextCheckpoint
               ? { contextCheckpoint, requestedModel: model }
               : {}),

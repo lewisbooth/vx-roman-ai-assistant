@@ -39,7 +39,10 @@ export async function recallConversationHistory(conversationId: string, input: u
   // Customer window/layer names usually occur in prose, not native arguments.
   // Recover proof from that exact assistant turn without expanding to adjacent
   // messages or inferring a relationship from a shared product or timestamp.
-  const assistantIds = messages.filter((message) => message.role === "assistant").map((message) => message.id);
+  // Voice advisor turns are stored as context messages, but own the same
+  // confirmed tool receipts as text assistant turns.
+  const assistantIds = messages.filter((message) =>
+    message.role === "assistant" || message.role === "context").map((message) => message.id);
   const linkedTools = terms.length && assistantIds.length ? await prisma.toolInvocation.findMany({
     where: { ...toolWhere, assistantId: { in: assistantIds } },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 8, select: toolSelect,

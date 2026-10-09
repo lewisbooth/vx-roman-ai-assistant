@@ -5,7 +5,7 @@ export interface ModelMessage {
   role: "user" | "assistant";
   text: string;
   /** Roman has replied through a widget, even when no assistant prose exists. */
-  source?: "roman_question" | "application_state" | "memory";
+  source?: "roman_question" | "application_state" | "memory" | "history_boundary";
   /** Original source range, unaffected by display reordering/grouping. */
   sequence?: number;
   endSequence?: number;

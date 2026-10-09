@@ -1488,6 +1488,113 @@ test("private window and layer notes and a model-owned checkpoint commit with th
   assert.ok(voice.some(item=>item.source==="memory"&&item.text.includes("Blue replaces green")));
 });
 
+test("reviewed memo checkpoints commit atomically and retire legacy provider state without covering later captions", async () => {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Kitchen blind first, then curtains" });
+  await database.conversationContext.create({ data: {
+    conversationId: id, model: repository.PRIMARY_TEXT_MODEL, throughSequence: 0,
+    inputJson: JSON.stringify([{ type: "compaction", encrypted_content: "legacy-private-context" }]),
+  } });
+  // Work arriving during generation must remain outside the reviewed frontier.
+  await database.conversationMessage.create({ data: {
+    id: randomUUID(), conversationId: id, requestId: randomUUID(), sequence: 2,
+    role: "user", status: "complete", partsJson: JSON.stringify([{ type: "text", text: "Later correction: blue" }]),
+  } });
+  await database.conversation.update({ where: { id }, data: { nextSequence: 3 } });
+  await repository.finishTurn(id, turn.assistantId, {
+    status: "complete", text: "Let's measure the blind.", memoCheckpoint: turn.memory.throughSequence,
+    memoryUpdate: { set: [{ key: "kitchen", text: "Blind first; return to curtain. Source 0." }], forget: [] },
+  });
+  const saved = await database.conversation.findUniqueOrThrow({ where: { id } });
+  assert.equal(saved.memoThroughSequence, 1);
+  assert.equal(await database.conversationContext.count({ where: { conversationId: id } }), 0);
+  const next = await repository.beginTurn(id, { requestId: randomUUID(), text: "Continue" });
+  assert.equal(next.memory.memoThroughSequence, 1);
+  assert.ok(next.history.some(item => item.text.includes("Later correction: blue")));
+  assert.match(next.memory.memo.kitchen, /return to curtain/);
+  await repository.finishTurn(id, next.assistantId, {
+    status: "complete", text: "Next step", memoCheckpoint: next.memory.throughSequence,
+  });
+  assert.equal((await database.conversation.findUniqueOrThrow({ where: { id } })).memoThroughSequence, next.memory.throughSequence,
+    "reviewed-with-no-change advances the checkpoint without replacing notes");
+});
+
+test("invalid or unsuccessful completions cannot advance the reviewed memo frontier", async () => {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Measure the kitchen" });
+  await assert.rejects(repository.finishTurn(id, turn.assistantId, {
+    status: "complete", text: "Wrong cursor", memoCheckpoint: turn.memory.throughSequence + 1,
+    memoryUpdate: { set: [{ key: "bad", text: "Must not commit" }], forget: [] },
+  }), /reviewed memory checkpoint/);
+  let row = await database.conversation.findUniqueOrThrow({ where: { id } });
+  assert.equal(row.memoThroughSequence, -1);
+  assert.equal(row.memoJson, "{}");
+  await repository.finishTurn(id, turn.assistantId, { status: "failed", text: "", memoCheckpoint: turn.memory.throughSequence });
+  await repository.finishTurn(id, turn.assistantId, { status: "complete", text: "Late", memoCheckpoint: turn.memory.throughSequence });
+  row = await database.conversation.findUniqueOrThrow({ where: { id } });
+  assert.equal(row.memoThroughSequence, -1);
+  const cancelled = await repository.beginTurn(id, { requestId: randomUUID(), text: "Continue" });
+  await database.conversationMessage.update({ where: { id: cancelled.assistantId }, data: { role: "context" } });
+  await repository.finishTurn(id, cancelled.assistantId, {
+    status: "cancelled", text: "", memoCheckpoint: cancelled.memory.throughSequence,
+    memoryUpdate: { set: [{ key: "cancelled", text: "Must not persist" }], forget: [] },
+  });
+  row = await database.conversation.findUniqueOrThrow({ where: { id } });
+  assert.equal(row.memoThroughSequence, -1, "silently retired voice rows are not reviewed answers");
+  assert.equal(row.memoJson, "{}");
+});
+
+test("all confirmed native receipts after the memo checkpoint survive unsuccessful replies", async () => {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const stamp = new Date().toISOString();
+  const owners = Array.from({ length: 10 }, (_, index) => ({
+    id: randomUUID(), conversationId: id, requestId: randomUUID(), sequence: index + 2,
+    role: "assistant", status: "failed", partsJson: "[]",
+  }));
+  await database.conversationMessage.createMany({ data: owners });
+  await database.toolInvocation.createMany({ data: owners.map((owner, index) => ({
+    id: randomUUID(), providerCallId: randomUUID(), conversationId: id, assistantId: owner.id,
+    name: "apply_measurements", status: "complete", completedAt: new Date(),
+    argumentsJson: JSON.stringify({ productPath: "/products/synthetic", draft: {
+      productPath: "/products/synthetic", width: 100 + index, height: 180, unit: "cm", kind: "order", mount: "recess", updatedAt: stamp,
+    } }),
+    resultJson: JSON.stringify({ status: "applied", productPath: "/products/synthetic", draftUpdatedAt: stamp, message: `Confirmed entry ${index}` }),
+  })) });
+  await database.conversation.update({ where: { id }, data: { nextSequence: 12, memoThroughSequence: 1 } });
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "What was completed?" });
+  const receipts = turn.history.filter(item => item.text.startsWith("Storefront action:"));
+  assert.equal(receipts.length, 10, "an eight-result convenience cap must not hide unreviewed effects");
+  for (let index = 0; index < 10; index++)
+    assert.ok(receipts.some(item => item.text.includes(`Confirmed entry ${index}`)));
+});
+
+test("long reviewed conversations retain bounded complete exchanges and retrieve original history on demand", async () => {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const messages = Array.from({ length: 40 }, (_, sequence) => ({
+    id: randomUUID(), conversationId: id, requestId: `history-${sequence}`,
+    sequence, role: sequence % 2 ? "assistant" : "user", status: "complete",
+    partsJson: JSON.stringify([{ type: "text", text: `original-${sequence} ${"detail ".repeat(700)}` }]),
+  }));
+  await database.conversationMessage.createMany({ data: messages });
+  await database.conversation.update({ where: { id }, data: {
+    nextSequence: 40, memoThroughSequence: 39,
+    memoJson: JSON.stringify({ kitchen: "Blinds completed; curtains pending. Source 1." }),
+  } });
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Return to the curtains" });
+  assert.equal(turn.history[0].source, "history_boundary");
+  assert.ok(!turn.history.some(item => item.text.startsWith("original-0 ")));
+  assert.ok(turn.history.some(item => item.text === "Return to the curtains"));
+  assert.ok(turn.history.filter(item => item.sequence <= 39)
+    .reduce((bytes, item) => bytes + Buffer.byteLength(item.text) + 32, 0) <= 32000);
+  for (let sequence = 0; sequence < 40; sequence += 2) {
+    assert.equal(turn.history.some(item => item.sequence === sequence), turn.history.some(item => item.sequence === sequence + 1));
+  }
+  const recalled = await turn.memory.recall({ query: "original-0", beforeSequence: null }, new AbortController().signal);
+  assert.ok(recalled.entries.some(item => item.source === "message:0"));
+  assert.equal(await database.conversationMessage.count({ where: { conversationId: id } }), 42);
+  assert.deepEqual(await turn.memory.historyForModel("another-model"), turn.history);
+});
+
 test("invalid, failed and late replies cannot partially change memory or context", async () => {
   const {conversationId:id}=await repository.createConversation(shop,origin);
   const turn=await repository.beginTurn(id,{requestId:randomUUID(),text:"Measure the kitchen"});
@@ -4104,16 +4211,14 @@ test("post-compaction turns read bounded caption tails and load another model's 
   assert.ok(queries.filter((query) => /^SELECT/.test(query) && /FROM .*VoiceTranscript/.test(query)).every((query) => /LIMIT/.test(query)), "finishing retains exact durable sources without rereading all captions");
 });
 
-test("cold fallback uses notes and explicitly bounded historical evidence; voice startup never reads the full caption log", async () => {
+test("legacy notes cannot omit unreviewed history for another model; voice startup remains bounded", async () => {
   const { id } = await longCaptionHistory({ memo: true });
   const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Continue with the kitchen" });
   queries.length = 0;
   const fallback = await turn.memory.historyForModel("gpt-5.6-luna");
-  assert.match(fallback[0].text, /Historical context boundary.*recall_history/);
   assert.ok(fallback.some((item) => item.source === "memory" && item.text.includes("bedroom")));
-  assert.ok(fallback.filter((item) => item.sequence !== undefined).every((item) => item.sequence > turn.memory.throughSequence - 120));
+  assert.ok(fallback.some((item) => item.text.includes("Synthetic original 0:")), "the first review needs original history, not an unverified legacy note");
   assert.ok(!JSON.stringify(fallback).includes("primary-only-encrypted-state"));
-  assert.ok(fallback.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0) < 50_000);
   assert.ok(queries.filter((query) => /FROM .*VoiceTranscript/.test(query)).every((query) => /sequence[`"] >/.test(query)), queries.join("\n"));
   await repository.finishTurn(id, turn.assistantId, { status: "complete", text: "Continue." });
   queries.length = 0;
@@ -4125,4 +4230,37 @@ test("cold fallback uses notes and explicitly bounded historical evidence; voice
   const startupCaptions = queryDetails.filter(({ query }) => /^SELECT/.test(query) && /FROM .*VoiceTranscript/.test(query));
   assert.equal(startupCaptions.length, 2, "latest customer context plus one bounded startup page");
   assert.ok(startupCaptions.every(({ params }) => params.at(-2) > 0 && params.at(-2) <= 256));
+});
+
+test("rolling history projects a complete delayed voice utterance across the SQL turn boundary", async () => {
+  const { conversationId: id } = await repository.createConversation(shop, origin);
+  const voiceId = randomUUID();
+  await database.voiceSession.create({ data: {
+    id: voiceId, conversationId: id, clientId: randomUUID(), status: "closed",
+    leaseExpiresAt: new Date(), closedAt: new Date(),
+  } });
+  await database.conversationMessage.createMany({ data: Array.from({ length: 14 }, (_, index) => {
+    const sequence = index * 10 + 9;
+    return { id: randomUUID(), conversationId: id, requestId: randomUUID(), sequence,
+      role: "context", status: "complete", partsJson: JSON.stringify([
+        { type: "voice_turn", version: 1, voiceId, throughSequence: sequence - 1, offsetMs: sequence * 100 },
+      ]),
+    };
+  }) });
+  await database.voiceTranscript.createMany({ data: [
+    { id: randomUUID(), voiceId, conversationId: id, providerEventId: "first-fragment", sequence: 18,
+      role: "user", text: "The kitchen width is ", startMs: 100, endMs: 200 },
+    { id: randomUUID(), voiceId, conversationId: id, providerEventId: "late-fragment", sequence: 20,
+      role: "user", text: "120 centimetres.", startMs: 200, endMs: 300 },
+  ] });
+  await database.conversation.update({ where: { id }, data: {
+    nextSequence: 140, memoThroughSequence: 139, memoJson: JSON.stringify({ kitchen: "Width 120 cm" }),
+  } });
+  const originalSpeech = (await repository.getModelHistory(id)).filter(item => item.text.startsWith("Customer audio transcript"));
+  const turn = await repository.beginTurn(id, { requestId: randomUUID(), text: "Continue with the kitchen" });
+  const retainedSpeech = turn.history.filter(item => item.text.startsWith("Customer audio transcript"));
+  assert.deepEqual(retainedSpeech, originalSpeech,
+    "the rolling SQL boundary must preserve the original voice projection, including the earlier width prefix");
+  assert.ok(retainedSpeech.some(item => item.text.includes("The kitchen width is ")));
+  assert.ok(retainedSpeech.some(item => item.text.includes("120 centimetres.")));
 });

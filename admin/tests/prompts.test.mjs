@@ -86,6 +86,7 @@ const domainOwners = {
   response: module.exports.ROMAN_RESPONSE_GUIDANCE,
 };
 const domainToolNames = [
+  "recall_history",
   "search_products",
   "lookup_catalog",
   "get_product_guides",
@@ -172,6 +173,7 @@ test("core owns intent and trust while channel suffixes contain delivery rather 
 
 test("domain owners retain their executable contract references without prescribing wording", () => {
   const references = {
+    memory: ["memoryUpdate", "recall_history"],
     visualization: ["list_windows", "rename_window", "create_visualization", "photoPresentation"],
     discovery: ["search_products", "lookup_catalog", "productIds"],
     guides: ["get_product_guides", "discover_guides", "read_library_guides"],
@@ -197,6 +199,15 @@ test("domain owners retain their executable contract references without prescrib
   assert.match(kb.replacement, /consent/i);
   assert.match(kb.upsell, /explicit consent/i);
   assert.match(kb.cart, /uncertain|handed_off/i);
+});
+
+test("private memory instructions stay with the memory owner and out of public answer schemas", () => {
+  for (const owner of [ROMAN_CORE_RULES, ROMAN_TEXT_PRESENTATION, ROMAN_VOICE_BRIEFING_PRESENTATION])
+    assert.ok(!owner.includes("memoryUpdate"), "The memory protocol belongs to the private memory module");
+  for (const definition of [askQuestionToolDefinition, askMeasurementToolDefinition]) {
+    assert.ok(!Object.hasOwn(definition.parameters.properties, "memoryUpdate"));
+    assert.ok(!definition.parameters.required.includes("memoryUpdate"));
+  }
 });
 
 test("terminal response schemas keep cards and questions atomic with distinct input kinds", () => {

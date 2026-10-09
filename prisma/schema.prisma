@@ -45,6 +45,7 @@ model Conversation {
   status              String                @default("active")
   pendingRequestId    String?
   memoJson            String                @default("{}")
+  memoThroughSequence Int                   @default(-1)
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   messages            ConversationMessage[]
