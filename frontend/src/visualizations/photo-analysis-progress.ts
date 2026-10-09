@@ -19,11 +19,17 @@ export function usePhotoAnalysisClock(analyses: readonly (PhotoAnalysisStatusDto
   const [now, setNow] = useState(Date.now);
   const deadline = Math.max(0, ...analyses.filter(photoAnalysisPending).map((analysis) => Date.parse(analysis!.queuedAt) + ROOM_ANALYSIS_WAIT_MS));
   useEffect(() => {
-    if (!Number.isFinite(deadline) || deadline <= Date.now()) return;
-    const refresh = () => setNow(Date.now());
-    refresh();
+    const refresh = () => { const current = Date.now(); setNow(current); return current; };
+    const current = refresh();
+    if (!Number.isFinite(deadline) || deadline <= current) return;
     const timer = window.setInterval(refresh, 100);
-    const expiry = window.setTimeout(() => { refresh(); window.clearInterval(timer); }, Math.max(0, deadline - Date.now()));
+    let expiry: number;
+    const expire = () => {
+      const remaining = deadline - refresh();
+      if (remaining > 0) expiry = window.setTimeout(expire, remaining);
+      else window.clearInterval(timer);
+    };
+    expiry = window.setTimeout(expire, Math.max(0, deadline - Date.now()));
     return () => { window.clearInterval(timer); window.clearTimeout(expiry); };
   }, [deadline]);
   return now;

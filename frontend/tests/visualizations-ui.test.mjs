@@ -17,11 +17,15 @@ const bundle = await build({
       import {PrivateImage} from './frontend/src/visualizations/PrivateImage';
       import {VisualizationViewer} from './shared/visualizations/VisualizationViewer';
       import {VisualizationCard,estimatedGenerationProgress} from './frontend/src/visualizations/VisualizationCard';
-      import {photoAnalysisProgress} from './frontend/src/visualizations/photo-analysis-progress';
-      export {saveVisualization, estimatedGenerationProgress, photoAnalysisProgress};
+      import {photoAnalysisProgress,usePhotoAnalysisClock} from './frontend/src/visualizations/photo-analysis-progress';
+      export {saveVisualization, estimatedGenerationProgress, photoAnalysisProgress, flushSync};
+      function PhotoAnalysisClock({analyses}) {
+        const now=usePhotoAnalysisClock(analyses);
+        return <output>{photoAnalysisProgress(analyses[0],now) ?? 'expired'}</output>;
+      }
       export function mount(target, kind) {
         const root=createRoot(target);
-        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,windows:WindowCarousel,image:PrivateImage,viewer:VisualizationViewer,visualization:VisualizationCard}[kind];
+        const Component={comparison:ImageComparison,upload:UploadModal,window:WindowCard,windows:WindowCarousel,image:PrivateImage,viewer:VisualizationViewer,visualization:VisualizationCard,analysisClock:PhotoAnalysisClock}[kind];
         return {render(props){flushSync(()=>root.render(<Component {...props}/>));},dispose(){flushSync(()=>root.unmount());}};
       }
     `,
@@ -156,6 +160,49 @@ test("photo analysis progress estimates three seconds but stops immediately at t
   assert.equal(exports.photoAnalysisProgress({...analysis, status: "completed"}, 10_500), null);
   assert.equal(exports.photoAnalysisProgress({...analysis, status: "failed"}, 10_500), null);
   assert.equal(exports.photoAnalysisProgress(undefined, 10_500), null);
+});
+
+test("photo analysis clock expires when its effect starts after the deadline", async (t) => {
+  const {window, mount, api} = setup(t, "analysisClock");
+  const analysis = {status: "queued", queuedAt: new Date(10_000).toISOString(), startedAt: null, completedAt: null};
+  let reads = 0;
+  window.Date.now = () => reads++ === 0 ? 19_700 : 20_001;
+  window.setInterval = window.setTimeout = () => assert.fail("Expired analysis must not install a timer");
+  api.render({analyses: [analysis]});
+  await delay(0);
+  assert.equal(mount.querySelector("output").textContent, "expired");
+});
+
+test("photo analysis clock keeps waiting when its expiry timer fires before the deadline", (t) => {
+  const {window, mount, api, exports} = setup(t, "analysisClock");
+  const analysis = {status: "queued", queuedAt: new Date(10_000).toISOString(), startedAt: null, completedAt: null};
+  let now = 19_700, nextId = 0;
+  const intervals = new Map(), timeouts = new Map();
+  window.Date.now = () => now;
+  window.setInterval = (callback, duration) => { const id = ++nextId; intervals.set(id, {callback, duration}); return id; };
+  window.setTimeout = (callback, duration) => { const id = ++nextId; timeouts.set(id, {callback, duration}); return id; };
+  window.clearInterval = (id) => intervals.delete(id);
+  window.clearTimeout = (id) => timeouts.delete(id);
+  const fireExpiry = () => {
+    assert.equal(timeouts.size, 1);
+    const [id, timer] = [...timeouts][0];
+    timeouts.delete(id);
+    exports.flushSync(timer.callback);
+  };
+  api.render({analyses: [analysis]});
+  assert.equal(mount.querySelector("output").textContent, "95");
+  assert.equal([...intervals.values()][0].duration, 100);
+  assert.equal([...timeouts.values()][0].duration, 300);
+  now = 19_999;
+  fireExpiry();
+  assert.equal(mount.querySelector("output").textContent, "95");
+  assert.equal(intervals.size, 1, "An early expiry must retain the pending clock");
+  assert.equal([...timeouts.values()][0].duration, 1);
+  now = 20_000;
+  fireExpiry();
+  assert.equal(mount.querySelector("output").textContent, "expired");
+  assert.equal(intervals.size, 0);
+  assert.equal(timeouts.size, 0);
 });
 
 test("a saved upload card reserves the same image while analysis starts and finishes", (t) => {
