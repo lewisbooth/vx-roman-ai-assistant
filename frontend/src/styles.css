@@ -1201,12 +1201,6 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .roman-composer form:has(textarea[data-roman-composer]:focus) {
-      animation: none;
-    }
-  }
-
   @media (forced-colors: active) {
     .roman-composer form:has(textarea[data-roman-composer]:focus) {
       --roman-composer-shadow: none;
