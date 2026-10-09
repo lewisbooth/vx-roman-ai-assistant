@@ -32,303 +32,108 @@ const bundle = await build({
 });
 
 const origin = "https://hd-dev-single.myshopify.com";
-const firstProduct = `${origin}/products/first-blind`;
-const firstFallback = `${origin}/cdn/shop/files/first-catalog.jpg`;
-const firstResolved = `${origin}/cdn/shop/files/first-room.jpg`;
-const secondProduct = `${origin}/products/second-blind`;
-const secondFallback = `${origin}/cdn/shop/files/second-catalog.jpg`;
-const secondResolved = `${origin}/cdn/shop/files/second-room.jpg`;
+const firstImage = `${origin}/cdn/shop/files/first-listing.jpg?v=1`;
+const firstSized = `${firstImage}&width=480`;
+const secondImage = `${origin}/cdn/shop/files/second-listing.jpg?width=400&v=2`;
 
-async function until(condition, message) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (condition()) return;
-    await delay(5);
-  }
-  assert.fail(message);
-}
-
-function setup(t, { intersectionObserver = true, active = true } = {}) {
-  const dom = new JSDOM(
-    "<!doctype html><roman-ai-assistant></roman-ai-assistant>",
-    {
-      url: origin,
-      runScripts: "outside-only",
-    },
-  );
+function setup(t, active = true) {
+  const dom = new JSDOM("<!doctype html><roman-ai-assistant></roman-ai-assistant>", {
+    url: origin,
+    runScripts: "outside-only",
+  });
   const { window } = dom;
-  const observers = [];
-  const calls = [];
   const failures = [];
   window.console.error = (...args) => failures.push(args);
-  window.fetch = () =>
-    assert.fail("ProductImage must use its owned loader, not fetch directly");
-  if (intersectionObserver) {
-    window.IntersectionObserver = class {
-      constructor(callback, options) {
-        this.callback = callback;
-        this.options = options;
-        this.disconnected = false;
-        observers.push(this);
-      }
-      observe(target) {
-        this.target = target;
-      }
-      disconnect() {
-        this.disconnected = true;
-      }
-      intersect(isIntersecting) {
-        this.callback([{ target: this.target, isIntersecting }]);
-      }
-    };
-  }
-  window.eval(
-    `${bundle.outputFiles[0].text};window.RomanImageTest=RomanImageTest;`,
-  );
-  const shadow = window.document
-    .querySelector("roman-ai-assistant")
-    .attachShadow({ mode: "open" });
-  const carousel = window.document.createElement("div");
-  carousel.className = "roman-product-scroll";
+  window.fetch = () => assert.fail("Catalogue card imagery must not fetch a product page");
+  window.eval(`${bundle.outputFiles[0].text};window.RomanImageTest=RomanImageTest;`);
+  const shadow = window.document.querySelector("roman-ai-assistant").attachShadow({ mode: "open" });
   const container = window.document.createElement("div");
-  carousel.append(container);
-  shadow.append(carousel);
+  shadow.append(container);
   const view = window.RomanImageTest.mount(container);
-  let mounted = true;
-  let props = {
-    productUrl: firstProduct,
-    fallback: firstFallback,
-    active,
-    session: {
-      loadProductImage: (url, signal) =>
-        new Promise((resolve, reject) => {
-          calls.push({ url, signal, resolve, reject });
-        }),
-    },
-  };
+  let props = { imageUrl: firstImage, active };
   const render = (updates = {}) => {
     props = { ...props, ...updates };
     view.render(props);
   };
-  const dispose = () => {
-    if (!mounted) return;
-    mounted = false;
-    view.dispose();
-  };
   t.after(() => {
-    dispose();
+    view.dispose();
     window.close();
     assert.deepEqual(failures, []);
   });
   render();
-  return {
-    window,
-    container,
-    carousel,
-    calls,
-    observers,
-    render,
-    dispose,
-    img: () => container.querySelector("img"),
-  };
+  return { window, container, render, img: () => container.querySelector("img") };
 }
 
-test("carousel eligibility warms images without waiting for horizontal intersection", async (t) => {
-  const ctx = setup(t, { active: false });
-  assert.equal(ctx.img().getAttribute("src"), null);
-  assert.equal(ctx.img().style.visibility, "hidden");
-  assert.equal(ctx.img().getAttribute("loading"), "lazy");
-  assert.equal(
-    ctx.observers.length,
-    0,
-    "Only the carousel owns viewport gating",
-  );
-  await delay(0);
-  assert.equal(ctx.calls.length, 0);
-  ctx.render({ active: true });
-  await until(() => ctx.calls.length === 1, "Eligible image was not requested");
+async function settle() {
+  await delay(10);
+}
+
+test("active carousel images request the original catalogue asset immediately without a product-page lookup", async (t) => {
+  const ctx = setup(t);
+  assert.equal(ctx.img().src, firstSized);
   assert.equal(ctx.img().getAttribute("loading"), "eager");
   assert.equal(ctx.img().getAttribute("decoding"), "async");
-  assert.equal(ctx.calls[0].url, firstProduct);
-  assert.equal(ctx.calls[0].signal.aborted, false);
-  assert.equal(
-    ctx.img().getAttribute("src"),
-    null,
-    "A pending lookup must not preview the catalog swatch",
-  );
-});
-
-test("only the resolved main photo paints, after it loads, without a catalog preview", async (t) => {
-  const ctx = setup(t);
-  await until(() => ctx.calls.length === 1, "Image lookup did not start");
-  assert.equal(ctx.img().getAttribute("src"), null);
-  ctx.calls[0].resolve(firstResolved);
-  await until(
-    () => ctx.img().src === firstResolved,
-    "Main photo not requested",
-  );
   assert.equal(ctx.img().style.visibility, "hidden");
   ctx.img().dispatchEvent(new ctx.window.Event("load"));
-  await until(
-    () => ctx.img().style.visibility === "",
-    "Loaded image not revealed",
-  );
+  await settle();
+  assert.equal(ctx.img().style.visibility, "");
   ctx.render();
-  assert.equal(ctx.img().src, firstResolved);
-  assert.equal(ctx.calls.length, 1);
+  assert.equal(ctx.img().src, firstSized);
 });
 
-test("a failed main photo uses the catalog fallback once without an automatic request loop", async (t) => {
-  const ctx = setup(t);
-  await until(() => ctx.calls.length === 1, "Image lookup did not start");
-  ctx.calls[0].resolve(firstResolved);
-  await until(
-    () => ctx.img().src === firstResolved,
-    "Verified image did not load",
-  );
-  ctx.img().dispatchEvent(new ctx.window.Event("error"));
-  await until(
-    () => ctx.img().src === firstFallback,
-    "Failed image did not restore fallback",
-  );
-  assert.equal(ctx.img().style.visibility, "hidden");
-  ctx.img().dispatchEvent(new ctx.window.Event("load"));
-  await until(() => ctx.img().style.visibility === "", "Fallback not revealed");
-  ctx.render();
+test("inactive imagery stays cold until its carousel is eligible, and loaded images remain visible", async (t) => {
+  const ctx = setup(t, false);
+  assert.equal(ctx.img().getAttribute("src"), null);
+  assert.equal(ctx.img().getAttribute("loading"), "lazy");
+  ctx.render({ active: true });
+  assert.equal(ctx.img().src, firstSized);
   ctx.render({ active: false });
-  await delay(10);
+  assert.equal(ctx.img().getAttribute("src"), null, "Unloaded offscreen image stops requesting");
   ctx.render({ active: true });
-  await delay(10);
-  assert.equal(
-    ctx.calls.length,
-    1,
-    "a failed resolved image must not cause an automatic request loop",
-  );
-  assert.equal(ctx.img().src, firstFallback);
-});
-
-test("missing or rejected optional image results leave the catalog image usable", async (t) => {
-  for (const outcome of ["missing", "rejected"])
-    await t.test(outcome, async (t) => {
-      const ctx = setup(t);
-      await until(() => ctx.calls.length === 1, "Image lookup did not start");
-      if (outcome === "missing") ctx.calls[0].resolve(undefined);
-      else ctx.calls[0].reject(new ctx.window.Error("Page image unavailable"));
-      await delay(10);
-      assert.equal(ctx.img().src, firstFallback);
-      ctx.render();
-      ctx.render({ active: false });
-      await delay(10);
-      ctx.render({ active: true });
-      await delay(10);
-      assert.equal(ctx.calls.length, 1);
-    });
-});
-
-test("leaving the eligible carousel aborts lookup and ignores its late result", async (t) => {
-  const ctx = setup(t);
-  await until(() => ctx.calls.length === 1, "Image lookup did not start");
+  ctx.img().dispatchEvent(new ctx.window.Event("load"));
+  await settle();
   ctx.render({ active: false });
-  await until(
-    () => ctx.calls[0].signal.aborted,
-    "Offscreen lookup was not cancelled",
-  );
-  ctx.calls[0].resolve(firstResolved);
-  await delay(10);
-  assert.equal(ctx.img().getAttribute("src"), null);
-  ctx.render({ active: true });
-  await until(
-    () => ctx.calls.length === 2,
-    "Returning image did not request again",
-  );
-  ctx.calls[1].resolve(firstResolved);
-  await until(
-    () => ctx.img().src === firstResolved,
-    "Returning image did not resolve",
-  );
+  assert.equal(ctx.img().src, firstSized);
+  assert.equal(ctx.img().style.visibility, "");
 });
 
-test("unmount aborts pending image work", async (t) => {
+test("changing catalogue sources hides the prior photo until the new image loads", async (t) => {
   const ctx = setup(t);
-  await until(() => ctx.calls.length === 1, "Image lookup did not start");
-  ctx.dispose();
-  assert.equal(ctx.calls[0].signal.aborted, true);
-  ctx.calls[0].resolve(firstResolved);
-  await delay(10);
-  assert.equal(ctx.container.childElementCount, 0);
-});
-
-test("a late old-product lookup cannot overwrite a newly rendered product image", async (t) => {
-  const ctx = setup(t);
-  await until(() => ctx.calls.length === 1, "First image lookup did not start");
-  ctx.render({ productUrl: secondProduct, fallback: secondFallback });
-  assert.equal(ctx.img().getAttribute("src"), null);
-  assert.equal(ctx.calls[0].signal.aborted, true);
-  await until(
-    () => ctx.calls.length === 2,
-    "Replacement product did not start its lookup",
-  );
-  assert.equal(ctx.calls[1].url, secondProduct);
-  ctx.calls[1].resolve(secondResolved);
-  await until(
-    () => ctx.img().src === secondResolved,
-    "Replacement image did not resolve",
-  );
-  ctx.calls[0].resolve(firstResolved);
-  await delay(10);
-  assert.equal(ctx.img().src, secondResolved);
-});
-
-test("changing products hides the previous photo until the new main image loads", async (t) => {
-  const ctx = setup(t, { intersectionObserver: false });
-  await until(() => ctx.calls.length === 1, "First lookup did not start");
-  ctx.calls[0].resolve(firstResolved);
-  await until(
-    () => ctx.img().src === firstResolved,
-    "First image not requested",
-  );
   ctx.img().dispatchEvent(new ctx.window.Event("load"));
-  await until(() => ctx.img().style.visibility === "", "First photo not shown");
-  ctx.render({ productUrl: secondProduct, fallback: secondFallback });
-  assert.equal(ctx.img().getAttribute("src"), null);
-  assert.equal(ctx.img().style.visibility, "hidden");
-  await until(() => ctx.calls.length === 2, "Second lookup did not start");
-  ctx.calls[1].resolve(secondResolved);
-  await until(
-    () => ctx.img().src === secondResolved,
-    "Second image not requested",
-  );
+  await settle();
+  ctx.render({ imageUrl: secondImage });
+  assert.equal(ctx.img().src, secondImage, "A smaller existing Shopify size is retained");
   assert.equal(ctx.img().style.visibility, "hidden");
   ctx.img().dispatchEvent(new ctx.window.Event("load"));
-  await until(
-    () => ctx.img().style.visibility === "",
-    "Second photo not shown",
-  );
+  await settle();
+  assert.equal(ctx.img().style.visibility, "");
 });
 
-test("unavailable main and catalog images leave neutral space rather than a broken image", async (t) => {
-  const ctx = setup(t, { intersectionObserver: false });
-  await until(() => ctx.calls.length === 1, "Image lookup did not start");
-  ctx.calls[0].resolve(undefined);
-  await until(() => ctx.img().src === firstFallback, "Fallback not requested");
+test("failed or missing catalogue imagery keeps neutral space without retrying or fetching a fallback PDP", async (t) => {
+  const ctx = setup(t);
   ctx.img().dispatchEvent(new ctx.window.Event("error"));
-  await delay(10);
+  await settle();
+  assert.equal(ctx.img().getAttribute("src"), null);
   assert.equal(ctx.img().style.visibility, "hidden");
-  assert.equal(ctx.calls.length, 1);
+  ctx.render({ active: false });
+  ctx.render({ active: true });
+  assert.equal(ctx.img().getAttribute("src"), null);
+  ctx.render({ imageUrl: undefined });
+  assert.equal(ctx.img().getAttribute("src"), null);
+  ctx.render({ imageUrl: secondImage });
+  assert.equal(ctx.img().src, secondImage, "A different valid asset remains usable");
 });
 
-test("browsers without IntersectionObserver load only when the carousel becomes active", async (t) => {
-  const ctx = setup(t, { intersectionObserver: false, active: false });
-  await delay(0);
-  assert.equal(ctx.calls.length, 0);
-  assert.equal(ctx.img().getAttribute("src"), null);
-  ctx.render({ active: true });
-  await until(
-    () => ctx.calls.length === 1,
-    "Active fallback-browser image did not load",
-  );
-  ctx.calls[0].resolve(firstResolved);
-  await until(
-    () => ctx.img().src === firstResolved,
-    "Fallback-browser image did not resolve",
-  );
+test("card sizing caps Shopify transforms without inventing a different filename or transforming non-Shopify paths", (t) => {
+  const ctx = setup(t);
+  for (const [imageUrl, expected] of [
+    [`${origin}/cdn/shop/files/room_r.webp?v=9&width=2000`, `${origin}/cdn/shop/files/room_r.webp?v=9&width=480`],
+    ["https://cdn.shopify.com/s/files/1/23/files/room_r.jpg?v=8", "https://cdn.shopify.com/s/files/1/23/files/room_r.jpg?v=8&width=480"],
+    [`${origin}/images/room.jpg?v=7`, `${origin}/images/room.jpg?v=7`],
+    [`${origin}/images/room.jpg?width=2000`, `${origin}/images/room.jpg?width=2000`],
+    [`${origin}/cdn/shop/files/room.jpg?signature=abc&width=2000`, `${origin}/cdn/shop/files/room.jpg?signature=abc&width=2000`],
+  ]) {
+    ctx.render({ imageUrl });
+    assert.equal(ctx.img().src, expected);
+  }
 });

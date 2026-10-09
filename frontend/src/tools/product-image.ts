@@ -56,15 +56,31 @@ function mediaUrl(src: string | null, pageUrl: string): string | undefined {
   }
 }
 
-/** Reuse Shopify's existing transform without inventing a different asset. */
+/** Bound known Shopify assets without replacing their source or changing signed URLs. */
 export function productImageWidth(src: string, maxWidth: number): string {
   const selected = new URL(src);
+  if (
+    selected.protocol !== "https:" ||
+    selected.username ||
+    selected.password ||
+    selected.hash ||
+    !((selected.origin === window.location.origin &&
+      selected.pathname.startsWith("/cdn/shop/")) ||
+      (selected.origin === "https://cdn.shopify.com" &&
+        selected.pathname.startsWith("/s/files/"))) ||
+    [...selected.searchParams.keys()].some(
+      (key) => !["v", "width", "height", "crop", "format"].includes(key),
+    )
+  )
+    return selected.href;
   const widths = selected.searchParams.getAll("width");
   if (
     widths.length === 1 &&
     /^\d+$/.test(widths[0]) &&
     Number(widths[0]) > maxWidth
   )
+    selected.searchParams.set("width", String(maxWidth));
+  else if (!widths.length)
     selected.searchParams.set("width", String(maxWidth));
   return selected.href;
 }

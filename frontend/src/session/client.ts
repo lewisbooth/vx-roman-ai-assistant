@@ -2404,18 +2404,6 @@ export function createConversationClient(
         );
       return executor.loadProducts(ids, signal);
     },
-    loadProductImage(url, signal, maxWidth) {
-      if (
-        !executor ||
-        disposed ||
-        ending ||
-        state.conversation?.status !== "active"
-      )
-        return Promise.reject(
-          new Error("Start a chat to load product images."),
-        );
-      return executor.loadProductImage(url, signal, maxWidth);
-    },
     loadProductGallery(url, signal) {
       if (
         !executor ||

@@ -223,6 +223,39 @@ test("UCP search, lookup and product responses share one minimal projection", ()
   }
 });
 
+test("catalog cards prefer the supplied variant listing photo over the product hero", () => {
+  const listing = "https://cdn.shopify.com/s/files/1/test/listing.jpg?v=2";
+  const otherVariant = "https://cdn.shopify.com/s/files/1/test/other.jpg?v=3";
+  const item = {
+    ...product,
+    variants: [
+      { media: [{ type: "video", url: listing }, { type: "image", url: listing }] },
+      { media: [{ type: "image", url: otherVariant }] },
+    ],
+  };
+  for (const raw of [{ products: [item] }, { product: item }]) {
+    const result = normalizeCatalogResult(raw, origin);
+    assert.equal(result.products[0].imageUrl, listing);
+    assert.deepEqual(parseCatalogResult(result, origin), result);
+    assert.doesNotMatch(JSON.stringify(result), /other\.jpg|variants|media/);
+  }
+});
+
+test("missing or unsafe variant photos fall back to supplied product media", () => {
+  for (const variants of [
+    undefined,
+    [],
+    [{ media: [] }],
+    [{ media: [{ type: "image", url: "https://attacker.example/photo.jpg" }] }],
+    [{ media: [{ type: "image", url: "javascript:alert(1)" }] }],
+    [{ media: [{ type: "video", url: imageUrl }] }],
+  ]) {
+    const result = normalizeCatalogResult({ product: { ...product, variants } }, origin);
+    assert.equal(result.products[0].imageUrl, imageUrl);
+    assert.deepEqual(parseCatalogResult(result, origin), result);
+  }
+});
+
 test("catalog collection labels survive every projection without borrowing collection claims", () => {
   const collections = [
     { title: " All Blinds ", description: { plain: "Some ranges support no-drill" } },

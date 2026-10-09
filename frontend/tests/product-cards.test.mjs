@@ -45,40 +45,23 @@ async function until(condition, message) {
 }
 
 function ids(start = 1) {
-  return Array.from(
-    { length: 10 },
-    (_, index) => `gid://shopify/Product/${start + index}`,
-  );
+  return Array.from({ length: 10 }, (_, index) => `gid://shopify/Product/${start + index}`);
 }
 
 function setup(t, rows) {
   const dom = new JSDOM(
     '<div data-roman-panel><div class="roman-chat-scroll"><div class="roman-chat-history"><div id="root"></div></div></div></div>',
-    {
-      url: "https://shop.example/",
-      pretendToBeVisual: true,
-      runScripts: "outside-only",
-    },
+    { url: "https://shop.example/", pretendToBeVisual: true, runScripts: "outside-only" },
   );
   const { window } = dom;
   const observers = [];
-  const images = [];
   const catalogs = [];
-  window.fetch = () => assert.fail("Cards use the owned display loaders");
+  window.fetch = () => assert.fail("Cards must not fetch product pages to discover image URLs");
   window.IntersectionObserver = class {
-    constructor(callback) {
-      this.callback = callback;
-      observers.push(this);
-    }
-    observe(target) {
-      this.target = target;
-    }
-    disconnect() {
-      this.disconnected = true;
-    }
-    intersect(value) {
-      this.callback([{ isIntersecting: value }]);
-    }
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+    intersect(value) { this.callback([{ isIntersecting: value }]); }
   };
   const session = {
     getCachedProducts: () => [],
@@ -88,167 +71,75 @@ function setup(t, rows) {
         products: selected.map((id) => {
           const number = id.split("/").at(-1);
           return {
-            id,
-            title: `Blind ${number}`,
-            description: "",
+            id, title: `Blind ${number}`, description: "",
             url: `https://shop.example/products/blind-${number}`,
-            imageUrl: `https://shop.example/cdn/shop/files/swatch-${number}.jpg`,
+            imageUrl: `https://shop.example/cdn/shop/files/listing-${number}.jpg`,
           };
         }),
         messages: [],
       };
     },
-    loadProductImage: (url, signal) =>
-      new Promise((resolve, reject) => {
-        const call = {
-          url,
-          signal,
-          done: false,
-          resolve: () => {
-            call.done = true;
-            resolve(
-              `https://shop.example/cdn/shop/files/${url.split("/").at(-1)}.jpg`,
-            );
-          },
-        };
-        images.push(call);
-        signal.addEventListener("abort", () => reject(signal.reason), {
-          once: true,
-        });
-      }),
   };
   window.eval(`${bundle.outputFiles[0].text};window.CardsTest=CardsTest;`);
   const root = window.document.querySelector("#root");
   const view = window.CardsTest.mount(root, session);
   view.render(rows);
-  t.after(() => {
-    view.dispose();
-    window.close();
-  });
+  t.after(() => { view.dispose(); window.close(); });
   return {
-    ...view,
-    window,
-    root,
-    observers,
-    images,
-    catalogs,
+    ...view, window, root, observers, catalogs,
     chat: window.document.querySelector(".roman-chat-history"),
     shell: window.document.querySelector("[data-roman-panel]"),
-    outstanding: () =>
-      images.filter((call) => !call.done && !call.signal.aborted),
   };
 }
 
-test("nearby carousels warm every horizontal image through two metadata slots each", async (t) => {
+test("nearby carousels request every original catalogue image without a second metadata lookup", async (t) => {
   const ctx = setup(t, [{ productIds: ids() }, { productIds: ids(11) }]);
   await delay(15);
   assert.equal(ctx.catalogs.length, 0, "Distant history stays cold");
-  assert.equal(
-    ctx.observers.length,
-    2,
-    "One viewport observer per carousel, none per image",
-  );
+  assert.equal(ctx.observers.length, 2, "Only the carousel owns viewport gating");
   ctx.observers.forEach((observer) => observer.intersect(true));
-  await until(
-    () => ctx.images.length === 4,
-    "Each carousel starts only two metadata lookups",
-  );
-  for (let index = 0; index < 20; index++) {
-    await until(
-      () => ctx.images[index],
-      "Next offscreen image was not admitted",
-    );
-    assert.ok(
-      ctx.outstanding().length <= 4,
-      "Two ten-card rows leave room for foreground tools and the active gallery",
-    );
-    ctx.images[index].resolve();
-  }
-  await until(
-    () =>
-      [...ctx.root.querySelectorAll("img")].every((image) =>
-        image.hasAttribute("src"),
-      ),
-    "All ten images per row preload without horizontal scrolling or native load events",
-  );
-  assert.equal(ctx.images.length, 20);
+  await until(() => ctx.root.querySelectorAll('img[src]').length === 20, "All catalogue sources start together");
+  assert.equal(ctx.catalogs.length, 2);
   assert.equal(ctx.root.querySelectorAll('img[loading="eager"]').length, 20);
-  assert.ok(
-    [...ctx.root.querySelectorAll("img")].every(
-      (image) =>
-        !image.src.includes("swatch") && image.style.visibility === "hidden",
-    ),
-  );
+  assert.ok([...ctx.root.querySelectorAll("img")].every((image) =>
+    image.src.includes("/listing-") && image.src.endsWith("?width=480") && image.style.visibility === "hidden"));
 });
 
-test("a fresh carousel preloads visibly without restarting image work", async (t) => {
+test("fresh cards load directly while reply text reveals and retain their loaded sources afterward", async (t) => {
   const row = { productIds: ids(), preload: true };
   const ctx = setup(t, [row]);
-  assert.equal(
-    ctx.observers.length,
-    0,
-    "Fresh cards preload without waiting for an intersection",
-  );
-  await until(
-    () => ctx.images.length === 2,
-    "Fresh cards start preloading while visible",
-  );
-  assert.equal(ctx.root.querySelector("button").closest("[hidden]"), null);
-  assert.ok(
-    [...ctx.root.querySelectorAll("button.roman-choose-blind")].every(
-      (button) => !button.disabled,
-    ),
-  );
-  ctx.render([{ ...row, preload: false }]);
+  assert.equal(ctx.observers.length, 0);
+  await until(() => ctx.root.querySelectorAll('img[src]').length === 10, "Fresh cards load without intersection delay");
+  assert.ok([...ctx.root.querySelectorAll("button.roman-choose-blind")].every((button) => !button.disabled));
+  const images = [...ctx.root.querySelectorAll("img")];
+  const urls = images.map((image) => image.src);
+  images.forEach((image) => image.dispatchEvent(new ctx.window.Event("load")));
   await delay(15);
-  assert.equal(ctx.images.length, 2);
-  assert.ok(
-    ctx.images.every((call) => !call.signal.aborted),
-    "Finishing text does not restart the metadata requests",
-  );
+  ctx.render([{ ...row, preload: false }]);
   ctx.observers[0].intersect(true);
-  assert.equal(ctx.root.querySelector("button").closest("[hidden]"), null);
-  ctx.images[0].resolve();
-  await until(
-    () => ctx.images.length === 3,
-    "Next offscreen card warms after metadata resolves",
-  );
-  assert.equal(ctx.catalogs.length, 1);
+  await delay(15);
+  assert.deepEqual([...ctx.root.querySelectorAll("img")].map((image) => image.src), urls);
+  assert.equal(ctx.catalogs.length, 1, "Finishing text does not rehydrate the products");
 });
 
-test("actual Chat or shell hiding aborts fresh lookups and does not admit more until visible", async (t) => {
+test("hiding Chat, the shell or document stops unfinished image loads until visible", async (t) => {
   for (const area of ["chat", "shell", "document"]) {
     await t.test(area, async (t) => {
       const ctx = setup(t, [{ productIds: ids(), preload: true }]);
-      await until(() => ctx.images.length === 2, "Initial image lookups start");
+      await until(() => ctx.root.querySelectorAll('img[src]').length === 10, "Initial image sources start");
       const setHidden = (hidden) => {
         if (area !== "document") ctx[area].hidden = hidden;
         else {
-          Object.defineProperty(ctx.window.document, "hidden", {
-            configurable: true,
-            value: hidden,
-          });
-          ctx.window.document.dispatchEvent(
-            new ctx.window.Event("visibilitychange"),
-          );
+          Object.defineProperty(ctx.window.document, "hidden", { configurable: true, value: hidden });
+          ctx.window.document.dispatchEvent(new ctx.window.Event("visibilitychange"));
         }
       };
       setHidden(true);
-      await until(
-        () => ctx.images.every((call) => call.signal.aborted),
-        "Hidden surface releases optional work",
-      );
-      ctx.images[0].resolve();
-      await delay(15);
-      assert.equal(ctx.images.length, 2);
-      assert.equal(ctx.root.querySelector("img").getAttribute("src"), null);
+      await until(() => ctx.root.querySelectorAll('img[src]').length === 0, "Hidden surface removes unfinished sources");
       setHidden(false);
-      await until(
-        () => ctx.images.length === 4,
-        "Returning surface resumes its two admission slots",
-      );
+      await until(() => ctx.root.querySelectorAll('img[src]').length === 10, "Returning surface restores sources");
+      assert.equal(ctx.catalogs.length, 1);
       ctx.dispose();
-      assert.ok(ctx.images.every((call) => call.signal.aborted));
       assert.ok(ctx.observers.every((observer) => observer.disconnected));
     });
   }

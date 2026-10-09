@@ -799,7 +799,7 @@ test("late selection acknowledgement after End Chat cannot clear a new review of
   assert.equal(ctx.session.getSnapshot().conversation, null);
 });
 
-test("inline visualization and full screen comparison appear before text reveal and quick answers, with no implicit customer turn", async (t) => {
+test("inline visualization, quick answers and full screen comparison appear before text reveal, with no implicit customer turn", async (t) => {
   const ctx = await setup(t, {active: true, saved: true});
   ctx.setCompletedJob();
   const question = {type: "question", version: 1, invocationId: questionId, question: "What would you like next?", answers: ["Keep shopping", "View cart"]};
@@ -812,7 +812,9 @@ test("inline visualization and full screen comparison appear before text reveal 
   next.messages = [...next.messages, reply];
   ctx.update({conversation: historySnapshot(next)});
   await until(() => ctx.container.querySelector(".roman-inline-media .roman-visualization-card"), "Inline result waited for typewriter text");
-  assert.ok(ctx.container.querySelector('.roman-question').closest('[data-question-reveal-pending="true"][aria-hidden="true"]'), "Quick answers must wait for reply reveal");
+  const offered = ctx.container.querySelector(".roman-question");
+  assert.ok(offered, "Quick answers appear with the visualization before prose finishes");
+  assert.equal(offered.closest('[aria-hidden="true"], [inert]'), null);
   ctx.container.querySelector(".roman-inline-media .roman-window-choice").click();
   await until(() => ctx.container.querySelector('.roman-visualization-fullscreen [role="slider"]'), "Full screen comparison did not resolve its private assets");
   assert.equal(ctx.container.querySelector('.roman-visualization-fullscreen input[type="file"]'), null);

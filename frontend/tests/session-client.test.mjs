@@ -3942,36 +3942,6 @@ test("cached product previews require an active conversation and never start net
   assert.equal(reads.length, 1);
 });
 
-test("product images use their separate display owner and stop after client disposal", async (t) => {
-  const calls = [];
-  const image = "https://cdn.shopify.com/main.jpg";
-  const ctx = setup(t, {
-    saved: access,
-    executor: {
-      loadProductImage: async (...args) => {
-        calls.push(args);
-        return image;
-      },
-      execute: () => assert.fail("Image loading must not invoke a model tool"),
-    },
-  });
-  await resume(ctx);
-  const controller = new ctx.window.AbortController();
-  const url = `${ctx.window.location.origin}/products/shade`;
-  assert.equal(
-    await ctx.client.loadProductImage(url, controller.signal),
-    image,
-  );
-  assert.equal(calls[0][0], url);
-  assert.equal(calls[0][1], controller.signal);
-  ctx.client.dispose();
-  await assert.rejects(
-    ctx.client.loadProductImage(url, controller.signal),
-    /Start a chat/,
-  );
-  assert.equal(calls.length, 1);
-});
-
 test("active gallery loading uses the display executor and cannot outlive its conversation client", async (t) => {
   const calls = [];
   const gallery = { productPath: "/products/shade", items: [] };

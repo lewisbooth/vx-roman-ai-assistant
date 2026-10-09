@@ -1,6 +1,5 @@
 import {
   memo,
-  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -40,30 +39,6 @@ function ProductCardsView({
   const currentResult = loaded?.ids === ids && loaded.session === session;
   const result = currentResult ? loaded.result : undefined;
   const error = currentResult ? loaded.error : undefined;
-  const [resolvedImages, setResolvedImages] = useState<{
-    ids: string;
-    session: ConversationClient;
-    urls: Set<string>;
-  }>();
-  const imageLimit =
-    2 +
-    (resolvedImages?.ids === ids && resolvedImages.session === session
-      ? resolvedImages.urls.size
-      : 0);
-  const imageResolved = useCallback(
-    (url: string) => {
-      setResolvedImages((previous) => {
-        const current = previous?.ids === ids && previous.session === session;
-        if (current && previous.urls.has(url)) return previous;
-        return {
-          ids,
-          session,
-          urls: new Set([...(current ? previous.urls : []), url]),
-        };
-      });
-    },
-    [ids, session],
-  );
   const [attempt, setAttempt] = useState(0);
   const [choosing, setChoosing] = useState(false);
   const [choiceError, setChoiceError] = useState<string>();
@@ -246,7 +221,7 @@ function ProductCardsView({
       {result.products.length > 0 ? (
         <ProductCarousel>
           <ul className="roman-product-list">
-            {result.products.map((product, index) => (
+            {result.products.map((product) => (
               <li key={product.id}>
                 <button
                   type="button"
@@ -257,12 +232,8 @@ function ProductCardsView({
                 >
                   <span className="roman-product-image">
                     <ProductImage
-                      productUrl={product.url}
-                      fallback={product.imageUrl}
-                      session={session}
+                      imageUrl={product.imageUrl}
                       active={active}
-                      admitted={index < imageLimit}
-                      onResolved={imageResolved}
                     />
                     <span
                       className="roman-choose-blind-label"

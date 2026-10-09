@@ -114,17 +114,6 @@ export function Timeline({
     >
       {rows.map((row, rowIndex) => {
         if (row.kind === "question") {
-          const revealPending =
-            row.part.invocationId === activeQuestionId &&
-            !row.part.voiceReply &&
-            !row.part.measurement &&
-            row.part.answers.length > 0 &&
-            (row.message.status === "pending" ||
-              row.message.parts.some((part) => {
-                if (part.type !== "text") return false;
-                const text = reveal.parts.get(part);
-                return text && text.visible < text.prepared.length;
-              }));
           return (
             <Question
               key={row.id}
@@ -135,7 +124,6 @@ export function Timeline({
               onAnswer={onAnswer!}
               onNavigate={onNavigate}
               currentTurn={rowIndex >= lastCustomer}
-              revealPending={revealPending}
               historySequence={row.message.sequence}
               historyId={row.id}
             />

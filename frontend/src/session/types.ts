@@ -61,11 +61,6 @@ export interface ConversationClient {
   loadProducts(ids: string[], signal?: AbortSignal): Promise<CatalogResult>;
   /** Fresh display-cache entries only; never starts a request or renews the cache. */
   getCachedProducts(ids: readonly string[]): CatalogProduct[];
-  loadProductImage(
-    url: string,
-    signal: AbortSignal,
-    maxWidth?: 480 | 1200,
-  ): Promise<string | undefined>;
   loadProductGallery(
     url: string,
     signal: AbortSignal,

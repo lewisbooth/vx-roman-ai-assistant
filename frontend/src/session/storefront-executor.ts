@@ -60,7 +60,6 @@ import { applyMeasurements } from "../tools/measurements";
 import {
   loadProductPageGallery,
   productImagePageUrl,
-  productImageWidth,
   type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
@@ -98,7 +97,7 @@ interface StorefrontJob {
 }
 
 // Only card hydration reuses recent public products. Model tools always fetch
-// Shopify, and all network work shares the theme owner's single-flight queue.
+// Shopify, and owned storefront requests share the theme's single-flight queue.
 export function createStorefrontExecutor(
   tools: Pick<AssistantTools, "execute">,
 ) {
@@ -253,8 +252,8 @@ export function createStorefrontExecutor(
       jobs.add(job);
       queue.push(job);
       signal?.addEventListener("abort", cancel, { once: true });
-      // Read-only images also yield to card hydration. No visible carousel or
-      // foreground action waits for decorative PDP fetching to finish.
+      // Read-only gallery work also yields to card hydration. Foreground actions
+      // do not wait for optional PDP fetching to finish.
       if (
         (kind === "foreground" && active?.kind === "display") ||
         (kind !== "image" && active?.kind === "image")
@@ -311,7 +310,7 @@ export function createStorefrontExecutor(
         for (const [url, entry] of productGalleries)
           if (entry.expiresAt <= now) productGalleries.delete(url);
         productGalleries.delete(pageUrl);
-        // Cache product media once for cards and the stage. Native feature imagery
+        // Cache product media for the stage and previews. Native feature imagery
         // belongs to the stage's live configuration snapshot, not a path-only cache.
         productGalleries.set(pageUrl, {
           gallery: gallery && {
@@ -714,15 +713,6 @@ export function createStorefrontExecutor(
         },
         signal,
       );
-    },
-    async loadProductImage(
-      url: string,
-      signal: AbortSignal,
-      maxWidth: 480 | 1200 = 480,
-    ) {
-      const gallery = await loadProductGallery(url, signal);
-      const image = gallery?.items.find((item) => item.kind === "product");
-      return image && productImageWidth(image.src, maxWidth);
     },
     loadProductGallery,
     prepareVisualizationProduct,

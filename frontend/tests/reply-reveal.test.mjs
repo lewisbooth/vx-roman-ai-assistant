@@ -14,15 +14,16 @@ const bundle = await build({
       export { reconcileReplyReveal, advanceReplyReveal } from './frontend/src/chat/useReplyReveal';
       export function mount(container) {
         const root = createRoot(container);
-        const navigation = {}, onContentChange = () => {}, onAnswer = async () => {};
+        const navigation = {}, onContentChange = () => {}, onAnswer = async (part, answer) => {
+          window.answers.push({ invocationId: part.invocationId, answer });
+        };
         const session = {
           getCachedProducts: () => [],
           loadProducts: async (ids) => {
             window.catalogLoads.push(ids);
             return { products: ids.map(id => ({ id, title: 'Blind ' + id,
-              url: '/products/' + id, priceLabel: 'From GBP 20.00' })), messages: [] };
+              url: '/products/' + id, imageUrl: 'https://shop.example/cdn/shop/files/' + id + '.jpg', priceLabel: 'From GBP 20.00' })), messages: [] };
           },
-          loadProductImage: async (url) => { window.imageLoads.push(url); return undefined; },
         };
         return {
           render(props) { flushSync(() => root.render(<div className="roman-chat-history"><Timeline navigation={navigation} session={session}
@@ -50,7 +51,7 @@ function setup(t) {
     pretendToBeVisual: true,
   });
   dom.window.catalogLoads = [];
-  dom.window.imageLoads = [];
+  dom.window.answers = [];
   const errors = [];
   const timers = new Map();
   const nativeSetTimeout = dom.window.setTimeout.bind(dom.window);
@@ -117,8 +118,6 @@ const choices = (ctx) =>
   [...ctx.container.querySelectorAll(".roman-question")].find(
     (node) => !node.closest("[inert]"),
   ) ?? null;
-const reservedChoices = (ctx) =>
-  ctx.container.querySelector("[data-question-reveal-pending] .roman-question");
 const products = (overrides = {}) => ({
   type: "products",
   version: 1,
@@ -127,7 +126,7 @@ const products = (overrides = {}) => ({
   ...overrides,
 });
 
-test("carousels and receipts appear while quick answers wait for their text", async (t) => {
+test("carousels, receipts and usable quick answers appear while their text reveals", async (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
   ctx.render({
@@ -159,22 +158,18 @@ test("carousels and receipts appear while quick answers wait for their text", as
     "Catalog preloads while prose reveals",
   );
   assert.equal(
-    ctx.window.imageLoads.length,
+    ctx.container.querySelectorAll('.roman-products img[src]').length,
     2,
     "Both carousel images warm before reveal ends",
   );
   assert.ok(ctx.container.querySelector(".roman-cart-added"));
-  assert.equal(choices(ctx), null);
-  const reserved = reservedChoices(ctx);
-  assert.ok(reserved, "The actual panel reserves its wrapped size during reveal");
-  assert.equal(reserved.closest("li").getAttribute("aria-hidden"), "true");
-  assert.ok(reserved.closest("[inert]"));
-  assert.ok([...reserved.querySelectorAll("button")].every(button => button.disabled));
-  let answers = 0;
-  // Disabled controls must not accept a selection before their reply is readable.
-  reserved.addEventListener("click", () => answers++);
-  reserved.querySelector("button").click();
-  assert.equal(answers, 0);
+  const offered = choices(ctx);
+  assert.ok(offered, "Quick answers appear without waiting for prose");
+  assert.equal(offered.closest("[aria-hidden=true]"), null);
+  assert.ok([...offered.querySelectorAll("button")].every(button => !button.disabled));
+  assert.ok(displayed(ctx).length < "Here are two light-filtering blinds to compare.".length);
+  offered.querySelector("button").click();
+  assert.deepEqual(ctx.window.answers.map(answer => answer.answer), ["Plain"]);
   ctx.tick(1000);
   assert.equal(
     ctx.container.querySelector(".roman-products"),
@@ -182,29 +177,32 @@ test("carousels and receipts appear while quick answers wait for their text", as
     "The visible carousel keeps its loaded content",
   );
   assert.ok(choices(ctx));
-  assert.equal(choices(ctx), reserved, "Reveal keeps the same panel and layout");
+  assert.equal(choices(ctx), offered, "Reveal keeps the same panel and layout");
   assert.equal(choices(ctx).closest("[inert]"), null);
   assert.equal(choices(ctx).closest("[aria-hidden=true]"), null);
 });
 
-test("an early carousel appears while quick answers wait for final text", async (t) => {
+test("pending quick answers are visible immediately while operation disabling stays intact", async (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
   ctx.render({
     messages: [user(), message("reply", "assistant", [products(), question()], "pending")],
     activeQuestionId: "q",
+    questionDisabled: true,
   });
   await delay(0);
   const cards = ctx.container.querySelector(".roman-products");
   assert.equal(cards.closest("[hidden]"), null);
   assert.equal(ctx.window.catalogLoads.length, 1);
-  assert.equal(choices(ctx), null);
-  const reserved = reservedChoices(ctx);
-  assert.ok(reserved);
+  const offered = choices(ctx);
+  assert.ok(offered);
+  assert.equal(offered.closest("[aria-hidden=true]"), null);
+  assert.ok([...offered.querySelectorAll("button")].every(button => button.disabled));
+  offered.querySelector("button").click();
+  assert.deepEqual(ctx.window.answers, [], "Pending operation must still prevent submission");
   ctx.tick(1000);
   assert.equal(cards.closest("[hidden]"), null);
-  assert.equal(choices(ctx), null, "Pending quick answers await final prose");
-  assert.equal(reservedChoices(ctx), reserved);
+  assert.equal(choices(ctx), offered, "Pending source does not hide its answers");
   ctx.render({
     messages: [
       user(),
@@ -217,7 +215,9 @@ test("an early carousel appears while quick answers wait for final text", async 
     activeQuestionId: "q",
   });
   assert.equal(cards.closest("[hidden]"), null);
-  assert.equal(choices(ctx), null);
+  assert.equal(choices(ctx), offered);
+  assert.ok([...offered.querySelectorAll("button")].every(button => !button.disabled));
+  assert.equal(displayed(ctx), "", "Answers do not wait for final prose to reveal");
   ctx.tick(1000);
   assert.ok(choices(ctx));
 });
@@ -254,7 +254,7 @@ test("older and voice carousels are not hidden by a new text reply", async (t) =
   );
 });
 
-test("new complete blocks reveal before answers, preserve formatting and do not restart on polling", (t) => {
+test("new complete blocks reveal alongside immediate answers and do not restart on polling", (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
   const response =
@@ -265,13 +265,14 @@ test("new complete blocks reveal before answers, preserve formatting and do not 
   ];
   ctx.render({ messages, activeQuestionId: "q" });
   assert.equal(displayed(ctx), "");
-  assert.equal(choices(ctx), null);
+  const offered = choices(ctx);
+  assert.ok(offered);
   assert.equal(ctx.container.querySelector("[aria-busy=true]")?.tagName, "LI");
   assert.equal(ctx.timers.size, 1);
   ctx.tick(150);
   const partial = displayed(ctx);
   assert.ok(partial.length > 0 && partial.length < 50);
-  assert.equal(choices(ctx), null);
+  assert.equal(choices(ctx), offered);
   ctx.render({ messages: structuredClone(messages), activeQuestionId: "q" });
   assert.equal(displayed(ctx), partial);
   ctx.tick(1000);
@@ -285,7 +286,7 @@ test("new complete blocks reveal before answers, preserve formatting and do not 
   assert.equal(ctx.timers.size, 0);
 });
 
-test("streamed append holds quick answers until both source and reveal finish", (t) => {
+test("streamed appends keep quick answers visible before source and reveal finish", (t) => {
   const ctx = setup(t);
   ctx.render({ messages: [user()] });
   const offered = question();
@@ -301,12 +302,14 @@ test("streamed append holds quick answers until both source and reveal finish", 
     ],
     activeQuestionId: "q",
   });
+  const panel = choices(ctx);
+  assert.ok(panel, "Answers appear as soon as the streamed question exists");
   ctx.tick(1000);
   assert.equal(displayed(ctx), "Measure the width.");
   assert.equal(
     choices(ctx),
-    null,
-    "Caught-up text is not a completed server reply",
+    panel,
+    "A pending reply does not hide the available question",
   );
   ctx.render({
     messages: [
@@ -319,7 +322,7 @@ test("streamed append holds quick answers until both source and reveal finish", 
     activeQuestionId: "q",
   });
   assert.equal(displayed(ctx), "Measure the width.");
-  assert.equal(choices(ctx), null);
+  assert.equal(choices(ctx), panel);
   ctx.tick(1000);
   assert.ok(choices(ctx));
 });
@@ -405,7 +408,7 @@ test("a new customer message finishes prior reveal without reviving retired answ
   ctx.render({ messages: [user(), reply, user("next")] });
   assert.equal(displayed(ctx), reply.parts[0].text);
   assert.equal(choices(ctx), null);
-  assert.equal(reservedChoices(ctx), null, "Retired answers leave no reserved gap");
+  assert.equal(ctx.container.querySelector("[data-active-question]"), null, "Retired answers leave no active panel");
   assert.equal(ctx.timers.size, 0);
 });
 

@@ -14,7 +14,6 @@ export function Question({
   onAnswer,
   onNavigate,
   currentTurn = false,
-  revealPending = false,
   historySequence,
   historyId,
 }: {
@@ -25,8 +24,6 @@ export function Question({
   onAnswer: (part: QuestionPart, answer: string) => Promise<void>;
   onNavigate?: (view: "cart") => void;
   currentTurn?: boolean;
-  /** Reserve the actual wrapped panel without exposing unanswered controls early. */
-  revealPending?: boolean;
   historySequence?: number;
   historyId?: string;
 }) {
@@ -39,7 +36,6 @@ export function Question({
   const [error, setError] = useState<string>();
   const [invalid, setInvalid] = useState(false);
   const [measurementValue, setMeasurementValue] = useState("");
-  const controlsDisabled = disabled || revealPending;
 
   useLayoutEffect(() => {
     if (!active && submittedFocus.current) {
@@ -61,7 +57,7 @@ export function Question({
   }, [active]);
 
   async function answer(value: string) {
-    if (!active || controlsDisabled || sending.current) return;
+    if (!active || disabled || sending.current) return;
     const view = questionNavigationView(value);
     if (view && onNavigate) { onNavigate(view); return; }
     sending.current = true;
@@ -132,7 +128,7 @@ export function Question({
             noValidate
             onSubmit={(event) => {
               event.preventDefault();
-              if (controlsDisabled || sending.current) return;
+              if (disabled || sending.current) return;
               try {
                 void answer(formatMeasurementAnswer(part, measurementValue));
               } catch (cause) {
@@ -156,7 +152,7 @@ export function Question({
                   }
                   required
                   value={measurementValue}
-                  disabled={controlsDisabled}
+                  disabled={disabled}
                   readOnly={pending}
                   aria-invalid={invalid}
                   aria-describedby={
@@ -177,7 +173,7 @@ export function Question({
                   <span aria-hidden="true">{measurement.unit}</span>
                 )}
               </div>
-              <button type="submit" disabled={controlsDisabled || pending}>
+              <button type="submit" disabled={disabled || pending}>
                 Submit
               </button>
             </div>
@@ -189,7 +185,7 @@ export function Question({
             <button
               key={value}
               type="button"
-              disabled={controlsDisabled || pending}
+              disabled={disabled || pending}
               onClick={() => void answer(value)}
             >
               {value}
@@ -200,7 +196,7 @@ export function Question({
       {!!onNavigate && !!part.navigationActions?.length && (
         <div className="roman-action-buttons">
           {part.navigationActions.filter((action) => !part.answers.some((answer) => questionNavigationView(answer) === action.view)).map((action) =>
-            <button key={action.view} type="button" disabled={controlsDisabled || pending} onClick={() => onNavigate(action.view)}>{action.label}</button>,
+            <button key={action.view} type="button" disabled={disabled || pending} onClick={() => onNavigate(action.view)}>{action.label}</button>,
           )}
         </div>
       )}
@@ -225,9 +221,6 @@ export function Question({
       className="roman-message roman-message-assistant"
       data-current-turn={currentTurn ? "true" : undefined}
       data-active-question={active || undefined}
-      data-question-reveal-pending={revealPending || undefined}
-      aria-hidden={revealPending || undefined}
-      {...(revealPending ? { inert: "" } : {})}
     >
       <span className="sr-only">Roman:</span>
       <div className="roman-message-parts">

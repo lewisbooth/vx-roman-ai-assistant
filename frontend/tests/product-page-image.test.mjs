@@ -94,6 +94,12 @@ function setup(
   };
 }
 
+async function firstGalleryImage(ctx, executor, url, signal, maxWidth = 480) {
+  const gallery = await executor.loadProductGallery(url, signal);
+  const image = gallery?.items.find((item) => item.kind === "product");
+  return image && ctx.productImageWidth(image.src, maxWidth);
+}
+
 test("the actual HD gallery structure selects its first main PDP image, not swatch, zoom or later media", async (t) => {
   const ctx = setup(t, async () =>
     response(html(page, `${gallery()}${gallery()}`)),
@@ -123,7 +129,7 @@ test("the existing Shopify width transform is capped without changing asset iden
   for (const [query, expected] of [
     ["v=12&width=1600&height=300", "v=12&width=480&height=300"],
     ["v=12&width=240", "v=12&width=240"],
-    ["v=12", "v=12"],
+    ["v=12", "v=12&width=480"],
   ]) {
     const src = `${origin}/cdn/shop/files/room.webp?${query}`;
     const ctx = setup(t, async () => response(html(page, gallery(src))));
@@ -155,7 +161,7 @@ test("fetched content remains inert and remote base tags cannot redirect image s
   );
   assert.equal(
     await ctx.loadImage(page, new AbortController().signal),
-    `${origin}/cdn/shop/files/room.webp`,
+    `${origin}/cdn/shop/files/room.webp?width=480`,
   );
   assert.equal(connected, 0);
   assert.equal(ctx.window.executed, undefined);
@@ -297,7 +303,9 @@ test("image reads yield to both model tools and uncached card hydration, then re
         },
       });
       t.after(() => executor.dispose());
-      const image = executor.loadProductImage(
+      const image = firstGalleryImage(
+        ctx,
+        executor,
         page,
         new AbortController().signal,
       );
@@ -322,22 +330,22 @@ test("image cache deduplicates concurrent requests, expires at60s and retains at
   const signal = new AbortController().signal;
   assert.deepEqual(
     await Promise.all([
-      executor.loadProductImage(page, signal),
-      executor.loadProductImage(page, signal),
+      firstGalleryImage(ctx, executor, page, signal),
+      firstGalleryImage(ctx, executor, page, signal),
     ]),
     [main, main],
   );
   assert.equal(ctx.calls.length, 1);
   ctx.clock.now += 59_999;
-  await executor.loadProductImage(page, signal);
+  await firstGalleryImage(ctx, executor, page, signal);
   assert.equal(ctx.calls.length, 1);
   ctx.clock.now++;
-  await executor.loadProductImage(page, signal);
+  await firstGalleryImage(ctx, executor, page, signal);
   assert.equal(ctx.calls.length, 2);
   for (let n = 0; n < 60; n++)
-    await executor.loadProductImage(`${origin}/products/shade-${n}`, signal);
+    await firstGalleryImage(ctx, executor, `${origin}/products/shade-${n}`, signal);
   assert.equal(ctx.calls.length, 62);
-  await executor.loadProductImage(page, signal);
+  await firstGalleryImage(ctx, executor, page, signal);
   assert.equal(ctx.calls.length, 63);
 });
 
@@ -347,11 +355,11 @@ test("unavailable images are cached briefly; cancelled and disposed reads never 
     execute: () => assert.fail("Image read used catalog"),
   });
   const signal = new AbortController().signal;
-  assert.equal(await executor.loadProductImage(page, signal), undefined);
-  assert.equal(await executor.loadProductImage(page, signal), undefined);
+  assert.equal(await firstGalleryImage(ctx, executor, page, signal), undefined);
+  assert.equal(await firstGalleryImage(ctx, executor, page, signal), undefined);
   assert.equal(ctx.calls.length, 1);
   executor.dispose();
-  await assert.rejects(executor.loadProductImage(page, signal), /removed/);
+  await assert.rejects(firstGalleryImage(ctx, executor, page, signal), /removed/);
   const pending = setup(
     t,
     (_url, { signal }) =>
@@ -364,8 +372,8 @@ test("unavailable images are cached briefly; cancelled and disposed reads never 
   const other = pending.createStorefrontExecutor({
     execute: async () => ({ products: [] }),
   });
-  const active = other.loadProductImage(page, signal);
-  const queued = other.loadProductImage(`${origin}/products/next`, signal);
+  const active = firstGalleryImage(pending, other, page, signal);
+  const queued = firstGalleryImage(pending, other, `${origin}/products/next`, signal);
   const rejected = Promise.all([
     assert.rejects(active),
     assert.rejects(queued),
@@ -377,23 +385,23 @@ test("unavailable images are cached briefly; cancelled and disposed reads never 
   assert.equal(pending.calls[0][1].signal.aborted, true);
 });
 
-test("active-product recovery and carousel sizing reuse one gallery metadata request", async (t) => {
+test("active-product recovery and gallery sizes reuse one metadata request", async (t) => {
   const ctx = setup(t);
   const executor = ctx.createStorefrontExecutor({
     execute: () => assert.fail("Image recovery must not request catalog"),
   });
   t.after(() => executor.dispose());
   const signal = new AbortController().signal;
-  assert.equal(await executor.loadProductImage(page, signal), main);
+  assert.equal(await firstGalleryImage(ctx, executor, page, signal), main);
   assert.equal(
-    await executor.loadProductImage(page, signal, 1200),
+    await firstGalleryImage(ctx, executor, page, signal, 1200),
     `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
   );
   assert.equal(
-    await executor.loadProductImage(page, signal, 1200),
+    await firstGalleryImage(ctx, executor, page, signal, 1200),
     `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
   );
-  assert.equal(await executor.loadProductImage(page, signal), main);
+  assert.equal(await firstGalleryImage(ctx, executor, page, signal), main);
   assert.equal((await executor.loadProductGallery(page, signal)).items.length, 2);
   assert.equal(ctx.calls.length, 1);
 });
@@ -425,12 +433,12 @@ test("missing PDP imagery falls back only to the matching fresh normalized Shopi
   const signal = new AbortController().signal;
   await executor.execute("search_products", { queries: ["shade"] });
   assert.equal(
-    await executor.loadProductImage(page, signal, 1200),
-    catalogImage,
+    await firstGalleryImage(ctx, executor, page, signal, 1200),
+    `${catalogImage}?width=1200`,
   );
   assert.equal(
-    await executor.loadProductImage(page, signal, 1200),
-    catalogImage,
+    await firstGalleryImage(ctx, executor, page, signal, 1200),
+    `${catalogImage}?width=1200`,
   );
   assert.equal(
     catalogReads,
@@ -439,12 +447,12 @@ test("missing PDP imagery falls back only to the matching fresh normalized Shopi
   );
   assert.equal(ctx.calls.length, 1);
   assert.equal(
-    await executor.loadProductImage(`${origin}/products/other`, signal, 1200),
+    await firstGalleryImage(ctx, executor, `${origin}/products/other`, signal, 1200),
     undefined,
   );
   ctx.clock.now += 60_000;
   assert.equal(
-    await executor.loadProductImage(page, signal, 1200),
+    await firstGalleryImage(ctx, executor, page, signal, 1200),
     undefined,
     "Expired catalog entries do not become authority for a restored choice",
   );
@@ -469,7 +477,7 @@ test("PDP gallery imagery stays preferred over the listing image when both are a
   t.after(() => executor.dispose());
   await executor.execute("search_products", { queries: ["shade"] });
   assert.equal(
-    await executor.loadProductImage(page, new AbortController().signal, 1200),
+    await firstGalleryImage(ctx, executor, page, new AbortController().signal, 1200),
     `${origin}/cdn/shop/files/room.webp?v=12&width=1200`,
   );
 });
@@ -490,7 +498,7 @@ test("gallery preserves native order and thumbnail/zoom assets, deduplicating re
   assert.equal(first.thumbnailSrc, sourceMain.replace('width=1600', 'width=90'));
   assert.equal(first.zoomSrc, sourceMain.replace('width=1600', 'width=1800'));
   assert.equal(first.kind, 'product');
-  assert.equal(second.src, swatch);
+  assert.equal(second.src, `${swatch}&width=1200`);
   assert.equal(ctx.calls.length, 1, 'Media URLs are extracted without fetching images');
 });
 
@@ -523,13 +531,13 @@ test("native feature imagery updates only when enabled and never enters the shar
   assert.equal(restored.items.every(item => item.kind === 'product'), true);
 });
 
-test("simultaneous thumbnail and active gallery requests share one fetched snapshot", async (t) => {
+test("simultaneous active gallery requests share one fetched snapshot", async (t) => {
   const ctx = setup(t);
   const executor = ctx.createStorefrontExecutor({execute: () => assert.fail('No catalog call')});
   t.after(() => executor.dispose());
   const signal = new AbortController().signal;
   const [image, result] = await Promise.all([
-    executor.loadProductImage(page, signal),
+    firstGalleryImage(ctx, executor, page, signal),
     executor.loadProductGallery(page, signal),
   ]);
   assert.equal(image, main);

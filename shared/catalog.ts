@@ -246,7 +246,9 @@ function normalizeProduct(
         object(variant) && Array.isArray(variant.media) ? variant.media : [],
       )
     : [];
-  const image = [...media, ...variantMedia]
+  // The variant photo is the listing image; product media may be a zoomed hero.
+  // Keep Shopify's supplied order and URLs, with product media as the fallback.
+  const image = [...variantMedia, ...media]
     .filter((item) => object(item) && item.type === "image")
     .map((item) => imageUrl(item.url, storefrontOrigin))
     .find(Boolean);

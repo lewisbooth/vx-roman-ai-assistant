@@ -106,8 +106,8 @@ export function useReplyReveal(
   const [state, setState] = useState(() =>
     reconcileReplyReveal(undefined, messages),
   );
-  // Reconcile before committing the new snapshot so complete blocks and their
-  // questions cannot flash at full length for a frame before an effect runs.
+  // Reconcile before committing the new snapshot so complete text blocks cannot
+  // flash at full length for a frame before an effect runs.
   let current = state;
   if (state.messages !== messages) {
     current = reconcileReplyReveal(state, messages);
