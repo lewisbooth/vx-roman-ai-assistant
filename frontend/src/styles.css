@@ -1064,28 +1064,14 @@
 
   .roman-voice-bar .roman-voice-microphone {
     right: 48px;
-    width: 44px;
     background: transparent;
-    color: #4e0e0e;
+    color: #797366;
   }
 
   .roman-voice-microphone[data-muted],
   .roman-voice-microphone:is(:hover, :focus-visible) {
-    background: #4e0e0e;
+    background: #797366;
     color: #f7f5ef;
-  }
-
-  .roman-voice-bar .roman-voice-microphone .roman-action-label,
-  .roman-voice-bar .roman-voice-microphone:is(:hover, :focus-visible) .roman-action-label {
-    position: absolute;
-    bottom: 52px;
-    right: 0;
-    max-width: none;
-    padding: 8px 12px;
-    border-radius: 12px;
-    background: #4e0e0e;
-    color: #f7f5ef;
-    pointer-events: none;
   }
 
   .roman-voice-waveform {
@@ -1267,6 +1253,11 @@
     color: #f8f6f0;
   }
 
+  .roman-end-voice {
+    background: #c59745;
+    color: #4e0e0e;
+  }
+
   .roman-action-icon {
     @apply inline-flex shrink-0 items-center justify-center;
     width: var(--roman-action-size);
@@ -1281,11 +1272,11 @@
       opacity 160ms ease;
   }
 
-  .roman-upload-image {
+  .roman-composer-tooltip {
     width: 44px;
   }
 
-  .roman-upload-image .roman-action-label {
+  .roman-composer-tooltip .roman-action-label {
     position: absolute;
     bottom: 52px;
     right: 0;
@@ -1305,7 +1296,7 @@
     opacity: 1;
   }
 
-  .roman-upload-image:focus-visible .roman-action-label {
+  .roman-composer-tooltip:focus-visible .roman-action-label {
     max-width: none;
     padding-left: 12px;
     transform: translateY(0);
@@ -1318,10 +1309,17 @@
       opacity: 1;
     }
 
-    .roman-upload-image:hover .roman-action-label {
+    .roman-composer-tooltip:hover .roman-action-label {
       max-width: none;
       padding-left: 12px;
       transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .roman-composer-tooltip .roman-action-label {
+      transition: none;
+      transform: none;
     }
   }
 

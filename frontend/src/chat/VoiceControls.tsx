@@ -9,7 +9,7 @@ export function UploadImageButton({
   return (
     <button
       type="button"
-      className="roman-composer-action roman-upload-image"
+      className="roman-composer-action roman-composer-tooltip roman-upload-image"
       data-roman-upload
       aria-label="Upload image"
       onClick={onUpload}
@@ -46,7 +46,7 @@ export function StartVoiceButton({
   return (
     <button
       type="button"
-      className="roman-composer-action roman-start-voice"
+      className="roman-composer-action roman-composer-tooltip roman-start-voice"
       data-roman-start-voice
       aria-label="Start voice"
       disabled={disabled}
@@ -118,7 +118,7 @@ export function VoiceControls({
       {active && (
         <button
           type="button"
-          className="roman-composer-action roman-voice-microphone"
+          className="roman-composer-action roman-composer-tooltip roman-voice-microphone"
           aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"}
           data-muted={voice.muted || undefined}
           onClick={() => session.setMicrophoneMuted(!voice.muted)}
@@ -154,7 +154,7 @@ export function VoiceControls({
       )}
       <button
         type="button"
-        className="roman-composer-action"
+        className="roman-composer-action roman-composer-tooltip roman-end-voice"
         aria-label="End voice"
         disabled={voice.status === "stopping"}
         onClick={() => void session.stopVoice().catch(() => undefined)}
