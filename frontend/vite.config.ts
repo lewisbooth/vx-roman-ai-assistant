@@ -20,6 +20,8 @@ const previewPages = [
 
 export default defineConfig(({ mode }) => ({
   root: fileURLToPath(new URL("./", import.meta.url)),
+  // Resolve the lazy runtime's stylesheet against its own Shopify CDN URL.
+  base: "./",
   publicDir: false,
   plugins: [
     tailwindcss(),
@@ -116,7 +118,17 @@ export default defineConfig(({ mode }) => ({
       },
     },
   ],
-  esbuild: { jsx: "automatic" },
+  // Keep the storefront on Preact without changing the admin's React runtime.
+  resolve: {
+    alias: [
+      { find: /^react$/, replacement: "preact/compat" },
+      { find: /^react-dom$/, replacement: "preact/compat" },
+      { find: /^react-dom\/client$/, replacement: "preact/compat/client" },
+      { find: /^react\/jsx-runtime$/, replacement: "preact/jsx-runtime" },
+      { find: /^react\/jsx-dev-runtime$/, replacement: "preact/jsx-dev-runtime" },
+    ],
+  },
+  esbuild: { jsx: "automatic", jsxImportSource: "preact" },
   define: {
     "process.env.NODE_ENV": JSON.stringify(
       mode === "development" ? "development" : "production",
@@ -124,6 +136,7 @@ export default defineConfig(({ mode }) => ({
   },
   server: { host: "127.0.0.1", port: 5173, strictPort: true },
   build: {
+    assetsInlineLimit: 0,
     // Native private fields keep the initial script below Shopify's 10 KB cap.
     // Tailwind 4 already requires browsers newer than ES2022 support.
     target: mode === "bootstrap" ? "es2022" : undefined,
@@ -131,6 +144,14 @@ export default defineConfig(({ mode }) => ({
       new URL("../extensions/vx-roman-ai-assistant/assets", import.meta.url),
     ),
     emptyOutDir: false,
+    rollupOptions: {
+      output: {
+        assetFileNames: ({ names }) =>
+          names.some((name) => name.endsWith(".css"))
+            ? "roman-assistant.css"
+            : "[name].[ext]",
+      },
+    },
     lib: {
       entry: fileURLToPath(
         new URL(

@@ -1,5 +1,6 @@
 import {
   StorefrontTurn,
+  cartToolDefinitions,
   isConfigurationStep,
   parseStorefrontCall,
 } from "./storefront-turn.server";
@@ -14,7 +15,7 @@ import type {
 import { catalogToolDefinitions } from "../../shared/catalog-tools";
 import { navigationToolDefinition } from "../../shared/navigation-tool";
 import type { BrowserToolOutcome } from "./browser-tools.server";
-import { cartToolDefinitions, isCartMutation } from "../../shared/cart-tools";
+import { isCartMutation } from "../../shared/cart-tools";
 import {
   productConfigurationToolDefinitions,
   type ProductConfigurationResult,

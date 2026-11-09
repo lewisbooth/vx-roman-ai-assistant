@@ -22,7 +22,7 @@ class StubAPIConnectionError extends StubAPIError {
     this.name = "Error"; // The installed SDK uses this generic name.
   }
 }
-const buildModelBundle = (withFallbackFixture = false) => build({
+const buildModelBundle = (fallbackOverride) => build({
   stdin: {
     contents: `export * from "./admin/conversations/model.server.ts";
       export * from "./admin/conversations/availability.server.ts";`,
@@ -36,21 +36,24 @@ const buildModelBundle = (withFallbackFixture = false) => build({
     {
       name: "model-api",
       setup(build) {
-        if (withFallbackFixture) {
-          // Keep existing failover scenarios meaningful independently of the
-          // production configuration, whose optional fallback is now disabled.
+        if (fallbackOverride !== undefined) {
+          // Explicit fixtures retain both retired-fallback and no-fallback
+          // scenarios independently of the current production configuration.
           build.onResolve({ filter: /availability\.server(?:\.ts)?$/ }, () => ({
             path: path.resolve("admin/conversations/availability.server.ts"),
             namespace: "fallback-fixture",
           }));
-          build.onLoad({ filter: /.*/, namespace: "fallback-fixture" }, async (args) => ({
-            contents: (await readFile(args.path, "utf8")).replace(
-              /export const FALLBACK_TEXT_MODEL: string \| null = null;/,
-              'export const FALLBACK_TEXT_MODEL: string | null = "gpt-5.6-luna";',
-            ),
-            loader: "ts",
-            resolveDir: path.dirname(args.path),
-          }));
+          build.onLoad({ filter: /.*/, namespace: "fallback-fixture" }, async (args) => {
+            const source = await readFile(args.path, "utf8");
+            const declaration = /export const FALLBACK_TEXT_MODEL: string \| null = (?:"[^"\r\n]+"|null);/;
+            assert.match(source, declaration, "Fallback fixture must replace the real declaration");
+            return {
+              contents: source.replace(declaration,
+                `export const FALLBACK_TEXT_MODEL: string | null = ${JSON.stringify(fallbackOverride)};`),
+              loader: "ts",
+              resolveDir: path.dirname(args.path),
+            };
+          });
         }
         build.onResolve({ filter: /api-errors\/repository\.server$/ }, (args) => ({
           path: args.path,
@@ -71,8 +74,11 @@ const buildModelBundle = (withFallbackFixture = false) => build({
     },
   ],
 });
-const bundle = await buildModelBundle(true);
-const singleModelBundle = await buildModelBundle();
+const bundles = new Map([
+  [undefined, await buildModelBundle()],
+  [null, await buildModelBundle(null)],
+  ["gpt-5.6-luna", await buildModelBundle("gpt-5.6-luna")],
+]);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const tokens = (input, output, cached = 0, reasoning = 0) => ({
   input_tokens: input,
@@ -120,7 +126,7 @@ const outputLimit = (usage = tokens(30, 8192, 10, 8000), output = []) => {
   event.response.incomplete_details = { reason: "max_output_tokens" };
   return event;
 };
-function setup(scripts, initialAvailability = "healthy", singleModel = false) {
+function setup(scripts, initialAvailability = "healthy", { fallback } = {}) {
   const records = [];
   const requests = [];
   const incidents = [];
@@ -142,7 +148,9 @@ function setup(scripts, initialAvailability = "healthy", singleModel = false) {
     },
   };
   const module = { exports: {} };
-  runInNewContext((singleModel ? singleModelBundle : bundle).outputFiles[0].text, {
+  const bundle = bundles.get(fallback);
+  assert.ok(bundle, "Use a supported explicit fallback fixture");
+  runInNewContext(bundle.outputFiles[0].text, {
     module,
     exports: module.exports,
     require,
@@ -171,6 +179,7 @@ function setup(scripts, initialAvailability = "healthy", singleModel = false) {
     clients,
     primaryModel: module.exports.PRIMARY_TEXT_MODEL,
     fallbackModel: module.exports.FALLBACK_TEXT_MODEL,
+    onSuspended: module.exports.onServiceSuspended,
     status: () => module.exports.getAvailabilityStatus(),
     tick: async () => {
       const timer = timers.find((item) => !item.cancelled && !item.ran);
@@ -208,7 +217,7 @@ const events = (...values) =>
   async function* () {
     yield* values;
   };
-const healthTerminal = (model = "gpt-6.1-sol", argumentsJson = '{"ok":true}') => ({
+const healthTerminal = (model = "gpt-6.1-terra", argumentsJson = '{"ok":true}') => ({
   type: "response.completed",
   response: {
     status: "completed",
@@ -216,24 +225,139 @@ const healthTerminal = (model = "gpt-6.1-sol", argumentsJson = '{"ok":true}') =>
     output: [{ type: "function_call", name: "report_api_health", arguments: argumentsJson }],
   },
 });
+const servedTerminal = (model) => {
+  const event = terminal();
+  event.response.model = model;
+  event.response.service_tier = "fast";
+  return event;
+};
 
-test("text and voice advisor rounds request Ultrafast and retain the actual served tier", async (t) => {
+test("configured Terra access rejection transparently uses Luna Fast for text and voice", async (t) => {
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const rejection = new StubAPIError(403, "model_not_found");
+      const app = setup([
+        async () => { throw rejection; },
+        events(servedTerminal("gpt-6-luna")),
+      ]);
+      let suspensions = 0;
+      const unsubscribe = app.onSuspended(() => suspensions++);
+      const reply = await app.run(undefined, { mode });
+      unsubscribe();
+      assert.equal(app.primaryModel, "gpt-6.1-terra");
+      assert.equal(app.fallbackModel, "gpt-6-luna");
+      assert.deepEqual(app.requests.map(([request]) => request.model), [
+        "gpt-6.1-terra", "gpt-6-luna",
+      ]);
+      assert.ok(app.requests.every(([request]) => request.service_tier === "fast" &&
+        request.reasoning.effort === "medium" && request.store === false));
+      assert.equal(reply.model, "gpt-6-luna");
+      assert.equal(reply.serviceTier, "fast");
+      assert.equal(reply.questionPresentation.question, "Which room are you shopping for?");
+      assert.doesNotMatch(reply.text, /unavailable|fallback|switch.*model/i);
+      assert.deepEqual(app.records.map((entry) => entry.status), [
+        "pending", "unavailable", "pending", "completed",
+      ]);
+      assert.deepEqual(app.incidents, ["fallback"]);
+      assert.equal(await app.status(), "degraded");
+      assert.equal(suspensions, 0);
+    });
+});
+
+test("configured Terra to Luna failover retains completed tools without replay in either channel", async (t) => {
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const first = toolRound();
+      first.response.model = "gpt-6.1-terra";
+      first.response.service_tier = "fast";
+      first.response.output.unshift({
+        type: "reasoning", id: "terra-reasoning", encrypted_content: "terra-only-state",
+      });
+      const app = setup([
+        events(first),
+        async () => { throw new StubAPIError(403, "model_not_found"); },
+        events(servedTerminal("gpt-6-luna")),
+      ]);
+      let actions = 0;
+      let suspensions = 0;
+      const unsubscribe = app.onSuspended(() => suspensions++);
+      const reply = await app.run(undefined, {
+        mode,
+        execute: async () => {
+          actions++;
+          return { products: [], messages: [] };
+        },
+      });
+      unsubscribe();
+      assert.equal(actions, 1);
+      assert.equal(suspensions, 0);
+      assert.equal(reply.model, "gpt-6-luna");
+      assert.equal(reply.questionPresentation.question, "Which room are you shopping for?");
+      assert.deepEqual(app.requests.map(([request]) => request.model), [
+        "gpt-6.1-terra", "gpt-6.1-terra", "gpt-6-luna",
+      ]);
+      const terraRetryInput = app.requests[1][0].input;
+      const lunaInput = app.requests[2][0].input;
+      const results = (input) => plain(input.filter((item) => item.type === "function_call_output"));
+      assert.equal(results(lunaInput).length, 1);
+      assert.deepEqual(results(lunaInput), results(terraRetryInput));
+      assert.equal(lunaInput.filter((item) => item.type === "function_call" && item.call_id === "tool_call_1").length, 1);
+      assert.equal(terraRetryInput.some((item) => item.type === "reasoning"), true);
+      assert.equal(lunaInput.some((item) => item.type === "reasoning" || item.type === "compaction"), false);
+      assert.ok(app.requests.every(([request]) => request.service_tier === "fast"));
+      assert.deepEqual(app.incidents, ["fallback"]);
+      assert.equal(await app.status(), "degraded");
+    });
+});
+
+test("configured Luna remains usable while background probes recover Terra for later turns", async (t) => {
+  for (const mode of ["text", "voice"])
+    await t.test(mode, async () => {
+      const rejected = async () => { throw new StubAPIError(403, "model_not_found"); };
+      const app = setup([
+        rejected, events(servedTerminal("gpt-6-luna")),
+        rejected,
+        events(servedTerminal("gpt-6-luna")),
+        events(healthTerminal()),
+        events(servedTerminal("gpt-6.1-terra")),
+      ]);
+      let suspensions = 0;
+      const unsubscribe = app.onSuspended(() => suspensions++);
+      assert.equal((await app.run(undefined, { mode })).model, "gpt-6-luna");
+      assert.equal(await app.tick(), 1_000);
+      assert.equal(await app.status(), "degraded");
+      assert.equal((await app.run(undefined, { mode })).model, "gpt-6-luna");
+      assert.equal(await app.tick(), 2_000);
+      assert.equal(await app.status(), "available");
+      assert.equal((await app.run(undefined, { mode })).model, "gpt-6.1-terra");
+      unsubscribe();
+      assert.equal(suspensions, 0);
+      assert.deepEqual(app.incidents, ["fallback", "healthy"]);
+      assert.deepEqual(app.requests.map(([request]) => request.model), [
+        "gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-terra",
+      ]);
+      assert.ok(app.requests.every(([request]) => request.service_tier === "fast"));
+      assert.equal(app.records.filter((entry) => entry.status === "pending").length, 4);
+    });
+});
+
+test("text and voice advisor rounds request Fast and retain the actual served tier", async (t) => {
   for (const mode of ["text", "voice"]) {
     await t.test(mode, async () => {
       const first = toolRound();
       const last = terminal();
-      first.response.model = last.response.model = "gpt-6.1-sol";
-      first.response.service_tier = "ultrafast";
+      first.response.model = last.response.model = "gpt-6.1-terra";
+      first.response.service_tier = "fast";
       // A returned tier is authoritative even when it differs from the request.
       last.response.service_tier = "default";
-      const app = setup([events(first), events(last)], "healthy", true);
+      const app = setup([events(first), events(last)]);
       const reply = await app.run(undefined, { mode });
       assert.equal(app.requests.length, 2);
       assert.ok(app.requests.every(([request]) =>
-        request.model === app.primaryModel && request.service_tier === "ultrafast" &&
+        request.model === app.primaryModel && request.service_tier === "fast" &&
         request.reasoning.effort === "medium" && request.store === false));
       assert.deepEqual(app.records.filter((entry) => entry.status === "completed")
-        .map((entry) => entry.serviceTier), ["ultrafast", "default"]);
+        .map((entry) => entry.serviceTier), ["fast", "default"]);
       assert.equal(reply.serviceTier, "default");
     });
   }
@@ -477,10 +601,10 @@ test("photo clarification rejects pickers, duplicate wording and malformed answe
   });
 });
 
-test("the configured single advisor rejects outages without a lower-model attempt", async () => {
+test("an explicitly configured single advisor rejects outages without a lower-model attempt", async () => {
   const rejection = new StubAPIError(404, "model_not_found");
-  const app = setup([async () => { throw rejection; }], "healthy", true);
-  assert.equal(app.primaryModel, "gpt-6.1-sol");
+  const app = setup([async () => { throw rejection; }], "healthy", { fallback: null });
+  assert.equal(app.primaryModel, "gpt-6.1-terra");
   assert.equal(app.fallbackModel, null);
   await assert.rejects(app.run(), (error) => error === rejection);
   assert.deepEqual(app.requests.map(([request]) => request.model), [app.primaryModel]);
@@ -492,7 +616,7 @@ test("the configured single advisor rejects outages without a lower-model attemp
 });
 
 test("a saved retired fallback incident suspends until the sole current advisor recovers", async () => {
-  const app = setup([events(healthTerminal())], "fallback", true);
+  const app = setup([events(healthTerminal())], "fallback", { fallback: null });
   assert.equal(await app.status(), "suspended");
   assert.deepEqual(app.incidents, ["outage"]);
   await assert.rejects(app.run(), { status: 503 });
@@ -508,7 +632,7 @@ test("single-advisor recovery keeps capped backoff and probes only the configure
   const app = setup([
     ...Array.from({ length: 6 }, () => async () => { throw unavailable; }),
     events(healthTerminal()),
-  ], "outage", true);
+  ], "outage", { fallback: null });
   assert.equal(await app.status(), "suspended");
   const delays = [];
   for (let index = 0; index < 6; index++) delays.push(await app.tick());
@@ -519,12 +643,12 @@ test("single-advisor recovery keeps capped backoff and probes only the configure
   assert.deepEqual(app.incidents, ["healthy"]);
   assert.ok(app.requests.every(([request]) =>
     request.model === app.primaryModel && request.input === "Call report_api_health with ok set to true." &&
-    request.reasoning.effort === "medium" && request.service_tier === "ultrafast" &&
+    request.reasoning.effort === "medium" && request.service_tier === "fast" &&
     request.store === false));
 });
 
 test("recovery exercises the advisor's strict streamed function envelope without executing it", async () => {
-  const app = setup([events(healthTerminal("gpt-6.1-sol", ' { "ok" : true } '))], "outage", true);
+  const app = setup([events(healthTerminal("gpt-6.1-terra", ' { "ok" : true } '))], "outage", { fallback: null });
   assert.equal(await app.status(), "suspended");
   await app.tick();
   assert.equal(await app.status(), "available");
@@ -532,7 +656,7 @@ test("recovery exercises the advisor's strict streamed function envelope without
   const [request, options] = app.requests[0];
   assert.equal(request.model, app.primaryModel);
   assert.equal(request.stream, true);
-  assert.equal(request.service_tier, "ultrafast");
+  assert.equal(request.service_tier, "fast");
   assert.equal(request.reasoning.effort, "medium");
   assert.equal(request.max_output_tokens, 1024);
   assert.equal(request.store, false);
@@ -574,11 +698,11 @@ test("plain, incomplete or incorrect health responses cannot reopen suspended in
     events(multipleCalls),
     events(wrongStatus),
     ...['{"ok":false}', '{"ok":true,"other":true}', '{"ok":false,"ok":true}', 'not JSON'].map(
-      (args) => events(healthTerminal("gpt-6.1-sol", args)),
+      (args) => events(healthTerminal("gpt-6.1-terra", args)),
     ),
   ];
   for (const script of scripts) {
-    const app = setup([script], "outage", true);
+    const app = setup([script], "outage", { fallback: null });
     assert.equal(await app.status(), "suspended");
     await app.tick();
     assert.equal(await app.status(), "suspended");
@@ -595,7 +719,7 @@ test("the explicit health deadline cancels a started stream which never complete
     await new Promise((resolve, reject) => {
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
-  }], "outage", true);
+  }], "outage", { fallback: null });
   assert.equal(await app.status(), "suspended");
   await app.tick();
   assert.equal(app.requests.length, 1);
@@ -612,7 +736,7 @@ test("the explicit health deadline cancels a started stream which never complete
 
 test("a sole-advisor failure after a tool result preserves the completed action without replay", async () => {
   const unavailable = new StubAPIError(503, "server_error");
-  const app = setup([events(toolRound()), async () => { throw unavailable; }], "healthy", true);
+  const app = setup([events(toolRound()), async () => { throw unavailable; }], "healthy", { fallback: null });
   let actions = 0;
   await assert.rejects(app.run(undefined, { execute: async () => {
     actions++;
@@ -631,7 +755,7 @@ test("a primary access rejection falls back before output and records both attem
       throw rejection;
     },
     events(terminal()),
-  ]);
+  ], "healthy", { fallback: "gpt-5.6-luna" });
   const reply = await app.run();
   assert.equal(
     reply.questionPresentation.question,
@@ -671,7 +795,7 @@ test("both model rejections suspend service without losing usage attempts", asyn
     async () => {
       throw rejection;
     },
-  ]);
+  ], "healthy", { fallback: "gpt-5.6-luna" });
   await assert.rejects(app.run(), (error) => error === rejection);
   assert.equal(app.requests.length, 2);
   assert.deepEqual(
@@ -691,7 +815,7 @@ test("provider rate limits use the fallback, but invalid prompts do not", async 
       throw rejection;
     },
     events(terminal()),
-  ]);
+  ], "healthy", { fallback: "gpt-5.6-luna" });
   await app.run();
   assert.equal(app.requests.length, 2);
   assert.deepEqual(plain(app.diagnostics(rejection)), {
@@ -716,7 +840,7 @@ test("connection, authentication and model access failures trigger fallback, whi
     const app = setup([
       async () => { throw failure; },
       events(terminal()),
-    ]);
+    ], "healthy", { fallback: "gpt-5.6-luna" });
     await app.run();
     assert.deepEqual(app.requests.map(([request]) => request.model), [
       app.primaryModel,
@@ -744,7 +868,7 @@ test("suspended service probes both models with capped backoff and resumes on fa
     events(healthTerminal("gpt-5.6-luna")),
     events(healthTerminal()),
   ];
-  const app = setup(scripts);
+  const app = setup(scripts, "healthy", { fallback: "gpt-5.6-luna" });
   await assert.rejects(app.run(), (error) => error === unavailable);
   assert.equal(await app.status(), "suspended");
   const delays = [];
@@ -759,7 +883,7 @@ test("suspended service probes both models with capped backoff and resumes on fa
   assert.equal(app.requests.slice(2).every(([request]) => request.input === "Call report_api_health with ok set to true."), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.max_output_tokens === 1024), true);
   assert.equal(app.requests.slice(2).every(([request]) => request.reasoning.effort === "medium"), true);
-  assert.equal(app.requests.slice(2).every(([request]) => request.service_tier === "ultrafast" && request.store === false), true);
+  assert.equal(app.requests.slice(2).every(([request]) => request.service_tier === "fast" && request.store === false), true);
 });
 
 test("a later provider round falls back using prior tool results without replaying the action", async () => {
@@ -774,7 +898,7 @@ test("a later provider round falls back using prior tool results without replayi
     events(first),
     async () => { throw unavailable; },
     events(terminal()),
-  ]);
+  ], "healthy", { fallback: "gpt-5.6-luna" });
   let actions = 0;
   await app.run(undefined, {
     execute: async () => {

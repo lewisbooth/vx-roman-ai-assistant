@@ -13,13 +13,11 @@ const bundle = await build({
       import { StrictMode } from 'react';
       import { createRoot } from 'react-dom/client';
       import { flushSync } from 'react-dom';
-      import { RouterProvider } from 'react-router/dom';
-      import { createAssistantRouter } from './frontend/src/app';
+      import { AssistantApp } from './frontend/src/app';
       export function mount(container, props) {
         const root = createRoot(container);
-        const router = createAssistantRouter(props);
-        flushSync(() => root.render(<StrictMode><RouterProvider router={router} /></StrictMode>));
-        return () => { flushSync(() => root.unmount()); router.dispose(); };
+        flushSync(() => root.render(<StrictMode><AssistantApp {...props} /></StrictMode>));
+        return () => flushSync(() => root.unmount());
       }
     `,
     resolveDir: cwd(),

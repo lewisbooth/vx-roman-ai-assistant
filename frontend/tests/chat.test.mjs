@@ -11,13 +11,11 @@ const bundle = await build({
   stdin: {
     contents: `
       import { createRoot } from 'react-dom/client';
-      import { RouterProvider } from 'react-router/dom';
-      import { createAssistantRouter } from './frontend/src/app';
+      import { AssistantApp } from './frontend/src/app';
       export function mount(container, props) {
-        const router = createAssistantRouter(props);
         const root = createRoot(container);
-        root.render(<RouterProvider router={router} />);
-        return () => { root.unmount(); router.dispose(); };
+        root.render(<AssistantApp {...props} />);
+        return () => root.unmount();
       }
     `,
     resolveDir: cwd(),
@@ -94,6 +92,7 @@ async function setup(t, options = {}) {
   const calls = [];
   const endCalls = [];
   const startVoiceCalls = [];
+  const retryAvailabilityCalls = [];
   const stopVoiceCalls = [];
   const voiceAnswers = [];
   const voiceChoices = [];
@@ -123,6 +122,10 @@ async function setup(t, options = {}) {
     },
     clearError: () => {
       if (state.error) update({ error: null });
+    },
+    retryAvailability: async () => {
+      retryAvailabilityCalls.push("retry");
+      await options.onRetryAvailability?.();
     },
     sendMessage: async (text, choice) => {
       if (choice && state.voice.status === "active") {
@@ -237,6 +240,7 @@ async function setup(t, options = {}) {
     errors,
     endCalls,
     startVoiceCalls,
+    retryAvailabilityCalls,
     stopVoiceCalls,
     voiceAnswers,
     voiceChoices,
@@ -689,6 +693,8 @@ test("an unconfirmed first message remains visibly retryable in the queue withou
     /My measurements/,
   );
   assert.equal(ctx.container.querySelector(".roman-message-user"), null);
+  assert.equal(ctx.container.querySelectorAll('[role="alert"]').length, 1);
+  assert.equal(ctx.container.querySelector(".roman-chat-retry"), null);
   assert.match(
     ctx.container.querySelector('[role="alert"]').textContent,
     /Connection lost/,
@@ -978,8 +984,10 @@ test("failed welcome submissions show one retryable error and retain the same st
   let attempts = 0;
   const ctx = await setup(t, {
     onSend: (_text, window) => {
-      if (++attempts === 1)
+      if (++attempts === 1) {
+        ctx.update({ error: "Connection lost. Please retry." });
         throw new window.Error("Connection lost. Please retry.");
+      }
     },
   });
   await ctx.type("Keep my dimensions");
@@ -990,6 +998,7 @@ test("failed welcome submissions show one retryable error and retain the same st
     "Tile error was not displayed",
   );
   assert.equal(ctx.container.querySelectorAll('[role="alert"]').length, 1);
+  assert.equal(ctx.container.querySelector(".roman-chat-retry"), null);
   assert.match(
     ctx.container.querySelector('[role="alert"]').textContent,
     /Connection lost/,
@@ -1185,23 +1194,25 @@ test("Enter sends, while Shift+Enter and composition Enter do not submit", async
 
 test("recovering a connection retains a failed queued message until an explicit retry", async (t) => {
   let ctx;
+  let attempts = 0;
   ctx = await setup(t, {
     onSend: (_text, window) => {
-      ctx.update({ error: "Connection lost. Please retry." });
-      throw new window.Error("Connection lost. Please retry.");
+      if (++attempts === 1) {
+        ctx.update({ error: "Connection lost. Please retry." });
+        throw new window.Error("Connection lost. Please retry.");
+      }
     },
   });
   await ctx.type("Keep this draft");
   ctx.container.querySelector('.roman-composer button[type="submit"]').click();
   await until(
-    () => ctx.container.querySelector(".roman-chat-retry"),
-    "Connection retry was not offered",
+    () => ctx.container.querySelector(".roman-queued-message [role=alert]"),
+    "Failed message was not retained",
   );
-  ctx.container.querySelector(".roman-chat-retry").click();
-  await until(
-    () => !ctx.container.querySelector(".roman-chat-retry"),
-    "Connection error did not clear",
-  );
+  assert.equal(ctx.container.querySelectorAll('[role="alert"]').length, 1);
+  assert.equal(ctx.container.querySelector(".roman-chat-retry"), null);
+  ctx.update({ error: null });
+  await delay(0);
   assert.deepEqual(ctx.calls, ["Keep this draft"]);
   assert.equal(ctx.input().value, "");
   assert.match(
@@ -1209,6 +1220,29 @@ test("recovering a connection retains a failed queued message until an explicit 
     /Keep this draft/,
   );
   assert.ok(ctx.container.querySelector(".roman-queued-message [role=alert]"));
+  ctx.container.querySelector(".roman-queued-message button").click();
+  await until(
+    () => !ctx.container.querySelector(".roman-queued-message"),
+    "Explicit retry did not send the retained message",
+  );
+  assert.deepEqual(ctx.calls, ["Keep this draft", "Keep this draft"]);
+  assert.equal(ctx.container.querySelector('[role="alert"]'), null);
+});
+
+test("a standalone connection failure keeps one retry action and the unsent draft", async (t) => {
+  const ctx = await setup(t, {
+    state: { error: "Roman could not connect. Please try again." },
+  });
+  assert.equal(ctx.container.querySelectorAll('[role="alert"]').length, 1);
+  assert.ok(ctx.container.querySelector(".roman-chat-retry"));
+  await ctx.type("Keep this draft");
+  ctx.container.querySelector(".roman-chat-retry").click();
+  await until(
+    () => !ctx.container.querySelector('[role="alert"]'),
+    "Connection error did not clear",
+  );
+  assert.deepEqual(ctx.calls, []);
+  assert.equal(ctx.input().value, "Keep this draft");
 });
 
 test("restoration disables the composer and backend work allows queuing without inventing a new session", async (t) => {
@@ -2537,6 +2571,55 @@ test("desktop and mobile End Chat cancellation preserves the current draft or ac
   }
 });
 
+test("an unavailable composer offers one pending-safe connection retry without sending its draft", async (t) => {
+  let finish;
+  const checking = new Promise((resolve) => { finish = resolve; });
+  const ctx = await setup(t, { onRetryAvailability: () => checking });
+  await ctx.type("Keep my measurements");
+  ctx.update({ availability: "suspended", availabilityChecked: true });
+  await until(() => !!ctx.container.querySelector(".roman-unavailable-retry button"), "Unavailable retry did not appear");
+  const retry = ctx.container.querySelector(".roman-unavailable-retry button");
+  assert.equal(retry.textContent, "Retry connection");
+  retry.click();
+  retry.click();
+  await until(() => retry.disabled, "Retry did not show pending state");
+  assert.equal(retry.textContent, "Checking connection…");
+  assert.deepEqual(ctx.retryAvailabilityCalls, ["retry"]);
+  assert.deepEqual(ctx.calls, []);
+  finish();
+  await until(() => !retry.disabled, "An unsuccessful retry did not unlock the retry action");
+  assert.equal(ctx.input(), null);
+  assert.equal(ctx.container.querySelectorAll(".roman-unavailable-retry button").length, 1);
+  ctx.update({ availability: "degraded" });
+  await until(() => !!ctx.input(), "Confirmed recovery did not restore the composer");
+  assert.equal(ctx.input().value, "Keep my measurements");
+  assert.equal(ctx.container.querySelector(".roman-unavailable-retry"), null);
+  assert.deepEqual(ctx.calls, []);
+});
+
+test("connection recovery keeps a failed queued message for its own explicit retry", async (t) => {
+  let ctx;
+  ctx = await setup(t, {
+    onSend: (_text, window) => {
+      ctx.update({ error: "Roman could not connect. Please try again." });
+      throw new window.Error("Roman could not connect. Please try again.");
+    },
+    onRetryAvailability: () => ctx.update({ availability: "degraded", error: null }),
+  });
+  await ctx.type("Help me measure");
+  ctx.container.querySelector('.roman-composer button[type="submit"]').click();
+  await until(() => ctx.container.querySelector(".roman-queued-message [role=alert]"), "Failed message was not retained");
+  await ctx.type("A newer draft");
+  ctx.update({ availability: "suspended", availabilityChecked: true });
+  await until(() => !!ctx.container.querySelector(".roman-unavailable-retry button"), "Unavailable retry did not appear");
+  ctx.container.querySelector(".roman-unavailable-retry button").click();
+  await until(() => !!ctx.input(), "Fallback recovery did not unlock input");
+  assert.equal(ctx.input().value, "A newer draft");
+  assert.match(ctx.container.querySelector(".roman-queued-message").textContent, /Help me measure/);
+  assert.deepEqual(ctx.calls, ["Help me measure"]);
+  assert.deepEqual(ctx.retryAvailabilityCalls, ["retry"]);
+});
+
 test("a suspended pending turn still allows End Chat while input stays unavailable", async (t) => {
   const ctx = await setup(t, {
     state: {
@@ -3148,7 +3231,7 @@ test("an explicit denied-microphone attempt opens the branded dialog and only a 
   assert.deepEqual(ctx.calls, []);
 });
 
-test("a denied microphone snapshot from autostart quietly restores text without opening a popup", async (t) => {
+test("a background microphone denial restores text without opening a popup", async (t) => {
   const ctx = await setup(t, {
     state: { voice: { status: "starting", muted: false, error: null } },
   });
@@ -3161,7 +3244,7 @@ test("a denied microphone snapshot from autostart quietly restores text without 
       errorCode: "microphone_denied",
     },
   });
-  await until(() => ctx.input(), "Autostart denial did not restore text");
+  await until(() => ctx.input(), "Background microphone denial did not restore text");
   assert.equal(ctx.container.querySelector("dialog"), null);
   assert.equal(
     ctx.container.querySelector(".roman-composer [role=alert]"),
@@ -3174,7 +3257,7 @@ test("a denied microphone snapshot from autostart quietly restores text without 
   ctx.container.querySelector('button[type="submit"]').click();
   await until(
     () => ctx.calls.length === 1,
-    "Text did not work after denied autostart",
+    "Text did not work after background microphone denial",
   );
   assert.deepEqual(ctx.calls, ["Help me measure"]);
   assert.deepEqual(ctx.startVoiceCalls, []);

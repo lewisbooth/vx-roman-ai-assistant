@@ -15,15 +15,42 @@ function wire(body) {
 }
 
 const bundle = await build({
-  entryPoints: ["frontend/src/main.tsx"],
+  stdin: {
+    contents: `
+      import { options } from "preact";
+      // Keep renderer scheduling real while the fixture controls loader deadlines.
+      options.requestAnimationFrame = (callback) => setTimeout(callback);
+      export { mountAssistant } from "./frontend/src/main.tsx";
+    `,
+    resolveDir: process.cwd(),
+    loader: "ts",
+  },
   bundle: true,
   write: false,
   format: "iife",
   globalName: "RomanAssistant",
   platform: "browser",
   jsx: "automatic",
+  jsxImportSource: "preact",
+  alias: {
+    "react": "preact/compat",
+    "react-dom": "preact/compat",
+    "react-dom/client": "preact/compat/client",
+    "react/jsx-runtime": "preact/jsx-runtime",
+    "react/jsx-dev-runtime": "preact/jsx-dev-runtime",
+  },
   define: { "process.env.NODE_ENV": '"production"' },
   loader: { ".svg": "dataurl", ".css": "text", ".woff2": "dataurl" },
+  plugins: [{
+    name: "runtime-stylesheet-url",
+    setup(builder) {
+      builder.onResolve({ filter: /\.css\?url$/ }, () => ({ path: "roman-assistant.css", namespace: "stylesheet-url" }));
+      builder.onLoad({ filter: /.*/, namespace: "stylesheet-url" }, () => ({
+        contents: 'export default "https://cdn.example/roman-assistant.css";',
+        loader: "js",
+      }));
+    },
+  }],
 });
 
 async function until(condition, message) {
@@ -34,7 +61,7 @@ async function until(condition, message) {
   assert.fail(message);
 }
 
-function setup(t, initialTime = 0) {
+function setup(t, initialTime = 0, { loadStylesheet = true } = {}) {
   const dom = new JSDOM(
     `<!doctype html><html data-roman-preview="true"><head><title>Store</title></head>
     <body><app-provider><main id="main">Store content</main></app-provider>
@@ -63,10 +90,19 @@ function setup(t, initialTime = 0) {
   let now = initialTime;
   let nextTimer = 900000;
   const timers = new Map();
+  const stylesheetTimers = new Map();
   const setTimeout = window.setTimeout.bind(window);
   const clearTimeout = window.clearTimeout.bind(window);
   window.performance.now = () => now;
   window.setTimeout = (callback, milliseconds, ...args) => {
+    if (milliseconds === 15000) {
+      const id = nextTimer++;
+      stylesheetTimers.set(id, {
+        at: now + milliseconds,
+        callback: () => callback(...args),
+      });
+      return id;
+    }
     // Leave React's immediate scheduling real while controlling loading delays.
     if (!(milliseconds > 0 && milliseconds <= 1000))
       return setTimeout(callback, milliseconds, ...args);
@@ -78,7 +114,7 @@ function setup(t, initialTime = 0) {
     return id;
   };
   window.clearTimeout = (id) => {
-    if (!timers.delete(id)) clearTimeout(id);
+    if (!timers.delete(id) && !stylesheetTimers.delete(id)) clearTimeout(id);
   };
   window.eval(
     `${bundle.outputFiles[0].text}\nwindow.RomanAssistant = RomanAssistant;`,
@@ -105,6 +141,10 @@ function setup(t, initialTime = 0) {
     container,
     themes,
     timers,
+    stylesheetTimers,
+    stylesheet() {
+      return host.shadowRoot.querySelector('link[rel="stylesheet"]');
+    },
     mount(loadingStartedAt) {
       installGalleryFixture(window);
       const runtime = window.RomanAssistant.mountAssistant(
@@ -127,14 +167,17 @@ function setup(t, initialTime = 0) {
         },
       );
       runtimes.push(runtime);
+      if (loadStylesheet) this.stylesheet().dispatchEvent(new window.Event("load"));
       return result;
     },
     async advance(milliseconds) {
       now += milliseconds;
-      for (const [id, timer] of [...timers]) {
-        if (timer.at > now) continue;
-        timers.delete(id);
-        timer.callback();
+      for (const pending of [timers, stylesheetTimers]) {
+        for (const [id, timer] of [...pending]) {
+          if (timer.at > now) continue;
+          pending.delete(id);
+          timer.callback();
+        }
       }
       await delay(0);
     },
@@ -241,7 +284,7 @@ test("closing text-only Roman preserves its saved conversation and pending store
   assert.match(ctx.container.textContent, /Your saved conversation/);
 });
 
-test("opening requests microphone once and permission denial leaves text usable without creating a session", async (t) => {
+test("only Start voice requests microphone permission and denial leaves text usable without creating a session", async (t) => {
   const ctx = setup(t, 1000);
   let permissionRequests = 0;
   let requests = 0;
@@ -277,16 +320,23 @@ test("opening requests microphone once and permission denial leaves text usable 
     "closed restoration must not request microphone",
   );
   mounted.runtime.setOpen(true);
-  await delay(0);
+  await until(
+    () => !!ctx.container.querySelector('[aria-label="Start voice"]'),
+    "manual voice control did not appear",
+  );
+  assert.equal(permissionRequests, 0, "opening requested microphone permission");
+  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
+  ctx.container.querySelector('[aria-label="Start voice"]').click();
   await until(
     () =>
       permissionRequests === 1 &&
       ctx.container.querySelector(".roman-composer textarea") &&
-      ctx.container.querySelector('[aria-label="Start voice"]'),
+      ctx.container.querySelector(".roman-dialog"),
     "permission denial did not restore text mode",
   );
-  assert.equal(ctx.container.querySelector(".roman-dialog"), null);
-  assert.doesNotMatch(ctx.container.textContent, /Allow microphone access/);
+  assert.match(ctx.container.querySelector(".roman-dialog").textContent, /Allow microphone access/);
+  ctx.container.querySelector(".roman-dialog button").click();
+  await until(() => !ctx.container.querySelector(".roman-dialog"), "Permission dialog did not close");
   const textarea = ctx.container.querySelector(".roman-composer textarea");
   assert.ok(textarea);
   assert.equal(textarea.disabled, false);
@@ -375,6 +425,43 @@ function voiceBackend(ctx) {
   return { access, stops, calls };
 }
 
+test("opening, reopening and restoring Roman stays in text until Start voice is clicked", async (t) => {
+  const ctx = setup(t, 1500);
+  const media = voiceMedia(ctx.window);
+  const backend = voiceBackend(ctx);
+  const mounted = ctx.mount(0);
+  mounted.runtime.setOpen(true);
+  await until(
+    () => !!ctx.container.querySelector('[aria-label="Start voice"]'),
+    "manual voice control did not appear",
+  );
+  assert.equal(media.calls.microphone, 0);
+  assert.deepEqual(backend.calls, [], "opening created a conversation before user input");
+
+  mounted.runtime.setOpen(false);
+  mounted.runtime.setOpen(true);
+  await delay(0);
+  assert.equal(media.calls.microphone, 0, "reopening requested microphone access");
+  assert.deepEqual(backend.calls, []);
+
+  ctx.window.sessionStorage.setItem("roman:conversation", JSON.stringify(backend.access));
+  mounted.runtime.dispose();
+  await delay(0);
+  const restored = ctx.mount(0);
+  restored.runtime.setOpen(true);
+  await until(
+    () => restored.state === "ready" && ctx.container.textContent.includes("Your saved conversation"),
+    "saved conversation did not restore",
+  );
+  assert.equal(media.calls.microphone, 0, "restoration requested microphone access");
+  assert.equal(backend.calls.some((url) => url.endsWith("/voice")), false);
+
+  ctx.container.querySelector('[aria-label="Start voice"]').click();
+  await until(() => !!media.peers[0]?.remoteDescription, "manual voice offer was not accepted");
+  assert.equal(media.calls.microphone, 1);
+  assert.equal(backend.calls.filter((url) => url.endsWith("/voice")).length, 1);
+});
+
 for (const stopFails of [false, true]) {
   test(`closing active voice stops media immediately and preserves chat${stopFails ? " even when finalization fails" : ""}`, async (t) => {
     const ctx = setup(t, 1000);
@@ -382,11 +469,13 @@ for (const stopFails of [false, true]) {
     const backend = voiceBackend(ctx);
     const mounted = ctx.mount(0);
     mounted.runtime.setOpen(false);
-    assert.equal(
-      ctx.window.sessionStorage.getItem("roman:voice-autostart"),
-      null,
-    );
     mounted.runtime.setOpen(true);
+    await until(
+      () => !!ctx.container.querySelector('[aria-label="Start voice"]'),
+      "manual voice control did not appear",
+    );
+    assert.equal(media.calls.microphone, 0);
+    ctx.container.querySelector('[aria-label="Start voice"]').click();
     await until(
       () => !!media.peers[0]?.remoteDescription,
       "voice offer was not accepted",
@@ -404,7 +493,7 @@ for (const stopFails of [false, true]) {
     assert.ok(media.calls.pause > 0);
     assert.equal(backend.stops.length, 1);
     assert.equal(
-      ctx.container.getRootNode().children.length,
+      [...ctx.container.getRootNode().children].filter((child) => child !== ctx.stylesheet()).length,
       1,
       "closed UI created a separate dock",
     );
@@ -455,8 +544,14 @@ test("closing during microphone permission prevents a late grant from starting v
   const mounted = ctx.mount(0);
   mounted.runtime.setOpen(true);
   await until(
+    () => !!ctx.container.querySelector('[aria-label="Start voice"]'),
+    "manual voice control did not appear",
+  );
+  assert.equal(media.calls.microphone, 0);
+  ctx.container.querySelector('[aria-label="Start voice"]').click();
+  await until(
     () => media.calls.microphone === 1,
-    "voice did not begin after availability was confirmed",
+    "voice did not begin after Start voice",
   );
   mounted.runtime.setOpen(false);
   grant();
@@ -469,6 +564,82 @@ test("closing during microphone permission prevents a late grant from starting v
   assert.equal(media.calls.microphone, 1);
   assert.equal(media.peers.length, 0);
   assert.deepEqual(backend.calls, []);
+});
+
+test("readiness waits for the runtime stylesheet inside the Shadow DOM", async (t) => {
+  const ctx = setup(t, 1600, { loadStylesheet: false });
+  const mounted = ctx.mount(0);
+  const stylesheet = ctx.stylesheet();
+  assert.equal(stylesheet.href, "https://cdn.example/roman-assistant.css");
+  assert.equal(stylesheet.parentNode, ctx.container.getRootNode());
+  assert.equal(ctx.container.contains(stylesheet), false);
+  assert.equal(ctx.window.document.querySelector('link[rel="stylesheet"]'), null);
+  await until(() => ctx.themes.length > 0, "the app did not commit while its stylesheet loaded");
+  assert.equal(mounted.state, "pending", "unstyled content must not become ready");
+  stylesheet.dispatchEvent(new ctx.window.Event("load"));
+  await until(() => mounted.state === "ready", "the loaded stylesheet did not release readiness");
+  assert.equal(ctx.stylesheetTimers.size, 0);
+  assert.equal(stylesheet.onload, null);
+  assert.equal(stylesheet.onerror, null);
+  mounted.runtime.setOpen(false);
+  mounted.runtime.setOpen(true);
+  assert.equal(ctx.stylesheet(), stylesheet, "toggles must retain the loaded stylesheet");
+});
+
+test("stylesheet errors reject readiness and retry owns a fresh stylesheet", async (t) => {
+  const ctx = setup(t, 1600, { loadStylesheet: false });
+  const first = ctx.mount(0);
+  const stylesheet = ctx.stylesheet();
+  stylesheet.dispatchEvent(new ctx.window.Event("error"));
+  await until(() => first.state === "rejected", "stylesheet failure did not reject readiness");
+  assert.match(first.error.message, /could not load its styles/);
+  assert.equal(ctx.stylesheetTimers.size, 0);
+  assert.equal(stylesheet.onload, null);
+  assert.equal(stylesheet.onerror, null);
+  first.runtime.dispose();
+  assert.equal(stylesheet.isConnected, false);
+  const second = ctx.mount(1600);
+  const replacement = ctx.stylesheet();
+  assert.notEqual(replacement, stylesheet);
+  assert.equal(ctx.container.getRootNode().querySelectorAll('link[rel="stylesheet"]').length, 1);
+  replacement.dispatchEvent(new ctx.window.Event("load"));
+  await until(() => second.state === "ready", "retry did not become ready after stylesheet load");
+});
+
+test("stylesheet loading has a bounded timeout and ignores late load callbacks", async (t) => {
+  const ctx = setup(t, 1600, { loadStylesheet: false });
+  const mounted = ctx.mount(0);
+  const stylesheet = ctx.stylesheet();
+  const lateLoad = stylesheet.onload;
+  await until(() => ctx.themes.length > 0, "the app did not commit before its stylesheet timeout");
+  await ctx.advance(15000);
+  assert.equal(mounted.state, "rejected");
+  assert.match(mounted.error.message, /styles timed out/);
+  assert.equal(ctx.stylesheetTimers.size, 0);
+  assert.equal(stylesheet.onload, null);
+  assert.equal(stylesheet.onerror, null);
+  lateLoad();
+  await delay(0);
+  assert.equal(mounted.state, "rejected");
+  mounted.runtime.dispose();
+  assert.equal(stylesheet.isConnected, false);
+});
+
+test("disposal removes a pending stylesheet and cancels its callbacks", async (t) => {
+  const ctx = setup(t, 1600, { loadStylesheet: false });
+  const mounted = ctx.mount(0);
+  const stylesheet = ctx.stylesheet();
+  const lateLoad = stylesheet.onload;
+  mounted.runtime.dispose();
+  await until(() => mounted.state === "rejected", "disposal did not reject pending readiness");
+  assert.equal(mounted.error.name, "AbortError");
+  assert.equal(stylesheet.isConnected, false);
+  assert.equal(ctx.stylesheetTimers.size, 0);
+  assert.equal(stylesheet.onload, null);
+  assert.equal(stylesheet.onerror, null);
+  lateLoad();
+  await delay(0);
+  assert.equal(mounted.state, "rejected");
 });
 
 test("a fast cached runtime waits until one second from loading start and React commit", async (t) => {
@@ -601,7 +772,6 @@ for (const failure of ["connection loss", "suspended service"]) {
 
 test("Cart and Gallery stay light while the empty Chat retains its welcome palette", async (t) => {
   const ctx = setup(t, 1500);
-  ctx.window.sessionStorage.setItem("roman:voice-autostart", "off");
   const canvas = ctx.window.document.documentElement;
   canvas.style.backgroundColor = "navy";
   ctx.window.fetch = async () => ({
@@ -642,7 +812,6 @@ test("End chat restores the welcome canvas only after the server confirms cleari
   canvas.style.setProperty("background-color", "navy", "important");
   canvas.style.backgroundImage = 'url("/original-theme.png")';
   const originalBackground = canvas.style.cssText;
-  ctx.window.sessionStorage.setItem("roman:voice-autostart", "off");
   const access = {
     conversationId: "11111111-1111-4111-8111-111111111111",
     token: "a".repeat(43),
@@ -669,6 +838,7 @@ test("End chat restores the welcome canvas only after the server confirms cleari
     const path = new URL(String(url), ctx.window.location.href).pathname;
     if (path === "/apps/roman/availability") return response({ status: "available" });
     if (path === "/apps/roman/bootstrap") return response({ ...access, conversation });
+    if (path.endsWith("/journey")) return response(conversation);
     if (path.endsWith("/end")) return new Promise((resolve) => { confirmEnd = () => resolve(response({ ...conversation, status: "ended", revision: 1 })); });
     if (path === `/api/conversations/${access.conversationId}`)
       return response({ ...conversation, streamRevision: 0 });
@@ -676,7 +846,8 @@ test("End chat restores the welcome canvas only after the server confirms cleari
     throw new Error("Unexpected runtime fixture request: " + path);
   };
   const mounted = ctx.mount(0);
-  await until(() => mounted.state === "ready", "saved conversation did not restore");
+  await until(() => mounted.state !== "pending", "saved conversation did not settle");
+  assert.equal(mounted.state, "ready", mounted.error?.stack);
   mounted.runtime.setOpen(true);
   assert.equal(canvas.style.backgroundColor, "rgb(247, 245, 239)");
   ctx.container.querySelector(".roman-end-chat").click();

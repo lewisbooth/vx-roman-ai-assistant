@@ -1244,6 +1244,14 @@
     @apply flex h-[44px] w-full items-center justify-center px-[12px] text-center text-[14px] leading-[20px] text-[#65625e];
   }
 
+  .roman-unavailable-retry {
+    @apply mb-[10px] flex justify-center;
+  }
+
+  .roman-unavailable-retry button {
+    @apply min-h-[44px] cursor-pointer rounded-full border border-[#4e0e0e] bg-[#f7f5ef] px-[18px] text-[14px] text-[#4e0e0e] disabled:cursor-default disabled:opacity-50;
+  }
+
   .roman-composer-field {
     @apply relative min-w-0 flex-1;
   }

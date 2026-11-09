@@ -42,16 +42,16 @@ const bundle = await build({
     {
       name: "count-markdown-work",
       setup(build) {
-        build.onResolve({ filter: /^react-markdown$/ }, (args) =>
+        build.onResolve({ filter: /^mdast-util-from-markdown$/ }, (args) =>
           args.namespace === "counter"
             ? undefined
             : { path: args.path, namespace: "counter" },
         );
         build.onLoad({ filter: /.*/, namespace: "counter" }, () => ({
-          contents: `import Markdown from 'react-markdown';
-          export default function CountedMarkdown(props) {
+          contents: `import { fromMarkdown as parse } from 'mdast-util-from-markdown';
+          export function fromMarkdown(...args) {
             window.romanMarkdownRenders = (window.romanMarkdownRenders || 0) + 1;
-            return Markdown(props);
+            return parse(...args);
           }`,
           loader: "jsx",
           resolveDir: cwd(),

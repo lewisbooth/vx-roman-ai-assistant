@@ -10,6 +10,7 @@ type ComposerProps = {
   queuedMessages?: ReactNode;
   error: string | null;
   onClearError?: () => void;
+  onRetryAvailability?: () => Promise<void>;
   onSend: (message: string) => Promise<void>;
   onStartVoice?: () => Promise<void>;
   onUpload?: () => void;
@@ -23,6 +24,7 @@ export function Composer({
   queuedMessages,
   error,
   onClearError,
+  onRetryAvailability,
   onSend,
   onStartVoice,
   onUpload,
@@ -31,6 +33,8 @@ export function Composer({
   const [message, setMessage] = useState("");
   const [sendError, setSendError] = useState<string>();
   const [sending, setSending] = useState(false);
+  const [checkingConnection, setCheckingConnection] = useState(false);
+  const retryingConnection = useRef(false);
   const submitting = useRef(false);
   const draftRevision = useRef(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -38,6 +42,18 @@ export function Composer({
   const hasMessage = !!message.trim();
   const displayedError = unavailable ? null : error || sendError;
   const sendLabel = busy ? "Queue message" : "Send";
+
+  async function retryConnection() {
+    if (!onRetryAvailability || retryingConnection.current) return;
+    retryingConnection.current = true;
+    setCheckingConnection(true);
+    try {
+      await onRetryAvailability();
+    } finally {
+      retryingConnection.current = false;
+      setCheckingConnection(false);
+    }
+  }
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -70,6 +86,17 @@ export function Composer({
   return (
     <div className="roman-composer">
       {queuedMessages}
+      {unavailable && onRetryAvailability && (
+        <div className="roman-unavailable-retry">
+          <button
+            type="button"
+            disabled={checkingConnection}
+            onClick={() => void retryConnection()}
+          >
+            {checkingConnection ? "Checking connection…" : "Retry connection"}
+          </button>
+        </div>
+      )}
       {displayedError && (
         <p className="roman-chat-error" role="alert">
           {displayedError}

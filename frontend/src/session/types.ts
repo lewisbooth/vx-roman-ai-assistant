@@ -40,6 +40,8 @@ export interface ConversationClient {
   subscribe(listener: () => void): () => void;
   /** Polls public service availability while the assistant is visible. */
   setOpen(open: boolean): void;
+  /** Immediately rechecks service availability; never resubmits customer input. */
+  retryAvailability(): Promise<void>;
   /** Prepends the previous transcript page without changing current conversation state. */
   loadOlderHistory(): Promise<void>;
   /** Uses connected/starting voice when present, otherwise text; resolves on acceptance.

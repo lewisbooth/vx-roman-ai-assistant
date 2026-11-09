@@ -108,6 +108,34 @@ test("Sol uses dated rates, returned tier and long context without repricing his
   assert.equal(estimateModelUsage({ ...sol, serviceTier: "unknown" }).reason, "missing_rate");
 });
 
+test("GPT-6.1 Terra uses its dated rates and the returned tier with 30-minute cache writes", () => {
+  const terra = usage({
+    model: "gpt-6.1-terra",
+    createdAt: "2026-10-28T00:00:00.000Z",
+  });
+  const result = estimateModelUsage(terra);
+  // 500 ordinary input, 400 cache reads, 100 cache writes, 200 output.
+  assert.equal(result.rateId, "gpt-6.1-terra-fast-2026-10-28");
+  close(result.usd, 0.00329);
+  assert.deepEqual(estimateModelUsage({ ...terra, serviceTier: "fast" }), result);
+  const standardResult = estimateModelUsage({ ...terra, serviceTier: "default" });
+  assert.equal(standardResult.rateId, "gpt-6.1-terra-standard-2026-10-28");
+  close(standardResult.usd, 0.001645);
+  close(estimateModelUsage({ ...terra, inputTokens: 272000 }).usd, 0.54529);
+  close(estimateModelUsage({ ...terra, inputTokens: 272001 }).usd, 1.089584);
+  close(estimateModelUsage({ ...terra, inputTokens: 272001, serviceTier: "default" }).usd, 0.544792);
+  for (const extra of [
+    { createdAt: "2026-10-27T23:59:59.999Z" },
+    { serviceTier: "unknown" },
+    { serviceTier: "ultrafast" },
+  ])
+    assert.equal(estimateModelUsage({ ...terra, ...extra }).reason, "missing_rate");
+  assert.equal(
+    estimateModelUsage({ ...terra, cacheWriteInputTokens: null }).reason,
+    "missing_usage",
+  );
+});
+
 test("Sol Ultrafast has separate dated rates without changing Fast or Standard history", () => {
   const sol = usage({
     model: "gpt-6.1-sol",

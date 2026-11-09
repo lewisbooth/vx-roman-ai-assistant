@@ -241,6 +241,35 @@ test("a suspended service pauses a restored chat and resumes it after availabili
   assert.equal(ctx.window.sessionStorage.getItem("roman:conversation") !== null, true);
 });
 
+test("manual availability retry shares its request, retains suspension on failure and never sends customer input", async (t) => {
+  const ctx = setup(t);
+  ctx.client.setOpen(true);
+  const initial = ctx.client.retryAvailability();
+  assert.equal(ctx.availabilityCalls.length, 1, "Retry must join the initial in-flight check");
+  ctx.respondAvailability(0, { status: "suspended" });
+  await initial;
+  assert.equal(ctx.client.getSnapshot().availability, "suspended");
+  const first = ctx.client.retryAvailability();
+  const concurrent = ctx.client.retryAvailability();
+  assert.equal(first, concurrent);
+  assert.equal(ctx.availabilityCalls.length, 2);
+  ctx.availabilityCalls[1].reject(new Error("Network unavailable"));
+  await first;
+  assert.equal(ctx.client.getSnapshot().availability, "suspended");
+  assert.equal(ctx.client.getSnapshot().error, null);
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.timers.size, 1);
+  assert.equal([...ctx.timers.values()][0].ms, 3_000);
+  const recovered = ctx.client.retryAvailability();
+  assert.equal(ctx.availabilityCalls.length, 3);
+  ctx.respondAvailability(2, { status: "degraded" });
+  await recovered;
+  assert.equal(ctx.client.getSnapshot().availability, "degraded");
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.window.sessionStorage.getItem("roman:conversation"), null);
+  assert.equal([...ctx.timers.values()][0].ms, 10_000);
+});
+
 test("SERVICE_UNAVAILABLE from a chat request suspends input before the next status poll", async (t) => {
   const ctx = setup(t);
   const sending = ctx.client.sendMessage("Hello");
@@ -275,7 +304,7 @@ test("SERVICE_UNAVAILABLE from a chat request suspends input before the next sta
   );
 });
 
-test("an unconfirmed availability check keeps automatic voice startup gated and retries", async (t) => {
+test("an unconfirmed availability check retains its unknown status and retries", async (t) => {
   const ctx = setup(t);
   ctx.client.setOpen(true);
   ctx.availabilityCalls[0].reject(new Error("Storefront connection lost"));
@@ -752,6 +781,44 @@ test("an invalid supplied message identity is rejected before changing state or 
   assert.equal(ctx.calls.length, 0);
   assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
   assert.equal(ctx.client.getSnapshot().pending, false);
+});
+
+test("connection failures use customer-facing feedback and preserve the original retry identity", async (t) => {
+  for (const failure of ["offline", "HTML error", "HTML success", "unauthorized", "forbidden", "gateway"])
+    await t.test(failure, async (t) => {
+      const ctx = setup(t);
+      const sending = ctx.client.sendMessage("Hello");
+      const requestId = ctx.client.getSnapshot().optimisticMessage.requestId;
+      const rejected = assert.rejects(sending, {
+        message: "Roman could not connect. Please try again.",
+      });
+      if (failure === "offline") ctx.calls[0].reject(new TypeError("Offline"));
+      else if (failure.startsWith("HTML"))
+        ctx.calls[0].resolve({
+          ok: failure === "HTML success",
+          status: failure === "HTML success" ? 200 : 502,
+          headers: { get: () => "text/html" },
+          json: async () => { throw new Error("HTML must not be parsed as JSON"); },
+        });
+      else ctx.respond(0, { error: { message: failure === "gateway"
+        ? "Internal upstream connection detail"
+        : "Open Roman in Shopify admin to approve its permissions." } },
+        failure === "unauthorized" ? 401 : failure === "forbidden" ? 403 : 502);
+      await rejected;
+      assert.equal(ctx.client.getSnapshot().error, "Roman could not connect. Please try again.");
+      assert.equal(ctx.client.getSnapshot().pending, false);
+      assert.equal(ctx.client.getSnapshot().optimisticMessage, null);
+      assert.equal(ctx.client.getSnapshot().conversation, null);
+
+      const retry = ctx.client.sendMessage("Hello");
+      assert.equal(ctx.client.getSnapshot().optimisticMessage.requestId, requestId);
+      ctx.respond(1, { ...access, conversation: empty });
+      await until(() => ctx.calls.length === 3, "Retry did not reach the message endpoint");
+      assert.equal(ctx.calls[2].body.requestId, requestId);
+      ctx.respond(2, pending);
+      await retry;
+      assert.equal(ctx.client.getSnapshot().error, null);
+    });
 });
 
 test("bootstrap failure removes unconfirmed local text and retry retains the original submission identity", async (t) => {
@@ -2486,7 +2553,7 @@ test("End keeps the current chat on failure and clears it only after server ackn
   const ctx = setup(t, { saved: access });
   await resume(ctx);
   const ending = ctx.client.end();
-  const failed = assert.rejects(ending, /Temporary failure/);
+  const failed = assert.rejects(ending, /Roman could not connect\. Please try again\./);
   assert.equal(ctx.client.getSnapshot().pending, true);
   assert.equal(ctx.client.getSnapshot().conversation.id, conversationId);
   assert.ok(ctx.window.sessionStorage.getItem("roman:conversation"));
@@ -2643,43 +2710,6 @@ async function activeVoice(ctx, conversation = empty) {
   await delay(0);
   return voice;
 }
-
-test("explicit End voice and End chat preserve text mode while manual voice start clears that tab preference", async (t) => {
-  const key = "roman:voice-autostart";
-  const ctx = setup(t, { mediaOptions: {} });
-  ctx.window.sessionStorage.setItem(key, "off");
-  const voice = await activeVoice(ctx);
-  assert.equal(ctx.window.sessionStorage.getItem(key), null);
-  const stopping = ctx.client.stopVoice();
-  assert.equal(ctx.window.sessionStorage.getItem(key), "off");
-  ctx.respond(3, {
-    ...empty,
-    revision: 2,
-    voice: { ...voice, status: "closed" },
-  });
-  await stopping;
-  assert.equal(ctx.window.sessionStorage.getItem(key), "off");
-  const ending = ctx.client.end();
-  ctx.respond(4, { ...empty, status: "ended", revision: 3 });
-  await ending;
-  assert.equal(ctx.window.sessionStorage.getItem(key), "off");
-  const another = setup(t, {
-    mediaOptions: {},
-    url: "https://unsupported.example/",
-  });
-  another.window.sessionStorage.setItem(key, "off");
-  await assert.rejects(
-    another.client.startVoice(),
-    /installed development storefronts/,
-  );
-  assert.equal(another.window.sessionStorage.getItem(key), null);
-  another.client.dispose();
-  assert.equal(
-    another.window.sessionStorage.getItem(key),
-    null,
-    "internal disposal is not a customer opt-out",
-  );
-});
 
 test("End chat followed by manual voice creates a fresh conversation without old credentials or a queued answer", async (t) => {
   const ctx = setup(t, { mediaOptions: {} });

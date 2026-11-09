@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { cwd } from "node:process";
 import { build } from "esbuild";
 
 const bundle = await build({
-  entryPoints: ["shared/cart-tools.ts"],
+  stdin: {
+    contents: `
+      export * from "./shared/cart-tools";
+      export { cartToolDefinitions } from "./admin/conversations/storefront-turn.server";
+    `,
+    resolveDir: cwd(),
+  },
   bundle: true,
   write: false,
   platform: "node",

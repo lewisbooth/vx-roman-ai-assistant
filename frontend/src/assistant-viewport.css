@@ -1,3 +1,6 @@
+/* One runtime stylesheet, in the same order as the former inline styles. */
+@import "./styles.css";
+
 /* The opaque shell always covers the layout viewport. Dialogs use the visible
    viewport; mobile typing keeps the page's geometry and moves only its bar. */
 .roman-panel {

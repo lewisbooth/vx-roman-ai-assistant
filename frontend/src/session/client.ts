@@ -72,7 +72,6 @@ import {
   createVoiceConnection,
   MicrophonePermissionError,
 } from "./voice-connection";
-import { setVoiceAutostartPreference } from "./voice-preference";
 import {
   DEFAULT_LIVE_VOICE,
   canRecoverVoice,
@@ -90,6 +89,7 @@ import {
 const STORAGE_KEY = CONVERSATION_STORAGE_KEY;
 const VOICE_STORAGE_KEY = "roman:voice";
 const UNAVAILABLE_MESSAGE = "Roman is currently unavailable";
+const CONNECTION_ERROR = "Roman could not connect. Please try again.";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const idleVoice: VoiceClientState = {
   status: "idle",
@@ -506,7 +506,7 @@ export function createConversationClient(
   let pollTimer: number | undefined;
   let availabilityTimer: number | undefined;
   let availabilityOpen = false;
-  let checkingAvailability = false;
+  let checkingAvailability: Promise<void> | undefined;
   let availabilityFailureVersion = 0;
   let pollFailures = 0;
   let polling = false;
@@ -663,30 +663,34 @@ export function createConversationClient(
     );
   }
 
-  async function checkAvailability() {
-    if (disposed || !availabilityOpen || checkingAvailability) return;
-    checkingAvailability = true;
+  function checkAvailability(): Promise<void> {
+    if (disposed || !availabilityOpen) return Promise.resolve();
+    if (checkingAvailability) return checkingAvailability;
+    window.clearTimeout(availabilityTimer);
     const failureVersion = availabilityFailureVersion;
-    try {
-      const result = await request(
-        new URL("/apps/roman/availability", window.location.origin).href,
-        { method: "GET", mode: "same-origin", credentials: "same-origin" },
-      );
-      if (
-        failureVersion === availabilityFailureVersion &&
-        record(result) &&
-        (result.status === "available" ||
-          result.status === "degraded" ||
-          result.status === "suspended")
-      )
-        setAvailability(result.status);
-    } catch {
-      // Keep the last confirmed status. A browser or proxy error cannot prove
-      // that the global AI service is suspended or recovered.
-    } finally {
-      checkingAvailability = false;
-      scheduleAvailability();
-    }
+    checkingAvailability = (async () => {
+      try {
+        const result = await request(
+          new URL("/apps/roman/availability", window.location.origin).href,
+          { method: "GET", mode: "same-origin", credentials: "same-origin" },
+        );
+        if (
+          failureVersion === availabilityFailureVersion &&
+          record(result) &&
+          (result.status === "available" ||
+            result.status === "degraded" ||
+            result.status === "suspended")
+        )
+          setAvailability(result.status);
+      } catch {
+        // Keep the last confirmed status. A browser or proxy error cannot prove
+        // that the global AI service is suspended or recovered.
+      } finally {
+        checkingAvailability = undefined;
+        scheduleAvailability();
+      }
+    })();
+    return checkingAvailability;
   }
 
   function persist() {
@@ -762,7 +766,7 @@ export function createConversationClient(
       });
       if (!response.headers.get("content-type")?.includes("application/json")) {
         throw new SessionRequestError(
-          "Roman could not connect. Open the app in Shopify admin to approve its connection, then refresh the storefront.",
+          CONNECTION_ERROR,
           response.status,
         );
       }
@@ -777,20 +781,25 @@ export function createConversationClient(
         ) {
           availabilityFailureVersion++;
           setAvailability("suspended");
+          throw new SessionRequestError(UNAVAILABLE_MESSAGE, response.status);
         }
         const error =
-          record(body) &&
-          record(body.error) &&
-          typeof body.error.message === "string"
-            ? body.error.message
-            : "Roman could not complete the request. Please try again.";
+          response.status === 401 ||
+          response.status === 403 ||
+          response.status >= 500
+            ? CONNECTION_ERROR
+            : record(body) &&
+                record(body.error) &&
+                typeof body.error.message === "string"
+              ? body.error.message
+              : "Roman could not complete the request. Please try again.";
         throw new SessionRequestError(error, response.status);
       }
       return body;
     } catch (error) {
       if (error instanceof SessionRequestError) throw error;
       throw new SessionRequestError(
-        "Roman could not connect. Check your connection and try again.",
+        CONNECTION_ERROR,
       );
     }
   }
@@ -2426,7 +2435,6 @@ export function createConversationClient(
       // A refused duplicate start must not unmute the existing microphone.
       if (!voiceConnection && state.voice.status !== "active")
         microphoneMuted = false;
-      setVoiceAutostartPreference(true);
       return startVoice();
     },
     setMicrophoneMuted(muted) {
@@ -2441,12 +2449,10 @@ export function createConversationClient(
     stopVoice() {
       cancelVoiceRecovery();
       microphoneMuted = false;
-      setVoiceAutostartPreference(false);
       return stopVoice();
     },
     async end() {
       cancelVoiceRecovery();
-      setVoiceAutostartPreference(false);
       if (!access || disposed || ending || endingRequested) return;
       if (
         activeToolClaimed ||
@@ -2489,6 +2495,7 @@ export function createConversationClient(
         update({ pending: false });
       }
     },
+    retryAvailability: checkAvailability,
     clearError() {
       pollFailures = 0;
       update({ error: null });

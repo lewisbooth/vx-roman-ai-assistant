@@ -10,11 +10,10 @@ const bundle = await build({
   stdin: { contents: `
     import {StrictMode} from 'react';
     import {createRoot} from 'react-dom/client';
-    import {RouterProvider} from 'react-router/dom';
-    import {createAssistantRouter} from './frontend/src/app';
-    export function mount(target,props){const router=createAssistantRouter(props),root=createRoot(target);
-      root.render(<StrictMode><RouterProvider router={router}/></StrictMode>);
-      const dispose=()=>{root.unmount();router.dispose();}; dispose.navigate=(...args)=>router.navigate(...args); return dispose;}
+    import {AssistantApp} from './frontend/src/app';
+    export function mount(target,props){const root=createRoot(target);let navigate;
+      root.render(<StrictMode><AssistantApp {...props} onNavigate={value=>{navigate=value;}}/></StrictMode>);
+      const dispose=()=>root.unmount(); dispose.navigate=(...args)=>navigate(...args); return dispose;}
   `, loader: "tsx", resolveDir: cwd() },
   bundle: true, write: false, platform: "browser", format: "iife", globalName: "MediaIntegration", jsx: "automatic",
   define: { "process.env.NODE_ENV": '"development"' },

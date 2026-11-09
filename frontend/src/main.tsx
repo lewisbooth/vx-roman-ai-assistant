@@ -1,22 +1,19 @@
 import { StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { RouterProvider } from "react-router/dom";
-import { createAssistantRouter } from "./app";
+import type { NavigateFunction } from "react-router";
+import { AssistantApp } from "./app";
 import { createStorefrontNavigation } from "./navigation/shared";
 import type { AssistantRuntime } from "./runtime";
 import { createAssistantTools } from "./tools";
 import { createConversationClient } from "./session/client";
 import { createStorefrontExecutor } from "./session/storefront-executor";
 import { createJourneyObserver } from "./session/journey";
-import { createVoiceAutostart } from "./session/voice-autostart";
-import { isConversationStorefront } from "../../shared/storefronts";
 import { createComposerFocus } from "./chat/composer-focus";
 import { createAssistantViewport } from "./assistant-viewport";
 import { createStorefrontScroll } from "./storefront-scroll";
 import { createStorefrontCartNotification } from "./storefront-cart-notification";
-import styles from "./styles.css?inline";
 import { currentVisualizationProduct } from "./visualizations/entry";
-import viewportStyles from "./assistant-viewport.css?inline";
+import stylesheetUrl from "./assistant-viewport.css?url";
 
 // Reopening or remounting on this document must not restart the loading delay.
 let firstLoadingDeadline: number | undefined;
@@ -30,6 +27,8 @@ export function mountAssistant(
   const deadline = (firstLoadingDeadline ??= loadingStartedAt + 1000);
   const logoUrl = host.dataset.logoUrl;
   if (!logoUrl) throw new Error("The Roman logo asset is not configured.");
+  const shadow = host.shadowRoot;
+  if (!shadow) throw new Error("The Roman assistant host is not ready.");
 
   let resolveReady!: () => void;
   let rejectReady!: (reason: unknown) => void;
@@ -37,7 +36,7 @@ export function mountAssistant(
     resolveReady = resolve;
     rejectReady = reject;
   });
-  let router: ReturnType<typeof createAssistantRouter> | undefined;
+  let navigateView: NavigateFunction | undefined;
   const storefrontScroll = createStorefrontScroll();
   storefrontScroll.setTheme(
     container.closest("[data-roman-panel]")?.hasAttribute("data-welcome-theme") ?? false,
@@ -49,67 +48,95 @@ export function mountAssistant(
     navigation,
     (name, input, signal) => session.executeMeasurements(name, input, signal),
     async (view) => {
-      if (!router) throw new Error("Roman is still loading. Please try again.");
-      await router.navigate(view === "chat" ? "/" : `/${view}`);
+      if (!navigateView) throw new Error("Roman is still loading. Please try again.");
+      await navigateView(view === "chat" ? "/" : `/${view}`);
     },
   );
   const executor = createStorefrontExecutor(tools);
   const session = createConversationClient(executor);
   const stopJourney = createJourneyObserver(session, navigation);
-  const voiceAutostart = isConversationStorefront(window.location.origin)
-    ? createVoiceAutostart(session)
-    : undefined;
   let root: Root | undefined;
   let disposed = false;
+  let failed = false;
+  let appReady = false;
+  let stylesReady = false;
   let readyTimer: number | undefined;
+  let stylesheetTimer: number | undefined;
   let sidebarOpen = false;
   const composerFocus = createComposerFocus(container);
   const viewport = createAssistantViewport(host);
+  const stylesheet = document.createElement("link");
+  stylesheet.rel = "stylesheet";
+  stylesheet.href = stylesheetUrl;
 
-  function onReady(welcome: boolean) {
-    if (disposed) return;
-    storefrontScroll.setTheme(welcome);
-    onThemeChange(welcome);
-    if (readyTimer !== undefined) return;
+  function finishReady() {
+    if (disposed || failed || !appReady || !stylesReady || readyTimer !== undefined) return;
     const remaining = deadline - window.performance.now();
     if (remaining <= 0) resolveReady();
     else readyTimer = window.setTimeout(resolveReady, remaining);
   }
 
+  function onReady(welcome: boolean) {
+    if (disposed || failed) return;
+    storefrontScroll.setTheme(welcome);
+    onThemeChange(welcome);
+    appReady = true;
+    finishReady();
+  }
+
+  function stopStylesheetLoading() {
+    window.clearTimeout(stylesheetTimer);
+    stylesheet.onload = stylesheet.onerror = null;
+  }
+
   function onError(error: unknown) {
+    failed = true;
     window.clearTimeout(readyTimer);
+    stopStylesheetLoading();
     rejectReady(error);
   }
 
   try {
-    router = createAssistantRouter({
-      logoUrl,
-      navigation,
-      session,
-      onReady,
-      onError,
-    });
+    stylesheet.onload = () => {
+      stopStylesheetLoading();
+      stylesReady = true;
+      finishReady();
+    };
+    stylesheet.onerror = () => onError(new Error("Roman could not load its styles. Retry."));
+    stylesheetTimer = window.setTimeout(
+      () => onError(new Error("Roman's styles timed out. Retry.")),
+      15000,
+    );
+    // Keep the link outside React's container and the shell hidden until it loads.
+    shadow.append(stylesheet);
     root = createRoot(container);
     root.render(
       <StrictMode>
-        <style>{styles + viewportStyles}</style>
-        <RouterProvider router={router} />
+        <AssistantApp
+          logoUrl={logoUrl}
+          navigation={navigation}
+          session={session}
+          onReady={onReady}
+          onError={onError}
+          onNavigate={(navigate) => { navigateView = navigate; }}
+        />
       </StrictMode>,
     );
   } catch (error) {
     // No runtime was returned, so the bootstrap cannot dispose these resources.
     disposed = true;
     window.clearTimeout(readyTimer);
+    stopStylesheetLoading();
+    stylesheet.remove();
     root?.unmount();
     composerFocus.dispose();
     viewport.dispose();
     storefrontScroll.dispose();
     cartNotification.dispose();
-    router?.dispose();
+    navigateView = undefined;
     tools.dispose();
     executor.dispose();
     stopJourney();
-    voiceAutostart?.dispose();
     session.dispose();
     navigation.dispose();
     throw error;
@@ -122,7 +149,7 @@ export function mountAssistant(
     },
     visualizeProduct(productPath) {
       if (disposed || !sidebarOpen || !currentVisualizationProduct(productPath)) return;
-      void router!.navigate("/", { state: { visualizeProduct: productPath, requestId: window.crypto.randomUUID() } });
+      void navigateView?.("/", { state: { visualizeProduct: productPath, requestId: window.crypto.randomUUID() } });
     },
     setOpen(open) {
       if (!disposed) {
@@ -134,7 +161,6 @@ export function mountAssistant(
         if (!open) composerFocus.cancel();
         navigation.setSidebarOpen(open);
         session.setOpen(open);
-        voiceAutostart?.setOpen(open);
         const { voice, conversation } = session.getSnapshot();
         if (
           closing &&
@@ -157,16 +183,16 @@ export function mountAssistant(
       onError(
         new DOMException("The Roman assistant was removed.", "AbortError"),
       );
+      stylesheet.remove();
       root?.unmount();
       composerFocus.dispose();
       viewport.dispose();
       storefrontScroll.dispose();
       cartNotification.dispose();
-      router?.dispose();
+      navigateView = undefined;
       tools.dispose();
       executor.dispose();
       stopJourney();
-      voiceAutostart?.dispose();
       session.dispose();
       navigation.dispose();
     },

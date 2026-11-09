@@ -1326,8 +1326,26 @@ test("the actual React runtime keeps its rendered content and storefront state a
     globalName: "RomanAssistant",
     platform: "browser",
     jsx: "automatic",
+    jsxImportSource: "preact",
+    alias: {
+      "react": "preact/compat",
+      "react-dom": "preact/compat",
+      "react-dom/client": "preact/compat/client",
+      "react/jsx-runtime": "preact/jsx-runtime",
+      "react/jsx-dev-runtime": "preact/jsx-dev-runtime",
+    },
     define: { "process.env.NODE_ENV": '"production"' },
     loader: { ".svg": "dataurl", ".css": "text", ".woff2": "dataurl" },
+    plugins: [{
+      name: "runtime-stylesheet-url",
+      setup(builder) {
+        builder.onResolve({ filter: /\.css\?url$/ }, () => ({ path: "roman-assistant.css", namespace: "stylesheet-url" }));
+        builder.onLoad({ filter: /.*/, namespace: "stylesheet-url" }, () => ({
+          contents: `export default ${JSON.stringify(new URL("roman-assistant.css", runtimeUrl).href)};`,
+          loader: "js",
+        }));
+      },
+    }],
   });
   let now = 0;
   const { document, window, host, launcher, close, progress, requests } = setup(
@@ -1359,6 +1377,15 @@ test("the actual React runtime keeps its rendered content and storefront state a
   now = 1000;
   loadingScript(document).dispatchEvent(new window.Event("load"));
   await until(
+    () => mounts === 1 && host.shadowRoot.querySelector("h1"),
+    "runtime did not commit while its stylesheet loaded",
+  );
+  const stylesheet = host.shadowRoot.querySelector('link[rel="stylesheet"]');
+  assert.equal(stylesheet.href, new URL("roman-assistant.css", runtimeUrl).href);
+  assert.equal(hidden(progress()), false, "the loader must remain until runtime styles load");
+  assert.equal(hidden(host.shadowRoot.querySelector(".roman-frame")), true);
+  stylesheet.dispatchEvent(new window.Event("load"));
+  await until(
     () => mounts === 1 && hidden(progress()),
     "React content never became ready",
   );
@@ -1375,8 +1402,10 @@ test("the actual React runtime keeps its rendered content and storefront state a
   assert.equal(disposals, 0);
   assert.equal(content.querySelector("h1"), heading);
   assert.equal(content.querySelector(".roman-conversation"), conversation);
+  assert.equal(host.shadowRoot.querySelector('link[rel="stylesheet"]'), stylesheet);
   assert.equal(requests.length, 1);
   host.remove();
   await delay(0);
   assert.equal(disposals, 1);
+  assert.equal(stylesheet.isConnected, false);
 });

@@ -5,9 +5,9 @@ import {
 } from "../api-errors/repository.server";
 import { ServiceUnavailableError } from "./errors.server";
 
-export const PRIMARY_TEXT_MODEL = "gpt-6.1-sol";
-export const TEXT_SERVICE_TIER = "ultrafast";
-export const FALLBACK_TEXT_MODEL: string | null = null;
+export const PRIMARY_TEXT_MODEL = "gpt-6.1-terra";
+export const TEXT_SERVICE_TIER = "fast";
+export const FALLBACK_TEXT_MODEL: string | null = "gpt-6-luna";
 export const UNAVAILABLE_MESSAGE = "Roman is currently unavailable";
 
 export type AvailabilityStatus = "available" | "degraded" | "suspended";

@@ -11,13 +11,11 @@ const bundle = await build({
   stdin: {
     contents: `
       import { createRoot } from 'react-dom/client';
-      import { RouterProvider } from 'react-router/dom';
-      import { createAssistantRouter } from './frontend/src/app';
+      import { AssistantApp } from './frontend/src/app';
       export function mount(container, props) {
-        const router = createAssistantRouter(props);
         const root = createRoot(container);
-        root.render(<RouterProvider router={router} />);
-        return () => { root.unmount(); router.dispose(); };
+        root.render(<AssistantApp {...props} />);
+        return () => root.unmount();
       }
     `,
     resolveDir: cwd(),

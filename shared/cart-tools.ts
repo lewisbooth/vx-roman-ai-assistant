@@ -77,68 +77,7 @@ const names: readonly CartToolName[] = [
   "set_cart_quantity",
   "clear_cart",
 ];
-const lineKeyPattern = /^[A-Za-z0-9:_-]{1,256}$/;
-const lineKeySchema = { type: "string", pattern: lineKeyPattern.source };
-const definitions = [
-  [
-    "get_cart",
-    "Read the current cart with exact line keys, store-supplied productType, quantities, currency, totals and supplied discount allocations. Insurance/Warranty types are linked extras, not independent blind selections; parent linkage is not inferred. Prices are minor units; linePriceMinorUnits is after line discounts, before basket discounts. totalPriceMinorUnits includes discounts. Omitted metadata is unknown. Does not display Cart.",
-    {},
-  ],
-  [
-    "add_to_cart",
-    "Add quantity identical copies of the chosen configured product on its verified current productPath after an explicit add request and fresh valid, priced native configuration. quantity is the requested additional count, not a final cart total; use 1 for one product. One native submission handles the count and linked extras. Requires resolved paid-choice consent; successful same-product form changes may be followed by this add after a fresh valid, priced native readback. One cart mutation per reply; failed or uncertain changes block it. Theme validation is authoritative. No additional review panel, payment or checkout.",
-    {
-      productPath: { type: "string", minLength: 1, maxLength: 2048 },
-      quantity: { type: "integer", minimum: 1, maximum: 999 },
-    },
-  ],
-  [
-    "add_sample_to_cart",
-    "Add only the explicitly requested sample from its verified current productPath, without query/hash. Theme verifies current product identity and sample availability. At most two distinct product samples per reply, serially; a second requires the first added or already_in_cart. Failed or uncertain results stop further writes; never repeat an attempted sample or mix sample additions with other cart mutations. No product configuration or extra approval needed; cannot fall back to adding the full product.",
-    { productPath: { type: "string", minLength: 1, maxLength: 2048 } },
-  ],
-  [
-    "remove_from_cart",
-    "Remove the explicitly requested cart lines in one operation using exact current lineKeys from get_cart, without another confirmation. One line uses a one-element array. Removes whole lines; the theme owns linked items. Never infer line keys or linked insurance from variant IDs, titles or order.",
-    {
-      lineKeys: {
-        type: "array",
-        items: lineKeySchema,
-        minItems: 1,
-        maxItems: 100,
-      },
-    },
-  ],
-  [
-    "set_cart_quantity",
-    "Set an exact current cart lineKey to a positive whole-number quantity when the shopper asks. Use remove_from_cart for removal. The theme owns linked items and allowed quantity ranges.",
-    {
-      lineKey: lineKeySchema,
-      quantity: { type: "integer", minimum: 1, maximum: 999 },
-    },
-  ],
-  [
-    "clear_cart",
-    "Empty the entire current cart through the theme, including linked items, when the shopper asks to clear the whole cart.",
-    {},
-  ],
-] as const;
-
-export const cartToolDefinitions = definitions.map(
-  ([name, description, properties]) => ({
-    type: "function" as const,
-    name,
-    description,
-    strict: true,
-    parameters: {
-      type: "object",
-      properties,
-      required: Object.keys(properties),
-      additionalProperties: false,
-    },
-  }),
-);
+export const lineKeyPattern = /^[A-Za-z0-9:_-]{1,256}$/;
 
 export function isCartTool(name: string): name is CartToolName {
   return names.includes(name as CartToolName);

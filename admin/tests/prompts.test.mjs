@@ -24,7 +24,7 @@ const bundle = await build({
       export * from './admin/prompts/knowledge-base/response';
       export * from './admin/prompts/text.server';
       export * from './admin/prompts/voice.server';
-      export { cartToolDefinitions } from './shared/cart-tools';
+      export { cartToolDefinitions } from './admin/conversations/storefront-turn.server';
       export { productGuidesToolDefinition } from './shared/product-guides';
       export { askQuestionToolDefinition, askMeasurementToolDefinition } from './shared/questions';
       export { measurementToolDefinitions, applyMeasurementsToolDefinition } from './shared/measurements';
@@ -327,6 +327,16 @@ test("Live shares identity and notation but delegates instead of copying the kno
   assert.match(live, /safety-critical/);
   assert.match(romanVoicePrompt("willow"), /Irish English/);
   assert.doesNotMatch(live, /Irish English/);
+});
+
+test("Live keeps displayed action labels silent unless the customer asks for the available actions", () => {
+  const delivery = romanVoicePrompt("marin")
+    .split("## Delivering the verified briefing\n")[1];
+  assert.match(delivery, /Speak the supplied displayed question once with its exact wording/);
+  assert.match(delivery, /reference data for interpreting customer replies, not additional spoken copy/);
+  assert.match(delivery, /Do not turn quick-answer or navigation labels into a separate spoken menu/);
+  assert.match(delivery, /If the customer asks which actions are available, give their exact labels once in displayed order/);
+  assert.doesNotMatch(delivery, /When offering these actions aloud|include the whole group/);
 });
 
 test("spoken answers hand off the displayed question even when they interrupt its delivery", () => {

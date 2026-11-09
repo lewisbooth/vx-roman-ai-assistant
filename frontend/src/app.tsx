@@ -1,4 +1,5 @@
 import {
+  Component,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -6,13 +7,14 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from "react";
 /* eslint-disable jsx-a11y/no-noninteractive-tabindex, jsx-a11y/no-noninteractive-element-interactions -- The named history region is focusable for native keyboard scrolling; its handlers only track scroll intent. */
 import {
-  createMemoryRouter,
+  MemoryRouter,
   useLocation,
   useNavigate,
-  useRouteError,
+  type NavigateFunction,
 } from "react-router";
 import { Composer } from "./chat/Composer";
 import { AssistantHeader } from "./chat/AssistantHeader";
@@ -54,6 +56,7 @@ type AssistantProps = {
   session: ConversationClient;
   onReady: (welcome: boolean) => void;
   onError: (error: unknown) => void;
+  onNavigate?: (navigate: NavigateFunction | undefined) => void;
 };
 
 function Assistant({
@@ -62,9 +65,14 @@ function Assistant({
   session,
   onReady,
   onError,
+  onNavigate,
 }: AssistantProps) {
   const location = useLocation();
   const navigateView = useNavigate();
+  useLayoutEffect(() => {
+    onNavigate?.(navigateView);
+    return () => onNavigate?.(undefined);
+  }, [navigateView, onNavigate]);
   const view =
     location.pathname === "/cart"
       ? "cart"
@@ -217,6 +225,15 @@ function Assistant({
   );
   const textBusy = ending || answering || messageQueue.busy;
   const chatError = state.error || startError || (!confirmingEnd ? endError : null);
+  const currentError =
+    chatError ||
+    (voice.errorCode !== "microphone_denied" ? voice.error : null);
+  // A failed queued message owns its error and retry action.
+  const composerError = messageQueue.messages.some(
+    (item) => item.status === "failed" && item.error === currentError,
+  )
+    ? null
+    : currentError;
   const activeQuestion =
     state.conversation?.status === "active" && !state.optimisticMessage
       ? currentQuestion(state.conversation, storefront.url)
@@ -239,8 +256,8 @@ function Assistant({
     try {
       await session.startVoice();
     } catch (error) {
-      // Autostart calls the session directly. Only a deliberate button press
-      // opens this explanation; other voice errors remain visible in the bar.
+      // Only an explicit Start voice attempt opens this explanation;
+      // background recovery errors remain visible in the bar.
       const failedVoice = session.getSnapshot().voice;
       if (failedVoice.errorCode === "microphone_denied")
         setMicrophoneDenied(true);
@@ -764,6 +781,7 @@ function Assistant({
                 busy={textBusy}
                 disabled={suspended || ending || state.restoring}
                 unavailable={suspended}
+                onRetryAvailability={() => session.retryAvailability()}
                 queuedMessages={
                   <MessageQueue
                     messages={messageQueue.messages}
@@ -781,10 +799,7 @@ function Assistant({
                     />
                   ) : undefined
                 }
-                error={
-                  chatError ||
-                  (voice.errorCode !== "microphone_denied" ? voice.error : null)
-                }
+                error={composerError}
                 onClearError={
                   chatError
                     ? () => {
@@ -853,21 +868,31 @@ function Assistant({
   );
 }
 
-function AssistantError({ onError }: Pick<AssistantProps, "onError">) {
-  const error = useRouteError();
-  useEffect(() => { onError(error); }, [error, onError]);
-  return null;
+class AssistantErrorBoundary extends Component<
+  Pick<AssistantProps, "onError"> & { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError(error);
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
 }
 
-export function createAssistantRouter(props: AssistantProps) {
-  return createMemoryRouter(
-    [
-      {
-        path: "*",
-        element: <Assistant {...props} />,
-        errorElement: <AssistantError onError={props.onError} />,
-      },
-    ],
-    { initialEntries: ["/"] },
+export function AssistantApp(props: AssistantProps) {
+  return (
+    <AssistantErrorBoundary onError={props.onError}>
+      <MemoryRouter initialEntries={["/"]}>
+        <Assistant {...props} />
+      </MemoryRouter>
+    </AssistantErrorBoundary>
   );
 }

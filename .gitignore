@@ -13,6 +13,7 @@ node_modules
 .agents/
 /extensions/*/dist
 /extensions/*/assets/*.bundle.js
+/extensions/vx-roman-ai-assistant/assets/roman-assistant.css
 # Figma assets copied from frontend/src/assets by the frontend build
 /extensions/vx-roman-ai-assistant/assets/roman-logo.svg
 /extensions/vx-roman-ai-assistant/assets/roman-wordmark.svg
