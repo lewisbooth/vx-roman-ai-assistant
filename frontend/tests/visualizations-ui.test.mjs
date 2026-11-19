@@ -401,9 +401,53 @@ test("native share cancellation never initiates a download; unsupported or faile
   assert.equal(downloads, 1);
 });
 
-test("estimated progress remains bounded and never claims provider completion", (t) => {
+test("estimated generation advances linearly for fifteen seconds and stops at 95%", (t) => {
   const {exports} = setup(t);
   assert.equal(exports.estimatedGenerationProgress(1000, 500), 0);
+  assert.equal(exports.estimatedGenerationProgress(1000, 8500), 47.5);
+  assert.equal(exports.estimatedGenerationProgress(1000, 16000), 95);
   assert.equal(exports.estimatedGenerationProgress(1000, 100000), 95);
   assert.equal(exports.estimatedGenerationProgress(NaN, 100000), 0);
+});
+
+test("preview preparation keeps the photo ready until dispatch, and saved results replace the estimate", (t) => {
+  const {window, mount, api, exports} = setup(t, "visualization");
+  let now = 30_000, hidden = false, tick;
+  window.Date.now = () => now;
+  Object.defineProperty(window.document, "hidden", {get: () => hidden});
+  window.setInterval = (callback, duration) => { assert.equal(duration, 200); tick = callback; return 1; };
+  window.clearInterval = () => { tick = undefined; };
+  const timestamp = (value) => new Date(value).toISOString();
+  const preparing = {...completedPreview, status: "preparing_assets", createdAt: timestamp(1000), completedAt: null, resultAvailable: false};
+  api.render({job: preparing});
+  const bar = mount.querySelector('[role="progressbar"]');
+  assert.equal(bar.getAttribute("aria-valuetext"), "Room photo ready. Preparing your visualization.");
+  assert.equal(bar.getAttribute("aria-valuenow"), "100");
+  assert.equal(tick, undefined);
+
+  const generating = {...preparing, status: "generating", startedAt: timestamp(now)};
+  api.render({job: generating});
+  assert.equal(mount.querySelector('[role="progressbar"]'), bar);
+  assert.equal(bar.getAttribute("aria-valuenow"), "0");
+  now += 7500;
+  exports.flushSync(tick);
+  assert.equal(bar.getAttribute("aria-valuenow"), "48");
+
+  const changeVisibility = () => exports.flushSync(() => window.document.dispatchEvent(new window.Event("visibilitychange")));
+  hidden = true;
+  changeVisibility();
+  assert.equal(tick, undefined);
+  now += 15_000;
+  hidden = false;
+  changeVisibility();
+  assert.equal(bar.getAttribute("aria-valuetext"), "Still generating. Estimated progress.");
+  assert.equal(bar.getAttribute("aria-valuenow"), "95");
+  api.render({job: {...generating, status: "saving"}});
+  assert.equal(bar.getAttribute("aria-valuenow"), "95");
+  assert.equal(mount.querySelector(".roman-window-use"), null);
+
+  api.render({job: {...generating, status: "completed", completedAt: timestamp(now), resultAvailable: true}});
+  assert.equal(mount.querySelector('[role="progressbar"]'), null);
+  assert.ok(mount.querySelector(".roman-window-use"));
+  assert.equal(tick, undefined);
 });

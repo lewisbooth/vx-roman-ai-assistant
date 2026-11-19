@@ -58,6 +58,7 @@ export interface VisualizationReference {
 }
 export interface VisualizationPreparation {
   productPath: string;
+  productTitle?: string;
   references: VisualizationReference[];
 }
 export type PhotoPresentation =

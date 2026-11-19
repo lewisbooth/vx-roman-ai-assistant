@@ -53,7 +53,7 @@ const bundle = await build({
         builder.onLoad(
           { filter: /visualizations[\\/]provider\.server\.ts$/ },
           () => ({
-            contents: `export const PRIMARY_IMAGE_MODEL = 'gpt-image-2.5-sunburst';
+            contents: `export const PRIMARY_IMAGE_MODEL = 'gpt-image-2.6-sunburst';
           export const FALLBACK_IMAGE_MODEL = 'gpt-image-2.5-flare';
           export const generateVisualizationAttempt = (...args) => global.__romanImageTest.provider(...args);`,
             loader: "ts",
@@ -590,7 +590,7 @@ test("eligible Flare continuation keeps one job and two physical receipts, unkno
   assert.equal((await settled(job.id)).status, "completed");
   assert.deepEqual(
     calls.map((call) => call.model),
-    ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"],
+    ["gpt-image-2.6-sunburst", "gpt-image-2.5-flare"],
   );
   assert.equal(await database.visualizationJob.count(), 1);
   assert.equal(await database.imageGenerationAttempt.count(), 2);
@@ -836,130 +836,61 @@ test("failed physical cleanup keeps bytes charged until a bounded retry actually
   await database.$transaction((tx) => api.galleryCapacity(tx, f.owner, 1));
 });
 
-test("appearance is frozen from verified selected options without another tool call", async () => {
+test("recoverable preparation adopts the current prompt and filters detail references before download", async () => {
   const f = await fixture();
-  const assistantId = randomUUID();
-  await database.conversationMessage.create({
-    data: {
-      id: assistantId,
-      requestId: randomUUID(),
-      conversationId: f.conversation.id,
-      sequence: 2,
-      role: "assistant",
-      status: "complete",
-      partsJson: "[]",
-    },
-  });
-  await database.conversation.update({
-    where: { id: f.conversation.id },
-    data: { nextSequence: 3 },
-  });
-  const configuration = {
-    status: "available",
-    productPath,
-    configurationId: randomUUID(),
-    measurements: null,
-    message: "Current native options",
-    controls: [
-      {
-        id: "c0",
-        label: "Lining",
-        kind: "select",
-        options: [
-          {
-            id: "o0",
-            label: "Light filtering",
-            selected: false,
-            available: true,
-          },
-          { id: "o1", label: "Blackout", selected: true, available: true },
-        ],
-      },
-      {
-        id: "c1",
-        label: "Control Options",
-        kind: "radio",
-        options: [
-          {
-            id: "o0",
-            label: "Electric SmartView",
-            selected: true,
-            available: true,
-          },
-        ],
-      },
-      {
-        id: "c2",
-        label: "14 Channel Remote Control",
-        kind: "select",
-        options: [
-          {
-            id: "o0",
-            label: "Remote selected",
-            selected: true,
-            available: true,
-          },
-        ],
-      },
-      {
-        id: "c3",
-        label: "Guarantee a Perfect Fit",
-        kind: "radio",
-        purpose: "measurement_guarantee",
-        description: "Optional replacement cover",
-        options: [
-          {
-            id: "o0",
-            label: "Do not insure",
-            selected: false,
-            available: true,
-          },
-          {
-            id: "o1",
-            label: "Insure measurements",
-            selected: true,
-            available: true,
-          },
-        ],
-      },
-    ],
-  };
-  const tool = await database.toolInvocation.create({
-    data: {
-      id: randomUUID(),
-      conversationId: f.conversation.id,
-      assistantId,
-      providerCallId: "configuration-call",
-      name: "get_product_configuration",
-      status: "complete",
-      argumentsJson: JSON.stringify({ productPath }),
-      resultJson: JSON.stringify(configuration),
-      completedAt: new Date(),
-    },
-  });
   const job = await api.startVisualization(f.owner, f.conversation.id, f.input);
-  const stored = await database.visualizationJob.findUniqueOrThrow({
+  await database.visualizationJob.update({
     where: { id: job.id },
+    data: {
+      promptVersion: "roman-v1",
+      targetDescription: "Left opening",
+      productJson: JSON.stringify({ configurationSummary: "Lining: Blockout" }),
+    },
   });
-  const frozen = JSON.parse(stored.productJson).configurationSummary;
-  assert.equal(frozen, "Lining: Blackout; Control Options: Electric SmartView");
-  configuration.controls[0].options[1].label = "Thermal";
-  await database.toolInvocation.update({
-    where: { id: tool.id },
-    data: { resultJson: JSON.stringify(configuration) },
-  });
-  const { claim } = await api.claimPreparation(
-    f.owner.id,
-    job.id,
-    randomUUID(),
+  const { claim } = await api.claimPreparation(f.owner.id, job.id, randomUUID());
+  await assert.rejects(
+    api.completePreparation(f.owner, job.id, claim.token, {
+      productPath,
+      productTitle: "Product\nInjected title",
+      references,
+    }),
+    errorStatus(400),
   );
   await api.completePreparation(f.owner, job.id, claim.token, {
     productPath,
-    references,
+    productTitle: "Test Roman Blind — Oak",
+    references: [
+      { url: `${origin}/cdn/shop/files/detail.jpg`, role: "detail", alt: "" },
+      ...references,
+      { url: `${origin}/cdn/shop/files/PID-1_CID-2_P2.jpg`, role: "unknown", alt: "" },
+    ],
   });
-  assert.equal((await settled(job.id)).status, "completed");
-  assert.equal(calls[0].configurationSummary, frozen);
-  assert.equal(await database.toolInvocation.count(), 1);
+  const stored = await settled(job.id);
+  assert.equal(stored.status, "completed");
+  assert.equal(stored.promptVersion, "v37");
+  assert.equal(stored.targetDescription, "Left opening");
+  assert.equal(stored.productTitle, job.productTitle);
+  assert.equal(calls[0].productTitle, "Test Roman Blind — Oak");
+  assert.equal(Object.hasOwn(calls[0], "targetDescription"), false);
+  assert.equal(Object.hasOwn(calls[0], "configurationSummary"), false);
+  assert.deepEqual(calls[0].references.map(({ url }) => url), [references[0].url]);
+});
+
+test("detail-only preparations release the reservation without downloading or dispatching", async () => {
+  const f = await fixture();
+  const job = await api.startVisualization(f.owner, f.conversation.id, f.input);
+  const { claim } = await api.claimPreparation(f.owner.id, job.id, randomUUID());
+  global.__romanImageTest.references = async () => assert.fail("Unexpected download");
+  await api.completePreparation(f.owner, job.id, claim.token, {
+    productPath,
+    references: [{ ...references[0], role: "detail" }],
+  });
+  const stored = await settled(job.id);
+  assert.equal(stored.status, "failed");
+  assert.match(stored.error, /no usable product image/);
+  assert.equal(stored.reservedBytes, 0);
+  assert.deepEqual(JSON.parse(stored.referencesJson), []);
+  assert.equal(await database.imageGenerationAttempt.count(), 0);
 });
 
 test("admin can inspect a same-owner photo explicitly reused in another chat", async () => {

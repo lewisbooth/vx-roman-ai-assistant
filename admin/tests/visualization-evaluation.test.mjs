@@ -91,7 +91,6 @@ test("an explicit additional preview returns a new accepted job rather than the 
   const fixture = createVisualizationFixture(sample);
   const result = await fixture.execute("additional-preview", "create_visualization", {
     windowId: visualizationWindow.id, productPath: visualizationProduct.path,
-    targetDescription: visualizationWindow.title,
   });
   assert.ok(sample.jobs.every(({id}) => id !== result.id),
     "reusing the old ID wrongly suggests the requested new job was not accepted");

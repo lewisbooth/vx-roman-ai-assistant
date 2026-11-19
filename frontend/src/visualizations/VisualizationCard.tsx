@@ -15,9 +15,9 @@ const statusCopy: Record<VisualizationStatus, string> = {
   cancelled: "Visualization cancelled",
 };
 
-/** Estimated progress deliberately stops at 95%; only a saved result completes it. */
+/** Match VX Visualizer's elapsed-time estimate and wait for a saved result. */
 export function estimatedGenerationProgress(startedAt: number, now = Date.now()): number {
-  return Number.isFinite(startedAt) && startedAt > 0 ? Math.min(95, Math.max(0, (now - startedAt) / 20_000 * 95)) : 0;
+  return Number.isFinite(startedAt) ? Math.min(95, Math.max(0, (now - startedAt) / 15_000 * 95)) : 0;
 }
 
 export function VisualizationCard({ job, source, result, uploadProgress, analysisProgress, onOpen, onRetry, onCheck, onDelete }: {
@@ -32,14 +32,15 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
   onDelete?: (job: VisualizationJobDto) => Promise<void> | void;
 }) {
   const pending = ["awaiting_product", "preparing_assets", "generating", "saving"].includes(job.status);
-  const [tick, setTick] = useState(Date.now());
+  const [tick, setTick] = useState(Date.now);
   const [deleting, setDeleting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const analyzing = analysisProgress !== undefined && analysisProgress !== null;
   const hasProduct = !!job.productPath;
+  const estimating = (job.status === "generating" || job.status === "saving") && uploadProgress === undefined && !analyzing;
   useEffect(() => {
-    if (!pending || uploadProgress !== undefined || analyzing) return;
+    if (!estimating) return;
     let timer: number | undefined;
     const refresh = () => {
       window.clearInterval(timer);
@@ -47,8 +48,19 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
     };
     refresh(); document.addEventListener("visibilitychange", refresh);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
-  }, [pending, uploadProgress, analyzing]);
-  const progress = analyzing ? analysisProgress : uploadProgress === undefined ? estimatedGenerationProgress(Date.parse(job.startedAt ?? job.createdAt), tick) : Math.min(100, Math.max(0, uploadProgress));
+  }, [estimating]);
+  let progress: { value: number; label: string; text: string } | undefined;
+  if (analyzing) {
+    progress = { value: analysisProgress, label: "Estimated room analysis progress", text: `${Math.round(analysisProgress)}%. Estimated progress.` };
+  } else if (uploadProgress !== undefined) {
+    const value = Math.min(100, Math.max(0, uploadProgress));
+    progress = { value, label: "Upload progress", text: `${Math.round(value)}% uploaded.` };
+  } else if (estimating) {
+    const value = estimatedGenerationProgress(Date.parse(job.startedAt ?? job.createdAt), tick);
+    progress = { value, label: "Estimated generation progress", text: value >= 95 ? "Still generating. Estimated progress." : `${Math.round(value)}%. Estimated progress.` };
+  } else if (pending && hasProduct) {
+    progress = { value: 100, label: "Room photo preparation", text: "Room photo ready. Preparing your visualization." };
+  }
   const label = analyzing ? "Analyzing your room" : uploadProgress !== undefined ? "Uploading your image" : hasProduct ? statusCopy[job.status] : pending ? "Saving your image" : "Checking your upload";
   const complete = job.status === "completed" && job.resultAvailable;
   const image = complete ? result : source;
@@ -56,10 +68,10 @@ export function VisualizationCard({ job, source, result, uploadProgress, analysi
     {image && <PrivateImage source={image} sourceKey={`${job.id}/${complete ? "result" : "source"}`} alt={complete ? `${job.productTitle} in ${job.windowTitle}` : ""} />}
     {!complete && <div className="roman-generation-content">
       <p role="status" aria-live="polite">{label}</p>
-      {pending && <div className="roman-generation-progress" role="progressbar" aria-label={analyzing ? "Estimated room analysis progress" : uploadProgress === undefined ? "Estimated generation progress" : "Upload progress"}
-        aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}
-        aria-valuetext={uploadProgress === undefined ? `${Math.round(progress)}%. Estimated progress.` : `${Math.round(progress)}% uploaded.`}>
-        <span style={{ width: `${progress}%` }} />
+      {pending && progress && <div className="roman-generation-progress" role="progressbar" aria-label={progress.label}
+        aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress.value)}
+        aria-valuetext={progress.text}>
+        <span style={{ width: `${progress.value}%` }} />
       </div>}
       {pending && <small>You can keep chatting while your image is prepared.</small>}
       {!pending && job.error && <small>{job.error}</small>}

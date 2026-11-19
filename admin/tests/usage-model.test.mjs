@@ -440,7 +440,7 @@ test("a stale photo presentation repairs only the terminal answer without repeat
           name: "create_visualization",
           call_id: "start-preview",
           arguments:
-            '{"windowId":"synthetic","productPath":"/products/blind","targetDescription":null}',
+            '{"windowId":"synthetic","productPath":"/products/blind"}',
         },
       ]),
     ),

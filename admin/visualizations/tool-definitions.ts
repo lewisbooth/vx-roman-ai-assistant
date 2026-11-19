@@ -77,16 +77,15 @@ export const visualizationToolDefinitions = [
     name: "create_visualization",
     strict: true,
     description:
-      "Start one asynchronous preview for a current explicit request or an unpaused unresolved request whose missing inputs are now supplied, with active selected product and a known consented room photo. An accepted job (including explicit upload-interface visualization submission) consumes that request; pending completion or a later product/photo selection does not request another. Neutral upload/list/select/rename and picker purpose do not authorize generation; newer pause/cancellation wins. A later explicit preview is a new request. Requires verified photo ID and active product path. Room cleanup is included automatically. Optional targetDescription identifies the requested opening. Returns accepted job ID/status, not a completed image.",
+      "Start one asynchronous preview for a current explicit request or an unpaused unresolved request whose missing inputs are now supplied, with active selected product and a known consented room photo. An accepted job (including explicit upload-interface visualization submission) consumes that request; pending completion or a later product/photo selection does not request another. Neutral upload/list/select/rename and picker purpose do not authorize generation; newer pause/cancellation wins. A later explicit preview is a new request. Requires verified photo ID and active product path. Room cleanup is included automatically and placement is inferred from the room photo and product references. Returns accepted job ID/status, not a completed image.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
         windowId: { type: "string" },
         productPath: { type: "string" },
-        targetDescription: { ...nullableText, maxLength: 300 },
       },
-      required: ["windowId", "productPath", "targetDescription"],
+      required: ["windowId", "productPath"],
     },
   },
 ] as const;

@@ -263,7 +263,6 @@ test("generation includes cleanup even for historical photos and uses one durabl
   const args = {
     windowId: app.photoId,
     productPath: "/products/blind",
-    targetDescription: null,
   };
   const job = await turn.execute("create", "create_visualization", args);
   const replay = await turn.execute("create", "create_visualization", args);
@@ -284,7 +283,6 @@ test("unconfirmed failures are not replayed and cancellation preserves already a
   const args = {
     windowId: app.photoId,
     productPath: "/products/blind",
-    targetDescription: null,
   };
   app.mock.start = async () => {
     throw new Error("Private provider body");

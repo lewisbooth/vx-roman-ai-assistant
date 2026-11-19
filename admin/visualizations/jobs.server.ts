@@ -4,10 +4,11 @@ import prisma from "../db.server";
 import { ConversationError } from "../conversations/errors.server";
 import { getCurrentContext } from "../conversations/repository.server";
 import { parseProductPath } from "../../shared/product-path";
-import { parseProductConfigurationResult } from "../../shared/product-configuration";
+import { isKnownProductDetailUrl } from "../../shared/product-reference-rules";
 import {
   isMediaId,
   type VisualizationPreparation,
+  type VisualizationReference,
 } from "../../shared/visualizations";
 import { galleryTokenHash, type GalleryIdentity } from "./auth.server";
 import {
@@ -17,7 +18,10 @@ import {
   RESULT_RESERVATION_BYTES,
   visualizationsEnabled,
 } from "./config.server";
-import { VISUALIZATION_PROMPT_VERSION } from "./prompt.server";
+import {
+  isVisualizationProductTitle,
+  VISUALIZATION_PROMPT_VERSION,
+} from "./prompt.server";
 import {
   cleanupDeletedMedia,
   expirePreparations,
@@ -34,7 +38,6 @@ import {
   FALLBACK_IMAGE_MODEL,
   generateVisualizationAttempt,
   PRIMARY_IMAGE_MODEL,
-  type ImageModel,
 } from "./provider.server";
 import {
   estimateImageUsage,
@@ -208,43 +211,6 @@ export async function startVisualization(
         "Your visualization limit has been reached. Try later or delete an old preview.",
       );
     await galleryCapacity(tx, owner, RESULT_RESERVATION_BYTES);
-    const configuration = await tx.toolInvocation.findFirst({
-      where: {
-        conversationId,
-        name: "get_product_configuration",
-        status: "complete",
-        argumentsJson: { contains: JSON.stringify(productPath) },
-      },
-      orderBy: { completedAt: "desc" },
-      select: { resultJson: true },
-    });
-    let configurationSummary: string | undefined;
-    if (configuration?.resultJson) {
-      const observed = parseProductConfigurationResult(
-        "get_product_configuration",
-        JSON.parse(configuration.resultJson),
-      );
-      if (
-        observed.status === "available" &&
-        observed.productPath === productPath
-      ) {
-        const selections = observed.controls
-          .filter(
-            (control) =>
-              control.purpose !== "measurement_guarantee" &&
-              !/remote|battery|charger|hub|warranty|guarantee|insurance/i.test(
-                control.label,
-              ),
-          )
-          .flatMap((control) =>
-            control.options
-              .filter((option) => option.selected)
-              .map((option) => `${control.label}: ${option.label}`),
-          );
-        configurationSummary =
-          selections.join("; ").slice(0, 1200) || undefined;
-      }
-    }
     const job = await tx.visualizationJob.create({
       data: {
         id: randomUUID(),
@@ -258,7 +224,7 @@ export async function startVisualization(
         sourceAssetKey: photo.assetKey,
         productPath,
         productTitle: product.title,
-        productJson: JSON.stringify({ ...product, configurationSummary }),
+        productJson: JSON.stringify(product),
         cleanup: true,
         targetDescription: input.targetDescription?.trim() || null,
         promptVersion: VISUALIZATION_PROMPT_VERSION,
@@ -391,11 +357,14 @@ export async function completePreparation(
   if (
     !preparation ||
     preparation.productPath !== job.productPath ||
+    (preparation.productTitle !== undefined &&
+      !isVisualizationProductTitle(preparation.productTitle)) ||
     !Array.isArray(preparation.references) ||
     preparation.references.length < 1 ||
     preparation.references.length > 4 ||
     preparation.references.some(
       (ref) =>
+        !ref ||
         typeof ref.url !== "string" ||
         ref.url.length > 2048 ||
         !["installation", "detail", "unknown"].includes(ref.role) ||
@@ -407,6 +376,13 @@ export async function completePreparation(
       400,
       "Product references do not match the accepted visualization.",
     );
+  const references = preparation.references.filter((reference) => {
+    const url = URL.parse(reference.url);
+    return (
+      reference.role !== "detail" && (!url || !isKnownProductDetailUrl(url))
+    );
+  });
+  const generationTitle = preparation.productTitle ?? job.productTitle;
   const accepted = await prisma.visualizationJob.updateMany({
     where: {
       id: jobId,
@@ -420,9 +396,15 @@ export async function completePreparation(
     },
     data: {
       status: "preparing_assets",
-      referencesJson: JSON.stringify(preparation.references),
+      referencesJson: JSON.stringify(references),
+      productJson: JSON.stringify({
+        ...JSON.parse(job.productJson),
+        generationTitle,
+      }),
       claimTokenHash: null,
       claimExpiresAt: null,
+      // Awaiting-product jobs can survive a restart without a paid dispatch.
+      promptVersion: VISUALIZATION_PROMPT_VERSION,
     },
   });
   if (accepted.count) launchJob(jobId, owner.origin);
@@ -524,6 +506,15 @@ async function executeJob(id: string, origin: string) {
     );
     return;
   }
+  const selected = JSON.parse(job.referencesJson) as VisualizationReference[];
+  if (!selected.length) {
+    await finishJob(
+      id,
+      "failed",
+      "This blind has no usable product image. Please choose another blind.",
+    );
+    return;
+  }
   const photo = await ownedPhoto(job.ownerId, job.windowId);
   if (
     photo.assetKey !== job.sourceAssetKey ||
@@ -543,18 +534,10 @@ async function executeJob(id: string, origin: string) {
     height: job.height,
     sha256: photo.sha256,
   };
-  const references = await fetchProductReferences(
-    JSON.parse(job.referencesJson),
-    { allowedOrigins: [origin, "https://cdn.shopify.com"], signal },
-  );
-  if (!references.length) {
-    await finishJob(
-      id,
-      "failed",
-      "This blind has no usable product image. Please choose another blind.",
-    );
-    return;
-  }
+  const references = await fetchProductReferences(selected, {
+    allowedOrigins: [origin, "https://cdn.shopify.com"],
+    signal,
+  });
   await prisma.visualizationJob.update({
     where: { id },
     data: {
@@ -569,10 +552,12 @@ async function executeJob(id: string, origin: string) {
       ),
     },
   });
-  for (const [index, model] of [
+  const productTitle =
+    JSON.parse(job.productJson).generationTitle ?? job.productTitle;
+  for (const [index, model] of ([
     PRIMARY_IMAGE_MODEL,
     FALLBACK_IMAGE_MODEL,
-  ].entries()) {
+  ] as const).entries()) {
     signal.throwIfAborted();
     if (!visualizationsEnabled(job.owner.shop)) {
       await finishJob(
@@ -648,15 +633,12 @@ async function executeJob(id: string, origin: string) {
     }
     const result = await generateVisualizationAttempt(
       {
-        model: model as ImageModel,
+        model,
         requestId: attempt.id,
         ownerId: job.ownerId,
         room,
         references,
-        productTitle: job.productTitle,
-        cleanup: job.cleanup,
-        targetDescription: job.targetDescription ?? undefined,
-        configurationSummary: JSON.parse(job.productJson).configurationSummary,
+        productTitle,
         signal,
         onReceipt: async (receipt) => {
           const cost = estimateImageUsage(

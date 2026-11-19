@@ -14,7 +14,7 @@ import {
 } from "./usage.server";
 import type { ImageTokenUsage } from "./usage.server";
 
-export const PRIMARY_IMAGE_MODEL = "gpt-image-2.5-sunburst";
+export const PRIMARY_IMAGE_MODEL = "gpt-image-2.6-sunburst";
 export const FALLBACK_IMAGE_MODEL = "gpt-image-2.5-flare";
 export type ImageModel =
   typeof PRIMARY_IMAGE_MODEL | typeof FALLBACK_IMAGE_MODEL;
@@ -41,9 +41,6 @@ export interface ImageProviderInput {
   room: NormalizedImage;
   references: readonly PreparedProductReference[];
   productTitle: string;
-  cleanup: boolean;
-  targetDescription?: string;
-  configurationSummary?: string;
   signal: AbortSignal;
   onReceipt: (receipt: ImageProviderReceipt) => Promise<void>;
 }
@@ -76,13 +73,7 @@ export async function generateVisualizationAttempt(
     input.references.some((reference) => !validInput(reference.image))
   )
     throw new Error("Bounded optimized room and product images are required.");
-  const prompt = buildVisualizationPrompt({
-    productTitle: input.productTitle,
-    cleanup: input.cleanup,
-    roles: input.references.map((reference) => reference.role),
-    targetDescription: input.targetDescription,
-    configurationSummary: input.configurationSummary,
-  });
+  const prompt = buildVisualizationPrompt(input.productTitle);
   const emptyReceipt: ImageProviderReceipt = {
     model: input.model,
     outcome: "unknown",
@@ -112,9 +103,10 @@ export async function generateVisualizationAttempt(
       },
       body: JSON.stringify({
         model: input.model,
-        quality: "auto",
+        quality: input.model === PRIMARY_IMAGE_MODEL ? "medium" : "auto",
         size: canvas.size,
         n: 1,
+        complexity: input.model === PRIMARY_IMAGE_MODEL ? "low" : undefined,
         output_format: "jpeg",
         stream: false,
         prompt,

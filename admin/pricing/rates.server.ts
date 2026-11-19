@@ -321,6 +321,24 @@ export const MODEL_PRICES: readonly ModelPrice[] = [
       imageOutputPerMillion: 30,
     },
   })),
+  {
+    id: "gpt-image-2.6-sunburst-standard-2026-11-09",
+    model: "gpt-image-2.6-sunburst",
+    kind: "image",
+    serviceTier: null,
+    currency: "USD",
+    effectiveFrom: "2026-11-09T12:15:57.000Z",
+    effectiveTo: null,
+    verifiedAt: "2026-11-09T12:15:57.000Z",
+    sourceUrl: "https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst",
+    prices: {
+      textInputPerMillion: 5,
+      cachedTextInputPerMillion: 1.25,
+      imageInputPerMillion: 8,
+      cachedImageInputPerMillion: 2,
+      imageOutputPerMillion: 30,
+    },
+  },
 ];
 
 validatePrices(MODEL_PRICES);

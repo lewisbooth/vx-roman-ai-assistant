@@ -219,29 +219,17 @@ export async function createVisualizationTurn(
               throw new ConversationError(400, "Use the image revision from its current metadata.");
             result = await renameWindow(owner.id, id, title, raw.revision as number);
           } else {
-            exact(raw, [
-              "windowId",
-              "productPath",
-              "targetDescription",
-            ]);
+            exact(raw, ["windowId", "productPath"]);
             if (
               typeof raw.productPath !== "string" ||
-              !isStorefrontPagePath(raw.productPath, owner.origin) ||
-              (raw.targetDescription !== null &&
-                typeof raw.targetDescription !== "string")
+              !isStorefrontPagePath(raw.productPath, owner.origin)
             )
-              throw new ConversationError(
-                400,
-                "Send the active product path and optional target description.",
-              );
+              throw new ConversationError(400, "Send the active product path.");
             result = await startVisualization(owner, conversationId, {
               requestId: receipt.id,
               windowId: id,
               productPath: raw.productPath,
               cleanup: true,
-              ...(raw.targetDescription
-                ? { targetDescription: raw.targetDescription as string }
-                : {}),
             });
           }
         }

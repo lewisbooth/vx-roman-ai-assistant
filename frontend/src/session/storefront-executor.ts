@@ -63,7 +63,7 @@ import {
   type ProductGallerySnapshot,
 } from "../tools/product-image";
 import { inspectConfiguredProduct } from "../tools/product";
-import { selectVisualizationProductReferences } from "../tools/product-references";
+import { loadVisualizationProductPreparation } from "../tools/product-references";
 import type { VisualizationPreparation } from "../../../shared/visualizations";
 
 export type BrowserToolResult =
@@ -310,7 +310,7 @@ export function createStorefrontExecutor(
         for (const [url, entry] of productGalleries)
           if (entry.expiresAt <= now) productGalleries.delete(url);
         productGalleries.delete(pageUrl);
-        // Cache product media for the stage and previews. Native feature imagery
+        // Cache product media for the stage. Native feature imagery
         // belongs to the stage's live configuration snapshot, not a path-only cache.
         productGalleries.set(pageUrl, {
           gallery: gallery && {
@@ -330,10 +330,11 @@ export function createStorefrontExecutor(
     const pageUrl = productImagePageUrl(path);
     return enqueue("foreground", async (signal) => {
       requireCurrentStore();
-      const gallery = await loadGalleryNow(pageUrl, signal);
-      const references = selectVisualizationProductReferences(gallery?.items ?? []);
-      if (!references.length) throw new Error("This blind has no usable product images.");
-      return { productPath: new URL(pageUrl).pathname, references };
+      const preparation = await loadVisualizationProductPreparation(pageUrl, signal);
+      requireCurrentStore();
+      signal.throwIfAborted();
+      if (!preparation?.references.length) throw new Error("This blind has no usable product images.");
+      return preparation;
     }, signal);
   }
 

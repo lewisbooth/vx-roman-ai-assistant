@@ -74,6 +74,7 @@ function setup(
         return clock.now;
       }
     },
+    AbortSignal,
     fetch: (...args) => {
       calls.push(args);
       return fetcher(...args);
@@ -560,6 +561,7 @@ test("visualization image roles use inspected Shopify labels rather than generic
     ["PID-123_CID-456_R.jpg", "", "installation"],
     ["blind_FZ.jpg", "", "detail"],
     ["blind_FabricZoom_2.jpg", "", "detail"],
+    ["PID-123_CID-456_P12.webp", "", "detail"],
     ["blind_FR.jpg", "ColorizedFabricZoom", "unknown"],
     ["blind_FZ.jpg", "ColorizedFullRoom", "unknown"],
   ]) {
@@ -567,61 +569,130 @@ test("visualization image roles use inspected Shopify labels rather than generic
   }
 });
 
-const referenceImage = (file, alt = "", kind = "product") => ({
-  id: file, kind, alt,
-  src: `${origin}/cdn/shop/files/${file}?width=1200`,
-  thumbnailSrc: `${origin}/cdn/shop/files/${file}?width=90`,
-  zoomSrc: `${origin}/cdn/shop/files/${file}?width=1800`,
+const referenceImage = (file, alt = "") => ({
+  url: `${origin}/cdn/shop/files/${file}?width=1800`,
+  alt,
 });
 
-test("visualization references classify all photos before the cap, promoting installation and preserving detail", (t) => {
+test("visualization references exclude known details before promoting an installation and capping", (t) => {
   const ctx = setup(t);
   const result = ctx.selectVisualizationProductReferences([
-    referenceImage("feature_FR.jpg", "", "feature"),
+    referenceImage("opaque.jpg", "ColorizedPLA"),
+    referenceImage("blind-fabric-2-zoom.jpg"),
+    referenceImage("PID-100_CID-155_P1.jpg"),
     ...["first_Z.jpg", "second_Z.jpg", "third_Z.jpg", "fourth_Z.jpg", "fifth_Z.jpg"].map(file => referenceImage(file)),
-    referenceImage("late_FZ.jpg"), referenceImage("late_FR.jpg"),
+    referenceImage("late_FZ.jpg", "ColorizedFullRoom"), referenceImage("late_FR.jpg"),
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(result.map(({url, role}) => ({file: new URL(url).pathname.split("/").at(-1), role})))), [
     {file: "late_FR.jpg", role: "installation"},
     {file: "first_Z.jpg", role: "unknown"},
     {file: "second_Z.jpg", role: "unknown"},
-    {file: "late_FZ.jpg", role: "detail"},
+    {file: "third_Z.jpg", role: "unknown"},
   ]);
   assert.equal(result.every(image => image.url.endsWith("?width=1800")), true);
+  assert.equal(ctx.selectVisualizationProductReferences([
+    referenceImage("blind_FZ.jpg"),
+    referenceImage("opaque.jpg", "ColorizedFabricZoom"),
+  ]).length, 0);
 });
 
 test("unknown visualization photos retain gallery order, deduplicate and bound alt payloads", (t) => {
   const ctx = setup(t);
   const images = [referenceImage("a_Z.jpg"), referenceImage("b_Z.jpg"), referenceImage("a_Z.jpg", "x".repeat(300)), referenceImage("c_Z.jpg"), referenceImage("d_Z.jpg"), referenceImage("e_Z.jpg")];
   const result = ctx.selectVisualizationProductReferences(images);
-  assert.deepEqual(JSON.parse(JSON.stringify(result.map(image => image.url))), [images[0].zoomSrc, images[1].zoomSrc, images[3].zoomSrc, images[4].zoomSrc]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.map(image => image.url))), [images[0].url, images[1].url, images[3].url, images[4].url]);
   assert.equal(result.every(image => image.role === "unknown"), true);
   assert.equal(result[0].alt, "x".repeat(200));
 });
 
-test("visualization preparation selects later references from validated gallery in one owner operation", async (t) => {
+const variantPage = (media = gallery(), variant = 140) => html(page,
+  `<main-product update-url="true" product-url="/products/shade">
+    <variant-picker><script type="application/json" data-selected-variant>{"id":${variant}}</script></variant-picker>
+    <script type="application/json" data-selected-variant>{"id":141}</script>
+    ${media}
+  </main-product>`);
+const asset = (file) => `${origin}/cdn/shop/files/${file}`;
+const productJson = (variants = [{ id: 140 }], images = [], media = [], title = "Roller Blind") =>
+  Response.json({
+    id: 12,
+    title,
+    variants: variants.map(variant => ({ title: "Default Title", ...variant })),
+    images,
+    media,
+  });
+const referenceFiles = (result) =>
+  JSON.parse(JSON.stringify(result.references.map(({ url }) => new URL(url).pathname.split("/").at(-1))));
+
+test("visualization preparation uses the selected variant and scoped gallery, skipping details and other variants", async (t) => {
   const media = [
+    `<swiper-slide hidden><img src="${asset("hidden_FR.jpg")}"></swiper-slide>`,
     `<swiper-slide data-feature-option-slide-holder><img data-feature-option-slide-image src="${origin}/cdn/shop/files/feature_FR.jpg"></swiper-slide>`,
-    ...["first_Z.jpg", "second_Z.jpg", "third_Z.jpg", "fourth_Z.jpg", "late_FZ.jpg", "late_FR.jpg"].map(file =>
+    `<swiper-slide><img alt="Size chart" src="${asset("chart.jpg")}"></swiper-slide>`,
+    `<swiper-slide><img src="${origin}/cdn/shop/t/12/assets/artwork_FR.jpg"></swiper-slide>`,
+    ...["first_Z.jpg", "swatch.jpg", "second_Z.jpg", "third_Z.jpg", "late_FZ.jpg", "late_FR.jpg"].map(file =>
       `<swiper-slide><img data-testid="pdp-product-image-main" src="${origin}/cdn/shop/files/${file}?width=1800"></swiper-slide>`),
   ].join("");
-  const ctx = setup(t, async () => response(html(page, `<swiper-with-media data-main-product-media-gallery><swiper-container id="MediaGallery-template-main-swiper-initial">${media}</swiper-container></swiper-with-media>`)));
+  const ctx = setup(t, async (url) => {
+    assert.equal(url, `${origin}/en-gb/products/shade.js`);
+    return productJson([
+      { id: 140, title: "Grey", featured_image: { src: asset("selected.jpg") } },
+      { id: 141, title: "Blue", featured_image: { src: asset("other-variant_FR.jpg") } },
+    ], [asset("other-variant_FR.jpg")]);
+  }, variantPage(`<swiper-with-media data-main-product-media-gallery>${media}</swiper-with-media>`), `${page}?variant=140`);
+  ctx.window.Shopify = { routes: { root: "/en-gb/" } };
+  Object.defineProperty(ctx.window.document.querySelector('img[src*="first_Z"]'), "currentSrc", {
+    value: asset("stale-other-variant_FR.jpg"),
+  });
   const executor = ctx.createStorefrontExecutor({execute: () => assert.fail("No catalog call")});
   t.after(() => executor.dispose());
   const result = await executor.prepareVisualizationProduct("/products/shade", new AbortController().signal);
   assert.equal(result.productPath, "/products/shade");
-  assert.deepEqual(JSON.parse(JSON.stringify(result.references.map(image => image.role))), ["installation", "unknown", "unknown", "detail"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(result.references.map(image => new URL(image.url).pathname.split("/").at(-1)))), ["late_FR.jpg", "first_Z.jpg", "second_Z.jpg", "late_FZ.jpg"]);
+  assert.equal(result.productTitle, "Roller Blind — Grey");
+  assert.deepEqual(JSON.parse(JSON.stringify(result.references.map(image => image.role))), ["installation", "unknown", "unknown", "unknown"]);
+  assert.deepEqual(referenceFiles(result), ["late_FR.jpg", "selected.jpg", "first_Z.jpg", "second_Z.jpg"]);
   assert.equal(ctx.calls.length, 1);
-  await executor.loadProductGallery(page, new AbortController().signal);
-  assert.equal(ctx.calls.length, 1, "Preparation shares the gallery cache");
+});
+
+test("off-PDP preparation allows a single-variant fallback and prefers the gallery alt for duplicate photos", async (t) => {
+  const featured = asset("opaque.jpg");
+  const fallback = asset("wanted_Z.jpg");
+  const ctx = setup(t, async (url) => url === page
+    ? response(variantPage(`<div data-main-product-media-gallery>
+        <img src="${featured}?width=800" alt="ColorizedFullRoom selected view">
+      </div>`))
+    : productJson([{ id: 140, title: "Grey", featured_image: { src: featured } }], [fallback], [
+      { media_type: "image", src: featured, alt: "ColorizedFabricZoom" },
+    ], "GREY Roller Blind"),
+  );
+  const executor = ctx.createStorefrontExecutor({execute: () => assert.fail("No catalog call")});
+  t.after(() => executor.dispose());
+  const result = await executor.prepareVisualizationProduct("/products/shade", new AbortController().signal);
+  assert.deepEqual(referenceFiles(result), ["opaque.jpg", "wanted_Z.jpg"]);
+  assert.equal(result.productTitle, "GREY Roller Blind");
+  assert.equal(result.references[0].url, featured);
+  assert.equal(result.references[0].role, "installation");
+  assert.equal(ctx.calls.length, 2);
+});
+
+test("a changed selected variant during preparation cannot return stale product photos", async (t) => {
+  let finishFetch;
+  const ctx = setup(t, () => new Promise((resolve) => { finishFetch = resolve; }), variantPage(), `${page}?variant=140`);
+  const executor = ctx.createStorefrontExecutor({execute: () => assert.fail("No catalog call")});
+  t.after(() => executor.dispose());
+  const pending = executor.prepareVisualizationProduct("/products/shade", new AbortController().signal);
+  const rejected = assert.rejects(pending, /no usable product images/);
+  await until(() => !!finishFetch);
+  ctx.window.history.replaceState({}, "", `${page}?variant=141`);
+  finishFetch(productJson([{ id: 140, featured_image: { src: asset("selected.jpg") } }]));
+  await rejected;
 });
 
 test("cancelled visualization preparation does not retain stale photos or block the next operation", async (t) => {
   let attempts = 0;
-  const ctx = setup(t, (_url, options) => {
+  const ctx = setup(t, (url, options) => {
     attempts++;
-    if (attempts > 1) return Promise.resolve(response());
+    if (attempts > 1)
+      return Promise.resolve(url === page ? response(variantPage()) : productJson());
     return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), {once: true}));
   });
   const executor = ctx.createStorefrontExecutor({execute: () => assert.fail("No catalog call")});
@@ -633,7 +704,8 @@ test("cancelled visualization preparation does not retain stale photos or block 
   controller.abort();
   await rejected;
   const result = await executor.prepareVisualizationProduct("/products/shade", new AbortController().signal);
-  assert.equal(result.references.length, 2);
-  assert.equal(ctx.calls.length, 2, "Aborted preparation must not populate the cache");
+  assert.equal(result.references.length, 1);
+  assert.equal(result.productTitle, "Roller Blind");
+  assert.equal(ctx.calls.length, 3, "Aborted preparation must not populate the cache");
   assert.equal(ctx.timers.size, 0);
 });

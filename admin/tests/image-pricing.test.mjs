@@ -48,6 +48,20 @@ test("image pricing uses five modality rates and subtracts cache subsets once", 
   assert.notEqual(flare.rateId, result.rateId);
 });
 
+test("Sunburst 2.6 uses its own dated five-component rate", () => {
+  const model = "gpt-image-2.6-sunburst";
+  assert.equal(imageRateFor(model, "2026-11-09T12:15:56.999Z"), null);
+
+  const createdAt = "2026-11-09T12:15:57.000Z";
+  const result = estimateImageUsage(usage({ model, createdAt }));
+  assert.equal(result.rateId, "gpt-image-2.6-sunburst-standard-2026-11-09");
+  assert.deepEqual(
+    result.lines.map((line) => line.ratePerMillion),
+    [5, 1.25, 8, 2, 30],
+  );
+  close(result.usd, estimateImageUsage(usage()).usd);
+});
+
 test("missing cache splits are labelled estimates without overwriting observed usage", () => {
   const input = usage({
     textCachedInputTokens: null,

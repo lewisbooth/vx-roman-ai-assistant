@@ -4,7 +4,8 @@ import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import { MAXIMUM_PHOTO_BYTES, normalizeProductImage } from "./image.server";
 import type { NormalizedImage } from "./image.server";
-import type { ProductImageRole } from "./prompt.server";
+import type { ProductImageRole } from "../../shared/visualizations";
+import { isShopifyProductAssetPath } from "../../shared/product-reference-rules";
 
 export interface ProductReference {
   url: string;
@@ -107,16 +108,7 @@ export function validateProductImageUrl(
     !allowedOrigins.includes(url.origin)
   )
     throw new ProductImageError();
-  const path = url.pathname;
-  const shopPath =
-    /^\/cdn\/shop\/(?:files|products)\/[^/]+\.(?:jpe?g|png|webp)$/i;
-  const cdnPath =
-    /^\/s\/files\/(?:\d+\/)+(?:(?:files|products)\/)[^/]+\.(?:jpe?g|png|webp)$/i;
-  if (
-    !(url.hostname === "cdn.shopify.com" ? cdnPath : shopPath).test(path) ||
-    /(?:%2f|%5c|%00|\\)/i.test(path)
-  )
-    throw new ProductImageError();
+  if (!isShopifyProductAssetPath(url)) throw new ProductImageError();
   return url;
 }
 

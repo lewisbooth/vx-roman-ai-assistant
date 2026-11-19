@@ -35,7 +35,10 @@ export function productImagePageUrl(value: string): string {
   return url.href;
 }
 
-function mediaUrl(src: string | null, pageUrl: string): string | undefined {
+export function productMediaUrl(
+  src: string | null,
+  pageUrl: string,
+): string | undefined {
   if (!src || src.length > 2048) return;
   try {
     // Resolve against the requested page, never a fetched <base> element.
@@ -139,7 +142,7 @@ export function readProductGallery(
     ].filter(belongs);
     if (!images.length || images.length > MAX_GALLERY_IMAGES) return;
     const entries = images.map((image) => {
-      const src = mediaUrl(image.getAttribute("src"), pageUrl);
+      const src = productMediaUrl(image.getAttribute("src"), pageUrl);
       return src ? { image, src, id: assetId(src) } : undefined;
     });
     if (entries.some((entry) => !entry)) return;
@@ -165,7 +168,7 @@ export function readProductGallery(
         (holder as HTMLElement).style.display === "none"
       )
         continue;
-      const src = mediaUrl(image.getAttribute("src"), pageUrl);
+      const src = productMediaUrl(image.getAttribute("src"), pageUrl);
       if (src) features.set(assetId(src), { image, src, id: assetId(src) });
     }
   }
@@ -178,7 +181,7 @@ export function readProductGallery(
     const container = image.closest("swiper-container");
     if (!container?.id.match(/-(?:main|thumbs)-swiper-(?:initial|zoom)$/))
       continue;
-    const src = mediaUrl(image.getAttribute("src"), pageUrl);
+    const src = productMediaUrl(image.getAttribute("src"), pageUrl);
     if (!src) continue;
     const id = assetId(src);
     const choices = sizes.get(id) ?? [];
@@ -232,6 +235,17 @@ export async function loadProductPageGallery(
     const gallery = readProductGallery(document, pageUrl);
     if (gallery) return gallery;
   }
+  const source = await loadProductPageMarkup(pageUrl, signal);
+  return source && readProductGallery(source, pageUrl);
+}
+
+/** Fetch a canonical same-store PDP without activating its markup. */
+export async function loadProductPageMarkup(
+  input: string,
+  signal: AbortSignal,
+): Promise<DocumentFragment | undefined> {
+  const pageUrl = productImagePageUrl(input);
+  signal.throwIfAborted();
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   signal.addEventListener("abort", abort, { once: true });
@@ -245,35 +259,12 @@ export async function loadProductPageGallery(
       signal: controller.signal,
       headers: { Accept: "text/html" },
     });
-    if (
-      !response.ok ||
-      !response.headers.get("content-type")?.includes("text/html") ||
-      Number(response.headers.get("content-length")) > MAX_PAGE_BYTES ||
-      !response.body
-    ) {
+    if (!response.headers.get("content-type")?.includes("text/html")) {
       await response.body?.cancel();
       return;
     }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let size = 0;
-    let html = "";
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        controller.signal.throwIfAborted();
-        if (done) break;
-        size += value.byteLength;
-        if (size > MAX_PAGE_BYTES) {
-          await reader.cancel();
-          return;
-        }
-        html += decoder.decode(value, { stream: true });
-      }
-      html += decoder.decode();
-    } finally {
-      reader.releaseLock();
-    }
+    const html = await readProductResponseText(response, controller.signal);
+    if (html === undefined) return;
     // Template contents are inert: scripts/custom elements/resources from the
     // fetched storefront never mount or run while selecting one image URL.
     const template = document.createElement("template");
@@ -282,13 +273,45 @@ export async function loadProductPageGallery(
       .querySelector('link[rel="canonical"]')
       ?.getAttribute("href");
     if (!canonical || productImagePageUrl(canonical) !== pageUrl) return;
-    return readProductGallery(template.content, pageUrl);
+    return template.content;
   } catch {
     signal.throwIfAborted();
-    // A display-only timeout/unavailable PDP must not hide its catalog card.
     return;
   } finally {
     window.clearTimeout(timeout);
     signal.removeEventListener("abort", abort);
+  }
+}
+
+export async function readProductResponseText(
+  response: Response,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  if (
+    !response.ok ||
+    Number(response.headers.get("content-length")) > MAX_PAGE_BYTES ||
+    !response.body
+  ) {
+    await response.body?.cancel();
+    return;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let content = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      signal.throwIfAborted();
+      if (done) return content + decoder.decode();
+      size += value.byteLength;
+      if (size > MAX_PAGE_BYTES) {
+        await reader.cancel();
+        return;
+      }
+      content += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
