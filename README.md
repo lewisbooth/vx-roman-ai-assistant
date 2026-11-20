@@ -34,11 +34,11 @@ Set `SHOPIFY_API_SECRET`, `OPENAI_API_KEY` and `SCOPES=write_app_proxy` in the r
 Build and start the backend, then start the customer preview:
 
 ```powershell
-docker compose up --build -d
+./dev/start.ps1
 npm run dev:frontend
 ```
 
-The customer preview is at http://127.0.0.1:5173; the admin defaults to http://localhost:3000. If that port is occupied, set `ROMAN_ADMIN_PORT=3100` and the matching local `SHOPIFY_APP_URL` in `.env`. Docker applies migrations and keeps SQLite in the `roman-ai-data` volume. Use `docker compose logs -f admin` for logs and `docker compose down` to stop; the volume is retained. See [admin setup](admin/README.md) for embedding the local server in Shopify through HTTPS and for native hot reload.
+The customer preview is at http://127.0.0.1:5173 and the admin defaults to http://localhost:3000. If that port is occupied, set `ROMAN_ADMIN_PORT=3100` and the matching local `SHOPIFY_APP_URL` in `.env`. Docker applies migrations and keeps SQLite in the `roman-ai-data` volume. Use `docker compose logs -f admin` for logs and `docker compose down` to stop. For image retention, rollback and HTTPS setup, see the [local Docker workflow](admin/README.md#local-docker-backend).
 
 For stores eligible for Shopify CLI previews, `npm run dev` manages the tunnel and builds the extension once; run `npm run watch:frontend` alongside it for subsequent changes. For the existing `hd-dev-multi` and `hd-dev-single` installations, use the local preview and publish an app version to test on the stores. Each store has its own [navigation profile](frontend/README.md#theme-integrations).
 
@@ -86,7 +86,7 @@ To restore the previous UI and backend, with no active voice or pending tool wor
 ```powershell
 shopify app release --config local --version vx-roman-ai-assistant-20260917-support-approval --allow-updates
 docker image tag roman-ai-admin:before-fullscreen-20260917 roman-ai-admin:latest
-docker compose up -d --no-build admin
+./dev/start.ps1 -SkipBuild
 ```
 
 The release restores the previous extension on every installed store. Refresh the storefront afterward. Do not rebuild the new checkout during that rollback: it would replace the tagged backend. Use a checkout/worktree at the source tag if source rollback is also needed. Do not restore an older database over newer customer conversations.

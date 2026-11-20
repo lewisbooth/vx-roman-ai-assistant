@@ -182,15 +182,15 @@ Missing usage fields, unknown models/tiers and gaps in pricing history stay unpr
 Install Docker Desktop with Linux containers and follow the [root setup](../README.md) to create `.env`. Supply the existing app's `SHOPIFY_API_KEY` and `SHOPIFY_API_SECRET`; `SCOPES` must match its configured scopes. Use `SHOPIFY_APP_URL=http://localhost:3000` for the local landing page. If port 3000 is occupied, add `ROMAN_ADMIN_PORT=3100` and use `SHOPIFY_APP_URL=http://localhost:3100`. Keep this file private; Docker excludes it from the image and Compose supplies it at runtime.
 
 ```powershell
-docker compose config --quiet
-docker compose build
-docker compose up -d
+./dev/start.ps1
 docker compose logs -f admin
 ```
 
 Open localhost on the chosen port. The production-style container binds only to `127.0.0.1` (host port 3000 by default; container port always 3000) and applies Prisma migrations at startup. Compose overrides `.env`'s development database path with `file:/data/roman.sqlite` in the durable `roman-ai-data` volume. Use one server instance with SQLite. Preserve and back up this volume; future uploaded/generated files also need persistent storage outside the container's writable layer.
 
-After code or environment changes, run `docker compose up --build -d`. Stop with `docker compose down`; the named volume remains. Docker does not provide source hot reload in this setup.
+Run `./dev/start.ps1` after code changes. Use `./dev/start.ps1 -SkipBuild` to start `roman-ai-admin:latest` with the current `.env`, including after environment-only changes. Both commands reuse the named volume. Stop with `docker compose down` to retain it.
+
+The start script captures the serving container's image ID before replacement and checks the replacement image and loopback HTTP response before keeping the prior verified image as `roman-ai-admin:rollback`. A failed start preserves the rollback tag and restores `roman-ai-admin:latest` to the prior verified image when available. Check `docker compose logs admin` for the startup error, then use `./dev/start.ps1 -SkipBuild` to restart the restored image. Use `./dev/start.ps1 -Rollback` to start and verify the retained rollback image. The script retires only superseded image IDs with no remaining tag, registry digest or container reference.
 
 The installed embedded app needs a configured HTTPS URL; setting `.env` alone does not change the URL Shopify opens. Connect this Docker backend with [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) and the chosen host port (3100 here):
 
@@ -198,7 +198,7 @@ The installed embedded app needs a configured HTTPS URL; setting `.env` alone do
 cloudflared tunnel --url http://127.0.0.1:3100 --no-autoupdate
 ```
 
-Install `cloudflared` on your machine, or use this checkout's downloaded `.agents/cloudflared.exe` in that command. Keep it running; Ctrl+C stops a foreground tunnel. Its random HTTPS URL changes after restarting. Set `SHOPIFY_APP_URL` in `.env` to the returned origin, update and release the local Shopify configuration below, and recreate Docker with `docker compose up -d admin`. Both Docker and the tunnel must run while using the installed app. Shopify webhooks use the same public endpoint; this container needs no HMR tunnel.
+Install `cloudflared` on your machine, or use this checkout's downloaded `.agents/cloudflared.exe` in that command. Keep it running. Ctrl+C stops a foreground tunnel, and its random HTTPS URL changes after restarting. Set `SHOPIFY_APP_URL` in `.env` to the returned origin, update and release the local Shopify configuration below, and apply the environment change with `./dev/start.ps1 -SkipBuild`. Both Docker and the tunnel must run while using the installed app. Shopify webhooks use the same public endpoint.
 
 ## Native hot reload
 
@@ -221,6 +221,8 @@ npm run build:admin
 ```
 
 The build and type check explicitly generate Prisma's client from the schema; they do not depend on npm's install hooks. The production server is `build/server/index.js`; its client assets are in `build/client/`. Publish this app to a Node.js host. Shopify's extension deployment does not host this server.
+
+Run `./dev/start.test.ps1` for the mocked image retention checks. To verify the Docker build separately from the local deployment, run `docker build --tag roman-ai-admin-check:runtime .`.
 
 For a later Azure VM deployment, use the same Dockerfile and Compose service with a private `.env`, a public HTTPS reverse proxy to the chosen localhost port, and a persistent database volume. Transfer the database deliberately when moving hosts; a volume on the local machine does not move with the image.
 
